@@ -1042,7 +1042,54 @@ def _snapshots(episode, nodes):
               tone="warning" if order_status == "cancelled" else "neutral")
 
 
-def _bound_records(episode, nodes):
+def _pending_review_receipt_refs(episode, review, *, now):
+    """Read exact primary-review receipt sources; never inspect or settle them."""
+    evidence = review.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    expected = {
+        (item.get("source_message_id") or item.get("message_id"),
+         item.get("source_part_id"), item.get("content_hash"))
+        for item in evidence.get("media") or [] if isinstance(item, dict)
+        and item.get("role") in {"receipt", "payment_candidate"}
+        and type(item.get("source_message_id") or item.get("message_id")) is int
+        and isinstance(item.get("source_part_id"), str) and item.get("source_part_id")
+        and isinstance(item.get("content_hash"), str) and item.get("content_hash")
+    }
+    if not expected or not review.get("watermark_message_id"):
+        return []
+    from management.models import IgClient, InstagramBotMessage
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_payment_observation import read_receipt_observation
+    from management.services.ig_memory_producer import _namespace
+
+    client = IgClient.objects.select_related("current_commercial_episode").filter(
+        pk=episode["client_id"], current_commercial_episode_id=episode["id"],
+        hidden_at__isnull=True, privacy_erasure_started_at__isnull=True, is_blocked=False,
+    ).first()
+    if client is None or client.current_commercial_episode.primary_payment_review_id != review["id"]:
+        return []
+    watermark = InstagramBotMessage.objects.filter(pk=review["watermark_message_id"],
+        client_id=client.pk, sender_id=client.igsid).first()
+    if watermark is None:
+        return []
+    namespace = _namespace(watermark)
+    if not namespace:
+        return []
+    observed = read_receipt_observation(client, episode_id=episode["id"],
+        source_namespace=namespace, reset_floor=conversation_route_reset_floor(client.pk),
+        watermark={"message_id": watermark.pk,
+            "event_at": (watermark.provider_created_at or watermark.created_at).isoformat()}, now=now)
+    admitted = {ref["message_id"] for ref in observed.get("source_refs") or []}
+    identities = {
+        receipt["source_message_id"] for receipt in (observed.get("observation") or {}).get("receipts") or []
+        if receipt.get("role") == "receipt" and receipt.get("state") in {"inspected", "uncertain"}
+        and receipt.get("source_message_id") in admitted
+        and (receipt.get("source_message_id"), receipt.get("source_part_id"), receipt.get("content_hash")) in expected
+    }
+    return [_ref("message", identifier) for identifier in sorted(identities)]
+
+
+def _bound_records(episode, nodes, *, now=None):
     """Latest state of the selected purchase, including when viewing its history."""
     from management.models import IgPaymentConfirmationReview
     from orders.models import Order
@@ -1051,7 +1098,7 @@ def _bound_records(episode, nodes):
     if episode["primary_payment_review_id"]:
         review = IgPaymentConfirmationReview.objects.filter(
             pk=episode["primary_payment_review_id"], client_id=episode["client_id"],
-        ).values("id", "status", "updated_at").first()
+        ).values("id", "status", "updated_at", "watermark_message_id", "evidence").first()
         if review:
             labels = dict(IgPaymentConfirmationReview.Status.choices)
             state, tone = {
@@ -1067,6 +1114,14 @@ def _bound_records(episode, nodes):
                     "kind": "manager_review", "label": "Перевірка менеджером",
                     "evidence_refs": [_ref("payment_review", review["id"])],
                 }
+                receipt_refs = _pending_review_receipt_refs(episode, review, now=now or timezone.now())
+                if receipt_refs:
+                    nodes["payment"]["waiting"].update(
+                        receipt_received=True, receipt_evidence_refs=receipt_refs,
+                    )
+                    _fact(nodes["payment"], "receipt", "Квитанція", "Отримано; очікує перевірки менеджером",
+                          source="receipt_observation.current", ref=receipt_refs[0],
+                          captured_at=_iso(review["updated_at"]), state="partial", tone="warning")
                 return_focus = "payment"
             else:
                 return_focus = None
@@ -1171,7 +1226,7 @@ def build_journey_snapshot(client, *, view_episode_id=None, source_selection=Non
                 node["evidence_refs"].extend(event["evidence_refs"])
         if history["visits"]:
             focus = history["visits"][-1]["node_id"]
-        review_focus = _bound_records(episode, nodes)
+        review_focus = _bound_records(episode, nodes, now=now)
         focus = review_focus or focus
         for node in nodes.values():
             covered.extend(fact["source"] for fact in node["facts"] if fact["source"].endswith(".current"))

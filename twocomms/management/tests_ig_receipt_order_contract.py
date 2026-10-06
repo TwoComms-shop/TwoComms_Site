@@ -69,7 +69,7 @@ class ApprovedReceiptAutoOrderTests(TestCase):
         self.manager = get_user_model().objects.create_user('receipt-auto-manager', is_staff=True)
         self.customer = IgClient.get_or_create_for_sender('receipt-auto-customer')
 
-    def _review(self, *, incomplete=None, canonical=False):
+    def _review(self, *, incomplete=None, canonical=False, earlier_examples=False, photo_role='manager', private_photo=None, shipping_quote='850 грн + 120 доставка = 970 грн'):
         from copy import deepcopy
         from django.utils import timezone
         from management.models import InstagramBotMessage
@@ -77,25 +77,54 @@ class ApprovedReceiptAutoOrderTests(TestCase):
         from management.services.ig_conversation_agreement import persist_conversation_agreement
 
         now = timezone.now()
+        self.reference_examples = []
+        if earlier_examples:
+            for index in range(2):
+                self.reference_examples.append(InstagramBotMessage.objects.create(
+                    client=self.customer, sender_id=self.customer.igsid,
+                    provider_namespace=self.namespace, role='user', text='', status='done',
+                    source='webhook', provider_created_at=now,
+                    provider_message_id=f'earlier-example-{index}', mid=f'earlier-example-{index}',
+                    attachment_media=[{'type': 'image', 'role': 'product', 'url': f'https://fixture.invalid/example-{index}.jpg'}],
+                ))
         texts = [
             ('user', 'Хочу одну футболку розмір L' if canonical else 'Хочу одну футболку'),
             ('manager', 'L білу оверсайз TWOCOMMS 1654'),
-            ('manager', ''),
+            (photo_role, ''),
             ('user', 'Так'),
-            ('manager', '850 грн + 120 доставка = 970 грн'),
+            ('manager', shipping_quote),
             ('user', 'ПІБ: Іван Іванов\nТелефон: 0931112233\nМісто: Київ\nВідділення: Відділення №4'),
         ]
         self.source_rows = []
         for index, (role, text) in enumerate(texts):
+            media = [{'type': 'image', 'role': 'product', 'url': 'https://fixture.invalid/reference.jpg'}] if index == 2 else []
+            lifecycle = {}
+            if index == 2 and private_photo:
+                from datetime import timedelta
+                deadline = now + timedelta(hours=1)
+                media = [{'type': 'image', 'role': 'product', 'mime': 'image/jpeg',
+                    'source_part_id': 'mp1_' + 'a' * 32, 'content_hash': 'a' * 64,
+                    'status': 'owned', 'capture_state': 'owned', 'private_storage': True,
+                    'storage_name': 'fixture-only/accepted-reference.jpg'}]
+                if private_photo != 'unknown':
+                    media[0]['delete_after'] = deadline.isoformat()
+                lifecycle = {'private_media_state': 'active',
+                    'private_media_delete_after': deadline if private_photo != 'unknown' else None}
+                if private_photo == 'expired_sibling':
+                    media.append({**media[0], 'source_part_id': 'mp1_' + 'b' * 32,
+                        'content_hash': 'b' * 64, 'storage_name': 'fixture-only/older-reference.jpg',
+                        'delete_after': (now - timedelta(seconds=1)).isoformat()})
+                if private_photo == 'deleting':
+                    lifecycle['private_media_state'] = 'delete_pending'
             self.source_rows.append(InstagramBotMessage.objects.create(
                 client=self.customer, sender_id=self.customer.igsid,
                 provider_namespace=self.namespace,
                 role=role, text=text, status='done',
                 source='echo' if role == 'manager' else 'webhook',
-                send_state='sent' if role == 'manager' else '',
+                send_state='sent' if role in {'manager', 'model'} else '',
                 provider_message_id=f'receipt-auto-{index}', mid=f'receipt-auto-{index}',
                 provider_created_at=now,
-                attachment_media=[{'type': 'image', 'role': 'product', 'url': 'https://fixture.invalid/reference.jpg'}] if index == 2 else [],
+                attachment_media=media, **lifecycle,
             ))
             if canonical and index == 0:
                 from management.services.ig_commerce_state import apply_turn
@@ -104,7 +133,7 @@ class ApprovedReceiptAutoOrderTests(TestCase):
                     self.customer, self.source_rows[0], parse_turn(text), reply_payload={},
                 )
                 self.customer.refresh_from_db()
-        result = persist_conversation_agreement(self.customer, self.source_rows, watermark=self.source_rows[-1].pk)
+        result = persist_conversation_agreement(self.customer, [*self.reference_examples, *self.source_rows], watermark=self.source_rows[-1].pk)
         self.assertTrue(result['persisted'], result)
         agreement = result['agreement']
         draft = {key: deepcopy(agreement.get(key)) for key in (
@@ -120,11 +149,11 @@ class ApprovedReceiptAutoOrderTests(TestCase):
             evidence={'order_draft': draft}, watermark_message_id=self.source_rows[-1].pk,
         )
 
-    def _approve(self, review):
+    def _approve(self, review, *, confirmed_amount='970.00', verification_scope='full_payment'):
         from management.services.ig_payment_review import record_review_decision
         return record_review_decision(
             review, actor=self.manager, decision='manager_verified',
-            verification_scope='full_payment', confirmed_amount='970.00',
+            verification_scope=verification_scope, confirmed_amount=confirmed_amount,
         )
 
     def test_complete_accepted_custom_order_is_created_by_approval_once(self):
@@ -151,6 +180,8 @@ class ApprovedReceiptAutoOrderTests(TestCase):
         self.assertEqual(item.color_name_custom, 'Білий')
         self.assertEqual(item.option_values['garment_type'], 'tshirt')
         self.assertEqual(item.option_values['_reference_message_ids'], sorted([self.source_rows[1].pk, self.source_rows[2].pk, self.source_rows[3].pk]))
+        self.assertEqual(item.option_values['accepted_reference_message_ids'], [self.source_rows[2].pk])
+        self.assertEqual(item.option_values['primary_reference_message_id'], self.source_rows[2].pk)
         self.assertEqual(item.unit_price, Decimal('850.00'))
         self.assertEqual(order.total_sum, Decimal('850.00'))
         self.assertEqual(order.payment_status, 'unpaid')
@@ -162,6 +193,187 @@ class ApprovedReceiptAutoOrderTests(TestCase):
         self.assertEqual(snapshot['delivery_payer_type'], 'Sender')
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.stage, IgClient.Stage.ORDER_CREATED)
+
+    def test_accepted_seller_photo_remains_primary_after_examples_and_receipt(self):
+        from django.utils import timezone
+        from management.models import InstagramBotMessage
+        from orders.models import Order
+        review = self._review(earlier_examples=True)
+        receipt = InstagramBotMessage.objects.create(
+            client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace=self.namespace, role='user', text='Оплатив, ось квитанція',
+            status='done', source='webhook', provider_created_at=timezone.now(),
+            provider_message_id='late-receipt', mid='late-receipt',
+            attachment_media=[{'type': 'image', 'role': 'receipt', 'payment_evidence': True,
+                'url': 'https://fixture.invalid/receipt.jpg'}],
+        )
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        options = Order.objects.get().items.get().option_values
+        self.assertEqual(options['accepted_reference_message_ids'], [self.source_rows[2].pk])
+        self.assertEqual(options['primary_reference_message_id'], self.source_rows[2].pk)
+        self.assertTrue(all(row.pk in options['_reference_message_ids'] for row in self.reference_examples))
+        self.assertNotIn(receipt.pk, options['_reference_message_ids'])
+
+    def test_live_owned_accepted_photo_allows_order_without_reading_private_bytes(self):
+        from orders.models import Order
+        review = self._review(private_photo='live')
+        with patch('management.services.ig_private_media.private_media_storage') as storage:
+            approved = self._approve(review)
+        storage.assert_not_called()
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        self.assertEqual(Order.objects.get().items.get().option_values['primary_reference_message_id'], self.source_rows[2].pk)
+
+    def test_expired_private_sibling_prevents_accepted_photo_order(self):
+        from orders.models import Order
+        review = self._review(private_photo='expired_sibling')
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['missing_fields'], ['accepted_reference_unavailable'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_unknown_private_retention_prevents_accepted_photo_order(self):
+        from orders.models import Order
+        review = self._review(private_photo='unknown')
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['missing_fields'], ['accepted_reference_unavailable'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_pending_deletion_prevents_accepted_photo_order(self):
+        from orders.models import Order
+        review = self._review(private_photo='deleting')
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['missing_fields'], ['accepted_reference_unavailable'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_native_sent_model_photo_becomes_accepted_primary(self):
+        from orders.models import Order
+        review = self._review(photo_role='model')
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        options = Order.objects.get().items.get().option_values
+        self.assertEqual(options['accepted_reference_message_ids'], [self.source_rows[2].pk])
+        self.assertEqual(options['primary_reference_message_id'], self.source_rows[2].pk)
+
+    def test_model_photo_without_sent_receipt_cannot_be_accepted_primary(self):
+        from orders.models import Order
+        review = self._review(photo_role='model')
+        photo = self.source_rows[2]
+        photo.send_state = 'pending'
+        photo.save(update_fields=['send_state'])
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('conversation_agreement_source_changed', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_changed_accepted_photo_requires_manual_completion(self):
+        from orders.models import Order
+        review = self._review(earlier_examples=True)
+        photo = self.source_rows[2]
+        photo.attachment_media = [{'type': 'image', 'role': 'product', 'url': 'https://fixture.invalid/replacement.jpg'}]
+        photo.save(update_fields=['attachment_media'])
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('conversation_agreement_source_changed', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_unbound_approved_photo_cannot_be_injected_into_draft(self):
+        from copy import deepcopy
+        from orders.models import Order
+        review = self._review(earlier_examples=True)
+        evidence = deepcopy(review.evidence)
+        evidence['order_draft']['items'][0]['accepted_reference_message_ids'] = [self.reference_examples[0].pk]
+        review.evidence = evidence
+        review.save(update_fields=['evidence', 'updated_at'])
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('conversation_agreement_draft_changed', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_source_verified_free_shipping_creates_sender_order_without_zeroing_goods(self):
+        from orders.models import Order
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставка безкоштовна за наш рахунок.')
+        approved = self._approve(review, confirmed_amount='850.00')
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        order = Order.objects.get()
+        self.assertEqual(order.items.get().unit_price, Decimal('850.00'))
+        self.assertEqual(order.payment_payload['delivery_payment']['mode'], 'merchant_free')
+        self.assertEqual(order.payment_payload['delivery_payment']['authority'], 'payment_review')
+        snapshot = build_order_payment_snapshot(order)
+        self.assertEqual(snapshot['payable_total'], '850.00')
+        self.assertEqual(snapshot['declared_cost'], '850.00')
+        self.assertEqual(snapshot['delivery_payer_type'], 'Sender')
+        self.assertFalse(snapshot['delivery_prepaid'])
+
+    def test_source_verified_recipient_carriage_is_not_collected_by_seller(self):
+        from orders.models import Order
+        from orders.nova_poshta_documents import build_order_payment_snapshot
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставку оплачує одержувач при отриманні.')
+        approved = self._approve(review, confirmed_amount='850.00')
+        self.assertEqual(approved.order_creation_result['status'], 'created', approved.order_creation_result)
+        snapshot = build_order_payment_snapshot(Order.objects.get())
+        self.assertEqual(snapshot['payable_total'], '850.00')
+        self.assertEqual(snapshot['delivery_payer_type'], 'Recipient')
+        self.assertEqual(snapshot['delivery_charge_amount'], '0.00')
+
+    def test_unbound_free_shipping_cannot_replace_captured_recipient_policy(self):
+        from copy import deepcopy
+        from orders.models import Order
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставку оплачує одержувач при отриманні.')
+        evidence = deepcopy(review.evidence)
+        policy = deepcopy(evidence['order_draft']['agreement']['shipping_payment'])
+        policy.update(mode='merchant_free', payer_type='Sender')
+        evidence['order_draft']['shipping_payment'] = policy
+        review.evidence = evidence
+        review.save(update_fields=['evidence', 'updated_at'])
+        approved = self._approve(review, confirmed_amount='850.00')
+        self.assertEqual(approved.order_creation_result['missing_fields'], ['conversation_agreement_draft_changed'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_reviewed_shipping_edit_is_locked_and_reprice_invalidates_original_binding(self):
+        import json
+        from django.urls import reverse
+        from orders.models import Order
+        from orders.services.delivery_payment import delivery_payment_snapshot
+        from storefront.views.manual_orders import _build_order_initial
+        review = self._review(shipping_quote='Ціна футболки 850 грн. Доставка безкоштовна за наш рахунок.')
+        self._approve(review, confirmed_amount='850.00')
+        order = Order.objects.get()
+        initial = _build_order_initial(order)
+        self.assertTrue(initial['delivery_payment_locked'])
+        payload = {key: initial[key] for key in ('full_name', 'phone', 'city', 'np_office', 'items', 'sale_source', 'manager_comment')}
+        payload.update(delivery_method='keep', payment_preset='unpaid_full',
+            delivery_payment_mode='carrier_recipient', delivery_charge_amount='0')
+        self.client.force_login(self.manager)
+        url = reverse('manual_order_edit', args=[order.pk])
+        with patch('storefront.views.manual_orders.telegram_notifier.update_order_notification_message'), patch(
+            'storefront.views.manual_orders.telegram_notifier.send_order_edit_notification',
+        ):
+            response = self.client.post(url, data=json.dumps(payload), content_type='application/json')
+            self.assertEqual(response.status_code, 422, response.content)
+            payload.update(delivery_payment_mode='merchant_free')
+            payload['items'][0]['unit_price'] = '900'
+            response = self.client.post(url, data=json.dumps(payload), content_type='application/json')
+            self.assertEqual(response.status_code, 200, response.content)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_payload['delivery_payment']['merchandise_total'], '850.00')
+        self.assertTrue(delivery_payment_snapshot(order, item_rows=list(order.items.all()))['requires_manual'])
+
+    def test_inclusive_total_without_shipping_allocation_requires_manual_completion(self):
+        from orders.models import Order
+        review = self._review(shipping_quote='Разом з доставкою 970 грн')
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('shipping_payment', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_partial_review_cannot_assume_shipping_was_paid(self):
+        from orders.models import Order
+        review = self._review()
+        approved = self._approve(review, confirmed_amount='200.00', verification_scope='prepayment')
+        self.assertEqual(approved.order_creation_result['status'], 'needs_manual_completion')
+        self.assertIn('delivery_amount_source', approved.order_creation_result['missing_fields'])
+        self.assertFalse(Order.objects.exists())
 
     def test_receipt_without_manager_decision_never_creates_order(self):
         from orders.models import Order

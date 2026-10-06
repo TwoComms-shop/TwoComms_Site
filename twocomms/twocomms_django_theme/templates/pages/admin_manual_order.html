@@ -455,6 +455,17 @@
   .mo-preset.is-active { border-color: var(--mo-accent); background: var(--mo-accent-soft); }
   .mo-preset input { accent-color: var(--mo-accent); }
   .mo-preset span { font-size: 0.88rem; font-weight: 600; }
+  .mo-shipping-payment { margin-top:20px; padding-top:18px; border-top:1px solid var(--mo-line-strong); }
+  .mo-shipping-payment fieldset { margin:0; padding:0; border:0; min-width:0; }
+  .mo-shipping-payment legend { margin-bottom:10px; }
+  .mo-shipping-options { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); gap:10px; }
+  .mo-shipping-options .mo-preset { align-items:flex-start; min-height:64px; }
+  .mo-shipping-options small { display:block; margin-top:4px; font-size:.76rem; font-weight:400; color:var(--mo-muted); line-height:1.4; }
+  .mo-shipping-options input { margin-top:3px; flex-shrink:0; }
+  .mo-shipping-charge { max-width:320px; margin-top:14px; }
+  .mo-shipping-payment [hidden] { display:none !important; }
+  .mo-shipping-payment input:disabled { opacity:.7; }
+  #moShippingBreakdown { display:block; margin-top:6px; line-height:1.5; }
 
   .mo-summary {
     position: sticky;
@@ -523,7 +534,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="mo-page"
+<div class="mo-page" data-shipping-payment-ui="v1"
      data-np-city-search-url="{% url 'cart_np_city_search' %}"
      data-np-warehouse-search-url="{% url 'cart_np_warehouse_search' %}"
      data-create-url="{% url 'manual_order_create' %}"
@@ -644,6 +655,22 @@
         </div>
       </div>
     </div>
+    <div class="mo-shipping-payment" id="moShippingPayment">
+      <fieldset>
+        <legend class="mo-label">Хто оплачує доставку</legend>
+        <div class="mo-shipping-options">
+          <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="carrier_recipient" checked><span>Клієнт перевізнику<small>Окремо при отриманні. Доставка не входить у платіж магазину.</small></span></label>
+          <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="customer_prepaid"><span>Доставка в оплаті магазину<small>Клієнт платить за доставку TwoComms. Перевізнику платить TwoComms.</small></span></label>
+          <label class="mo-preset"><input type="radio" name="delivery_payment_mode" value="merchant_free"><span>Безкоштовна для клієнта<small>Витрати доставки бере на себе TwoComms.</small></span></label>
+        </div>
+      </fieldset>
+      <div class="mo-field mo-shipping-charge" id="moShippingChargeWrap" hidden>
+        <label class="mo-label" for="moShippingCharge">Доставка в оплаті клієнта, грн</label>
+        <input type="number" id="moShippingCharge" class="mo-input" min="0.01" step="0.01" inputmode="decimal" placeholder="Напр. 120">
+      </div>
+      <p class="mo-field-hint" id="moShippingPolicyNote" aria-live="polite"></p>
+      <p class="mo-field-hint" id="moShippingPolicyLock" hidden>Умови доставки прив’язані до погоджених умов із переписки. Для зміни потрібна повторна звірка умов та оплати.</p>
+    </div>
   </section>
 
   <!-- 3. Товари -->
@@ -759,6 +786,7 @@
     <div class="mo-summary__total">
       Разом до сплати
       <b><span id="moTotal">0</span> грн</b>
+      <span id="moShippingBreakdown" class="mo-field-hint" aria-live="polite"></span>
       <span id="moAllocationStatus" class="mo-field-hint" aria-live="polite"></span>
     </div>
     <button type="button" class="mo-submit" id="moSubmit">Створити замовлення</button>
@@ -805,6 +833,14 @@
 
   function applyInitial() {
     if (!initial) return;
+    var shippingMode = initial.delivery_payment_mode || (Number(initial.delivery_amount) > 0 ? 'customer_prepaid' : 'carrier_recipient');
+    page.querySelectorAll('input[name="delivery_payment_mode"]').forEach(function (radio) {
+      radio.checked = radio.value === shippingMode;
+      radio.disabled = Boolean(initial.delivery_payment_locked);
+    });
+    document.getElementById('moShippingCharge').value = initial.delivery_charge_amount || initial.delivery_amount || '';
+    document.getElementById('moShippingCharge').disabled = Boolean(initial.delivery_payment_locked);
+    document.getElementById('moShippingPolicyLock').hidden = !initial.delivery_payment_locked;
     document.getElementById('moFullName').value = initial.full_name || '';
     document.getElementById('moPhone').value = initial.phone || '';
     document.getElementById('moSaleSource').value = initial.sale_source || '';
@@ -1225,7 +1261,19 @@
 
   function updateTotal() {
     var total = items.reduce(function (acc, it) { return acc + (Number(it.unit_price) || 0) * it.qty; }, 0);
-    document.getElementById('moTotal').textContent = fmt(total);
+    var mode = shippingPaymentMode();
+    var charge = shippingCharge();
+    var discount = initial ? Math.max(0, Number(initial.discount_amount) || 0) : 0;
+    document.getElementById('moTotal').textContent = fmt(Math.max(0, total - discount) + charge);
+    document.getElementById('moShippingBreakdown').textContent = 'Товари: ' + fmt(total) + ' грн' + (discount > 0 ? ' · Знижка: ' + fmt(discount) + ' грн' : '') + ' · Доставка в оплаті магазину: ' + fmt(charge) + ' грн';
+    document.getElementById('moShippingChargeWrap').hidden = mode !== 'customer_prepaid';
+    page.querySelectorAll('#moShippingPayment .mo-preset').forEach(function (label) {
+      label.classList.toggle('is-active', label.querySelector('input').checked);
+    });
+    document.getElementById('moShippingPolicyNote').textContent = !mode ? 'Умови доставки потребують звірки. Оберіть, хто оплачує перевізнику і чи включено доставку в платіж магазину.' : mode === 'customer_prepaid'
+      ? 'Сума доставки включена в платіж клієнта. Спочатку підтвердьте оплату або передплату, що покриває доставку; неоплачене замовлення не підтверджує її оплату.'
+      : mode === 'merchant_free' ? 'Для клієнта доставка безкоштовна. У ТТН платник — TwoComms (відправник).'
+        : 'Клієнт оплачує доставку перевізнику окремо. У ТТН платник — одержувач.';
     var overrideBox = document.getElementById('moPriceOverride');
     var quoted = initial && initial.quoted_total ? Number(initial.quoted_total) : 0;
     var incomplete = items.some(function (it) { return it.unit_price === '' || Number(it.unit_price) <= 0; });
@@ -1239,6 +1287,19 @@
       overrideBox.style.display = !incomplete && quoted > 0 && Math.abs(total - quoted) >= 0.005 ? 'block' : 'none';
     }
   }
+
+  function shippingPaymentMode() {
+    return (page.querySelector('input[name="delivery_payment_mode"]:checked') || {}).value || '';
+  }
+
+  function shippingCharge() {
+    return shippingPaymentMode() === 'customer_prepaid' ? Math.max(0, Number(document.getElementById('moShippingCharge').value) || 0) : 0;
+  }
+
+  page.querySelectorAll('input[name="delivery_payment_mode"]').forEach(function (radio) {
+    radio.addEventListener('change', updateTotal);
+  });
+  document.getElementById('moShippingCharge').addEventListener('input', updateTotal);
 
   // ── payment presets ────────────────────────────────────
   page.querySelectorAll('#moPresets .mo-preset').forEach(function (label) {
@@ -1287,11 +1348,19 @@
 
     if (!fullName) { flash('Вкажіть ПІБ клієнта.', 'error'); return; }
     if (!phone) { flash('Вкажіть телефон клієнта.', 'error'); return; }
+    if (!shippingPaymentMode()) { flash('Оберіть умови оплати доставки.', 'error'); return; }
+    if (shippingPaymentMode() === 'customer_prepaid' && shippingCharge() <= 0) {
+      flash('Вкажіть суму доставки, включену в оплату клієнта.', 'error');
+      document.getElementById('moShippingCharge').focus();
+      return;
+    }
 
     var payload = {
       full_name: fullName,
       phone: phone,
       delivery_method: deliveryMethod,
+      delivery_payment_mode: shippingPaymentMode(),
+      delivery_charge_amount: shippingCharge().toFixed(2),
       payment_preset: (page.querySelector('input[name="payment_preset"]:checked') || {}).value || 'cod',
       sale_source: saleInput.value.trim(),
       manager_comment: document.getElementById('moComment').value.trim(),

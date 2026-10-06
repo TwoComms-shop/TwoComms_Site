@@ -50,12 +50,14 @@ def _current_agreement_error(client, draft):
     recorded = draft.get('agreement')
     if not isinstance(recorded, dict):
         return 'conversation_agreement_draft_unproven'
-    for key in ('items', 'amounts', 'shipping', 'payment_instruction', 'packaging', 'evidence'):
+    for key in ('items', 'amounts', 'shipping', 'shipping_payment', 'payment_instruction', 'packaging', 'evidence'):
         if recorded.get(key) != agreement.get(key):
             return 'conversation_agreement_draft_changed'
     for key in ('items', 'merchandise_total', 'delivery_amount', 'payable_total'):
         if draft.get(key) != agreement.get(key):
             return 'conversation_agreement_draft_changed'
+    if 'shipping_payment' in draft and draft['shipping_payment'] != agreement.get('shipping_payment'):
+        return 'conversation_agreement_draft_changed'
     shipping = agreement.get('shipping') or {}
     delivery = draft.get('delivery') or {}
     from orders.nova_poshta_documents import normalize_checkout_phone
@@ -88,7 +90,7 @@ def _current_agreement_error(client, draft):
         *retained_rows,
         *[{**_row(source), 'provider_namespace': namespaces[source.pk]} for source in new_sources],
     ])
-    for key in ('items', 'amounts', 'shipping', 'payment_instruction', 'packaging'):
+    for key in ('items', 'amounts', 'shipping', 'shipping_payment', 'payment_instruction', 'packaging'):
         if reproduced.get(key) != agreement.get(key):
             return 'conversation_agreement_current_sources_changed'
     return ''
@@ -156,6 +158,54 @@ def _configuration_correction_error(client, draft, *, lock=False):
     return ''
 
 
+def _accepted_reference_availability_error(client, prepared, agreement, *, lock=False):
+    """Read current lifecycle evidence for all selected references in one batch."""
+    from django.utils import timezone
+    from management.models import InstagramBotMessage
+    from management.services.ig_conversation_agreement import _proof, _row
+    from management.services.ig_private_media import earliest_private_media_deadline
+    from management.services.ig_private_media_lifecycle import project_private_media_lifecycle
+
+    selected = {item['option_values'].get('primary_reference_message_id') for item in prepared}
+    selected.discard(None)
+    if not selected:
+        return ''
+    query = InstagramBotMessage.objects.filter(client_id=client.pk, pk__in=selected).order_by('pk')
+    if lock:
+        query = query.select_for_update()
+    sources = {source.pk: source for source in query}
+    proofs = agreement.get('evidence') or {}
+    now = timezone.now()  # A source-row lock wait may cross its retention boundary.
+    for identifier in selected:
+        source = sources.get(identifier)
+        if (
+            source is None or source.sender_id != client.igsid
+            or _proof(_row(source)) != proofs.get(str(identifier))
+            or source.private_media_state in {'delete_pending', 'deleting', 'delete_failed', 'deleted'}
+        ):
+            return 'accepted_reference_unavailable'
+        parts = source.attachment_media if isinstance(source.attachment_media, list) else []
+        private_parts = [part for part in parts if isinstance(part, dict) and (
+            part.get('private_storage') is True or part.get('storage_name')
+            or part.get('status') in {'owned', 'expired'} or part.get('capture_state') == 'owned'
+        )]
+        if not private_parts:
+            continue
+        deadline = earliest_private_media_deadline(source, media=parts)
+        if deadline is None or deadline <= now:
+            return 'accepted_reference_unavailable'
+        for part in private_parts:
+            lifecycle = project_private_media_lifecycle(
+                part, message_state=source.private_media_state,
+                message_delete_after=source.private_media_delete_after,
+                message_parts=parts, owner_verified=True,
+                erasure_started=bool(client.privacy_erasure_started_at), now=now,
+            )
+            if lifecycle['state'] != 'active' or not lifecycle['readable']:
+                return 'accepted_reference_unavailable'
+    return ''
+
+
 def _review_order_operation(review, *, actor=None, create=True):
     """No order from a receipt alone; missing source facts leave a manual task.
 
@@ -168,7 +218,7 @@ def _review_order_operation(review, *, actor=None, create=True):
     from orders.models import Order, OrderItem
     from orders.nova_poshta_documents import normalize_checkout_phone
     from orders.services.order_builder import assert_order_matches_commercial_contract
-    from storefront.views.manual_orders import _build_order_item, _collect_items, _review_delivery_contract
+    from storefront.views.manual_orders import _build_order_item, _collect_items, _review_delivery_contract, _review_shipping_policy, _legacy_delivery_alias, _assert_delivery_contract_compatible
 
     if create:
         from management.services.ig_payment_review import _lock_payment_review
@@ -205,6 +255,9 @@ def _review_order_operation(review, *, actor=None, create=True):
     agreement_error = _current_agreement_error(locked.client, draft)
     if agreement_error:
         return _completion(agreement_error)
+    shipping_policy = _review_shipping_policy(locked)
+    if shipping_policy.get('mode') == 'unknown':
+        return _completion('shipping_payment')
     delivery = draft.get('delivery') if isinstance(draft.get('delivery'), dict) else {}
     missing = []
     name = str(delivery.get('full_name') or '').strip()
@@ -216,7 +269,7 @@ def _review_order_operation(review, *, actor=None, create=True):
             missing.append(field)
     merchandise = _money(draft.get('merchandise_total') or draft.get('quoted_total'))
     payable = _money(draft.get('payable_total') or draft.get('quoted_total'))
-    raw_delivery = draft.get('delivery_amount') or draft.get('delivery_total') or '0'
+    raw_delivery = shipping_policy.get('customer_charge_amount') if shipping_policy else draft.get('delivery_amount') or draft.get('delivery_total') or '0'
     try:
         delivery_amount = Decimal(str(raw_delivery))
         if not delivery_amount.is_finite() or delivery_amount < 0:
@@ -272,6 +325,36 @@ def _review_order_operation(review, *, actor=None, create=True):
         }
         references.update(int(item[key]) for key in ('source_message_id', 'acceptance_message_id') if str(item.get(key) or '').isdigit())
         options['_reference_message_ids'] = sorted(references)
+        # The current agreement reader has reverified every retained source
+        # and its immutable media binding. Earlier examples remain secondary.
+        proofs = (draft.get('agreement') or {}).get('evidence') or {}
+        accepted = item.get('accepted_reference_message_ids') or []
+        valid_accepted = isinstance(accepted, list) and all(
+            isinstance(value, int) and not isinstance(value, bool) and value > 0
+            for value in accepted
+        )
+        if valid_accepted:
+            valid_accepted = len(accepted) <= 8 and len(set(accepted)) == len(accepted) and all(
+                value in references
+                and int(item.get('source_message_id') or 0) <= value < int(item.get('acceptance_message_id') or 0)
+                and (proofs.get(str(value)) or {}).get('role') in {'manager', 'model', 'bot', 'assistant'}
+                and (proofs.get(str(value)) or {}).get('media_binding_digest')
+                for value in accepted
+            )
+        if not valid_accepted:
+            missing.append(prefix + '.accepted_reference_message_ids')
+            accepted = []
+        options.pop('primary_reference_message_id', None)
+        options['accepted_reference_message_ids'] = list(accepted)
+        if len(accepted) == 1:
+            options['primary_reference_message_id'] = accepted[0]
+        elif len(accepted) > 1:
+            missing.append(prefix + '.primary_reference_message_id')
+        else:
+            media_references = [value for value in sorted(references)
+                if (proofs.get(str(value)) or {}).get('media_binding_digest')]
+            if len(media_references) == 1:
+                options['primary_reference_message_id'] = media_references[0]
         prepared.append({
             'kind': 'catalog' if product_id else 'custom', 'product_id': product_id,
             'color_variant_id': item.get('color_variant_id'),
@@ -282,6 +365,11 @@ def _review_order_operation(review, *, actor=None, create=True):
         })
     if missing:
         return _completion(*missing)
+    availability_error = _accepted_reference_availability_error(
+        locked.client, prepared, draft['agreement'], lock=create,
+    )
+    if availability_error:
+        return _completion(availability_error)
     provisional = Order()
     try:
         _raw_items, products_map, variants_map = _collect_items(prepared)
@@ -296,7 +384,7 @@ def _review_order_operation(review, *, actor=None, create=True):
         return _completion('manager_actor_identity')
     audited_actor = actor or decision.actor or SimpleNamespace(pk=int(decision.actor_external_id))
     try:
-        shipping = _review_delivery_contract(locked, merchandise_total=merchandise, actor=audited_actor)
+        shipping = _review_delivery_contract(locked, merchandise_total=merchandise, actor=audited_actor, item_rows=items, agreement_verified=True)
     except ValueError:
         return _completion('delivery_amount_source')
     if locked.deal_id:
@@ -327,7 +415,8 @@ def _review_order_operation(review, *, actor=None, create=True):
         'manager_payment_currency': decision.currency,
         'effective_confirmed_amount': f'{Decimal(decision.confirmed_amount):.2f}',
         'negotiated_order_total': f'{payable:.2f}',
-        **({'instagram_delivery_contract': shipping} if shipping else {}),
+        **({'delivery_payment': shipping} if shipping else {}),
+        **({'instagram_delivery_contract': _legacy_delivery_alias(shipping)} if shipping and shipping.get('mode') == 'customer_prepaid' else {}),
     }
     fields = {'full_name': name[:200], 'phone': phone, 'city': city[:100], 'np_office': office[:200]}
     order, created = Order.objects.get_or_create(
@@ -343,8 +432,9 @@ def _review_order_operation(review, *, actor=None, create=True):
         try:
             assert_order_matches_commercial_contract(
                 order, expected_fields=fields, expected_items=items,
-                declared_total=merchandise, expected_delivery_contract=shipping,
+                declared_total=merchandise,
             )
+            _assert_delivery_contract_compatible(order, shipping)
         except ValueError:
             return _completion('episode_order_contract')
     else:

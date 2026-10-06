@@ -10,6 +10,7 @@ import secrets
 import time
 import re
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from django.conf import settings
@@ -23,6 +24,7 @@ BACKOFF_SECONDS = (1, 2, 5, 15, 30)
 _STATE_PREFIX = "ig_db_circuit:v1:"
 _CAPACITY_PREFIX = "ig_db_capacity:v1:"
 CAPACITY_TTL_SECONDS = 600
+_retained_session_connections = ContextVar("ig_retained_session_connections", default=frozenset())
 
 
 class DbCircuitOpen(RuntimeError):
@@ -235,10 +237,25 @@ def db_active_slot(*, configured_cap: int | None = None, measured_user_cap: int 
                 handle.close()
 
 
+@contextmanager
+def retain_session_connection(*, using: str = "default"):
+    """An explicit session-lock owner retains its connection until release.
+
+    This is independent of transaction.atomic: MariaDB advisory locks belong
+    to the physical connection and disappear if an idle connection is closed.
+    Nested owners restore the previous alias set on every exit.
+    """
+    token = _retained_session_connections.set(_retained_session_connections.get() | {using})
+    try:
+        yield
+    finally:
+        _retained_session_connections.reset(token)
+
+
 def release_idle_connection(*, using: str = "default") -> bool:
-    """Drop an idle DB connection before provider HTTP only outside atomic."""
+    """Drop only a non-atomic connection without an active session-lock owner."""
     connection = connections[using]
-    if connection.in_atomic_block:
+    if connection.in_atomic_block or using in _retained_session_connections.get():
         return False
     connection.close()
     return True

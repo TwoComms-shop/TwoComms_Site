@@ -36,7 +36,7 @@ class PaymentWorkspaceContractTests(TestCase):
         }
         message = InstagramBotMessage.objects.create(
             client=customer, sender_id=customer.igsid, role=role, text=text, status="done",
-            source="webhook", provider_namespace=self.namespace, mid=f"receipt-mid-{customer.pk}-{index}",
+            source="echo" if role == "manager" else "webhook", provider_namespace=self.namespace, mid=f"receipt-mid-{customer.pk}-{index}",
             media_capture_eligible=True,
             private_media_state="active", private_media_delete_after=deadline or timezone.now() + timedelta(hours=1),
             attachment_media=[part] if media else [],
@@ -87,10 +87,36 @@ class PaymentWorkspaceContractTests(TestCase):
         foreign = IgClient.get_or_create_for_sender("receipt-foreign")
         _, foreign_media = self._message(customer=foreign, index=3)
         card = self._card(self._review({"media": [expired, foreign_media]}))
-        self.assertEqual([row["availability"] for row in card["media"]["receipts"]], ["expired", "unavailable"])
+        self.assertEqual({row["message_id"]: row["availability"] for row in card["media"]["receipts"]},
+            {expired["message_id"]: "expired", foreign_media["message_id"]: "unavailable"})
         for row in card["media"]["receipts"]:
             self.assertNotIn("preview_url", row)
             self.assertNotIn("url", row)
+
+    def test_accepted_garment_photo_is_one_agreed_reference_not_a_second_receipt(self):
+        from management.services.ig_conversation_agreement import _proof, _row
+        shirt, shirt_media = self._message(index=30, role="manager", text="Погоджена біла L oversize")
+        shirt.source = "echo"
+        shirt.save(update_fields=["source"])
+        _, example = self._message(index=31)
+        example["role"] = "product"
+        receipt, receipt_media = self._message(index=32)
+        receipt_media = self._inspected(receipt, receipt_media)
+        agreement = {"schema": "conversation-agreement.v1", "source_message_ids": [shirt.pk],
+            "items": [{"title": "Agreed shirt", "qty": 1,
+            "accepted_reference_message_ids": [shirt.pk]}],
+            "evidence": {str(shirt.pk): _proof(_row(shirt))}}
+        review = self._review({"media": [example, shirt_media, receipt_media],
+            "order_draft": {"agreement": agreement}})
+        groups = self._card(review)["media"]
+        self.assertEqual([row["message_id"] for row in groups["agreed_products"]], [shirt.pk])
+        self.assertEqual(groups["agreed_products"][0]["role"], "agreed_reference")
+        self.assertEqual([row["message_id"] for row in groups["receipts"]], [receipt.pk])
+        self.assertEqual([row["message_id"] for row in groups["products"]], [example["message_id"]])
+        self.assertEqual(groups["unknown"], [])
+        shirt.text = "Інше непогоджене фото"
+        shirt.save(update_fields=["text"])
+        self.assertEqual(self._card(review)["media"]["agreed_products"], [])
 
     def test_late_receipt_is_recovered_from_old_review_context_and_deduplicated(self):
         context = []
@@ -136,7 +162,7 @@ class PaymentWorkspaceContractTests(TestCase):
         self.assertFalse(card["payment"]["authoritative_for_fulfillment"])
 
     def test_changed_or_expired_part_cannot_display_cached_ocr_facts_or_findings(self):
-        for index, change in [(21, "hash"), (22, "expiry"), (23, "part_expiry"), (24, "namespace")]:
+        for index, change in [(21, "hash"), (22, "expiry"), (23, "part_expiry"), (24, "namespace"), (26, "unknown_retention"), (27, "sibling_expiry")]:
             with self.subTest(change=change):
                 source, media = self._message(index=index)
                 media = self._inspected(source, media)
@@ -153,6 +179,13 @@ class PaymentWorkspaceContractTests(TestCase):
                     source.private_media_delete_after = timezone.now() - timedelta(seconds=1)
                 elif change == "part_expiry":
                     source.attachment_media[0]["delete_after"] = (timezone.now() - timedelta(seconds=1)).isoformat()
+                elif change == "unknown_retention":
+                    source.private_media_delete_after = None
+                elif change == "sibling_expiry":
+                    source.attachment_media.append({
+                        "source_part_id": "mp1_" + "e" * 32, "private_storage": True,
+                        "delete_after": (timezone.now() - timedelta(seconds=1)).isoformat(),
+                    })
                 else:
                     source.provider_namespace = "different-account"
                 source.save(update_fields=["attachment_media", "private_media_delete_after", "provider_namespace"])
@@ -270,3 +303,86 @@ class PaymentWorkspaceContractTests(TestCase):
         acceptance.text = "Ні, не беру"
         acceptance.save(update_fields=["text"])
         self.assertFalse(self._card(review)["draft"]["agreement"]["customer_confirmed"])
+
+    def test_source_proved_custom_agreement_shipping_keeps_real_conflicts_visible(self):
+        from management.services.ig_conversation_agreement import extract_conversation_agreement
+        seller, _ = self._message(index=60, role="manager", media=False,
+            text="Біла футболка TWOCOMMS 1654, оверсайз, розмір L, 1 шт. 850 грн + 120 доставка = 970 грн")
+        acceptance, _ = self._message(index=61, media=False, text="Так, беру")
+        agreement = extract_conversation_agreement([seller, acceptance])
+        draft = {"agreement": agreement, "items": agreement["items"],
+            "uncertainty_reasons": ["catalog_product_not_identified", "unverified_price", "configuration_mismatch"]}
+        review = self._review({"order_draft": draft})
+        card = self._card(review)
+        self.assertTrue(card["draft"]["custom_agreed"])
+        self.assertNotIn("catalog_product_not_identified", card["draft"]["uncertainty_reasons"])
+        self.assertIn("unverified_price", card["draft"]["uncertainty_reasons"])
+        self.assertIn("configuration_mismatch", card["draft"]["uncertainty_reasons"])
+        shipping = card["payment"]["shipping_payment"]
+        self.assertEqual(shipping["mode"], "customer_prepaid")
+        self.assertEqual(shipping["customer_charge_amount"], "120.00")
+        self.assertEqual(shipping["payer_type"], "Sender")
+        self.assertFalse(shipping["payment_verified"])
+        seller.text = "Інша ціна та інша доставка"
+        seller.save(update_fields=["text"])
+        changed = self._card(review)
+        self.assertFalse(changed["draft"]["custom_agreed"])
+        self.assertEqual(changed["payment"]["shipping_payment"], {})
+
+    def test_bounded_media_scan_keeps_late_owned_receipt_and_exact_agreed_photo(self):
+        from unittest.mock import patch
+        from management.bot_views import _review_media_groups
+        from management.services.ig_conversation_agreement import _proof, _row
+
+        shirt, _ = self._message(index=900, role="manager", text="Погоджена біла футболка L")
+        deadline = timezone.now() + timedelta(hours=1)
+        examples = []
+        for index in range(220):
+            part = {"source_part_id": "mp1_" + f"{index + 1000:032x}",
+                "url": f"https://lookaside.fbsbx.com/example-{index}?signature=PRIVATE",
+                "status": "owned", "private_storage": True, "mime": "image/jpeg",
+                "storage_name": f"ig_message_media/private/example-{index}.jpg",
+                "content_hash": hashlib.sha256(b"private").hexdigest()}
+            examples.append(InstagramBotMessage(client=self.customer, sender_id=self.customer.igsid,
+                role="user", status="done", source="webhook", provider_namespace=self.namespace,
+                mid=f"bounded-example-{index}", media_capture_eligible=True,
+                private_media_state="active", private_media_delete_after=deadline,
+                attachment_media=[part]))
+        InstagramBotMessage.objects.bulk_create(examples)
+        media = [{**source.attachment_media[0], "message_id": source.pk,
+            "role": ("unknown", "product", "custom_reference")[index % 3]}
+            for index, source in enumerate(examples)]
+        receipt_source, receipt = self._message(index=2000)
+        receipt = self._inspected(receipt_source, receipt)
+        contexts = [{"message_id": row["message_id"], "media": [row]} for row in media]
+        contexts.append({"message_id": receipt_source.pk, "media": [receipt]})
+        agreement = {"schema": "conversation-agreement.v1", "source_message_ids": [shirt.pk],
+            "items": [{"qty": 1, "accepted_reference_message_ids": [shirt.pk]}],
+            "evidence": {str(shirt.pk): _proof(_row(shirt))}}
+        # The primary photo is recoverable only from its exact accepted source;
+        # the late receipt exists only beyond the old context prefix.
+        with patch.object(InstagramBotMessage.objects, "filter", wraps=InstagramBotMessage.objects.filter) as source_filter:
+            groups = _review_media_groups({"media": media,
+                "order_draft": {"agreement": agreement, "context_messages": contexts}}, client_id=self.customer.pk)
+        self.assertEqual(source_filter.call_count, 1)
+        queried_ids = source_filter.call_args.kwargs["pk__in"]
+        self.assertLessEqual(len(queried_ids), 160)
+        self.assertIn(shirt.pk, queried_ids)
+        self.assertIn(receipt_source.pk, queried_ids)
+        self.assertEqual([row["message_id"] for row in groups["agreed_products"]], [shirt.pk])
+        self.assertEqual([row["message_id"] for row in groups["receipts"]], [receipt_source.pk])
+        self.assertEqual(groups["receipts"][0]["receipt_reported_amount"], "970.00")
+        for group in ("unknown", "products", "custom_print"):
+            self.assertEqual(len(groups[group]), 20)
+        serialized = json.dumps(groups)
+        for secret in ("signature=", "lookaside.fbsbx.com", "ig_message_media/private", receipt["content_hash"]):
+            self.assertNotIn(secret, serialized)
+
+    def test_unowned_legacy_media_keeps_bounded_scan_without_late_receipt_fabrication(self):
+        from management.bot_views import _review_media_groups
+        media = [{"role": "unknown", "url": f"https://cdn.example/{index}.jpg"} for index in range(1000)]
+        media.append({"role": "receipt", "url": "https://cdn.example/late-receipt.jpg"})
+        groups = _review_media_groups({"media": media})
+        self.assertEqual(len(groups["unknown"]), 20)
+        self.assertEqual(groups["receipts"], [])
+        self.assertTrue(all(row["availability"] == "unavailable" and "url" not in row for row in groups["unknown"]))

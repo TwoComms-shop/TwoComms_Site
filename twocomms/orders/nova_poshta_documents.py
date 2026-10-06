@@ -290,22 +290,10 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
     if manager_payment_verified and payment_status == "prepaid":
         prepayment_amount = min(manager_confirmed_amount, payable_total)
 
-    delivery_contract = payment_payload.get("instagram_delivery_contract") or {}
-    delivery_prepaid = bool(
-        isinstance(delivery_contract, dict)
-        and delivery_contract.get("prepaid")
-        and delivery_contract.get("payer_type") == "Sender"
-        and delivery_contract.get("actor_id")
-        and delivery_contract.get("review_id")
-        and delivery_contract.get("decision_id") == payment_payload.get("manager_payment_decision_id")
-        and manager_payment_verified
-        and manager_confirmed_amount == payable_total
-        and amounts.get("delivery_contract_valid", False)
-    )
-    if delivery_prepaid:
-        from management.services.ig_order_links import order_fulfillment_payment_verified
-
-        delivery_prepaid = order_fulfillment_payment_verified(order)
+    from orders.services.delivery_payment import delivery_payment_snapshot
+    delivery_policy = amounts.get('delivery_payment_snapshot') or delivery_payment_snapshot(order)
+    delivery_prepaid = delivery_policy['delivery_prepaid']
+    automatic_fulfillment_blocked = bool(automatic_fulfillment_blocked or delivery_policy['requires_manual'])
     if payment_status == "paid":
         cod_amount = Decimal("0.00")
     elif pay_type in {"prepayment", "prepay_200"}:
@@ -345,7 +333,11 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
         "declared_cost": f"{merchandise_payable:.2f}",
         "declared_cost_value": merchandise_payable,
         "delivery_prepaid": delivery_prepaid,
-        "delivery_payer_type": "Sender" if delivery_prepaid else "Recipient",
+        "delivery_payer_type": delivery_policy['payer_type'],
+        "delivery_payment_mode": delivery_policy['mode'],
+        "delivery_charge_amount": f"{delivery_policy['delivery_amount']:.2f}",
+        "delivery_payment_locked": delivery_policy['source_locked'],
+        "delivery_payment_requires_manual": delivery_policy['requires_manual'],
         "prepayment_amount": f"{prepayment_amount:.2f}",
         "prepayment_amount_value": prepayment_amount,
         "cod_amount": f"{cod_amount:.2f}",
@@ -519,6 +511,11 @@ class NovaPoshtaDocumentService:
         }
 
     def create_waybill(self, order, payload: dict[str, Any]) -> dict[str, Any]:
+        snapshot = build_order_payment_snapshot(order)
+        if snapshot['delivery_payment_requires_manual']:
+            raise NovaPoshtaDocumentError('Уточніть і збережіть оплату доставки в замовленні перед створенням ТТН.')
+        if str(payload.get('payer_type') or snapshot['delivery_payer_type']) != snapshot['delivery_payer_type']:
+            raise NovaPoshtaDocumentError('Платник доставки має відповідати збереженим умовам замовлення.')
         if not self.is_configured():
             raise NovaPoshtaDocumentError("NOVA_POSHTA_API_KEY не налаштований.")
 
@@ -583,7 +580,7 @@ class NovaPoshtaDocumentService:
         )
 
         method_properties = {
-            "PayerType": str(payload.get("payer_type") or "Recipient").strip() or "Recipient",
+            "PayerType": snapshot['delivery_payer_type'],
             "PaymentMethod": str(payload.get("payment_method") or "Cash").strip() or "Cash",
             "DateTime": date.today().strftime("%d.%m.%Y"),
             "CargoType": "Parcel",

@@ -17,10 +17,40 @@ def message(pk, role, text, **extra):
 
 
 class ConversationAgreementTests(SimpleTestCase):
+    def test_current_explicit_quote_resolves_old_unknown_amount_purpose(self):
+        rows = [message(1, "manager", "Додаткова вишивка коштує 200 грн"),
+            message(2, "user", "Без вишивки"),
+            message(3, "manager", "850 грн + 120 доставка = 970 грн")]
+        result = extract_conversation_agreement(rows)
+        self.assertEqual(result["payable_total"], "970.00")
+        self.assertEqual(result["merchandise_total"], "850.00")
+        self.assertNotIn("amount_purpose_unknown", result["uncertainty_reasons"])
+        unresolved = extract_conversation_agreement(rows[:2])
+        self.assertIn("amount_purpose_unknown", unresolved["uncertainty_reasons"])
+
     def extract(self, offer, answer="Так", **seller):
         return extract_conversation_agreement([
             message(10, "manager", offer, **seller), message(11, "user", answer),
         ])
+
+    def test_source_media_proof_ignores_legacy_url_render_augmentation(self):
+        from management.services.ig_conversation_agreement import _proof, _row
+        source = message(10, "model", "Модель: SamplePrint42, розмір L", status="done", send_state="sent",
+            provider_message_id="synthetic-legacy-model", attachment_media=[],
+            attachments=json.dumps(["https://example.invalid/immutable-image"]))
+        augmented = {**source, "media": [{"url": "https://example.invalid/immutable-image", "role": "product", "confidence": 0.99}]}
+        self.assertEqual(_proof(_row(source)), _proof(_row(augmented)))
+        mutated = {**source, "attachments": json.dumps(["https://example.invalid/changed-image"])}
+        self.assertNotEqual(_proof(_row(source)), _proof(_row(mutated)))
+
+    def test_source_media_marker_keeps_synthesized_attachments_out_of_canonical_proof(self):
+        from management.services.ig_conversation_agreement import _proof, _row
+        source = message(10, "manager", "Модель: SamplePrint42, розмір L", attachment_media=[], attachments="")
+        rendered = {**source, "attachments": json.dumps(["https://example.invalid/render-only"]),
+            "media": [{"url": "https://example.invalid/render-only", "type": "image"}],
+            "_source_media_binding": {"attachments": "", "attachment_media": []}}
+        self.assertEqual(_proof(_row(source)), _proof(_row(rendered)))
+        self.assertNotIn("media_binding_digest", _proof(_row(source)))
 
     def test_accepted_offsite_configuration_keeps_source_identity(self):
         result = self.extract("L отверсаз білу TwoComms SamplePrint42")
@@ -76,6 +106,73 @@ class ConversationAgreementTests(SimpleTestCase):
         self.assertEqual(item["quantity_inference"], "singular_garment")
         self.assertIn(8, result["source_message_ids"])
 
+    def test_affirmative_garment_clause_survives_unrelated_negation_and_questions(self):
+        for request in ("Вітаю, хочу на подарунок футболку другу, але він не любить яскраві пакунки. Чи є доставка?",
+                        "Хочу футболку. Не потрібна подарункова коробка. Коли відправка?",
+                        "I want a t-shirt, but no gift wrapping. Is shipping available?",
+                        "Хочу 2 футболки, але не потрібна подарункова коробка"):
+            with self.subTest(request=request):
+                result = extract_conversation_agreement([
+                    message(8, "user", request), message(10, "manager", "L oversize white TwoComms SamplePrint42"),
+                    message(11, "user", "Так"), message(12, "manager", "850 грн + 120 доставка = 970 грн"),
+                ])
+                item = result["items"][0]
+                self.assertEqual(item["garment_type"], "tshirt")
+                self.assertEqual(item["qty"], 2 if "2 футболки" in request else 1)
+                self.assertEqual((item["garment_source_message_id"], item["quantity_source_message_id"]), (8, 8))
+                self.assertEqual(item["unit_price"], None if item["qty"] == 2 else "850.00")
+
+    def test_question_negated_reported_and_alternative_requests_cannot_supply_quantity(self):
+        for request in ("Хочу футболку?", "Не хочу футболку", "Хочу футболку або худі",
+                        "I want a t-shirt or hoodie", "Хочу футболку і худі", 'Він написав: "хочу футболку"'):
+            with self.subTest(request=request):
+                item = extract_conversation_agreement([
+                    message(8, "user", request), message(10, "manager", "L oversize white TwoComms SamplePrint42"),
+                    message(11, "user", "Так"),
+                ])["items"][0]
+                self.assertEqual(item["garment_type"], "")
+                self.assertIsNone(item["qty"])
+        item = extract_conversation_agreement([
+            message(8, "user", "Хочу футболку, ще футболку для друга"),
+            message(10, "manager", "L oversize white TwoComms SamplePrint42"), message(11, "user", "Так"),
+        ])["items"][0]
+        self.assertIsNone(item["qty"])
+
+    def test_owned_mime_only_photo_and_confirmation_question_complete_custom_item(self):
+        result = extract_conversation_agreement([
+            message(8, "user", "Вітаю, хочу на подарунок футболку другу, але він не любить яскраві пакунки"),
+            message(9, "manager", "Сума (850 грн)"),
+            message(10, "manager", "L отверсаз білу TwoComms SamplePrint42"),
+            message(11, "manager", "Саме цей принт", attachments=json.dumps(["https://example.invalid/source-image"]),
+                attachment_media=[{"mime": "image/jpeg", "source_part_id": "synthetic-owned-image", "content_hash": "a" * 64,
+                    "status": "owned", "private_storage": True}]),
+            message(12, "manager", "Все вірно?"), message(13, "user", "Так"),
+            message(14, "manager", "850 грн + 120 доставка = 970 грн"),
+        ])
+        item = result["items"][0]
+        self.assertEqual((item["garment_type"], item["qty"], item["unit_price"]), ("tshirt", 1, "850.00"))
+        self.assertEqual(item["reference_message_ids"], [11])
+        self.assertEqual(item["accepted_reference_message_ids"], [11])
+        self.assertEqual(item["price_evidence_message_ids"], [14])
+        self.assertEqual(item["acceptance_message_id"], 13)
+        self.assertIsNone(item["product_id"])
+        self.assertIn("media_binding_digest", result["evidence"]["11"])
+
+    def test_accepted_seller_reference_excludes_prior_alternatives_and_late_receipt(self):
+        rows = [message(7, "user", "", attachment_media=[{"mime": "image/jpeg", "content_hash": "a" * 64}]),
+            message(10, "manager", "Футболка SamplePrint42 L oversize white"),
+            message(11, "manager", "Саме цей принт", attachment_media=[{"mime": "image/jpeg", "content_hash": "b" * 64}]),
+            message(12, "user", "Так"),
+            message(13, "user", "", attachment_media=[{"mime": "image/jpeg", "content_hash": "c" * 64}])]
+        before = extract_conversation_agreement(rows)
+        self.assertEqual(before["items"][0]["reference_message_ids"], [7, 11])
+        self.assertEqual(before["items"][0]["accepted_reference_message_ids"], [11])
+        self.assertNotIn(13, before["source_message_ids"])
+        rows[-1]["attachment_media"][0].update(role="receipt", payment_evidence=True)
+        after = extract_conversation_agreement(rows)
+        self.assertEqual(after["items"], before["items"])
+        self.assertEqual(after["evidence"], before["evidence"])
+
     def test_old_customer_type_and_quantity_do_not_cross_a_reset(self):
         result = extract_conversation_agreement([
             message(8, "user", "Хочу футболку"), message(9, "user", "Хочу інший товар"),
@@ -116,6 +213,91 @@ class ConversationAgreementTests(SimpleTestCase):
         ])
         self.assertEqual(len(result["items"]), 1)
 
+    def test_affirmative_seller_configuration_survives_only_confirmation_question(self):
+        for question in ("Все вірно?", "Всё верно?", "Is that correct?"):
+            result = self.extract("Футболка SamplePrint42 біла L oversize, 1 шт. " + question)
+            self.assertEqual((result["items"][0]["size"], result["items"][0]["qty"]), ("L", 1))
+        self.assertEqual(self.extract("Футболка SamplePrint42 біла L чи M? Все вірно?")["items"], [])
+
+    def test_quoted_or_reported_arithmetic_is_not_current_seller_price(self):
+        for quote in ('Раніше писали: «850 грн + 120 доставка = 970 грн»',
+                      '"850 UAH + 120 delivery = 970 UAH"', "They wrote 850 UAH + 120 delivery = 970 UAH"):
+            result = extract_conversation_agreement([message(10, "manager", quote), message(11, "user", "Так")])
+            self.assertEqual(result["amounts"], {})
+            self.assertEqual(result["payable_total"], "")
+
+    def test_conditional_free_shipping_respects_inclusive_and_strict_boundaries(self):
+        rules = [("Доставка безкоштовна від 3000 грн", ">="), ("Бесплатная доставка от 3000 грн", ">="),
+                 ("Доставка за наш рахунок від 3000 грн", ">="),
+                 ("Free shipping for orders from 3000 UAH", ">="), ("Free shipping for orders of 3000 UAH or more", ">="),
+                 ("Доставка безкоштовна понад 3000 грн", ">"), ("Бесплатная доставка свыше 3000 грн", ">"),
+                 ("Free shipping for orders above 3000 UAH", ">"), ("Free shipping for orders more  than 3000 UAH", ">")]
+        for rule, operator in rules:
+            for total in ("2999", "3000", "3001"):
+                with self.subTest(rule=rule, total=total):
+                    result = extract_conversation_agreement([message(10, "manager", "Ціна футболки " + total + " грн"),
+                        message(11, "manager", rule)])
+                    met = int(total) >= 3000 if operator == ">=" else int(total) > 3000
+                    policy = result["shipping_payment"]
+                    self.assertEqual(policy["mode"], "merchant_free" if met else "unknown")
+                    self.assertEqual(policy["condition"]["operator"], operator)
+                    self.assertEqual(policy["condition"]["status"], "met" if met else "not_met")
+                    self.assertEqual(result["merchandise_total"], total + ".00")
+                    self.assertEqual(result["delivery_total"], "0.00" if met else "")
+                    self.assertEqual(policy["evidence_message_ids"], [10, 11])
+
+    def test_conditional_rule_recalculates_on_later_price_and_withdrawal(self):
+        rows = [message(10, "manager", "Доставка безкоштовна понад 3000 грн"),
+            message(11, "manager", "Ціна футболки 2999 грн")]
+        self.assertEqual(extract_conversation_agreement(rows)["shipping_payment"]["mode"], "unknown")
+        rows.append(message(12, "manager", "Ціна футболки 3100 грн"))
+        result = extract_conversation_agreement(rows)
+        self.assertEqual(result["shipping_payment"]["mode"], "merchant_free")
+        self.assertEqual(result["shipping_payment"]["condition"]["amount_source_message_id"], 12)
+        self.assertNotIn("shipping_condition_not_met", result["uncertainty_reasons"])
+        rows.append(message(13, "manager", "Ціна футболки 2800 грн"))
+        result = extract_conversation_agreement(rows)
+        self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+        self.assertEqual(result["delivery_total"], "")
+        rows.append(message(14, "manager", "Доставка не безкоштовна"))
+        rows.append(message(15, "manager", "Ціна футболки 3500 грн"))
+        result = extract_conversation_agreement(rows)
+        self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+        self.assertNotIn("condition", result["shipping_payment"])
+
+    def test_conditional_rule_requires_current_goods_amount_same_currency_and_affirmed_promise(self):
+        result = extract_conversation_agreement([message(10, "manager", "Доставка безкоштовна від 3000 грн")])
+        self.assertEqual(result["amounts"], {})
+        self.assertIn("shipping_condition_amount_unknown", result["uncertainty_reasons"])
+        mismatch = extract_conversation_agreement([message(9, "manager", "T-shirt price 4000 USD"),
+            message(10, "manager", "Доставка безкоштовна від 3000 грн")])
+        self.assertEqual(mismatch["shipping_payment"]["mode"], "unknown")
+        self.assertIn("shipping_condition_currency_mismatch", mismatch["uncertainty_reasons"])
+        for rule in ("Доставка не безкоштовна від 3000 грн", "Доставка безкоштовна від 3000 грн?",
+                     '"Free shipping above 3000 UAH"', "Доставка безкоштовна від 3000", "Free shipping if the order is large",
+                     "Раніше писали: доставка безкоштовна від 3000 грн"):
+            result = extract_conversation_agreement([message(9, "manager", "Ціна футболки 4000 грн"), message(10, "manager", rule)])
+            self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+            self.assertEqual(result["delivery_total"], "")
+
+    def test_explicit_additive_acceptance_retains_two_lines_without_allocating_total_to_each(self):
+        rows = [message(10, "manager", "Футболка SamplePrint42 біла L oversize, 1 шт"), message(11, "user", "Так"),
+            message(12, "user", "Додай ще одне худі"),
+            message(13, "manager", "Худі SamplePrint43 чорне M classic, 1 шт"), message(14, "user", "Так"),
+            message(15, "manager", "Вартість замовлення 3200 грн")]
+        result = extract_conversation_agreement(rows)
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual([item["source_message_id"] for item in result["items"]], [10, 13])
+        self.assertEqual([item["acceptance_message_id"] for item in result["items"]], [11, 14])
+        self.assertEqual(result["items"][1]["addition_source_message_id"], 12)
+        self.assertTrue(all(item["unit_price"] is None for item in result["items"]))
+        self.assertIn("multi_item_price_allocation_required", result["uncertainty_reasons"])
+        replaced = extract_conversation_agreement([*rows, message(16, "user", "Заміни на іншу футболку"),
+            message(17, "manager", "Футболка SamplePrint44 біла L oversize, 1 шт"), message(18, "user", "Так")])
+        self.assertEqual([item["source_message_id"] for item in replaced["items"]], [17])
+        counter = extract_conversation_agreement([*rows, message(16, "user", "Пропоную тільки за 2500 грн")])
+        self.assertEqual(counter["items"], [])
+
     def test_failed_manager_offer_cannot_supply_configuration(self):
         self.assertEqual(self.extract("Футболка SamplePrint42 біла L oversize", status="failed")["items"], [])
 
@@ -139,6 +321,7 @@ class ConversationAgreementTests(SimpleTestCase):
         ])
         self.assertEqual(result["items"][0]["reference_message_ids"], [11])
         self.assertIn(11, result["source_message_ids"])
+        self.assertEqual(result["items"][0]["accepted_reference_message_ids"], [11])
         self.assertEqual(result["items"][0]["acceptance_message_id"], 12)
         self.assertIsNone(result["items"][0]["product_id"])
 
@@ -160,6 +343,90 @@ class ConversationAgreementTests(SimpleTestCase):
         self.assertEqual(result["items"][0]["unit_price"], "850.00")
         self.assertEqual(result["amounts"]["authority"], "seller_instruction")
         self.assertIsNone(result["amounts"]["acceptance_message_id"])
+        self.assertEqual(result["shipping_payment"]["mode"], "customer_prepaid")
+        self.assertEqual(result["shipping_payment"]["payer_type"], "Sender")
+
+    def test_customer_request_and_seller_split_bind_shipping_arrangement_not_payment(self):
+        result = extract_conversation_agreement([
+            message(8, "user", "Порахуйте відразу з доставкою"),
+            message(10, "manager", "850 грн + 120 доставка = 970 грн"),
+        ])
+        self.assertEqual(result["shipping_payment"], {"mode": "customer_prepaid", "customer_charge_amount": "120.00",
+            "included_in_payable_total": True, "payer_type": "Sender", "source_message_id": 10,
+            "evidence_message_ids": [8, 10], "customer_request_message_id": 8, "authority": "seller_instruction"})
+        self.assertEqual(result["source_message_ids"], [8, 10])
+        self.assertNotIn("paid", result["shipping_payment"])
+
+    def test_free_and_seller_covered_shipping_do_not_reclassify_goods_price(self):
+        for quote in ("Ціна футболки 850 грн, доставка безкоштовна", "Стоимость футболки 850 грн, доставка бесплатная",
+                      "T-shirt price 850 UAH, free delivery", "Ціна футболки 850 грн, доставку оплачуємо ми",
+                      "Стоимость футболки 850 грн, мы оплачиваем доставку", "T-shirt price 850 UAH, we pay delivery"):
+            with self.subTest(quote=quote):
+                result = extract_conversation_agreement([message(10, "manager", quote), message(11, "user", "Так")])
+                self.assertEqual((result["merchandise_total"], result["delivery_total"], result["payable_total"]), ("850.00", "0.00", "850.00"))
+                self.assertEqual(result["shipping_payment"]["mode"], "merchant_free")
+                self.assertEqual(result["shipping_payment"]["payer_type"], "Sender")
+                self.assertFalse(result["shipping_payment"]["included_in_payable_total"])
+
+    def test_explicit_zero_shipping_arithmetic_and_standalone_zero_have_source(self):
+        for quote in ("850 грн + 0 доставка = 850 грн", "850 UAH + 0 delivery = 850 UAH"):
+            result = extract_conversation_agreement([message(10, "manager", quote)])
+            self.assertEqual((result["merchandise_total"], result["delivery_total"], result["payable_total"]), ("850.00", "0.00", "850.00"))
+            self.assertEqual(result["shipping_payment"]["mode"], "merchant_free")
+        result = extract_conversation_agreement([message(9, "manager", "Ціна футболки 850 грн"), message(10, "manager", "Доставка 0 грн")])
+        self.assertEqual(result["shipping_payment"]["customer_charge_amount"], "0.00")
+        self.assertEqual(result["shipping_payment"]["source_message_id"], 10)
+
+    def test_carrier_recipient_shipping_keeps_goods_payable_without_shipping_charge(self):
+        for quote in ("Ціна футболки 850 грн, доставку оплачує отримувач", "Стоимость футболки 850 грн, доставку оплачивает получатель",
+                      "T-shirt price 850 UAH, delivery paid by recipient"):
+            result = extract_conversation_agreement([message(10, "manager", quote)])
+            self.assertEqual((result["merchandise_total"], result["delivery_total"], result["payable_total"]), ("850.00", "0.00", "850.00"))
+            self.assertEqual(result["shipping_payment"]["mode"], "carrier_recipient")
+            self.assertEqual(result["shipping_payment"]["payer_type"], "Recipient")
+
+    def test_inclusive_unallocated_total_is_unknown_and_goods_total_does_not_invent_shipping(self):
+        for quote in ("Разом 970 грн з доставкою", "Итого 970 грн с доставкой", "Total 970 UAH including delivery"):
+            result = extract_conversation_agreement([message(10, "manager", quote)])
+            self.assertEqual(result["payable_total"], "970.00")
+            self.assertEqual(result["merchandise_total"], "")
+            self.assertEqual(result["delivery_total"], "")
+            self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+            self.assertIn("delivery_allocation_required", result["uncertainty_reasons"])
+        result = extract_conversation_agreement([message(10, "manager", "Вартість футболки 970 грн")])
+        self.assertEqual(result["merchandise_total"], "970.00")
+        self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+        self.assertEqual(result["delivery_total"], "")
+
+    def test_questions_negations_quoted_and_customer_free_mentions_cannot_promise_shipping(self):
+        for quote in ("Ціна футболки 850 грн, доставка безкоштовна?", "Ціна футболки 850 грн, доставка не безкоштовна",
+                      'Ціна футболки 850 грн, "доставка безкоштовна"', "T-shirt price 850 UAH, delivery is not free",
+                      "Стоимость футболки 850 грн, доставка бесплатная?", "Стоимость футболки 850 грн, доставка небесплатная",
+                      "Ціна футболки 850 грн, доставка безкоштовна або оплатить отримувач"):
+            result = extract_conversation_agreement([message(10, "manager", quote)])
+            self.assertEqual(result["merchandise_total"], "850.00")
+            self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+            self.assertEqual(result["delivery_total"], "")
+        result = extract_conversation_agreement([message(10, "user", "Доставка безкоштовна")])
+        self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+
+    def test_latest_shipping_retraction_invalidates_free_policy_and_new_quote_resolves_allocation(self):
+        result = extract_conversation_agreement([message(10, "manager", "Ціна футболки 850 грн, доставка безкоштовна"),
+            message(11, "manager", "Доставка не безкоштовна")])
+        self.assertEqual(result["shipping_payment"]["mode"], "unknown")
+        self.assertEqual(result["shipping_payment"]["source_message_id"], 11)
+        self.assertIn("shipping_payment_not_affirmed", result["uncertainty_reasons"])
+        resolved = extract_conversation_agreement([message(10, "manager", "Разом 970 грн з доставкою"),
+            message(11, "manager", "850 грн + 120 доставка = 970 грн")])
+        self.assertEqual(resolved["shipping_payment"]["mode"], "customer_prepaid")
+        self.assertNotIn("delivery_allocation_required", resolved["uncertainty_reasons"])
+
+    def test_separate_amount_clauses_and_decimal_prices_allocate_without_defaults(self):
+        result = extract_conversation_agreement([message(10, "manager", "Ціна футболки 850.50 грн, доставка 120.25 грн, разом 970.75 грн")])
+        self.assertEqual((result["merchandise_total"], result["delivery_total"], result["payable_total"]), ("850.50", "120.25", "970.75"))
+        self.assertEqual(result["shipping_payment"]["mode"], "customer_prepaid")
+        conflict = extract_conversation_agreement([message(10, "manager", "Ціна футболки 850 грн, доставка 120 USD")])
+        self.assertIn("amount_currency_conflict", conflict["uncertainty_reasons"])
 
     def test_incorrect_or_mixed_currency_equation_is_unknown(self):
         for text, reason in (("850 грн + 120 доставка = 980 грн", "amount_arithmetic_mismatch"),
@@ -219,6 +486,36 @@ class ConversationAgreementTests(SimpleTestCase):
         self.assertEqual(result["shipping"]["city"], "Місто Прикладу")
         self.assertEqual(result["shipping"]["office"], "Відділення №4")
         self.assertEqual(result["shipping"]["field_evidence"]["full_name"]["source_message_id"], 10)
+
+    def test_inline_phone_name_and_city_np_without_comma_have_exact_address_sources(self):
+        for city in ("Софіївський квартал", "Місто Прикладу", "Новий Приклад"):
+            result = extract_conversation_agreement([
+                message(10, "user", "0631234567 Приклад Отримувача\n" + city + " НП4"),
+            ])
+            self.assertEqual(result["shipping"]["full_name"], "Приклад Отримувача")
+            self.assertEqual(result["shipping"]["phone"], "0631234567")
+            self.assertEqual(result["shipping"]["city"], city)
+            self.assertEqual(result["shipping"]["office"], "Відділення №4")
+            self.assertEqual(result["shipping"]["field_evidence"], {key: {"source_message_id": 10}
+                for key in ("full_name", "phone", "city", "office")})
+
+    def test_greetings_and_random_chat_are_not_address_or_recipient_names(self):
+        for prefix in ("Вітаю", "Привіт", "Доброго дня", "Hello", "Хочу футболку", "Не Софіївський квартал",
+                       "Софіївський квартал або Приклад"):
+            with self.subTest(prefix=prefix):
+                result = extract_conversation_agreement([
+                    message(10, "user", prefix + "\n0631234567\n" + prefix + " НП4"),
+                ])
+                self.assertNotIn("city", result["shipping"])
+                self.assertNotIn("full_name", result["shipping"])
+        self.assertEqual(extract_conversation_agreement([message(10, "user", "Вітаю, хочу футболку")])["shipping"], {})
+
+    def test_labeled_city_excludes_office_suffix_and_followup_greeting_cannot_override_it(self):
+        result = extract_conversation_agreement([
+            message(10, "user", "Місто: Софіївський квартал НП4"), message(11, "user", "Вітаю"),
+        ])
+        self.assertEqual(result["shipping"]["city"], "Софіївський квартал")
+        self.assertEqual(result["shipping"]["field_evidence"]["city"]["source_message_id"], 10)
 
     def test_negative_reminder_to_include_receipt_does_not_mean_exclude(self):
         result = extract_conversation_agreement([message(10, "user", "Це подарунок, не забудьте вкласти чек")])
@@ -321,6 +618,92 @@ class ConversationAgreementPersistenceTests(TestCase):
         InstagramBotMessage.objects.filter(pk=self.rows[1].pk).update(text="Different source text")
         self.assertEqual(self.read()["reason"], "conversation_agreement_source_changed")
 
+    def legacy_projection(self):
+        from management.services.ig_conversation_agreement import agreement_projection_digest
+        self.persist()
+        context = deepcopy(self.customer.sales_context)
+        item = context["conversation_agreement"]["items"][0]
+        item.update(garment_type="", qty=None, unit_price=None, price_evidence_message_ids=[])
+        for key in ("garment_source_message_id", "quantity_source_message_id", "quantity_inference", "price_authority"):
+            item.pop(key, None)
+        self.customer.sales_context = context
+        self.customer.save(update_fields=["sales_context"])
+        return agreement_projection_digest(context["conversation_agreement"])
+
+    def reproject(self, expected_digest, rows=None):
+        from management.services.ig_conversation_agreement import reproject_conversation_agreement
+        rows = self.rows if rows is None else rows
+        with patch("management.services.ig_admin_state_capture._namespace", return_value="instagram_login:synthetic-agreement-owner"):
+            return reproject_conversation_agreement(self.customer, rows, watermark=rows[-1].pk,
+                expected_agreement_digest=expected_digest)
+
+    def test_explicit_reprojection_restores_current_source_facts_and_bounded_metadata(self):
+        expected = self.legacy_projection()
+        self.assertEqual(self.read()["reason"], "conversation_agreement_projection_changed")
+        self.assertEqual(self.persist()["reason"], "agreement_retained_conversation_agreement_projection_changed")
+        result = self.reproject(expected)
+        self.assertTrue(result["persisted"], result)
+        self.assertEqual(result["reason"], "agreement_reprojected")
+        item = result["agreement"]["items"][0]
+        self.assertEqual((item["garment_type"], item["qty"], item["unit_price"]), ("tshirt", 1, "850.00"))
+        self.assertEqual(self.read()["reason"], "")
+        self.customer.refresh_from_db()
+        audit = self.customer.sales_context["conversation_agreement_reprojections"]
+        self.assertEqual(len(audit), 1)
+        self.assertEqual((audit[0]["prior_digest"], audit[0]["new_digest"]), (expected, result["new_digest"]))
+        self.assertEqual(audit[0]["reason"], "explicit_source_reprojection")
+        self.assertEqual(audit[0]["source_message_ids"], result["agreement"]["source_message_ids"])
+        self.assertNotIn("SamplePrint", json.dumps(audit))
+
+    def test_reprojection_refuses_changed_material_source_before_projection_bypass(self):
+        from management.models import InstagramBotMessage
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        InstagramBotMessage.objects.filter(pk=self.rows[1].pk).update(text="A changed source")
+        result = self.reproject(expected)
+        self.assertEqual(result["reason"], "agreement_reprojection_conversation_agreement_source_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
+    def test_reprojection_refuses_erasure_started_after_preview(self):
+        from management.models import IgClient
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        IgClient.objects.filter(pk=self.customer.pk).update(privacy_erasure_started_at=self.now)
+        self.assertEqual(self.reproject(expected)["reason"], "agreement_reprojection_client_unavailable")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
+    def test_reprojection_refuses_reset_after_preview(self):
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        with patch("management.services.ig_conversation_routes.conversation_route_reset_floor", return_value=self.rows[-1].pk):
+            self.assertEqual(self.reproject(expected)["reason"], "agreement_reprojection_scope_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
+    def test_reprojection_expected_digest_refuses_a_concurrent_head_change(self):
+        from management.models import IgClient
+        expected = self.legacy_projection()
+        newer = deepcopy(self.customer.sales_context)
+        newer["conversation_agreement"]["items"][0]["size"] = "M"
+        IgClient.objects.filter(pk=self.customer.pk).update(sales_context=newer)
+        self.assertEqual(self.reproject(expected)["reason"], "agreement_reprojection_head_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, newer)
+
+    def test_reprojection_rolls_back_removed_head_when_fresh_source_capture_is_refused(self):
+        from management.models import InstagramBotMessage
+        expected = self.legacy_projection()
+        before = deepcopy(self.customer.sales_context)
+        foreign = InstagramBotMessage.objects.create(client=self.customer, sender_id="synthetic-foreign-recipient",
+            provider_namespace="instagram_login:synthetic-agreement-owner", role="user", source="webhook", status="done",
+            mid="synthetic-foreign-refresh-source", text="A source", provider_created_at=self.now)
+        result = self.reproject(expected, rows=[*self.rows, foreign])
+        self.assertEqual(result["reason"], "agreement_reprojection_agreement_source_changed")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.sales_context, before)
+
     def test_capture_cannot_borrow_future_agreement_or_source_time(self):
         from datetime import timedelta
         self.persist()
@@ -351,6 +734,32 @@ class ConversationAgreementPersistenceTests(TestCase):
         self.rows[-1].save(update_fields=["text"])
         self.persist()
         self.assertEqual(self.read()["reason"], "conversation_agreement_quote_expired")
+
+    def test_conditional_shipping_material_rule_survives_long_history_and_later_price(self):
+        from management.models import InstagramBotMessage
+        from management.services.ig_conversation_agreement import persist_conversation_agreement
+        rule = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace="instagram_login:synthetic-agreement-owner", role="manager", source="echo", status="done",
+            send_state="sent", provider_message_id="synthetic-conditional-rule", mid="synthetic-conditional-rule",
+            text="Доставка безкоштовна від 3000 грн", provider_created_at=self.now)
+        self.rows.append(rule)
+        self.assertEqual(self.persist()["agreement"]["shipping_payment"]["condition"]["status"], "not_met")
+        for index in range(85):
+            self.rows.append(InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+                provider_namespace="instagram_login:synthetic-agreement-owner", role="user", source="webhook", status="done",
+                mid=f"synthetic-rule-noise-{index}", text="Дякую", provider_created_at=self.now))
+        price = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace="instagram_login:synthetic-agreement-owner", role="manager", source="echo", status="done",
+            send_state="sent", provider_message_id="synthetic-new-price", mid="synthetic-new-price",
+            text="Ціна футболки 3100 грн", provider_created_at=self.now)
+        self.rows.append(price)
+        result = persist_conversation_agreement(self.customer, self.rows[-80:], watermark=price.pk)
+        self.assertTrue(result["persisted"], result)
+        self.assertEqual(result["agreement"]["shipping_payment"]["mode"], "merchant_free")
+        self.assertEqual(result["agreement"]["shipping_payment"]["condition"]["source_message_id"], rule.pk)
+        self.assertEqual(result["agreement"]["shipping_payment"]["condition"]["amount_source_message_id"], price.pk)
+        self.assertEqual((result["agreement"]["delivery_total"], result["agreement"]["payable_total"]), ("0.00", "3100.00"))
+        self.assertEqual(self.read()["reason"], "")
 
     def prepare_initial_agreement(self):
         self.customer.current_commercial_episode = None
@@ -570,7 +979,7 @@ class ConversationAgreementPersistenceTests(TestCase):
                 source="echo" if role == "manager" else "webhook", status="done",
                 send_state="sent" if role == "manager" else "", provider_message_id=f"synthetic-manager-photo-{index}",
                 mid=f"synthetic-manager-photo-{index}", text=text, provider_created_at=self.now,
-                attachment_media=[{"media_type": "image", "source_part_id": "synthetic-owned-reference",
+                attachment_media=[{"mime": "image/jpeg", "source_part_id": "synthetic-owned-reference",
                     "content_hash": "a" * 64, "status": "owned", "private_storage": True,
                     "url": "https://example.invalid/image?signature=fixture"}] if index == 1 else []))
         self.rows.extend(added)

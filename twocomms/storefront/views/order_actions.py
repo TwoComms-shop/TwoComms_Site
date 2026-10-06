@@ -139,7 +139,7 @@ def _fallback_waybill_initial(service: NovaPoshtaDocumentService, order: Order) 
         "width_cm": f"{service.DEFAULT_WIDTH_CM}",
         "height_cm": f"{service.DEFAULT_HEIGHT_CM}",
         "cod_amount": payment_snapshot["cod_amount"] if payment_snapshot["cod_amount_value"] > 0 else "",
-        "payer_type": "Recipient",
+        "payer_type": payment_snapshot["delivery_payer_type"],
         "payment_method": "Cash",
     }
 
@@ -582,6 +582,12 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
                     .get(pk=order.pk)
                 )
                 block_reason = _waybill_action_block_reason(locked_order)
+                snapshot = build_order_payment_snapshot(locked_order)
+                if not block_reason and (
+                    snapshot['delivery_payment_requires_manual']
+                    or form.cleaned_data['payer_type'] != snapshot['delivery_payer_type']
+                ):
+                    block_reason = 'Збережіть правильний спосіб оплати доставки в замовленні перед створенням ТТН.'
                 if block_reason:
                     return _render_waybill_action_page(
                         request,

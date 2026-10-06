@@ -480,6 +480,9 @@ class ResponsePlan:
             "Payment claims and receipt/OCR are reported evidence, never verified money. Acknowledge an observed receipt with "
             "verification pending; a text-only claim permits reported-payment acknowledgement, never claiming receipt was read. "
             "Only authority.payment_confirmed permits verified payment. No forwarding/manager notification claim without SENT notification proof. "
+            "Conversation amounts retain their source authority and component: merchandise, delivery and payable total. "
+            "Attribute seller_instruction amounts explicitly to the manager's quote (За розрахунком менеджера); "
+            "attribute customer-accepted amounts to the agreement. Never call the payable total a garment price or claim delivery/payment was paid from a quote. "
             "Links/requisites are instructions; receipt response completion leaves manager verification unresolved."
             )
         if audited:

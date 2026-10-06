@@ -142,14 +142,22 @@ class ReceiptFinalAdmissionTests(TransactionTestCase):
         self.raw = image_bytes() + b"\0" * (1024 * 1024)
         self.payload = receipt_payload(self.raw)
         self.owner = IgClient.objects.create(igsid="receipt-inline-fixture")
+        retention_deadline = timezone.now() + timedelta(hours=1)
         self.message = InstagramBotMessage.objects.create(client=self.owner, sender_id=self.owner.igsid,
             role="user", source="webhook", media_capture_eligible=True, private_media_state="active",
+            private_media_delete_after=retention_deadline,
             private_media_use_token="lease", private_media_use_until=timezone.now() + timedelta(minutes=3))
         self.capability = admission(self.raw, message_id=self.message.pk)
         source = self.capability.sources[0]
         self.message.attachment_media = [{"source_part_id": source.source_part_id, "content_hash": source.content_hash,
-            "storage_name": source.storage_name, "status": "owned", "private_storage": True}]
+            "storage_name": source.storage_name, "status": "owned", "private_storage": True,
+            "mime": "image/jpeg", "media_type": "image", "delete_after": retention_deadline.isoformat()}]
         self.message.save(update_fields=["attachment_media"])
+        from management.services.ig_receipt_inspection import _source_allowed
+        self.assertIs(_source_allowed({"message_id": source.source_message_id,
+            "source_part_id": source.source_part_id, "content_hash": source.content_hash,
+            "storage_name": source.storage_name}, source.use_token), True,
+            "Receipt facade fixture must prove the canonical private retention and lease before admission")
 
     def generate(self, *, payload=None, capability=True, guard=lambda: True):
         kwargs = {"role": "management", "reasoning_task": "media_analysis", "pre_dispatch_guard": guard}

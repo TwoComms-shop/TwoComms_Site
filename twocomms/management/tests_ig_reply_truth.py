@@ -97,6 +97,31 @@ class ReplyTruthValidatorTests(SimpleTestCase):
         self.assertIn(reason, result.reasons)
         self.assertTrue(set(result.reasons) <= set(REASON_CODES))
 
+    def test_conversation_amounts_require_attribution_and_correct_component_not_settlement(self):
+        amounts = tuple((kind, amount, "UAH", 42, "conversation_agreement") for kind, amount in (
+            ("merchandise", "850.00"), ("delivery", "120.00"), ("payable", "970.00")))
+        context = ReplyTruthContext(conversation_amounts=amounts)
+        self.assertValid("За домовленістю: футболка 850 грн, доставка 120 грн, разом 970 грн.", context=context)
+        for text in ("Футболка 850 грн.", "За домовленістю футболка 970 грн.",
+                     "За домовленістю доставка 850 грн.", "За домовленістю разом 120 грн.",
+                     "За домовленістю разом 970 USD."):
+            self.assertFalse(validate_reply_truth(text, context=context).valid, text)
+        self.assertReason("unverified_payment", "За домовленістю разом 970 грн, оплату підтверджено.", context=context)
+        quote = ReplyTruthContext(conversation_amounts=tuple((*row[:4], "seller_instruction") for row in amounts))
+        self.assertValid("За розрахунком менеджера: футболка 850 грн, доставка 120 грн, разом 970 грн.", context=quote)
+        self.assertReason("unverified_price", "За домовленістю разом 970 грн.", context=quote)
+
+    def test_accepted_agreement_configuration_is_not_stock_authority(self):
+        context = ReplyTruthContext(agreement_choices=(("size", "L", 42), ("fit", "oversize", 42),
+            ("color", "white", 42), ("color", "біла", 42), ("color", "белая", 42)))
+        for text in ("За домовленістю: біла футболка, розмір L, oversize.",
+                     "Мы согласовали: белая футболка, размер L."):
+            self.assertValid(text, context=context)
+        for text in ("За домовленістю: black футболка, розмір L.",
+                     "За домовленістю: біла футболка, розмір XL.",
+                     "За домовленістю: біла футболка L є в наявності."):
+            self.assertFalse(validate_reply_truth(text, context=context).valid, text)
+
     def test_authorized_multiline_prices_range_configuration_url_and_action(self):
         context = ReplyTruthContext(
             authorized_prices=(Decimal("900"), Decimal("1100")),

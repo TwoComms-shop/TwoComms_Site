@@ -209,6 +209,7 @@ def _build_order_initial(order):
         'sale_source': order.sale_source or '',
         'manager_comment': order.manager_comment or '',
         'payment_preset': _preset_key_for_order(order),
+        'discount_amount': str(order.discount_amount or '0.00'),
         'city': order.city or '',
         'np_office': order.np_office or '',
         'delivery_text': ', '.join(p for p in (order.city, order.np_office) if p),
@@ -223,6 +224,7 @@ def _build_order_initial(order):
         },
         'has_tracking': bool(order.tracking_number or order.nova_poshta_document_ref),
         'items': items,
+        **_shipping_initial(order),
     }
 
 
@@ -395,25 +397,128 @@ def _review_quoted_total(review):
     return amount if amount is not None and amount > 0 else None
 
 
-def _review_delivery_contract(review, *, merchandise_total, actor):
+def _review_shipping_policy(review):
+    evidence = review.evidence if review and isinstance(review.evidence, dict) else {}
+    draft = evidence.get('order_draft') if isinstance(evidence.get('order_draft'), dict) else {}
+    agreement = draft.get('agreement') if isinstance(draft.get('agreement'), dict) else {}
+    policy = draft.get('shipping_payment') or agreement.get('shipping_payment')
+    return policy if isinstance(policy, dict) else {}
+
+
+def _shipping_initial(order):
+    from orders.services.delivery_payment import delivery_payment_snapshot
+    snapshot = delivery_payment_snapshot(order, item_rows=list(order.items.all()))
+    return {
+        'delivery_payment_mode': snapshot['mode'],
+        'delivery_charge_amount': f"{snapshot['delivery_amount']:.2f}",
+        'delivery_payment_locked': snapshot['source_locked'],
+        'delivery_payment_requires_manual': snapshot['requires_manual'],
+        'delivery_payer_type': snapshot['payer_type'],
+    }
+
+
+def _review_shipping_initial(review):
+    policy = _review_shipping_policy(review)
+    evidence = review.evidence if isinstance(review.evidence, dict) else {}
+    draft = evidence.get('order_draft') or {}
+    delivery = draft.get('delivery_amount') or draft.get('delivery_total') or '0'
+    mode = policy.get('mode') or ('customer_prepaid' if (_decimal_or_none(delivery) or 0) > 0 else 'carrier_recipient')
+    return {
+        'delivery_payment_mode': mode,
+        'delivery_charge_amount': str(policy.get('customer_charge_amount', delivery)),
+        'delivery_payment_locked': bool(policy and mode != 'unknown' or not policy and (_decimal_or_none(delivery) or 0) > 0),
+        'delivery_payment_requires_manual': mode == 'unknown',
+    }
+
+
+def _manual_delivery_contract(data, *, merchandise_total, actor, preset_key, item_rows, existing=None, confirmed_amount=None, review=None, discount_amount='0', existing_snapshot=None):
+    from orders.services.delivery_payment import build_delivery_payment_contract, delivery_payment_snapshot
+    explicit = 'delivery_payment_mode' in data or 'delivery_charge_amount' in data
+    if not explicit:
+        return None
+    mode = str(data.get('delivery_payment_mode') or '').strip()
+    if mode == 'clientcarrier':
+        mode = 'carrier_recipient'
+    amount = _decimal_or_none(data.get('delivery_charge_amount', '0'))
+    if amount is None or amount < 0:
+        raise ValueError('Вкажіть коректну суму доставки.')
+    if existing is not None:
+        current = existing_snapshot or delivery_payment_snapshot(existing, item_rows=list(existing.items.all()))
+        if current['source_locked']:
+            if mode != current['mode'] or amount != current['delivery_amount']:
+                raise ValueError('Доставку підтверджено з переписки; для зміни потрібна нова перевірка домовленості.')
+            return None
+    allocated = None
+    if mode == 'customer_prepaid':
+        if preset_key == 'free':
+            raise ValueError('Безкоштовне замовлення не підтверджує оплату доставки; оберіть доставку коштом продавця.')
+        if confirmed_amount is None:
+            if preset_key == 'paid_full':
+                confirmed_amount = merchandise_total + amount
+            elif preset_key == 'prepaid_200':
+                confirmed_amount = Decimal('200.00')
+            elif existing is not None:
+                payload = existing.payment_payload if isinstance(existing.payment_payload, dict) else {}
+                confirmed_amount = _decimal_or_none(payload.get('manager_confirmed_amount'))
+        # Explicit staff selection allocates the verified payment to carriage;
+        # the builder still rejects an allocation larger than that payment.
+        allocated = amount
+    return build_delivery_payment_contract(
+        mode=mode, merchandise_total=merchandise_total, delivery_amount=amount,
+        actor_id=actor.pk, authority='manual_manager', confirmed_amount=confirmed_amount,
+        allocated_delivery_amount=allocated, item_rows=item_rows,
+        discount_amount=discount_amount,
+        review_id=getattr(review, 'pk', None),
+        decision_id=getattr(_authoritative_manager_payment_decision(review), 'pk', None) if review else None,
+    )
+
+
+def _legacy_delivery_alias(contract):
+    return {key: contract.get(key) for key in (
+        'merchandise_total', 'delivery_amount', 'payable_total', 'payer_type',
+        'review_id', 'decision_id', 'actor_id', 'evidence_message_ids',
+    )} | {'prepaid': contract.get('mode') == 'customer_prepaid'}
+
+
+def _assert_delivery_contract_compatible(order, contract):
+    if contract is None:
+        return
+    from orders.services.delivery_payment import delivery_payment_snapshot
+    current = delivery_payment_snapshot(order, item_rows=list(order.items.all()))
+    if current['valid'] is not True or any(
+        str(current[key]) != str(contract[key]) if key in {'mode', 'payer_type'}
+        else Decimal(str(current[key])) != Decimal(str(contract[key]))
+        for key in ('mode', 'payer_type', 'merchandise_total', 'delivery_amount', 'payable_total')
+    ):
+        raise ValueError('Існуюче замовлення має інші або непідтверджені умови оплати доставки.')
+
+
+def _review_delivery_contract(review, *, merchandise_total, actor, item_rows=None, agreement_verified=False):
     """Keep reviewed prepaid carriage separate from garment prices."""
     if review is None:
         return None
     evidence = review.evidence if isinstance(review.evidence, dict) else {}
     draft = evidence.get('order_draft') if isinstance(evidence.get('order_draft'), dict) else {}
-    delivery = _decimal_or_none(draft.get('delivery_amount') or draft.get('delivery_total'))
-    if delivery is None or delivery <= 0:
+    policy = _review_shipping_policy(review)
+    mode = policy.get('mode')
+    if mode == 'unknown':
+        raise ValueError('Потрібно уточнити, хто сплачує доставку та яку суму включено в оплату.')
+    delivery = _decimal_or_none(policy.get('customer_charge_amount') if policy else draft.get('delivery_amount') or draft.get('delivery_total'))
+    if not policy and (delivery is None or delivery <= 0):
         return None
+    if delivery is None or delivery < 0:
+        raise ValueError('Суму доставки з переписки не підтверджено.')
+    if policy and not agreement_verified:
+        from orders.services.ig_review_order_builder import _current_agreement_error
+        if _current_agreement_error(review.client, draft):
+            raise ValueError('Домовленість про доставку більше не підтверджена поточною перепискою.')
+    mode = mode or 'customer_prepaid'
     quoted_merchandise = _decimal_or_none(draft.get('merchandise_total') or draft.get('quoted_total'))
     quoted_payable = _decimal_or_none(draft.get('payable_total'))
     if quoted_merchandise is None or quoted_payable != quoted_merchandise + delivery:
         raise ValueError('Сума товарів, доставки та повної оплати потребує звірки.')
     decision = _authoritative_manager_payment_decision(review)
     payable = merchandise_total + delivery
-    prepaid = bool(
-        decision and decision.verification_scope == 'full_payment'
-        and Decimal(decision.confirmed_amount or 0) == payable
-    )
     evidence_ids = {
         int(value) for value in (draft.get('amount_evidence_message_ids') or [])
         if str(value).isdigit()
@@ -421,19 +526,17 @@ def _review_delivery_contract(review, *, merchandise_total, actor):
     for key in ('amount_source_message_id', 'delivery_source_message_id'):
         if str(draft.get(key) or '').isdigit():
             evidence_ids.add(int(draft[key]))
+    evidence_ids.update(value for value in policy.get('evidence_message_ids', []) if type(value) is int and value > 0)
     if not evidence_ids:
         raise ValueError('Для суми доставки потрібне повідомлення-джерело з переписки.')
-    return {
-        'merchandise_total': f'{merchandise_total:.2f}',
-        'delivery_amount': f'{delivery:.2f}',
-        'payable_total': f'{payable:.2f}',
-        'prepaid': prepaid,
-        'payer_type': 'Sender' if prepaid else 'Recipient',
-        'review_id': review.pk,
-        'decision_id': getattr(decision, 'pk', None),
-        'actor_id': actor.pk,
-        'evidence_message_ids': sorted(evidence_ids),
-    }
+    from orders.services.delivery_payment import build_delivery_payment_contract
+    return build_delivery_payment_contract(
+        mode=mode, merchandise_total=merchandise_total, delivery_amount=delivery,
+        actor_id=actor.pk, authority='payment_review',
+        confirmed_amount=getattr(decision, 'confirmed_amount', None),
+        review_id=review.pk, decision_id=getattr(decision, 'pk', None),
+        evidence_message_ids=sorted(evidence_ids), item_rows=item_rows,
+    )
 
 
 def _price_override_payload(data, *, quoted_total, actual_total, actor, review):
@@ -919,6 +1022,7 @@ def _build_ig_review_initial(review):
             "sale_source": "Instagram",
             "manager_comment": comment,
             "items": items,
+            **_review_shipping_initial(review),
         }
     items = []
     for item in deal.items.select_related("product", "color_variant").all():
@@ -1212,9 +1316,33 @@ def manual_order_create(request):
                 if payment_review
                 else None
             )
-            delivery_contract = _review_delivery_contract(
-                payment_review, merchandise_total=total_sum, actor=request.user,
-            )
+            policy = _review_shipping_policy(payment_review)
+            explicit_shipping = 'delivery_payment_mode' in data or 'delivery_charge_amount' in data
+            expected = _review_shipping_initial(payment_review) if payment_review else {}
+            if expected.get('delivery_payment_locked') and explicit_shipping:
+                if (
+                    data.get('delivery_payment_mode') != expected['delivery_payment_mode']
+                    or _decimal_or_none(data.get('delivery_charge_amount')) != _decimal_or_none(expected['delivery_charge_amount'])
+                ):
+                    raise ValueError('Доставка має відповідати підтвердженій домовленості з переписки.')
+            if payment_review and policy.get('mode') != 'unknown':
+                delivery_contract = _review_delivery_contract(
+                    payment_review, merchandise_total=total_sum, actor=request.user, item_rows=order_items,
+                )
+                if delivery_contract is None and explicit_shipping:
+                    delivery_contract = _manual_delivery_contract(
+                        data, merchandise_total=total_sum, actor=request.user, preset_key=preset_key,
+                        item_rows=order_items, review=payment_review,
+                        confirmed_amount=getattr(manager_decision, 'confirmed_amount', None),
+                    )
+            else:
+                delivery_contract = _manual_delivery_contract(
+                    data, merchandise_total=total_sum, actor=request.user, preset_key=preset_key,
+                    item_rows=order_items, review=payment_review,
+                    confirmed_amount=getattr(manager_decision, 'confirmed_amount', None),
+                )
+                if payment_review and policy.get('mode') == 'unknown' and delivery_contract is None:
+                    raise ValueError('Уточніть спосіб оплати доставки перед створенням замовлення.')
             payable_total = total_sum + (
                 Decimal(delivery_contract['delivery_amount']) if delivery_contract else Decimal('0.00')
             )
@@ -1273,7 +1401,8 @@ def manual_order_create(request):
                 'manager_comment': manager_comment,
                 'payment_payload': {
                     'manual_payment_preset': effective_preset_key,
-                    **({'instagram_delivery_contract': delivery_contract} if delivery_contract else {}),
+                    **({'delivery_payment': delivery_contract} if delivery_contract else {}),
+                    **({'instagram_delivery_contract': _legacy_delivery_alias(delivery_contract)} if delivery_contract and payment_review and delivery_contract.get('mode') == 'customer_prepaid' else {}),
                     **({'manual_payment_action': {
                         'actor_id': request.user.pk,
                         'source': 'management_user',
@@ -1315,8 +1444,8 @@ def manual_order_create(request):
                     },
                     expected_items=order_items,
                     declared_total=total_sum,
-                    expected_delivery_contract=delivery_contract,
                 )
+                _assert_delivery_contract_compatible(order, delivery_contract)
             if order_created:
                 apply_nova_poshta_refs(order, delivery['refs'])
                 order.save()
@@ -1480,6 +1609,8 @@ def manual_order_edit(request, order_id):
         with transaction.atomic():
             locked = Order.objects.select_for_update().get(pk=order.pk)
             before_snapshot = snapshot_order(locked)
+            from orders.services.delivery_payment import delivery_payment_snapshot
+            shipping_before = delivery_payment_snapshot(locked, item_rows=list(locked.items.all()))
             locked.full_name = full_name[:200]
             locked.phone = phone
             locked.pay_type = preset['pay_type']
@@ -1531,6 +1662,18 @@ def manual_order_edit(request, order_id):
                 order_items.append(item)
                 total_sum += item.line_total
             OrderItem.objects.bulk_create(order_items)
+            merchandise_total = max(total_sum - Decimal(locked.discount_amount or 0), Decimal('0.00'))
+            delivery_contract = _manual_delivery_contract(
+                data, merchandise_total=merchandise_total, actor=request.user, preset_key=preset_key,
+                item_rows=order_items, existing=locked, discount_amount=locked.discount_amount or 0,
+                existing_snapshot=shipping_before,
+            )
+            if delivery_contract is not None:
+                payment_payload = dict(locked.payment_payload or {})
+                payment_payload['delivery_payment'] = delivery_contract
+                # A new explicit audited choice supersedes the old bridge.
+                payment_payload.pop('instagram_delivery_contract', None)
+                locked.payment_payload = payment_payload
             locked.total_sum = total_sum
             locked.save()
             if preset_key == 'free':

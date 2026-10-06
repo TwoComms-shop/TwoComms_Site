@@ -407,6 +407,7 @@ def classify_media_items(
     payment_context: bool = False,
     explicit_claim: bool | None = None,
     purchase_context: bool = False,
+    source_role: str = "",
 ) -> list[dict]:
     """Attach conservative role/intent semantics to current-turn media.
 
@@ -415,11 +416,12 @@ def classify_media_items(
     reviewable instead of becoming invented products.
     """
     normalized_text = " ".join(str(text or "").split())
+    manager_source = source_role in {"manager", "model", "assistant", "bot"}
     if explicit_claim is None:
         explicit_claim = _is_explicit_payment_claim(normalized_text)
     intent = _media_intent(
         normalized_text,
-        payment_context=payment_context,
+        payment_context=payment_context and not manager_source,
         explicit_claim=bool(explicit_claim),
         purchase_context=purchase_context,
     )
@@ -438,6 +440,9 @@ def classify_media_items(
             item["role"] = inspection["role"]
             item["payment_evidence"] = inspection["role"] in {"receipt", "payment_candidate"}
             item["catalog_match_allowed"] = keep_catalog_domain
+            if manager_source:
+                item["catalog_match_allowed"] = False
+                item["actionable"] = False
             item["uncertainties"] = inspection.get("uncertainties", [])
             if inspection["role"] == "receipt":
                 item["receipt_facts"] = inspection["receipt_facts"]
@@ -463,14 +468,14 @@ def classify_media_items(
             role = "product"
             item_intent = intent
         else:
-            role = "other"
+            role = "manager_reference" if manager_source else "other"
             item_intent = intent
         item.update({
             "role": role,
             "intent": item_intent,
-            "actionable": item_intent == "purchase_candidate" and role == "product",
+            "actionable": not manager_source and item_intent == "purchase_candidate" and role == "product",
             "payment_evidence": role in {"receipt", "payment_candidate"},
-            "catalog_match_allowed": role == "product",
+            "catalog_match_allowed": role == "product" and not manager_source,
             "purchase_context": bool(purchase_context),
             "uncertain": role in {"other", "custom_reference", "payment_candidate"} or item_intent in {"unknown", "question", "interest"},
         })
@@ -502,6 +507,13 @@ def _augment_messages_with_raw_media(client, messages) -> list[dict]:
         if not isinstance(raw, dict):
             continue
         item = dict(raw)
+        # Analysis may normalize legacy URLs or synthesize a display attachment.
+        # Preserve the actual retained source fields for source-proof hashing.
+        if "attachments" in raw or "attachment_media" in raw:
+            item["_source_media_binding"] = {
+                "attachments": raw.get("attachments") or "",
+                "attachment_media": raw.get("attachment_media") or [],
+            }
         media = list(item.get("media") or []) if isinstance(item.get("media"), list) else []
         attachment_media = item.get("attachment_media")
         if isinstance(attachment_media, list) and attachment_media:
@@ -627,6 +639,7 @@ def _resolve_payment_media_candidates(media: list[dict]) -> list[dict]:
         index for index, item in enumerate(result)
         if (
             item.get("role") == "payment_candidate"
+            and item.get("source_role") != "manager"
             and not item.get("receipt_inspection")
             and item.get("inspection_eligible") is True
             and item.get("url")
@@ -1157,6 +1170,8 @@ def extract_payment_review_evidence(messages) -> dict:
         except (TypeError, ValueError):
             message_id = 0
         media = [dict(item) for item in raw_media if isinstance(item, dict) and item.get("url")]
+        for media_item in media:
+            media_item.update(message_id=message_id, source_message_id=message_id, source_role=role)
         explicit_claim = _is_explicit_payment_claim(text)
         if explicit_claim and re.search(r"\b(?:чек(?:а|у|ом)?|квитанц\w*|receipt)\b", text, re.IGNORECASE):
             for url in re.findall(r"https?://[^\s<>]+", text):
@@ -1195,9 +1210,10 @@ def extract_payment_review_evidence(messages) -> dict:
             payment_context=payment_context,
             explicit_claim=explicit_claim,
             purchase_context=purchase_context,
+            source_role=role,
         )
         for media_item in media:
-            media_item["message_id"] = message_id
+            media_item.update(message_id=message_id, source_message_id=message_id, source_role=role)
         context_messages.append({
             "message_id": message_id,
             "role": role,
@@ -1318,7 +1334,7 @@ def extract_payment_review_evidence(messages) -> dict:
         office_match = _OFFICE_RE.search(quote)
         if office_match and not delivery["office"]:
             delivery["office"] = f"{office_match.group('kind').capitalize()} {office_match.group('number')}"
-        if "," in quote and not delivery["city"]:
+        if "," in quote and office_match and not delivery["city"]:
             candidate = quote.split(",", 1)[0].strip()
             if 2 <= len(candidate) <= 100 and not any(char.isdigit() for char in candidate):
                 delivery["city"] = candidate
@@ -1368,6 +1384,7 @@ def extract_payment_review_evidence(messages) -> dict:
     if agreement.get("merchandise_total"):
         order_draft["quoted_total"] = agreement["merchandise_total"]
     order_draft["agreement"] = agreement
+    order_draft["shipping_payment"] = dict(agreement.get("shipping_payment") or {})
     shipping = agreement.get("shipping") or {}
     for key in ("full_name", "phone", "city", "office"):
         if shipping.get(key):
@@ -1520,6 +1537,16 @@ def _alert_text(review, client) -> str:
             f"\nТовар: {merchandise:.2f} грн\nДоставка: {delivery:.2f} грн\nСтатус:",
             1,
         )
+    arrangement = agreement.get("shipping_payment") or {}
+    if (arrangement.get("authority") == "seller_instruction"
+        and arrangement.get("source_message_id") in (agreement.get("source_message_ids") or [])):
+        labels = {
+            "customer_prepaid": "Доставка включена в суму переказу; платник ТТН — відправник після звірки оплати.",
+            "merchant_free": "Доставка безкоштовна для клієнта; платник ТТН — відправник.",
+            "carrier_recipient": "Клієнт оплачує перевізнику доставку окремо; платник ТТН — одержувач.",
+        }
+        if arrangement.get("mode") in labels:
+            alert += "\n" + labels[arrangement["mode"]]
     return alert
 
 
@@ -2332,6 +2359,7 @@ def _payment_notification_material(review) -> dict:
             "part_id": str(item.get("source_part_id") or "")[:128],
             "content_hash": str(item.get("content_hash") or "")[:128],
             "role": item["role"],
+            "source_role": str(item.get("source_role") or "")[:32],
             "reported_facts": (inspection or {}).get("receipt_facts") or {},
         })
     accepted = []
@@ -2347,6 +2375,9 @@ def _payment_notification_material(review) -> dict:
              "acceptance_message_id": source(item.get("acceptance_message_id"))})
         for value in item.get("price_evidence_message_ids") or []:
             source(value)
+        accepted[-1]["reference_message_ids"] = sorted({source(value) for value in item.get("reference_message_ids") or []})
+        accepted[-1]["accepted_reference_message_ids"] = sorted({source(value)
+            for value in item.get("accepted_reference_message_ids") or []})
     for value in candidate.get("evidence_message_ids") or []:
         source(value)
     amount_source = source(draft.get("amount_source_message_id"))
@@ -2354,6 +2385,17 @@ def _payment_notification_material(review) -> dict:
                      "amount": str(_positive_money(row.get("amount")) or ""),
                      "currency": str(row.get("currency") or "")[:8]}
                     for row in evidence.get("manager_confirmation_observations") or [] if isinstance(row, dict)]
+    arrangement = ((draft.get("agreement") or {}).get("shipping_payment") or {})
+    arrangement = arrangement if isinstance(arrangement, dict) else {}
+    shipping_payment = {
+        "mode": str(arrangement.get("mode") or "unknown")[:32],
+        "customer_charge_amount": str(arrangement.get("customer_charge_amount") or "")[:32],
+        "included_in_payable_total": arrangement.get("included_in_payable_total") if type(arrangement.get("included_in_payable_total")) is bool else None,
+        "payer_type": str(arrangement.get("payer_type") or "")[:16],
+        "source_message_id": source(arrangement.get("source_message_id")),
+        "customer_request_message_id": source(arrangement.get("customer_request_message_id")),
+        "evidence_message_ids": sorted({source(value) for value in arrangement.get("evidence_message_ids") or []}),
+    }
     if len(receipts) > 256 or len(accepted) > 50 or len(sources) > 512 or len(observations) > 80:
         return {}
     payload = {
@@ -2363,7 +2405,7 @@ def _payment_notification_material(review) -> dict:
         "amounts": {key: str(_positive_money(draft.get(key)) or "")
                     for key in ("quoted_total", "merchandise_total", "delivery_amount", "delivery_total", "payable_total")},
         "amount_source_message_id": amount_source,
-        "manager_observations": observations,
+        "manager_observations": observations, "shipping_payment": shipping_payment,
     }
     return {"schema": "payment-notification-material.v1",
             "material_digest": hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True,
@@ -2403,12 +2445,45 @@ def _payment_notification_scope_current(review, material, *, strict_sources=Fals
     draft = (review.evidence or {}).get("order_draft") or {}
     agreement = draft.get("agreement") or {}
     proofs = agreement.get("evidence") or {}
-    if any(str(row.pk) in proofs and proofs[str(row.pk)] != _proof(_row(row)) for row in rows):
+    if any(str(row.pk) in proofs and proofs[str(row.pk)] != _proof({
+        **_row(row), "provider_namespace": namespaces[row.pk],
+    }) for row in rows):
         return False
     from management.services.ig_receipt_inspection import _source_allowed
+    by_id = {row.pk: row for row in rows}
     for media in (review.evidence or {}).get("media") or []:
         if isinstance(media, dict) and media.get("role") in {"receipt", "payment_candidate"} and media.get("content_hash"):
-            if _source_allowed(media, "") is not True:
+            source = by_id.get(media.get("source_message_id") or media.get("message_id"))
+            if source is None or (media.get("source_role") and media["source_role"] != source.role):
+                return False
+            if source.role == "user":
+                if _source_allowed(media, "") is not True:
+                    return False
+            elif source.role == "manager":
+                # A manager may forward receipt evidence. Validate the exact
+                # owned part and privacy fences without granting user OCR or
+                # catalogue admission to the manager's image.
+                from management.services.ig_private_media import earliest_private_media_deadline
+                now = timezone.now()
+                shared_deadline = earliest_private_media_deadline(source)
+                if source.private_media_state not in {"", "active"} or shared_deadline is None or shared_deadline <= now:
+                    return False
+                parts = [part for part in source.attachment_media or [] if isinstance(part, dict)
+                    and part.get("source_part_id") == media.get("source_part_id")
+                    and part.get("content_hash") == media.get("content_hash")
+                    and part.get("storage_name") == media.get("storage_name")
+                    and part.get("status") == "owned" and part.get("private_storage") is True]
+                if len(parts) != 1 or not re.fullmatch(r"[a-f0-9]{64}", str(media["content_hash"])):
+                    return False
+                deadline = parts[0].get("delete_after")
+                if deadline is not None:
+                    try:
+                        deadline = datetime.fromisoformat(deadline.replace("Z", "+00:00")) if isinstance(deadline, str) else deadline
+                        if not isinstance(deadline, datetime) or timezone.is_naive(deadline) or deadline <= now:
+                            return False
+                    except (TypeError, ValueError):
+                        return False
+            else:
                 return False
     return True
 

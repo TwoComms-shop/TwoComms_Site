@@ -20,9 +20,13 @@ from orders.fulfillment_truth import (
 
 _EPISODE_LOCKS = WeakValueDictionary()
 _EPISODE_LOCKS_GUARD = RLock()
-_HELD_DB_LOCKS = ContextVar("ig_episode_db_locks", default=frozenset())
+_HELD_DB_LOCKS = ContextVar("ig_episode_db_locks", default={})
 
 FALSE_HISTORICAL_PURCHASE_REASON = "false_historical_purchase_corrected"
+
+
+class SessionLockOwnershipLost(RuntimeError):
+    """A reentrant owner no longer has the MariaDB connection that took its lock."""
 
 
 @contextmanager
@@ -30,8 +34,12 @@ def commercial_episode_client_lock(client_id: int):
     """Serialize episode/open-order decisions across MariaDB workers."""
     lock_name = f"twocomms:ig-episode:{int(client_id)}"
     if connection.vendor in {"mysql", "mariadb"}:
+        from management.services.ig_db_circuit import retain_session_connection
+
         held_locks = _HELD_DB_LOCKS.get()
         if lock_name in held_locks:
+            if connection.connection is None or connection.connection is not held_locks[lock_name]:
+                raise SessionLockOwnershipLost("commercial_episode_connection_changed")
             yield
             return
         with connection.cursor() as cursor:
@@ -39,16 +47,25 @@ def commercial_episode_client_lock(client_id: int):
             acquired = cursor.fetchone()[0]
         if acquired != 1:
             raise RuntimeError("Could not acquire Instagram commercial episode lock")
-        token = _HELD_DB_LOCKS.set(held_locks | {lock_name})
-        try:
-            yield
-        finally:
+        owner_connection = connection.connection
+        token = _HELD_DB_LOCKS.set({**held_locks, lock_name: owner_connection})
+        with retain_session_connection(using=connection.alias):
             try:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT RELEASE_LOCK(%s)", [lock_name])
-            except Exception:
-                pass
-            _HELD_DB_LOCKS.reset(token)
+                yield
+            finally:
+                try:
+                    # A replacement session cannot own the original lock.
+                    # Best-effort release on the original owner without
+                    # reconnecting and pretending a fresh connection held it.
+                    if connection.connection is owner_connection:
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT RELEASE_LOCK(%s)", [lock_name])
+                    elif owner_connection is not None:
+                        with owner_connection.cursor() as cursor:
+                            cursor.execute("SELECT RELEASE_LOCK(%s)", [lock_name])
+                except Exception:
+                    pass
+                _HELD_DB_LOCKS.reset(token)
         return
     with _EPISODE_LOCKS_GUARD:
         lock = _EPISODE_LOCKS.setdefault(int(client_id), RLock())
