@@ -6,7 +6,7 @@
 {% block extra_css %}
 <link rel="stylesheet" href="{% static 'management/ig_journey.css' %}?v=journey-presentation-v14">
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_human_documents.css' %}?v=human-documents-v2">{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_selection_corrections.css' %}?v=selection-corrections-v1">{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_selection_corrections.css' %}?v=commerce-scope-v1"><link rel="stylesheet" href="{% static 'management/ig_commerce_scope.css' %}?v=commerce-scope-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
@@ -1877,7 +1877,7 @@ body.bot-drawer-open{overflow:hidden;}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v14"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-presentation-v15"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=selection-corrections-v1"></script>{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=commerce-scope-v1"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=commerce-scope-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
@@ -2468,15 +2468,71 @@ body.bot-drawer-open{overflow:hidden;}
     const contextEl=document.getElementById('bot-client-context');
     let humanDocumentsController=null,humanDocumentsClientId=null,humanDocumentsRoot=null,humanDocumentsDisclosure=null;
     let sizeCorrectionController=null,sizeCorrectionClientId=null,sizeCorrectionRoot=null,sizeCorrectionDisclosure=null;
+    let commerceScopeController=null,commerceScopeRoot=null,commerceScopeClientId=null,commerceScopeOrderId=null,commerceScopeEnvelope=null,commerceScopeRequest=0,commerceScopeAbort=null;
+    function commerceCorrectionAllowed(){return commerceScopeOrderId===null&&commerceScopeEnvelope&&commerceScopeEnvelope.current&&commerceScopeEnvelope.current.editable===true;}
+    async function refreshCommerceScope(id){
+      {% if bot_can_operate and bot_can_view_pii %}
+      if(!commerceScopeController||Number(commerceScopeClientId)!==Number(id))return;
+      const version=++commerceScopeRequest,selected=commerceScopeOrderId;
+      if(commerceScopeAbort)commerceScopeAbort.abort();const controller=new AbortController();commerceScopeAbort=controller;
+      const url='{% url "management_bot_client_commerce_scope_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/')+(selected===null?'':'?order_id='+encodeURIComponent(selected));
+      commerceScopeRoot.setAttribute('aria-busy','true');
+      try{
+        const response=await fetch(url,{cache:'no-store',signal:controller.signal,headers:{'X-Requested-With':'XMLHttpRequest'}});
+        const data=await response.json().catch(()=>({}));
+        if(version!==commerceScopeRequest||Number(commerceScopeClientId)!==Number(id)||commerceScopeOrderId!==selected)return;
+        if(!response.ok||!data.success||!commerceScopeController.render(id,data))throw new Error('commerce_scope_unavailable');
+        commerceScopeEnvelope=data;
+        if(sizeCorrectionDisclosure){
+          if(commerceCorrectionAllowed())sizeCorrectionDisclosure.hidden=false;
+          else if(!sizeCorrectionController||sizeCorrectionController.clear())sizeCorrectionDisclosure.hidden=true;
+          else setGlobalFeedback('Контекст вибору змінився. Незавершене уточнення збережено у редакторі; відкиньте його та перечитайте актуальні дані.','error');
+        }
+        if(commerceCorrectionAllowed())renderSizeCorrectionEditor(id);
+      }catch(error){
+        if(error.name==='AbortError'||version!==commerceScopeRequest)return;
+        commerceScopeEnvelope=null;commerceScopeController.clear();
+        commerceScopeRoot.appendChild(node('p','bot-feedback error','Не вдалося перевірити вибір та історію.'));
+        const retry=node('button','bot-mini-btn','Повторити читання');retry.type='button';retry.addEventListener('click',()=>refreshCommerceScope(id));commerceScopeRoot.appendChild(retry);
+        if(sizeCorrectionDisclosure&&(!sizeCorrectionController||sizeCorrectionController.clear()))sizeCorrectionDisclosure.hidden=true;
+      }finally{if(version===commerceScopeRequest){commerceScopeRoot.removeAttribute('aria-busy');commerceScopeAbort=null;}}
+      {% endif %}
+    }
+    function renderCommerceScope(id){
+      {% if bot_can_operate and bot_can_view_pii %}
+      if(!window.IgCommerceScope)return;
+      if(!commerceScopeRoot){
+        commerceScopeRoot=node('div','bot-context-block');
+        commerceScopeController=window.IgCommerceScope.create(commerceScopeRoot,{onSelectOrder:async(clientId,orderId)=>{
+          if(Number(clientId)!==Number(activeId))return;
+          if(sizeCorrectionController&&!sizeCorrectionController.clear()){
+            commerceScopeController.render(clientId,commerceScopeEnvelope);
+            if(sizeCorrectionDisclosure){sizeCorrectionDisclosure.hidden=false;sizeCorrectionDisclosure.open=true;}
+            setGlobalFeedback('Збережіть або відкиньте уточнення розміру перед зміною перегляду замовлення.','error');return;
+          }
+          commerceScopeOrderId=orderId;commerceScopeEnvelope=null;
+          if(sizeCorrectionDisclosure)sizeCorrectionDisclosure.hidden=true;
+          await refreshCommerceScope(clientId);
+          if(orderId===null&&commerceCorrectionAllowed()&&sizeCorrectionDisclosure&&sizeCorrectionDisclosure.open)await refreshSizeCorrectionState(clientId);
+        }});
+      }
+      if(Number(commerceScopeClientId)!==Number(id)){
+        commerceScopeRequest++;if(commerceScopeAbort)commerceScopeAbort.abort();
+        commerceScopeClientId=id;commerceScopeOrderId=null;commerceScopeEnvelope=null;commerceScopeController.clear();
+      }
+      contextEl.appendChild(commerceScopeRoot);refreshCommerceScope(id);
+      {% endif %}
+    }
     async function refreshSizeCorrectionState(id){
+      if(!commerceCorrectionAllowed())return;
       const response=await fetch('{% url "management_bot_client_state_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/'),{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'}});
       const data=await response.json().catch(()=>({}));
-      if(Number(sizeCorrectionClientId)!==Number(id))return;
+      if(Number(sizeCorrectionClientId)!==Number(id)||!commerceCorrectionAllowed())return;
       sizeCorrectionController.render(id,response.ok?data:null);
     }
     function renderSizeCorrectionEditor(id){
       {% if bot_can_operate and bot_can_view_pii %}
-      if(!window.IgSelectionCorrections)return;
+      if(!window.IgSelectionCorrections||!commerceCorrectionAllowed())return;
       if(!sizeCorrectionRoot){
         sizeCorrectionDisclosure=node('details','bot-context-block bot-analysis-disclosure');sizeCorrectionDisclosure.appendChild(node('summary','','Уточнення розміру менеджером'));
         const loadButton=node('button','bot-mini-btn','Оновити дані уточнення');loadButton.type='button';
@@ -2486,7 +2542,9 @@ body.bot-drawer-open{overflow:hidden;}
         sizeCorrectionController=window.IgSelectionCorrections.create(sizeCorrectionRoot,{csrfToken:csrf,onCommitted:async(clientId)=>{if(Number(activeId)===Number(clientId)){await refreshSizeCorrectionState(clientId);await detail(clientId);}}});
       }
       if(Number(sizeCorrectionClientId)!==Number(id))sizeCorrectionController.render(id,null);
-      sizeCorrectionClientId=id;contextEl.appendChild(sizeCorrectionDisclosure);
+      sizeCorrectionClientId=id;sizeCorrectionDisclosure.hidden=false;
+      if(commerceScopeRoot&&commerceScopeRoot.parentNode===contextEl)commerceScopeRoot.insertAdjacentElement('afterend',sizeCorrectionDisclosure);
+      else contextEl.appendChild(sizeCorrectionDisclosure);
       {% endif %}
     }
     function canLeaveHumanDocuments(id){
@@ -3073,9 +3131,9 @@ body.bot-drawer-open{overflow:hidden;}
       });
     }
     function renderContext(d,id){
-      const c=d.client;contextEl.replaceChildren();const status=section(contextEl,'Стан клієнта');const grid=node('div','bot-context-grid');contextFact(grid,'Категорія',c.interaction_type_label||'Не визначено');contextFact(grid,'Намір',c.intent_label||c.intent||'—');contextFact(grid,'Режим діалогу',c.manager_takeover?'Менеджер':(d.automation&&d.automation.owner==='manager'?'Автовідповіді призупинено':'Бот'));contextFact(grid,'Стан виконання',fulfillmentLabel(d));contextFact(grid,'Оплата через Monobank',providerTruthLabel(d.payment||{}));contextFact(grid,'Перевірка менеджера',managerTruthLabelForClient(d.payment||{},c));status.appendChild(grid);
+      const c=d.client;contextEl.replaceChildren();renderCommerceScope(id);const status=section(contextEl,'Стан клієнта');const grid=node('div','bot-context-grid');contextFact(grid,'Категорія',c.interaction_type_label||'Не визначено');contextFact(grid,'Намір',c.intent_label||c.intent||'—');contextFact(grid,'Режим діалогу',c.manager_takeover?'Менеджер':(d.automation&&d.automation.owner==='manager'?'Автовідповіді призупинено':'Бот'));contextFact(grid,'Стан виконання',fulfillmentLabel(d));contextFact(grid,'Оплата через Monobank',providerTruthLabel(d.payment||{}));contextFact(grid,'Перевірка менеджера',managerTruthLabelForClient(d.payment||{},c));status.appendChild(grid);
       const selection=c.source_selection_display;
-      if(selection&&Array.isArray(selection.items)&&selection.items.length){
+      if(!window.IgCommerceScope&&selection&&Array.isArray(selection.items)&&selection.items.length){
         const choices=section(contextEl,'Вибір клієнта');const choiceGrid=node('div','bot-context-grid');
         selection.items.forEach(item=>{
           const fact=node('div','bot-context-fact');const source=item.source||{};

@@ -586,24 +586,62 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(limited.reason, "rate_limited")
         self.assertFalse(GeminiRequest.objects.exists())
 
-    def _checkout_bundle(self, *, two_items=False):
+    def _checkout_bundle(self, *, two_items=False, first_quantity=1):
+        from django.db import transaction
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
         from productcolors.models import Color, ProductColorVariant
-        from storefront.models import Category, Product
+        from storefront.models import Category, Product, ProductFitOption
 
-        category = Category.objects.create(name="Checkout live", slug="checkout-live")
-        color = Color.objects.create(name="Checkout black", primary_hex="#111111")
-        controls = []
+        category = Category.objects.create(name="Футболки", slug="checkout-live")
+        color = Color.objects.create(name="Чорний", primary_hex="#111111")
+        controls, choice_sources = [], []
+        names = ("Atlas Wave", "Ocean Frame")
+        choice_time = timezone.now() - timedelta(minutes=2)
         for index in range(2 if two_items else 1):
-            product = Product.objects.create(title=f"Checkout product {index}", slug=f"checkout-product-{index}", category=category, price=900 + index * 100, status="published")
-            variant = ProductColorVariant.objects.create(product=product, color=color, price_override=900 + index * 100, is_default=True)
-            controls.append({"kind": "item", "value": f"{product.pk}|1|M||{variant.pk}"})
+            product = Product.objects.create(title=names[index], slug=f"checkout-product-{index}", category=category, price=900 + index * 100, status="published")
+            ProductFitOption.objects.create(product=product, code="classic", label="Classic", is_active=True)
+            variant = ProductColorVariant.objects.create(product=product, color=color, price_override=900 + index * 100, stock=20, is_default=True)
+            quantity = first_quantity if index == 0 else 1
+            recipient = " для друга" if index == 1 else ""
+            source = self._message(f"добавьте {names[index]}, количество {quantity}, футболку{recipient}, цвет чёрный, крой classic, размер M",
+                f"checkout-choice-{self._testMethodName}-{index}")
+            source.provider_created_at = choice_time + timedelta(seconds=index)
+            source.save(update_fields=["provider_created_at"])
+            # Accepted choice sources predate the sealed purchase. The producer
+            # owns its usual decision/transition; the later reducer reuses them.
+            with transaction.atomic():
+                InstagramBotSettings.objects.select_for_update().get(pk=self.settings.pk)
+                customer = IgClient.objects.select_for_update().get(pk=self.customer.pk)
+                admitted = reduce_inbound_commerce_source(customer, source,
+                    expected_provider_namespace=source.provider_namespace)
+            self.assertTrue(admitted.ready, admitted.reason)
+            choice_sources.append(source)
+            self.customer.refresh_from_db()
+            controls.append({"kind": "item", "value": f"{product.pk}|{quantity}|M|classic|{variant.pk}"})
+        self.checkout_choice_sources = tuple(choice_sources)
+        capture = capture_current_selection_lines(self.customer.pk)
+        self.assertEqual(capture["status"], "captured", capture)
+        self.assertEqual(len(capture["lines"]), len(choice_sources))
+        for line, source in zip(capture["lines"], choice_sources):
+            self.assertEqual(line["fields"]["product_id"]["source"]["source_message_id"], source.pk)
+            self.assertEqual(line["fields"]["quantity"]["source"]["source_message_id"], source.pk)
         controls.append({"kind": "paylink", "value": "full"})
         self.parsed["controls"] = controls
         self.parsed["reply_text"] = "Можна переходити до оформлення."
+        # A new accepted purchase MID follows the episode's source floor. Do
+        # not rewrite the earlier source beneath its admitted immutable receipt.
+        self.source = self._message("Беру. Оформлюйте замовлення.", f"checkout-purchase-{self._testMethodName}")
+        self.source.provider_created_at = timezone.now()
+        self.source.save(update_fields=["provider_created_at"])
+        self.turn = IgCustomerTurn.objects.create(client=self.customer, primary_source_message=self.source,
+            window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=self.turn, message=self.source, ordinal=1, role="user")
+        self.revision = create_collecting_revision(self.turn, [self.source], bypass_quiet=True).revision
         self._replace_bundle(["Беру. Оформлюйте замовлення.", "👍"])
 
     def test_standard_checkout_uses_sealed_purchase_source_and_exact_token_plan(self):
-        from management.models import IgCheckoutAccessToken
+        from management.models import IgCheckoutAccessToken, IgCheckoutProposal, IgCommerceTurnDecision
 
         self._checkout_bundle()
         result, generation, http = self._execute()
@@ -616,6 +654,11 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(effect.source_message_id, self.source.pk)
         self.assertIn("https://", effect.payload["message"]["text"])
         self.assertNotIn("client_configuration_update", self.revision.action_receipts)
+        proposal = IgCheckoutProposal.objects.get()
+        artifact = proposal.revisions.get(revision=proposal.revision).snapshot
+        self.assertEqual(artifact["source_cart_binding"]["lines"][0]["evidence"]["product_id"]["source_message_id"], self.checkout_choice_sources[0].pk)
+        self.assertIn(self.source.pk, artifact["source_cart_capture"]["fence"]["source_ids"])
+        self.assertEqual(IgCommerceTurnDecision.objects.filter(source_message__in=self.checkout_choice_sources).count(), 1)
 
     def test_two_item_checkout_creates_current_cart_without_duplicate_token_on_resume(self):
         from management.models import IgCheckoutAccessToken, IgCheckoutProposal
@@ -623,8 +666,15 @@ class RevisionLiveTests(TransactionTestCase):
         self._checkout_bundle(two_items=True)
         result, generation, http = self._execute()
         self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(generation.call_count, 1)
+        self.assertEqual(http.call_count, 1)
         self.assertEqual(IgCheckoutProposal.objects.get().items.count(), 2)
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 1)
+        proposal = IgCheckoutProposal.objects.get()
+        artifact = proposal.revisions.get(revision=proposal.revision).snapshot
+        self.assertEqual([row["recipient_id"] for row in artifact["source_cart_binding"]["quote_line_map"]], ["self", "friend"])
+        self.assertEqual([row["evidence"]["product_id"]["source_message_id"] for row in artifact["source_cart_binding"]["lines"]],
+            [source.pk for source in self.checkout_choice_sources])
         with patch("management.services.ig_payment_observation.observe_payment_source") as observe:
             resumed, generation, http = self._execute()
         generation.assert_not_called()
@@ -643,7 +693,7 @@ class RevisionLiveTests(TransactionTestCase):
             return checkout
         with patch.object(ig_revision_checkout, "create_or_update_proposal", side_effect=mutate_scope):
             result, _generation, http = self._execute()
-        self.assertEqual(result.reasons, ("checkout_post_fact_unavailable",))
+        self.assertEqual(result.reasons, ("checkout_cart_owner_rebind_failed",))
         http.assert_not_called()
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 0)
         self.assertEqual(IgCheckoutProposal.objects.count(), 0)
@@ -815,7 +865,7 @@ class RevisionLiveTests(TransactionTestCase):
         from management.models import IgCommerceSelectionSession, IgCommerceSelectionTransition, IgCommerceTurnDecision
         from management.services.ig_revision_commerce import reduce_revision_commerce
 
-        self._checkout_bundle()
+        self._checkout_bundle(first_quantity=2)
         item = self.parsed["controls"][0]["value"].split("|")
         product_id, variant_id = int(item[0]), int(item[4])
         self.parsed["controls"] = [{"kind": "product", "value": str(product_id)}, {"kind": "color_variant_id", "value": str(variant_id)}, {"kind": "qty", "value": "2"}]

@@ -320,9 +320,41 @@ def _frozen_proposal_items(proposal):
 
 
 def _snapshot(proposal):
-    frozen = _frozen_proposal_items(proposal)
+    from management.models import IgCheckoutRevision
+    from management.services.ig_checkout_cart_provenance import (
+        CartProvenanceError, bind_expanded_cart, capture_proposal_provenance,
+    )
+    revision = IgCheckoutRevision.objects.filter(
+        proposal=proposal, revision=proposal.revision,
+    ).order_by("-id").first()
+    revision_snapshot = revision.snapshot if revision is not None else {}
+    frozen = revision_snapshot.get("items", []) if isinstance(revision_snapshot, dict) else []
+    ordered_items = list(proposal.items.order_by("position", "id"))
+    original_rows = [{
+        "proposal_item_id": item.pk, "position": item.position,
+        "product_id": item.product_id, "qty": item.quantity,
+        "size": item.size or "", "fit_option_code": item.fit_code or "",
+        "color_variant_id": item.color_variant_id, "option_values": item.option_values or {},
+        "unit_price": str(item.quoted_unit_price), "line_total": str(item.quoted_line_total),
+    } for item in ordered_items]
+    owner = {"proposal_id": str(proposal.public_id), "proposal_pk": proposal.pk,
+        "revision_id": revision.pk if revision else None, "revision": proposal.revision,
+        "client_id": proposal.client_id, "deal_id": proposal.deal_id,
+        "episode_id": proposal.commercial_episode_id}
+    try:
+        if isinstance(revision_snapshot, dict) and "source_cart_binding" in revision_snapshot:
+            episode = proposal.commercial_episode
+            if (proposal.deal.client_id != proposal.client_id or episode.client_id != proposal.client_id
+                    or episode.deal_id != proposal.deal_id or revision.proposal_id != proposal.pk
+                    or revision.revision != proposal.revision):
+                raise CartProvenanceError("cart_provenance_owner_changed")
+        provenance = capture_proposal_provenance(
+            revision_snapshot=revision_snapshot, owner=owner, proposal_items=original_rows,
+        )
+    except CartProvenanceError as exc:
+        raise CheckoutPaymentError(exc.reason, "Походження кошика змінилося. Оновіть пропозицію.") from exc
     items = []
-    for index, item in enumerate(proposal.items.order_by("position", "id")):
+    for index, item in enumerate(ordered_items):
         if not item.product_id:
             raise CheckoutPaymentError("item_unavailable", "Один из товаров больше недоступен.")
         base = {
@@ -361,6 +393,10 @@ def _snapshot(proposal):
             items.append(base)
     if not items:
         raise CheckoutPaymentError("empty_items", "В предложении нет товаров.")
+    try:
+        provenance = bind_expanded_cart(provenance, cart_items=items)
+    except CartProvenanceError as exc:
+        raise CheckoutPaymentError(exc.reason, "Походження кошика змінилося. Оновіть пропозицію.") from exc
     # This metadata is server-owned and travels with the frozen attempt.  The
     # generic PaymentAttempt materializer uses it to preserve the commercial
     # source on the canonical Order without coupling orders back to IG models.
@@ -370,6 +406,7 @@ def _snapshot(proposal):
         "checkout_surface": "instagram_proposal",
         "sale_source": "Instagram",
         "proposal_id": str(proposal.public_id),
+        "source_cart_provenance": provenance,
     }
 
 
@@ -390,6 +427,12 @@ def _revalidate_frozen_proposal(proposal):
     # bot-created proposals always have a revision and are fully revalidated.
     if revision is None:
         return
+
+    if isinstance(revision.snapshot, dict) and "source_cart_binding" in revision.snapshot:
+        # Structural parity precedes catalog validation and all recipient/
+        # provider effects. Current source/CAS authorization belongs to the
+        # checkout effect owner; this reads only the frozen proposal graph.
+        _snapshot(proposal)
 
     item_specs = [
         {
@@ -416,6 +459,8 @@ def _revalidate_frozen_proposal(proposal):
             ),
             requested_payment_amount=proposal.requested_payment_amount,
             allow_promo=proposal.allow_promo,
+            source_cart_binding=(revision.snapshot.get("source_cart_binding")
+                if isinstance(revision.snapshot, dict) else None),
         )
     except Exception as exc:
         raise CheckoutPaymentError(

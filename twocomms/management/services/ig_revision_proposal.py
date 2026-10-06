@@ -688,6 +688,7 @@ def store_revision_generation_proposal(
     offer_checker=check_offer_bindings,
     prize_programme=None,
     customer_route_capture: RevisionCustomerRouteCapture | None = None,
+    source_cart_capture=None,
 ) -> RevisionProposalResult:
     """Persist one exact validated proposal before any business or send effect."""
     if connection.in_atomic_block:
@@ -803,6 +804,35 @@ def store_revision_generation_proposal(
                 "authority_digest": authority.authority_digest,
             },
         }
+        if source_cart_capture is not None:
+            from management.services.ig_response_plan import _provided_source_cart
+            from management.services.ig_revision_cart_binding import stable_checkout_source_capture
+
+            original, cart_reason = _provided_source_cart(client, revision, source_cart_capture)
+            if cart_reason:
+                return RevisionProposalResult(reasons=(cart_reason,))
+            stable = stable_checkout_source_capture(original)
+            references = []
+            for row in safe_facts:
+                selector = row.get("selector") or {}
+                if "source_cart_fence" in selector:
+                    fence = selector["source_cart_fence"]
+                    references.append((fence.get("capture_digest"), fence.get("semantic_capture_digest")))
+                if "source_cart_reference" in selector:
+                    reference = selector["source_cart_reference"]
+                    if reference.get("artifact") != {"kind": "generation_capture", "revision_id": revision.pk}:
+                        return RevisionProposalResult(reasons=("checkout_generation_artifact_scope_changed",))
+                    references.append((reference.get("original_capture_digest"), reference.get("semantic_digest")))
+            if (stable is None or not references or any(
+                    raw != original["capture_digest"] or semantic != _digest(stable)
+                    for raw, semantic in references)):
+                return RevisionProposalResult(reasons=("generation_cart_authority_mismatch",))
+            # One exact original artifact, covered by the immutable proposal
+            # digest. Fact bindings contain bounded references only.
+            proposal["source_cart_capture"] = original
+        elif any(set(row.get("selector") or {}).intersection({"source_cart_reference", "source_cart_fence"})
+                 for row in safe_facts):
+            return RevisionProposalResult(reasons=("checkout_generation_artifact_missing",))
         try:
             # Catch OUTSIDE the savepoint: a route DB error must roll back its
             # own work and clear the broken-transaction state before the already

@@ -1,0 +1,172 @@
+TAP version 13
+# Subtest: passive current card keeps three positions, gift recipient and only one active correction target
+ok 1 - passive current card keeps three positions, gift recipient and only one active correction target
+  ---
+  duration_ms: 2.597041
+  type: 'test'
+  ...
+# Subtest: current pink is separate from collapsed source-qualified old black and unproven fields are omitted
+ok 2 - current pink is separate from collapsed source-qualified old black and unproven fields are omitted
+  ---
+  duration_ms: 0.926375
+  type: 'test'
+  ...
+# Subtest: genuine previous order has actual items/payment and never lends old payment to current choice
+ok 3 - genuine previous order has actual items/payment and never lends old payment to current choice
+  ---
+  duration_ms: 0.580333
+  type: 'test'
+  ...
+# Subtest: selector requests only a supplied real order or current choice
+ok 4 - selector requests only a supplied real order or current choice
+  ---
+  duration_ms: 0.399083
+  type: 'test'
+  ...
+# Subtest: bounded history shows explicit coverage and no invented global completed-count or LTV
+ok 5 - bounded history shows explicit coverage and no invented global completed-count or LTV
+  ---
+  duration_ms: 0.436875
+  type: 'test'
+  ...
+# Subtest: historical envelope/client mismatch fail closed and markup remains text
+ok 6 - historical envelope/client mismatch fail closed and markup remains text
+  ---
+  duration_ms: 0.488541
+  type: 'test'
+  ...
+# Subtest: copied source and cart default remain distinct from new pink customer assertion
+ok 7 - copied source and cart default remain distinct from new pink customer assertion
+  ---
+  duration_ms: 0.646709
+  type: 'test'
+  ...
+# Subtest: unavailable selected order cannot fall back to editable current positions
+ok 8 - unavailable selected order cannot fall back to editable current positions
+  ---
+  duration_ms: 0.300833
+  type: 'test'
+  ...
+# Subtest: read-only active position gets a neutral scope label and no edit claim
+ok 9 - read-only active position gets a neutral scope label and no edit claim
+  ---
+  duration_ms: 0.552417
+  type: 'test'
+  ...
+# Subtest: canonical net revenue is a separate compact metric with refunds and current draft unchanged
+ok 10 - canonical net revenue is a separate compact metric with refunds and current draft unchanged
+  ---
+  duration_ms: 0.649458
+  type: 'test'
+  ...
+# Subtest: known full refund zero is distinct from unknown missing payment/refund coverage
+ok 11 - known full refund zero is distinct from unknown missing payment/refund coverage
+  ---
+  duration_ms: 0.494708
+  type: 'test'
+  ...
+# Subtest: partial history and malformed/currency-conflicted net proof cannot display a lifetime total
+ok 12 - partial history and malformed/currency-conflicted net proof cannot display a lifetime total
+  ---
+  duration_ms: 1.921958
+  type: 'test'
+  ...
+# Subtest: visible positions are plainly numbered without exposing technical line or episode identifiers
+ok 13 - visible positions are plainly numbered without exposing technical line or episode identifiers
+  ---
+  duration_ms: 0.402458
+  type: 'test'
+  ...
+# Subtest: a current bound order uses its real number while historical item numbering stays inside that order
+ok 14 - a current bound order uses its real number while historical item numbering stays inside that order
+  ---
+  duration_ms: 0.833042
+  type: 'test'
+  ...
+# Subtest: known color and fit codes use Ukrainian display labels without changing captured values or evidence
+ok 15 - known color and fit codes use Ukrainian display labels without changing captured values or evidence
+  ---
+  duration_ms: 0.536209
+  type: 'test'
+  ...
+# Subtest: unknown catalog labels and numeric product history remain literal escaped text
+ok 16 - unknown catalog labels and numeric product history remain literal escaped text
+  ---
+  duration_ms: 0.364416
+  type: 'test'
+  ...
+# Subtest: actual order item known codes share the same display labels
+ok 17 - actual order item known codes share the same display labels
+  ---
+  duration_ms: 0.275666
+  type: 'test'
+  ...
+# Subtest: create and supplied current render are passive; explicit normalized save binds CAS and safe body
+ok 18 - create and supplied current render are passive; explicit normalized save binds CAS and safe body
+  ---
+  duration_ms: 2.542041
+  type: 'test'
+  ...
+# Subtest: historical, unavailable, bare state and cross-client proof deny editing without I/O
+ok 19 - historical, unavailable, bare state and cross-client proof deny editing without I/O
+  ---
+  duration_ms: 2.184291
+  type: 'test'
+  ...
+# Subtest: canonical set whitelist and explicit clear preserve source provenance and audit actor label
+ok 20 - canonical set whitelist and explicit clear preserve source provenance and audit actor label
+  ---
+  duration_ms: 0.787583
+  type: 'test'
+  ...
+# Subtest: 503, lost response and malformed success retain same UUID/input and prevent switching or discard
+ok 21 - 503, lost response and malformed success retain same UUID/input and prevent switching or discard
+  ---
+  duration_ms: 0.945208
+  type: 'test'
+  ...
+# Subtest: in-flight request disables duplicate save and cannot be hidden by client switch
+ok 22 - in-flight request disables duplicate save and cannot be hidden by client switch
+  ---
+  duration_ms: 0.445792
+  type: 'test'
+  ...
+# Subtest: 409 keeps edits and requires explicit supplied new-context acceptance before a new UUID
+ok 23 - 409 keeps edits and requires explicit supplied new-context acceptance before a new UUID
+  ---
+  duration_ms: 0.483916
+  type: 'test'
+  ...
+# Subtest: dirty same-client refresh never silently rebinds and explicit discard permits switching
+ok 24 - dirty same-client refresh never silently rebinds and explicit discard permits switching
+  ---
+  duration_ms: 0.391416
+  type: 'test'
+  ...
+# Subtest: ambiguous operation is disabled in historical view and resumes only same-operation retry on current view
+ok 25 - ambiguous operation is disabled in historical view and resumes only same-operation retry on current view
+  ---
+  duration_ms: 0.367458
+  type: 'test'
+  ...
+# Subtest: noop is a proven result and unavailable fresh card never grants editing
+ok 26 - noop is a proven result and unavailable fresh card never grants editing
+  ---
+  duration_ms: 0.636291
+  type: 'test'
+  ...
+# Subtest: exact episode/order/line/recipient scope is visible before editing and mismatches deny editing
+ok 27 - exact episode/order/line/recipient scope is visible before editing and mismatches deny editing
+  ---
+  duration_ms: 0.673125
+  type: 'test'
+  ...
+1..27
+# tests 27
+# suites 0
+# pass 27
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 56.978833

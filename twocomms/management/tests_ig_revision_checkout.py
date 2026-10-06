@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+from django.db import transaction
 from management.models import BotPolicyPublication, IgClient, IgCustomerTurn, IgTurnMessage, InstagramBotMessage, InstagramBotSettings
 from management.services.ig_revision_authority import check_fact_bindings
 from management.services.ig_revision_outbox import PublicationBinding, claim_next_effect, mark_provider_started
@@ -23,6 +25,9 @@ class RevisionCheckoutTests(TransactionTestCase):
     def setUp(self):
         from productcolors.models import Color, ProductColorVariant
         from storefront.models import Category, Product
+        environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        environment.start()
+        self.addCleanup(environment.stop)
 
         snapshot = {"schema_version": 1, "instructions": []}
         snapshot_hash = hashlib.sha256(json.dumps(
@@ -45,6 +50,7 @@ class RevisionCheckoutTests(TransactionTestCase):
             is_enabled=True,
             reply_permission_epoch=4,
             active_instruction_publication=self.publication,
+            ig_user_id="owner-1",
         )
         category = Category.objects.create(
             name="Revision action", slug="revision-action"
@@ -67,6 +73,7 @@ class RevisionCheckoutTests(TransactionTestCase):
             igsid="revision-action-client",
             reply_permission_epoch=3,
         )
+        self._admit_choice(self.product, quantity=2, variant=self.variant)
         self.source = self._source("revision-action-source")
         self.turn = IgCustomerTurn.objects.create(
             client=self.client_row,
@@ -108,7 +115,7 @@ class RevisionCheckoutTests(TransactionTestCase):
             provider_namespace="instagram_login:owner-1",
             role=InstagramBotMessage.Role.USER,
             source="webhook",
-            text=getattr(self, "source_text", "обираю цей варіант"),
+            text=getattr(self, "source_text", "Беру. Оформіть замовлення."),
             quick_reply_payload=getattr(self, "source_quick_reply", ""),
             mid=mid,
             status=InstagramBotMessage.Status.PENDING,
@@ -117,7 +124,10 @@ class RevisionCheckoutTests(TransactionTestCase):
     def _install_generation(self):
         from management.services.ig_response_control import ResponseControl, ValidatedResponse
         response = ValidatedResponse(reply_text="Перевірте деталі:", controls=tuple(ResponseControl(**row) for row in self.controls))
-        control, reasons = checkout_authority_control(self.client_row, response.control)
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        capture = capture_current_selection_lines(self.client_row.pk)
+        control, reasons = checkout_authority_control(self.client_row, response.control,
+            source_cart_capture=capture, source_cart_revision_id=self.revision.pk)
         self.assertFalse(reasons)
         self.authority = build_revision_authority_bindings(self.client_row, claims=(CLAIM_CATALOG_CONFIGURATION,), control=control, server_authorized_actions=("checkout_proposal_create",))
         self.assertTrue(self.authority.ready, self.authority.reasons)
@@ -129,11 +139,35 @@ class RevisionCheckoutTests(TransactionTestCase):
             "hash": self.publication.snapshot_hash,
         }}
         proposal["authority"] = _authority_projection(self.authority)
+        proposal["source_cart_capture"] = capture
         proposal["response"] = {"reply_text": response.reply_text, "controls": self.controls}
         self.revision.generation_proposal = proposal
         self.revision.generation_proposal_digest = _digest(proposal)
         self.revision.generation_proposed_at = timezone.now()
         self.revision.save(update_fields=["generation_proposal", "generation_proposal_digest", "generation_proposed_at", "updated_at"])
+
+    def _admit_choice(self, product, *, quantity=1, variant=None):
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        source = InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid,
+            role="user", source="webhook", provider_namespace="instagram_login:owner-1",
+            text=f"добавьте {product.title}, количество {quantity}, размер M" + (", цвет чёрный" if variant else ""),
+            mid=f"checkout-exact-choice-{product.pk}", provider_created_at=timezone.now()-timedelta(minutes=2))
+        with transaction.atomic():
+            admitted = reduce_inbound_commerce_source(self.client_row, source,
+                expected_provider_namespace=source.provider_namespace)
+        self.assertTrue(admitted.ready, admitted.reason)
+        self.client_row.refresh_from_db()
+
+    def _renew_purchase_revision(self):
+        self.source = self._source("checkout-current-purchase")
+        self.turn = IgCustomerTurn.objects.create(client=self.client_row, primary_source_message=self.source,
+            window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=self.turn, message=self.source, ordinal=1, role="user")
+        revision = create_collecting_revision(self.turn, [self.source], bypass_quiet=True).revision
+        prepared = claim_revision_preparation(revision.pk)
+        sealed = seal_revision(revision.pk, prepared.token).revision
+        claimed = claim_sealed_revision(sealed.pk)
+        self.revision, self.revision_token = claimed.revision, claimed.token
 
     def _prepare(self, **overrides):
         if not self.revision.generation_proposal_digest:
@@ -162,8 +196,13 @@ class RevisionCheckoutTests(TransactionTestCase):
 
     def test_two_items_current_prices_and_second_item_drift(self):
         from storefront.models import Product
+        from productcolors.models import ProductColorVariant
         second = Product.objects.create(title="Second", slug="checkout-second", category=self.product.category, price=600, status="published")
-        self.controls.insert(1, {"kind": "item", "value": f"{second.pk}|1|M|"})
+        variant = ProductColorVariant.objects.create(product=second, color=self.variant.color,
+            price_override=600, stock=20, is_default=True)
+        self._admit_choice(second, variant=variant)
+        self._renew_purchase_revision()
+        self.controls.insert(1, {"kind": "item", "value": f"{second.pk}|1|M||{variant.pk}"})
         self._install_generation()
         result = self._prepare()
         self.assertTrue(result.planned, result.reasons)
@@ -172,6 +211,8 @@ class RevisionCheckoutTests(TransactionTestCase):
         self.assertEqual(proposal.quoted_total, Decimal("2400.00"))
         second.price = 700
         second.save(update_fields=["price"])
+        variant.price_override = 700
+        variant.save(update_fields=["price_override"])
         self.assertFalse(self._prepare().planned)
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 1)
 
@@ -231,6 +272,8 @@ class RevisionCheckoutTests(TransactionTestCase):
         self.client_row.intent = ""
         self.client_row.stage = "new"
         self.client_row.save(update_fields=["intent", "stage"])
+        self.source_text = "Скільки коштує цей товар?"
+        self._renew_purchase_revision()
         self.assertFalse(self._prepare().planned)
         self.assertEqual(IgCheckoutProposal.objects.count(), 0)
 
@@ -304,6 +347,8 @@ class RevisionCheckoutV2PrepayTests(TransactionTestCase):
     _source = RevisionCheckoutTests._source
     _install_generation = RevisionCheckoutTests._install_generation
     _prepare = RevisionCheckoutTests._prepare
+    _admit_choice = RevisionCheckoutTests._admit_choice
+    _renew_purchase_revision = RevisionCheckoutTests._renew_purchase_revision
 
     def test_full_online_proposal_preserves_existing_browser_200_option(self):
         from management.services.ig_checkout_policy import payment_choice_for_post
@@ -405,6 +450,8 @@ class RevisionCheckoutV2QuickReplyTests(TransactionTestCase):
     source_text = "Передоплата"
     source_quick_reply = "twc:v1:checkout_payment:prepay_200_cod"
     setUp = RevisionCheckoutTests.setUp
+    _admit_choice = RevisionCheckoutTests._admit_choice
+    _renew_purchase_revision = RevisionCheckoutTests._renew_purchase_revision
     _source = RevisionCheckoutTests._source
     _install_generation = RevisionCheckoutTests._install_generation
     _prepare = RevisionCheckoutTests._prepare

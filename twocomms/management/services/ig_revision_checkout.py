@@ -5,6 +5,7 @@ The bearer URL is retained only in the exact durable delivery payload.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Mapping
@@ -94,7 +95,256 @@ def _prepay_policy(client, sealed_sources):
     return decision, ()
 
 
-def checkout_authority_control(client, control):
+def checkout_owner_scope(client):
+    """Exact mutable business owner; source DTO hashes are not this permission."""
+    from management.models import IgCommercialEpisode, IgDeal
+
+    current = IgClient.objects.filter(pk=client.pk).values(
+        "pk", "igsid", "current_commercial_episode_id", "reply_permission_epoch",
+        "privacy_erasure_started_at", "bot_paused", "manager_takeover", "is_blocked",
+        "hidden_at", "opted_out_at",
+    ).first()
+    if current is None or current["privacy_erasure_started_at"]:
+        return None
+    episode = IgCommercialEpisode.objects.filter(pk=current["current_commercial_episode_id"],
+        client_id=client.pk).values("pk", "client_id", "state", "open_slot", "intended_order_id",
+            "deal_id", "primary_payment_review_id", "updated_at").first()
+    if episode is None or episode["state"] != IgCommercialEpisode.State.ACTIVE or episode["open_slot"] != 1 or episode["intended_order_id"] is not None:
+        return None
+    deal = None
+    if episode["deal_id"] is not None:
+        deal = IgDeal.objects.filter(pk=episode["deal_id"], client_id=client.pk).values(
+            "pk", "client_id", "status", "order_id", "paid_at", "paid_amount", "payment_truth",
+            "active_checkout_proposal_id", "invoice_id", "invoice_url", "updated_at").first()
+        if (deal is None or deal["order_id"] is not None or deal["paid_at"] or (deal["paid_amount"] or 0) > 0
+                or deal["invoice_id"] or deal["invoice_url"]
+                or deal["status"] in {IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED}
+                or deal["payment_truth"] in {IgDeal.PaymentTruth.CONFIRMED, IgDeal.PaymentTruth.PARTIALLY_REFUNDED,
+                    IgDeal.PaymentTruth.REFUNDED, IgDeal.PaymentTruth.REVERSED}):
+            return None
+    # The existing authority serializer also uses ISO timestamps and decimals.
+    from management.services.ig_revision_authority import _jsonable
+    return _jsonable({"client": current, "episode": episode, "deal": deal})
+
+
+def rebind_checkout_cart_owner(control, *, before, after, checkout):
+    """Allow only this transaction's exact offer attachment, no cart mutation."""
+    if not isinstance(before, dict) or not isinstance(after, dict) or before.get("client") != after.get("client"):
+        return None
+    old_episode, new_episode = before.get("episode"), after.get("episode")
+    if not isinstance(old_episode, dict) or not isinstance(new_episode, dict):
+        return None
+    if any(old_episode.get(key) != new_episode.get(key) for key in old_episode if key not in {"deal_id", "updated_at"}):
+        return None
+    if new_episode.get("pk") != checkout.commercial_episode_id or new_episode.get("deal_id") != checkout.deal_id or old_episode.get("deal_id") not in {None, checkout.deal_id}:
+        return None
+    old_deal, new_deal = before.get("deal"), after.get("deal")
+    if not isinstance(new_deal, dict) or new_deal.get("pk") != checkout.deal_id or new_deal.get("active_checkout_proposal_id") != checkout.pk:
+        return None
+    if old_deal is not None and (not isinstance(old_deal, dict) or any(
+        old_deal.get(key) != new_deal.get(key) for key in old_deal if key not in {"active_checkout_proposal_id", "status", "updated_at"}
+    )):
+        return None
+    from management.models import IgDeal
+    if (new_deal.get("status") != IgDeal.Status.QUOTED and before != after) or (old_deal is not None
+            and old_deal.get("status") not in {IgDeal.Status.DRAFT, IgDeal.Status.QUOTED, IgDeal.Status.AWAITING_PAYMENT}):
+        return None
+    if new_deal.get("order_id") is not None or new_deal.get("paid_at") or Decimal(new_deal.get("paid_amount") or "0") > 0 or new_deal.get("invoice_id") or new_deal.get("invoice_url"):
+        return None
+    if control.get("checkout_owner_scope") != before:
+        return None
+    result = deepcopy(control)
+    result["checkout_owner_scope"] = deepcopy(after)
+    return result
+
+
+def _source_cart_control(client, control, captured):
+    from management.services.ig_commerce_projection import capture_current_selection_lines
+    from management.services.ig_checkout_readiness import selection_readiness
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_revision_cart_binding import (
+        build_cart_binding, bind_quote_lines, frozen_cart_binding_payload,
+        same_checkout_source_capture, stable_checkout_source_capture,
+    )
+
+    if stable_checkout_source_capture(captured) is None:
+        return {}, ("checkout_cart_capture_invalid",)
+    current = capture_current_selection_lines(client.pk)
+    if not same_checkout_source_capture(captured, current):
+        return {}, ("checkout_cart_source_changed",)
+    from management.models import IgCommerceSelectionSession
+    from management.services.ig_commerce_projection import _choice_digest
+    session = IgCommerceSelectionSession.objects.filter(pk=current["session_id"], client_id=client.pk,
+        commercial_episode_id=current["scope"]["episode_id"], generation=current["generation"],
+        revision=current["selection_revision"], open_slot=1, state="open").first()
+    if session is None or _choice_digest(session.snapshot()) != current["fence"]["snapshot_digest"]:
+        return {}, ("checkout_cart_source_changed",)
+    if session.pending_clarification:
+        return {}, ("checkout_cart_clarification_required",)
+    owner = checkout_owner_scope(client)
+    if owner is None or owner["episode"]["pk"] != captured["scope"].get("episode_id"):
+        return {}, ("checkout_cart_owner_unavailable",)
+    if "checkout_owner_scope" in control and control["checkout_owner_scope"] != owner:
+        return {}, ("checkout_cart_owner_changed",)
+    source = build_cart_binding(captured_cart=captured, expected_scope=current["scope"])
+    if not source.ok:
+        return {}, (source.reason or "checkout_cart_incomplete",)
+    specs, readiness = [], {}
+    for line in source.binding["lines"]:
+        choices = line["choices"]
+        quantity = choices.get("quantity", (line["quantity_default"] or {}).get("value"))
+        args = {"product_id": choices.get("product_id"), "size": choices.get("size", ""),
+            "fit": choices.get("fit_option_code", ""), "quantity": quantity,
+            "color": choices.get("color", ""), "strict": True}
+        state = selection_readiness(selection={}, **args)
+        color = choices.get("color")
+        if color:
+            # Existing parser aliases classify catalog names too. A source color
+            # can identify one current variant; ambiguous shades still abstain.
+            matches = [row["variant_id"] for row in state["color"]["options"] if (
+                str(row["name"]).strip().casefold() == str(color).strip().casefold()
+                or parse_turn(row["name"]).field_updates.get("color") == color)]
+            if len(matches) != 1:
+                return {}, ("checkout_cart_color_unresolved",)
+            state = selection_readiness(selection={"color_variant_id": matches[0]}, **args)
+        if state.get("applicability_known") is not True or state.get("can_issue_link") is not True or state.get("missing"):
+            return {}, ("checkout_cart_readiness_incomplete",)
+        item = {"product_id": state["product"]["id"], "qty": state["quantity"],
+            "size": state["size"]["selected"], "fit_option_code": state["fit"]["selected"],
+            "color_variant_id": state["color"]["selected_variant_id"], "option_values": state["options"]["selected"]}
+        specs.append(item)
+        readiness[line["line_id"]] = {"scope": {**captured["scope"], "line_id": line["line_id"], "recipient_id": line["recipient_id"]},
+            "capture_digest": captured["capture_digest"], "readiness": state}
+    try:
+        quote = validate_checkout_items(client=client, item_specs=specs, negotiated_total=None,
+            source_cart_binding=source)
+    except CheckoutConfigurationError as exc:
+        return {}, ("checkout:" + exc.code,)
+    items = _quote_items(quote)
+    result = bind_quote_lines(binding=source, quoted_items=items, readiness_by_line=readiness)
+    if result.status != "ready":
+        return {}, (result.reason or "checkout_cart_binding_incomplete",)
+    binding = frozen_cart_binding_payload(result)
+    if "source_cart_binding" in control and control["source_cart_binding"] != binding:
+        return {}, ("checkout_cart_binding_changed",)
+    return {"items": items, "source_cart_binding": binding,
+        "source_cart_capture": deepcopy(captured), "checkout_owner_scope": owner}, ()
+
+
+def _quote_items(quote):
+    return [{"product_id": item.product.pk,
+        "color_variant_id": item.color_variant.pk if item.color_variant else None,
+        "qty": item.quantity, "size": item.size,
+        "fit_option_code": item.fit_code, "option_values": dict(item.option_values)} for item in quote.items]
+
+
+def compact_checkout_control(control, *, artifact=None):
+    """Fixed-size authority reference; full source artifacts stay with owners."""
+    from management.services.ig_revision_cart_binding import stable_checkout_source_capture
+    capture, binding = control["source_cart_capture"], control["source_cart_binding"]
+    stable = stable_checkout_source_capture(capture)
+    if stable is None:
+        raise ValueError("checkout_cart_capture_invalid")
+    artifact = artifact or control.get("source_cart_artifact")
+    if not isinstance(artifact, dict):
+        raise ValueError("checkout_generation_artifact_missing")
+    return {"source_cart_reference": {
+        "schema": "ig-checkout-cart-reference.v1",
+        "semantic_digest": _digest(stable),
+        "original_capture_digest": capture["capture_digest"],
+        "source_binding_digest": binding["source_binding_digest"],
+        "quote_binding_digest": binding["quote_binding_digest"],
+        "quote_map_digest": _digest(binding["quote_line_map"]),
+        "configuration_digest": _digest(control["items"]),
+        "owner_scope_digest": _digest(control["checkout_owner_scope"]),
+        "artifact": deepcopy(artifact),
+    }}
+
+
+def checkout_artifact_control(client, reference):
+    """Load an original artifact from its exact current owned revision only."""
+    from management.models import IgCheckoutRevision
+    artifact = reference.get("artifact") if isinstance(reference, Mapping) else None
+    if not isinstance(artifact, dict):
+        return {}, ("checkout_cart_reference_invalid",)
+    if artifact.get("kind") == "generation_capture":
+        if set(artifact) != {"kind", "revision_id"} or type(artifact.get("revision_id")) is not int or artifact["revision_id"] <= 0:
+            return {}, ("checkout_cart_reference_invalid",)
+        revision = IgCustomerTurnRevision.objects.filter(pk=artifact["revision_id"], client_id=client.pk).first()
+        proposal = revision.generation_proposal if revision is not None else None
+        if revision is None or revision.sealed_at is None:
+            return {}, ("checkout_generation_artifact_missing",)
+        if not revision.generation_proposal_digest:
+            now = timezone.now()
+            if (proposal or revision.generation_proposed_at or revision.state != revision.State.CLAIMED
+                    or not revision.claim_token or revision.lease_until is None or revision.lease_until <= now
+                    or revision.overall_deadline <= now or revision.permission_epoch != client.reply_permission_epoch
+                    or revision.erasure_started_at_snapshot is not None):
+                return {}, ("checkout_generation_owner_unavailable",)
+            # Before the first immutable generation commit only: no owner
+            # materialization has happened, so ALL original hashes must match
+            # the independently rebuilt canonical capture in the caller below.
+            from management.services.ig_commerce_projection import capture_current_selection_lines
+            return _source_cart_control(client, {}, capture_current_selection_lines(client.pk))
+        if not isinstance(proposal, dict) or _digest(proposal) != revision.generation_proposal_digest:
+            return {}, ("checkout_generation_artifact_missing",)
+        facts = (proposal.get("authority") or {}).get("fact_bindings") or []
+        if not any(row.get("claim") == CLAIM_CATALOG_CONFIGURATION and
+                (row.get("selector") or {}).get("source_cart_reference") == reference for row in facts if isinstance(row, dict)):
+            return {}, ("checkout_generation_artifact_scope_changed",)
+        capture = proposal.get("source_cart_capture")
+        return _source_cart_control(client, {}, capture)
+    keys = {"kind", "proposal_id", "checkout_revision_id", "revision"}
+    if set(artifact) != keys or artifact.get("kind") != "checkout_revision" or any(
+            type(artifact.get(key)) is not int or artifact[key] <= 0 for key in keys - {"kind"}):
+        return {}, ("checkout_cart_reference_invalid",)
+    owner = checkout_owner_scope(client)
+    if owner is None or not owner.get("deal") or owner["deal"]["active_checkout_proposal_id"] != artifact["proposal_id"]:
+        return {}, ("checkout_cart_artifact_owner_changed",)
+    revision = IgCheckoutRevision.objects.filter(pk=artifact["checkout_revision_id"],
+        proposal_id=artifact["proposal_id"], revision=artifact["revision"],
+        proposal__revision=artifact["revision"], proposal__client_id=client.pk,
+        proposal__commercial_episode_id=owner["episode"]["pk"], proposal__deal_id=owner["deal"]["pk"]).first()
+    snapshot = revision.snapshot if revision is not None else None
+    if not isinstance(snapshot, dict) or "source_cart_capture" not in snapshot or "source_cart_binding" not in snapshot:
+        return {}, ("checkout_cart_artifact_missing",)
+    return _source_cart_control(client, {"source_cart_binding": snapshot["source_cart_binding"]},
+        snapshot["source_cart_capture"])
+
+
+def resolve_checkout_cart_reference(client, reference, *, source_cart_capture=None):
+    """Fresh complete cart/readiness must reproduce every compact fence."""
+    if not isinstance(reference, dict) or reference.get("schema") != "ig-checkout-cart-reference.v1":
+        return {}, ("checkout_cart_reference_invalid",)
+    if source_cart_capture is not None:
+        normalized, reasons = _source_cart_control(client, {}, source_cart_capture)
+    else:
+        normalized, reasons = checkout_artifact_control(client, reference)
+    if reasons:
+        return {}, reasons
+    try:
+        current = compact_checkout_control(normalized, artifact=reference.get("artifact"))
+    except (KeyError, TypeError, ValueError):
+        return {}, ("checkout_cart_reference_invalid",)
+    if current["source_cart_reference"] != reference:
+        return {}, ("checkout_cart_reference_changed",)
+    return normalized, ()
+
+
+def lock_checkout_cart_sources(client, captured):
+    """Use the existing source rows, after the client lock, through effect CAS."""
+    from management.models import InstagramBotMessage
+    ids = (captured.get("fence") or {}).get("source_ids") if isinstance(captured, dict) else None
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= 64
+            or any(type(value) is not int or value <= 0 for value in ids)
+            or ids != sorted(set(ids))):
+        return False
+    rows = list(InstagramBotMessage.objects.select_for_update().filter(pk__in=ids,
+        client_id=client.pk).order_by("pk").values_list("pk", flat=True))
+    return rows == ids
+
+
+def checkout_authority_control(client, control, *, source_cart_capture=None, source_cart_revision_id=None):
     """Resolve provider selectors to a complete server-owned standard cart."""
     from management.services import instagram_bot as bot
 
@@ -105,6 +355,28 @@ def checkout_authority_control(client, control):
     _request, reasons = _payment_request(control)
     if reasons:
         return {}, reasons
+    captured = source_cart_capture if source_cart_capture is not None else control.get("source_cart_capture")
+    if "source_cart_reference" in control:
+        try:
+            return resolve_checkout_cart_reference(client, control["source_cart_reference"], source_cart_capture=captured)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return {}, ("checkout_cart_readiness_unavailable",)
+    if captured is not None:
+        try:
+            normalized, reasons = _source_cart_control(client, control, captured)
+            if not reasons:
+                artifact = control.get("source_cart_artifact")
+                if source_cart_revision_id is not None:
+                    if type(source_cart_revision_id) is not int or source_cart_revision_id <= 0:
+                        return {}, ("checkout_cart_reference_invalid",)
+                    artifact = {"kind": "generation_capture", "revision_id": source_cart_revision_id}
+                if artifact is not None:
+                    normalized["source_cart_artifact"] = deepcopy(artifact)
+            return normalized, reasons
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return {}, ("checkout_cart_readiness_unavailable",)
+    if "source_cart_binding" in control or "checkout_owner_scope" in control:
+        return {}, ("checkout_cart_capture_missing",)
     if "items" in control:
         specs = bot._control_item_specs(dict(control))
         if not specs:
@@ -123,25 +395,23 @@ def checkout_authority_control(client, control):
             "color_variant_id": control.get("variant") or control.get("color_variant_id") or selection.get("color_variant_id"),
             "option_values": {**(selection.get("option_values") or {}), **options},
         }]
-    if len(specs) > 8:
-        return {}, ("checkout_item_limit",)
+    from management.models import IgCommerceSelectionSession
+    session = IgCommerceSelectionSession.objects.filter(client_id=client.pk, open_slot=1, state="open").first()
+    if len(specs) != 1 or (session is not None and len(session.lines or []) > 1):
+        return {}, ("checkout_cart_capture_missing",)
     try:
         quote = validate_checkout_items(client=client, item_specs=specs, negotiated_total=None)
     except CheckoutConfigurationError as exc:
         return {}, ("checkout:" + exc.code,)
-    return {"items": [{
-        "product_id": item.product.pk,
-        "color_variant_id": item.color_variant.pk if item.color_variant else None,
-        "qty": item.quantity, "size": item.size,
-        "fit_option_code": item.fit_code, "option_values": dict(item.option_values),
-    } for item in quote.items]}, ()
+    return {"items": _quote_items(quote)}, ()
 
 
-def authorize_revision_checkout(client, control, source_text, *, sealed_sources=()):
+def authorize_revision_checkout(client, control, source_text, *, sealed_sources=(), source_cart_capture=None, source_cart_revision_id=None):
     """Use the real purchase gate with sealed customer text, never model prose."""
     from management.services.instagram_bot import payment_link_allowed
 
-    normalized, reasons = checkout_authority_control(client, control)
+    normalized, reasons = checkout_authority_control(client, control, source_cart_capture=source_cart_capture,
+        source_cart_revision_id=source_cart_revision_id)
     if reasons:
         return normalized, reasons
     request, _reasons = _payment_request(control)
@@ -149,7 +419,13 @@ def authorize_revision_checkout(client, control, source_text, *, sealed_sources=
         _decision, reasons = _prepay_policy(client, sealed_sources)
         if reasons:
             return {}, reasons
-    if not payment_link_allowed(client, dict(control), str(source_text or "")):
+    # The legacy purchase gate parses provider ITEM strings, not backend spec
+    # dicts. It checks purchase intent using an already proven first product;
+    # complete configuration authority remains the all-line binding above.
+    purchase_control = ({"product": normalized["items"][0]["product_id"],
+        **{key: control[key] for key in ("paylink", "payment") if key in control}}
+        if "source_cart_binding" in normalized else dict(control))
+    if not payment_link_allowed(client, purchase_control, str(source_text or "")):
         return {}, ("checkout_purchase_authority_missing",)
     return normalized, ()
 
@@ -180,7 +456,7 @@ def prepare_revision_checkout(
     revision_id: int, revision_token: str, *, source_message_id: int,
     settings_id: int, settings_permission_epoch: int, publication: PublicationBinding,
     generation_proposal_digest: str, authority: RevisionAuthorityBindingSet,
-    noncheckout_effects=(), reply_text: str, now=None,
+    noncheckout_effects=(), reply_text: str, source_cart_capture=None, now=None,
 ) -> RevisionCheckoutResult:
     """Commit offer, one token, and ALL physical parts or roll everything back."""
     if connection.in_atomic_block:
@@ -219,6 +495,21 @@ def prepare_revision_checkout(
                 raise _Rollback("generation_proposal_authority_mismatch")
             if ACTION not in before.get("allowed_actions", ()):
                 raise _Rollback("stored_checkout_action_not_authorized")
+            cart_facts = [row for row in authority.fact_bindings if row.get("claim") == CLAIM_CATALOG_CONFIGURATION]
+            cart_reference = (cart_facts[0].get("selector") or {}).get("source_cart_reference") if len(cart_facts) == 1 else None
+            if cart_reference is not None and cart_reference.get("artifact") != {"kind": "generation_capture", "revision_id": revision.pk}:
+                raise _Rollback("checkout_cart_generation_reference_mismatch")
+            cart_capture = source_cart_capture if source_cart_capture is not None else proposal.get("source_cart_capture")
+            if cart_reference is not None and cart_capture is None:
+                recovered, reasons = checkout_artifact_control(client, cart_reference)
+                if reasons:
+                    raise _Rollback(",".join(reasons))
+                cart_capture = recovered["source_cart_capture"]
+            if cart_reference is not None and (not isinstance(cart_capture, dict)
+                    or cart_capture.get("capture_digest") != cart_reference.get("original_capture_digest")):
+                raise _Rollback("checkout_cart_generation_capture_mismatch")
+            if cart_capture is not None and not lock_checkout_cart_sources(client, cart_capture):
+                raise _Rollback("checkout_cart_source_scope_invalid")
             source = revision.sources.filter(message_id=source_message_id, message__client_id=client.pk).first()
             snapshots = {row.get("message_id"): row for row in (revision.bundle_snapshot or {}).get("sources", ())}
             if source is None or source_message_id not in snapshots or source_message_id not in {row.get("message_id") for row in proposal.get("sources", ())}:
@@ -274,14 +565,23 @@ def prepare_revision_checkout(
             if not readiness.ready:
                 raise _Rollback("readiness:" + ",".join(readiness.reasons))
             sealed_sources = tuple(snapshots.values())
+            bound = [row for row in authority.fact_bindings if row.get("claim") == CLAIM_CATALOG_CONFIGURATION]
+            if len(bound) != 1:
+                raise _Rollback("checkout_cart_authority_mismatch")
+            cart_selector = bound[0].get("selector") or {}
+            original_capture = cart_capture if cart_reference is not None else None
+            checkout_control = dict(response.control)
+            if original_capture is not None:
+                checkout_control["source_cart_reference"] = cart_reference
             control, reasons = authorize_revision_checkout(
-                client, response.control, snapshots[source_message_id].get("text", ""),
-                sealed_sources=sealed_sources,
+                client, checkout_control, snapshots[source_message_id].get("text", ""),
+                sealed_sources=sealed_sources, source_cart_capture=original_capture,
             )
             if reasons:
                 raise _Rollback(",".join(reasons))
-            bound = [row for row in authority.fact_bindings if row.get("claim") == CLAIM_CATALOG_CONFIGURATION]
-            if len(bound) != 1 or bound[0].get("selector") != control:
+            expected_selector = (compact_checkout_control(control, artifact=cart_reference["artifact"])
+                if original_capture is not None else control)
+            if len(bound) != 1 or bound[0].get("selector") != expected_selector:
                 raise _Rollback("checkout_cart_authority_mismatch")
             payment_request, _reasons = _payment_request(response.control)
             payment_decision = None
@@ -297,6 +597,8 @@ def prepare_revision_checkout(
                 client=client, pay_type="online_full", item_specs=control["items"],
                 negotiated_total=None, requested_payment_amount=None, allow_promo=True,
                 evidence={"message_ids": evidence_ids}, locale=client.language,
+                **({key: control[key] for key in ("source_cart_binding", "source_cart_capture", "checkout_owner_scope")}
+                   if original_capture is not None else {}),
             )
             if (
                 payment_decision is not None
@@ -327,13 +629,32 @@ def prepare_revision_checkout(
             # Offer creation can create an episode; all bindings must reflect the
             # committed candidate, without rewriting immutable generation input.
             business_after = capture_checkout_business_facts(client)
+            cart_owner_after = checkout_owner_scope(client) if original_capture is not None else None
             facts = []
             for old in authority.fact_bindings:
-                fresh = build_revision_authority_bindings(client, claims=(old["claim"],), control=old["selector"], settings_obj=settings_obj)
+                selector = old["selector"]
+                own_cart_rebind = False
+                if old["claim"] == CLAIM_CATALOG_CONFIGURATION and original_capture is not None:
+                    owned = rebind_checkout_cart_owner(control,
+                        before=control["checkout_owner_scope"], after=cart_owner_after, checkout=checkout)
+                    if owned is None:
+                        raise _Rollback("checkout_cart_owner_rebind_failed")
+                    checkout_revision = checkout.revisions.get(revision=checkout.revision)
+                    artifact = {"kind": "checkout_revision", "proposal_id": checkout.pk,
+                        "checkout_revision_id": checkout_revision.pk, "revision": checkout.revision}
+                    reference = compact_checkout_control(owned, artifact=artifact)["source_cart_reference"]
+                    persisted, reasons = checkout_artifact_control(client, reference)
+                    from management.services.ig_revision_cart_binding import same_checkout_source_capture
+                    if (reasons or persisted["items"] != owned["items"] or not same_checkout_source_capture(
+                            owned["source_cart_capture"], persisted["source_cart_capture"])):
+                        raise _Rollback("checkout_cart_artifact_rebind_failed")
+                    selector = compact_checkout_control(persisted, artifact=artifact)
+                    own_cart_rebind = True
+                fresh = build_revision_authority_bindings(client, claims=(old["claim"],), control=selector, settings_obj=settings_obj)
                 if not fresh.ready or not fresh.fact_bindings:
                     raise _Rollback("checkout_post_fact_unavailable")
                 current = fresh.fact_bindings[0]
-                if current["authority_digest"] != old["authority_digest"] and not owned_checkout_business_rebind(
+                if current["authority_digest"] != old["authority_digest"] and not own_cart_rebind and not owned_checkout_business_rebind(
                     old, current, before=business_before.get(old["claim"]),
                     after=business_after.get(old["claim"]), checkout=checkout,
                     prior_deal_watermark=prior_deal_watermark,

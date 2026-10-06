@@ -1,0 +1,35 @@
+.ig-commerce-scope { min-width: 0; padding: 14px; border: 1px solid #29374a; border-radius: 8px; background: #101925; color: #dce5f0; }
+.ig-cs-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; }
+.ig-cs-title { margin: 0; font-size: 13px; font-weight: 650; }
+.ig-cs-count { font-size: 11px; color: #96adc8; }
+.ig-cs-picker-label { display: grid; gap: 6px; margin: 12px 0; color: #9aaec6; font-size: 11px; }
+.ig-cs-picker { width: 100%; min-width: 0; min-height: 42px; border: 1px solid #35465e; border-radius: 6px; padding: 8px 10px; background: #0b131e; color: #dce5f0; font: inherit; font-size: 13px; }
+.ig-cs-view-title { font-size: 13px; font-weight: 600; }
+.ig-cs-scope-label, .ig-cs-payment, .ig-cs-recipient, .ig-cs-source, .ig-cs-order-item-detail, .ig-cs-status { margin: 6px 0 0; font-size: 11px; line-height: 1.55; color: #96a8bf; overflow-wrap: anywhere; }
+.ig-cs-payment { color: #b5cddd; }
+.ig-cs-positions { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
+.ig-cs-position { min-width: 0; padding: 11px 0; border-top: 1px solid #29374a; }
+.ig-cs-position-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.ig-cs-position-caption { display: grid; gap: 3px; min-width: 0; }
+.ig-cs-position-number { display: block; color: #8196b1; font-size: 10px; line-height: 1.4; font-weight: 400; }
+.ig-cs-product { display: block; font-size: 13px; line-height: 1.45; font-weight: 600; overflow-wrap: anywhere; }
+.ig-cs-active { max-width: 100%; margin-top: 2px; font-size: 10px; line-height: 1.5; color: #8ab8ef; }
+.ig-cs-fields { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 10px 0 0; }
+.ig-cs-field { display: grid; gap: 2px; font-size: 12px; }
+.ig-cs-field dt { display: flex; flex-wrap: wrap; gap: 4px 6px; color: #8196b1; font-size: 10px; }
+.ig-cs-field-source { color: #6f86a4; font-size: 9px; font-weight: 400; }
+.ig-cs-field dd { margin: 0; overflow-wrap: anywhere; }
+.ig-cs-source { color: #9bb0ca; }
+
+.ig-cs-history { margin-top: 8px; font-size: 11px; color: #9fb0c5; }
+.ig-cs-history summary { padding: 5px 0; cursor: pointer; }
+.ig-cs-history-list { padding-left: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.ig-cs-history-coverage { margin: 6px 0 0; color: #7f93ad; font-size: 10px; line-height: 1.5; }
+.ig-cs-status { margin-top: 12px; }
+.ig-commerce-scope :focus-visible { outline: 3px solid #3b82f6; outline-offset: 2px; }
+@media (max-width: 600px) { .ig-commerce-scope { padding: 12px; } .ig-cs-picker { font-size: 16px; } }
+
+.ig-cs-revenue { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 4px 10px; margin: 12px 0 0; padding: 10px 0; border-top: 1px solid #29374a; border-bottom: 1px solid #29374a; }
+.ig-cs-revenue-label { font-size: 11px; color: #9aaec6; }
+.ig-cs-revenue-value { overflow-wrap: anywhere; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ig-cs-revenue-note { grid-column: 1 / -1; margin: 0; font-size: 10px; line-height: 1.5; color: #7f93ad; }

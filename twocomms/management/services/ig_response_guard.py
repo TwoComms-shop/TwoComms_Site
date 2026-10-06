@@ -5,7 +5,7 @@ from copy import deepcopy
 import json
 
 from management.services.ig_provider_dispatch_budget import ValidationDecision
-from management.services.ig_reply_truth import validate_reply_truth
+from management.services.ig_reply_truth import ReplyTruthResult, validate_reply_truth
 from management.services.ig_response_control import parse_structured_response
 
 
@@ -23,13 +23,14 @@ _SCHEMA_REPAIR_GUIDANCE = {
 
 
 class ProviderResponseGuard:
-    def __init__(self, *, context_factory, image_mimes=(), expected_content_hashes=None, require_intelligence=False, programme=None, response_normalizer=None):
+    def __init__(self, *, context_factory, image_mimes=(), expected_content_hashes=None, require_intelligence=False, programme=None, response_normalizer=None, truth_validator=None):
         self.context_factory = context_factory
         self.image_mimes = tuple(image_mimes)
         self.expected_content_hashes = tuple(expected_content_hashes) if expected_content_hashes is not None else None
         self.require_intelligence = bool(require_intelligence)
         self.programme = programme
         self.response_normalizer = response_normalizer
+        self.truth_validator = truth_validator
         self.source = None
         self.response = None
         self.last_reasons = ()
@@ -80,9 +81,13 @@ class ProviderResponseGuard:
                 return self._decision(False, ("incomplete_image_coverage",))
         try:
             context = self.context_factory(response.control, response.reply_text)
+            truth = (self.truth_validator(response, context) if self.truth_validator is not None
+                else validate_reply_truth(response.reply_text, context=context))
         except Exception:
             return self._decision(False, ("authority_unavailable",))
-        truth = validate_reply_truth(response.reply_text, context=context)
+        if (not isinstance(truth, ReplyTruthResult) or not isinstance(truth.valid, bool)
+                or not isinstance(truth.reasons, tuple) or any(not isinstance(reason, str) for reason in truth.reasons)):
+            return self._decision(False, ("authority_unavailable",))
         if not truth.valid:
             return self._decision(False, truth.reasons)
         self.source, self.response = parsed, response
@@ -257,16 +262,18 @@ def _current_fit_withdrawal(client, revision):
     return {}
 
 
-def build_source_preference_fallback(client, *, revision=None):
+def build_source_preference_fallback(client, *, revision=None, response_plan=None):
     """Build fresh local prose, with a recomputable source-backed proof.
 
     No rejected provider text is read or sanitized. This narrow answer covers
     preference acknowledgement and the missing model, never a product offer.
     """
     import hashlib
-    from management.services.ig_commerce_projection import source_preferences_for
     from management.services.ig_reply_truth import ReplyTruthContext
 
+    if response_plan is not None:
+        return _planned_source_fallback(client, revision, response_plan=response_plan)
+    from management.services.ig_commerce_projection import source_preferences_for
     if revision is not None:
         planned, proof = _planned_source_fallback(client, revision)
         if planned is not None:
@@ -323,12 +330,21 @@ def build_source_preference_fallback(client, *, revision=None):
     return guard.response, proof
 
 
-def _planned_source_fallback(client, revision):
-    from management.services.ig_response_plan import capture_response_plan
+def _planned_source_fallback(client, revision, *, response_plan=None):
+    from management.services.ig_response_plan import capture_response_plan, ResponsePlan
     from management.services.ig_commerce_replies import missing_selector_question
     from management.services.ig_reply_truth import ReplyTruthContext
 
-    plan = capture_response_plan(client, revision=revision)
+    if response_plan is not None and not isinstance(response_plan, ResponsePlan):
+        return None, {"reason": "fallback_captured_cart_unavailable"}
+    plan = response_plan if response_plan is not None else capture_response_plan(client, revision=revision)
+    if plan.line_plans:
+        try:
+            return _cart_source_fallback(client, revision, plan)
+        except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
+            return None, {"reason": "fallback_captured_cart_unavailable"}
+    if response_plan is not None:
+        return None, {"reason": plan.plan_gap or "fallback_captured_cart_unavailable"}
     sources = {row["message_id"] for row in revision.bundle_snapshot.get("sources", [])}
     withdrawal = _current_fit_withdrawal(client, revision)
     current = next((proof for key, proof in plan.evidence.items()
@@ -389,3 +405,136 @@ def _planned_source_fallback(client, revision):
                             "template": "choice_then_missing_selector", "language": language,
                             "current_source_preference": current, "response_plan": plan.as_dict(),
                             "response_plan_digest": plan.digest, "coverage": plan.coverage(guard.response, local=True)}
+
+
+def _cart_source_fallback(client, revision, plan):
+    """Pure source-only cart acknowledgement over the original sealed plan.
+
+    This is not a checkout operation. Remaining substantive obligations retain
+    the plan's recovery/customer-wait disposition for the caller's debt owner.
+    """
+    import hashlib
+    import re
+    from management.services.ig_response_plan import _provided_source_cart
+    from management.services.ig_commerce_replies import missing_selector_question
+    from management.services.ig_reply_truth import ReplyTruthContext, ReplyTruthResult
+
+    def denied(reason):
+        return None, {"reason": reason}
+    if plan.plan_gap:
+        return denied(plan.plan_gap)
+    capture, reason = _provided_source_cart(client, revision, plan.source_cart_capture)
+    if reason:
+        return denied(reason)
+    if not 1 <= len(plan.line_plans) <= 16 or not capture.get("coverage_complete"):
+        return denied("fallback_captured_cart_unavailable")
+    if any(item["kind"] == "unresolved_line_operation" or item["kind"].startswith("withdrawal:") for item in plan.obligations):
+        return denied("fallback_line_operation_requires_recovery")
+    selector = plan.next_selector_line
+    if not selector:
+        return denied("fallback_complete_selection_requires_action")
+    sources = {row["message_id"]: row for row in revision.bundle_snapshot["sources"] if row.get("role") == "user"}
+    receipt = (revision.action_receipts or {}).get("commerce_reduction") or {}
+    if receipt.get("snapshot_digest") != revision.snapshot_digest:
+        return denied("fallback_source_reduction_unavailable")
+    current = None
+    rows = {row["line_id"]: row for row in capture["lines"]}
+    for line in plan.line_plans:
+        row = line.as_dict(); captured = rows.get(row["line_id"])
+        if (captured is None or row["index"] != captured["index"] or row["recipient_id"] != captured["recipient_id"]
+            or row["scope"].get("capture_digest") != capture["capture_digest"]):
+            return denied("fallback_line_scope_changed")
+        for field, value in row["choices"].items():
+            fact = captured["fields"].get(field) or {}
+            proof = row["evidence"].get(field) or {}
+            accepted = fact.get("source") or {}
+            if (fact.get("status") != "confirmed" or fact.get("value") != value
+                or any(proof.get(key) != accepted.get(key) for key in ("source_message_id", "source_digest", "decision_id", "transition_id", "authority", "correction"))):
+                return denied("fallback_line_source_unavailable")
+            source = sources.get(proof.get("source_message_id"))
+            if source is not None and proof.get("authority", "customer_source") != "audited_correction":
+                digest = hashlib.sha256(str(source.get("text") or "").encode()).hexdigest()
+                if digest != proof.get("source_digest"):
+                    return denied("fallback_current_source_changed")
+                # Field evidence authenticates the text body; the sealed
+                # reduction authenticates the complete ingress envelope.
+                # These digests deliberately cover different artifacts.
+                envelope_digest = source.get("source_digest")
+                if (isinstance(envelope_digest, str) and re.fullmatch(r"[a-f0-9]{64}", envelope_digest)
+                    and type(proof.get("decision_id")) is int and any(
+                    item.get("source_message_id") == proof["source_message_id"] and item.get("source_digest") == envelope_digest
+                    and item.get("decision_id") == proof["decision_id"] and item.get("transition_id") == proof.get("transition_id")
+                    and item.get("session_id") == capture["session_id"] and item.get("accepted") is True and item.get("is_stale") is False
+                    for item in receipt.get("decisions") or [])):
+                    current = current or deepcopy(proof)
+    if current is None:
+        return denied("fallback_no_current_source_reduction")
+    language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+    labels = {"uk": {"black": "чорний", "white": "білий", "blue": "синій", "pink": "рожевий", "grey": "сірий", "green": "зелений", "classic": "класична", "oversize": "оверсайз", "tshirt": "футболку", "hoodie": "худі"},
+        "ru": {"black": "чёрный", "white": "белый", "blue": "синий", "pink": "розовый", "grey": "серый", "green": "зелёный", "classic": "классическая", "oversize": "оверсайз", "tshirt": "футболку", "hoodie": "худи"},
+        "en": {"tshirt": "t-shirt", "hoodie": "hoodie", "classic": "classic fit", "oversize": "oversize"}}
+    recipients = {"uk": {"self": "для себе", "friend": "для друга", "friend_female": "для подруги", "mother": "для мами", "father": "для тата"},
+        "ru": {"self": "для себя", "friend": "для друга", "friend_female": "для подруги", "mother": "для мамы", "father": "для папы"},
+        "en": {"self": "for yourself", "friend": "for a friend", "friend_female": "for a friend", "mother": "for your mother", "father": "for your father"}}
+    def safe(value, limit=240):
+        return isinstance(value, str) and 0 < len(value) <= limit and not re.search(r"[.!?,;\n\r<>«»“”\"]", value)
+    def identity(row):
+        title = (row["configuration"].get("product_title") or "") if (row["choices"].get("product_id")
+            and row["choices"]["product_id"] == row["configuration"].get("product_id")) else ""
+        recipient = row["recipient_id"]
+        if not safe(recipient, 128) or title and not safe(title):
+            return None
+        recipient_label = recipients[language].get(recipient, {"uk": f"для {recipient}", "ru": f"для {recipient}", "en": f"for {recipient}"}[language])
+        ordinal = {"uk": "Позиція", "ru": "Позиция", "en": "Item"}[language]
+        return f"{ordinal} {row['index']+1} {recipient_label}" + (f" · {title}" if title else "") + ": "
+    clauses, by_id = [], {}
+    for line in plan.line_plans:
+        row = line.as_dict(); prefix = identity(row)
+        if prefix is None or not row["choices"]:
+            return denied("fallback_line_label_unavailable")
+        by_id[row["line_id"]] = prefix
+        count_before = len(clauses)
+        choices = row["choices"]
+        for field in ("product_id", "size", "fit_option_code", "color", "quantity", "garment_type"):
+            value = choices.get(field)
+            if value is None:
+                continue
+            if field == "product_id":
+                title = row["configuration"].get("product_title")
+                if not title or row["configuration"].get("product_id") != value:
+                    return denied("fallback_product_title_unavailable")
+                text = {"uk": f"ви обрали модель {title}", "ru": f"вы выбрали модель {title}", "en": f"you selected model {title}"}[language]
+            else:
+                raw = str(value); label = labels[language].get(raw, raw)
+                if not safe(label, 80):
+                    return denied("fallback_line_value_unavailable")
+                audited = field == "size" and (row["evidence"].get("size") or {}).get("authority") == "audited_correction"
+                if audited:
+                    text = {"uk": f"уточнений розмір — {label}", "ru": f"уточнённый размер — {label}", "en": f"the corrected size requirement is {label}"}[language]
+                else:
+                    field_names = {"uk": {"size": "розмір", "fit_option_code": "посадку", "color": "колір", "quantity": "кількість", "garment_type": ""},
+                        "ru": {"size": "размер", "fit_option_code": "посадку", "color": "цвет", "quantity": "количество", "garment_type": ""},
+                        "en": {"size": "size", "fit_option_code": "fit", "color": "colour", "quantity": "quantity", "garment_type": ""}}
+                    verb = {"uk": "ви обрали", "ru": "вы выбрали", "en": "you selected"}[language]
+                    text = " ".join(part for part in (verb, field_names[language][field], label) if part)
+            clauses.append(prefix + text + ".")
+        if len(clauses) == count_before:
+            return denied("fallback_line_choice_requires_recovery")
+    question = missing_selector_question(selector["field"], language=language, label=selector.get("label"))
+    if not question or selector["line_id"] not in by_id:
+        return denied("fallback_selector_unavailable")
+    text = "\n".join(clauses) + "\n" + by_id[selector["line_id"]] + question
+    if len(text.encode()) > 4000:
+        return denied("fallback_cart_reply_bound")
+    payload = {"reply_text": text, "controls": []}
+    def truth(response, context):
+        failure = plan.validate(response) or plan.validate_multiline_claims(response, context)
+        return ReplyTruthResult(not bool(failure), (failure,) if failure else ())
+    guard = ProviderResponseGuard(context_factory=lambda *_: ReplyTruthContext(), truth_validator=truth)
+    if not guard.validate(payload).valid:
+        return denied("fallback_truth_rejected")
+    return guard.response, {"kind": "source_preference_fallback", "version": 3, "template": "cart_choices_then_missing_selector",
+        "language": language, "current_source_preference": current, "source_cart_capture": deepcopy(capture),
+        "response_plan": plan.as_dict(), "response_plan_digest": plan.digest,
+        "response_digest": hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(),
+        "coverage": plan.coverage(guard.response, local=True)}

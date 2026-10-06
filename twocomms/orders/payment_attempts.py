@@ -71,6 +71,18 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
         _append_history(attempt, status, payload, source)
         snapshot = attempt.cart_snapshot if isinstance(attempt.cart_snapshot, dict) else {}
         cart_items = snapshot.get('cart') or []
+        is_instagram_proposal = snapshot.get('checkout_surface') == 'instagram_proposal'
+        source_provenance = None
+        if is_instagram_proposal or 'source_cart_provenance' in snapshot or 'source_cart_binding' in snapshot:
+            from management.services.ig_checkout_cart_provenance import (
+                CartProvenanceError, bind_order_items, validate_attempt_provenance,
+            )
+            try:
+                source_provenance = validate_attempt_provenance(snapshot)
+            except CartProvenanceError as exc:
+                raise PaymentAttemptConversionError(
+                    exc.reason, marker='source_cart_provenance_invalid',
+                ) from exc
         product_ids = [int(item['product_id']) for item in cart_items if item.get('product_id')]
         products = Product.objects.in_bulk(product_ids)
         if len(products) != len(set(product_ids)):
@@ -95,7 +107,6 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
             }
             else 'paid'
         )
-        is_instagram_proposal = snapshot.get('checkout_surface') == 'instagram_proposal'
         checkout_idempotency_key = None
         if attempt.checkout_series_key:
             from orders.checkout_series import (
@@ -113,6 +124,32 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
                 checkout_idempotency_key=checkout_idempotency_key
             ).first()
             if existing_order is not None:
+                if source_provenance and source_provenance['status'] == 'bound':
+                    stored = (existing_order.payment_payload or {}).get('source_cart_provenance')
+                    if not isinstance(stored, dict):
+                        raise PaymentAttemptConversionError(
+                            'cart_existing_order_provenance_missing', marker='source_cart_provenance_invalid',
+                        )
+                    # Preserve the winner's original frozen scope. Another
+                    # generation cannot attach a different source cart to an
+                    # already materialized series order.
+                    original = dict(stored)
+                    order_ids = []
+                    original.pop('order_id', None)
+                    try:
+                        original['item_map'] = [dict(row) for row in stored['item_map']]
+                        for row in original['item_map']:
+                            order_ids.append(row.pop('order_item_id'))
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise PaymentAttemptConversionError(
+                            'cart_existing_order_provenance_invalid', marker='source_cart_provenance_invalid',
+                        ) from exc
+                    if (stored.get('order_id') != existing_order.pk or original != source_provenance
+                            or any(type(value) is not int or value <= 0 for value in order_ids)
+                            or len(set(order_ids)) != len(order_ids)):
+                        raise PaymentAttemptConversionError(
+                            'cart_existing_order_provenance_changed', marker='source_cart_provenance_invalid',
+                        )
                 attempt.order = existing_order
                 attempt.last_status_at = timezone.now()
                 attempt.save(update_fields=[
@@ -144,6 +181,7 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
             utm_content=(attempt.tracking_payload or {}).get('utm_content', ''),
             utm_term=(attempt.tracking_payload or {}).get('utm_term', ''),
             payment_payload={
+                **({'source_cart_provenance': source_provenance} if source_provenance else {}),
                 'attempt_id': attempt.pk,
                 'attempt_reference': attempt.reference,
                 'tracking': attempt.tracking_payload or {},
@@ -186,7 +224,24 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
                 unit_price=Decimal(str(item.get('unit_price') or 0)),
                 line_total=Decimal(str(item.get('line_total') or 0)),
             ))
-        OrderItem.objects.bulk_create(items)
+        items = OrderItem.objects.bulk_create(items)
+        if source_provenance and source_provenance['status'] == 'bound':
+            try:
+                order_provenance = bind_order_items(
+                    source_provenance, cart_items=cart_items, order_id=order.pk,
+                    order_items=[{
+                        'id': item.pk, 'order_id': item.order_id, 'product_id': item.product_id,
+                        'qty': item.qty, 'size': item.size, 'fit_option_code': item.fit_option_code,
+                        'color_variant_id': item.color_variant_id, 'option_values': item.option_values,
+                        'unit_price': str(item.unit_price), 'line_total': str(item.line_total),
+                    } for item in items],
+                )
+            except CartProvenanceError as exc:
+                raise PaymentAttemptConversionError(
+                    exc.reason, marker='source_cart_provenance_invalid',
+                ) from exc
+            order.payment_payload = {**order.payment_payload, 'source_cart_provenance': order_provenance}
+            order.save(update_fields=['payment_payload'])
 
         custom_ids = snapshot.get('custom_print_lead_ids') or []
         if custom_ids:

@@ -20,7 +20,7 @@ from django.utils.dateparse import parse_datetime
 
 from management.services.ig_turn_intelligence import (
     MAX_HISTORY, MAX_MEDIA_PARTS, MAX_SOURCES, SCOPE_KEYS, TurnContextError,
-    build_turn_context, capture_digest,
+    build_turn_context, capture_digest, validate_source_cart_capture,
 )
 
 MAX_SIGNALS = 24
@@ -43,6 +43,39 @@ def _frozen(value):
     if isinstance(value, (tuple, list)):
         return tuple(_frozen(item) for item in value)
     return value
+
+
+def validate_current_source_cart_sources(capture, *, source_rows=None):
+    """One bounded source fence read, without choice reconstruction/reparse.
+
+    The producer hashes an INT-key row map; preserve its numeric key ordering.
+    This digest is distinct from both canonical pre-seal source identity and
+    the cart DTO digest. Admin may reuse its existing complete values rows.
+    """
+    from types import SimpleNamespace
+    from management.models import InstagramBotMessage
+    from management.services.ig_commerce_projection import _source_fence_row
+    capture = detached_payload(capture)
+    fence = capture.get("fence") or {}
+    identities = fence.get("source_ids")
+    if (not isinstance(identities, list) or len(identities) > 64
+            or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in identities)
+            or identities != sorted(set(identities))):
+        raise TurnContextError("source_cart_fence_invalid")
+    if source_rows is None:
+        source_rows = list(InstagramBotMessage.objects.filter(pk__in=identities).only(
+            "pk", "client_id", "sender_id", "role", "source", "status", "text", "provider_namespace",
+            "provider_created_at", "created_at", "mid", "reply_to_provider_message_id", "quick_reply_payload",
+            "attachments", "attachment_media"))
+    rows = [SimpleNamespace(**row) if isinstance(row, Mapping) else row for row in source_rows]
+    if {row.pk for row in rows} != set(identities) or len(rows) != len(identities):
+        raise TurnContextError("source_cart_sources_changed")
+    actual = {row.pk: _source_fence_row(row) for row in rows}
+    digest = hashlib.sha256(json.dumps(actual, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    if digest != fence.get("source_digest"):
+        raise TurnContextError("source_cart_sources_changed")
+    return True
 
 
 def _stamp(value):
@@ -370,12 +403,21 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         raise TurnContextError("capture_permission_changed")
     sources, namespace, watermark = _capture_sources(revision, client)
     reset = IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values("pk", "reset_after_message_id").first() or {}
-    session = IgCommerceSelectionSession.objects.filter(client_id=client.pk, open_slot=1,
+    source_cart = detached_payload(getattr(plan, "source_cart_capture", None) or {})
+    canonical_cart = source_cart.get("schema") == "source-selections.v1" and source_cart.get("status") == "captured"
+    # Current production uses the already captured cart. The single-line read
+    # below is compatibility coverage only for older plans without that DTO.
+    session = None if canonical_cart else IgCommerceSelectionSession.objects.filter(client_id=client.pk, open_slot=1,
         commercial_episode_id=client.current_commercial_episode_id).order_by("-generation").first()
     line = {}
     episode = (IgCommercialEpisode.objects.filter(pk=client.current_commercial_episode_id,
         client_id=client.pk).values("pk", "intended_order_id").first() if client.current_commercial_episode_id else None)
-    if session is not None:
+    if canonical_cart:
+        rows = source_cart.get("lines") or []
+        index = source_cart.get("active_index")
+        if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(rows):
+            line = rows[index]
+    elif session is not None:
         if plan.scope.get("session_id") and (plan.scope["session_id"] != session.pk
             or plan.scope.get("revision") != session.revision or plan.scope.get("generation") != session.generation):
             raise TurnContextError("capture_selection_changed")
@@ -391,6 +433,21 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         settings_permission_epoch=settings_row.reply_permission_epoch, publication=_publication(publication),
         episode_id=client.current_commercial_episode_id, order_id=episode.get("intended_order_id") if episode else None,
         line_id=str(line.get("line_id") or ""), recipient_id=str(line.get("recipient_id") or "self"))
+    if canonical_cart:
+        boundary.update(selection_session_id=source_cart.get("session_id"),
+            selection_generation=source_cart.get("generation"), selection_revision=source_cart.get("selection_revision"),
+            selection_line_count=len(source_cart.get("lines") or []), source_cart_capture_digest=source_cart.get("capture_digest"))
+        source_cart = validate_source_cart_capture(source_cart, boundary)
+        if plan.scope.get("session_id") is not None and any(plan.scope.get(key) != source_cart.get(value)
+                for key, value in (("session_id", "session_id"), ("generation", "generation"), ("revision", "selection_revision"))):
+            raise TurnContextError("capture_selection_changed")
+    else:
+        count = len(session.lines or []) if session is not None else 0
+        if count > 1:
+            raise TurnContextError("source_cart_unavailable")
+        boundary["selection_line_count"] = count
+        source_cart = {"schema": "source-selections.v1", "status": "unavailable", "coverage_complete": False,
+            "reason": source_cart.get("reason") or "legacy_single_line_capture", "lines": []}
     boundary["source_time_origins"] = {str(source["message_id"]): _source_time(source)[1] for source in sources}
     boundary["watermark_time_origin"] = boundary["source_time_origins"][str(watermark["message_id"])]
     if any(source["message_id"] < boundary["reset_floor"] for source in sources):
@@ -411,8 +468,10 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         from management.services.ig_revision_conversation_context import conversation_timing_guidance
         return dict(scope=scope, guidance=conversation_timing_guidance(revision))
     timing = optional("timing", timing_capture)
-    components = dict(source_selection=_selection(plan, scope),
+    components = dict(source_selection=(dict(scope=scope, capture=deepcopy(line.get("source_selection") or {}))
+        if canonical_cart else _selection(plan, scope)),
         signals=optional("signals", lambda: _signals(client, boundary, captured_at)))
+    components["source_cart"] = dict(scope=scope, capture=source_cart)
     readiness = getattr(plan, "readiness_snapshot", None)
     if isinstance(readiness, dict) and readiness:
         components["readiness"] = dict(scope=scope, capture=deepcopy(readiness))
@@ -436,8 +495,11 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
             raise TurnContextError("payment_context_changed")
         return first
     payment_context = optional("payment_context", payment_context_capture)
-    components.update({key: value for key, value in payment_context.items() if key in {"slots", "payment_truth"}})
-    components["observation_omissions"] = payment_context.get("omissions") or []
+    # Pure builder components require one full outer capture scope. Retain the
+    # original observation/payment scopes inside; never relabel their proof.
+    components.update({key: dict(scope=scope, capture=deepcopy(value))
+        for key, value in payment_context.items() if key in {"slots", "payment_truth"}})
+    components["observation_omissions"] = dict(scope=scope, capture=deepcopy(payment_context.get("omissions") or []))
     omissions.extend({"block_id": "state:" + item["component"], "reason": item["reason"]}
         for item in payment_context.get("omissions") or [])
     try:
@@ -467,6 +529,18 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         metadata["omitted_blocks"].extend(omissions)
         metadata["readiness_codes"] = sorted(set(metadata["readiness_codes"]) | {item["reason"] for item in omissions})
         result = replace(result, omissions=(*result.omissions, *(_frozen(item) for item in omissions)))
+    if canonical_cart:
+        # This is a head fence, never another choice projection. In particular
+        # a nonactive line edit must not survive just because active CRM fields
+        # and the already sealed customer source happen to be unchanged.
+        from management.services.ig_commerce_projection import _choice_digest
+        current_session = IgCommerceSelectionSession.objects.filter(pk=source_cart["session_id"],
+            client_id=client.pk, commercial_episode_id=boundary["episode_id"], open_slot=1, state="open").first()
+        if (current_session is None or current_session.generation != source_cart["generation"]
+                or current_session.revision != source_cart["selection_revision"]
+                or _choice_digest(current_session.snapshot()) != source_cart["fence"]["snapshot_digest"]):
+            raise TurnContextError("source_cart_head_changed")
+        validate_current_source_cart_sources(source_cart)
     return replace(result, metadata=_frozen(metadata), provider_history=_frozen(_provider_history(captured_history, sources)))
 
 

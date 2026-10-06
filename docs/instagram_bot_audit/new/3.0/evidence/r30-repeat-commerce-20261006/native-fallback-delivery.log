@@ -1,0 +1,9 @@
+/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+.....................................
+----------------------------------------------------------------------
+Ran 37 tests in 13.097s
+
+OK
+Found 37 test(s).
+System check identified no issues (0 silenced).

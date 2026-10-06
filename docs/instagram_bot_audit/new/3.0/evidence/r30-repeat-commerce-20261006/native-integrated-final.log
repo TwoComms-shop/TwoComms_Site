@@ -1,0 +1,17 @@
+................/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+.............................................Assisted attempt 56 provider identity/currency mismatch -> checking
+Assisted attempt 56 provider identity/currency mismatch -> checking
+...............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+......................................................................................................................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 933 tests in 210.203s
+
+OK
+Found 933 test(s).
+System check identified no issues (0 silenced).

@@ -44,6 +44,11 @@
         !proof || proof.available !== true || !/^[a-f0-9]{64}$/.test(proof.context_digest || '') ||
         !context || context.schema !== 'size-correction-context.v1' || context.field !== 'size' ||
         !context.scope || id(context.scope.client_id) !== clientId ||
+        !['episode_id', 'order_id'].every(key => Object.hasOwn(context.scope, key) &&
+          (context.scope[key] === null || id(context.scope[key])) && context.scope[key] === boundary[key]) ||
+        !['line_id', 'recipient_id'].every(key => typeof context.scope[key] === 'string' &&
+          context.scope[key].length > 0 && context.scope[key].length <= 128 && context.scope[key] === boundary[key]) ||
+        !Number.isSafeInteger(context.active_index) || context.active_index < 0 || context.active_index >= 16 ||
         !Number.isSafeInteger(context.selection_revision) || context.selection_revision <= 0 ||
         context.selection_revision !== envelope.selection_revision || context.selection_revision !== boundary.selection_revision ||
         !context.source || !id(context.source.source_message_id) ||
@@ -79,7 +84,8 @@
     });
     summary.append(valueBlock, edit);
     const provenance = el('p', 'ig-sc-provenance');
-    panel.append(heading, summary, provenance);
+    const scopeLabel = el('p', 'ig-sc-scope');
+    panel.append(heading, scopeLabel, summary, provenance);
     const editor = el('div', 'ig-sc-editor'), fields = el('div', 'ig-sc-fields');
     const modeLabel = el('label', 'ig-sc-label', 'Дія'), mode = el('select', 'ig-sc-operation');
     for (const [value, title] of [['set', 'Уточнити розмір'], ['clear', 'Очистити вимогу розміру']]) {
@@ -141,8 +147,13 @@
       accept.hidden = !staged; accept.disabled = busy || !!pending;
       impact.textContent = mode.value === 'clear' ? 'Приберемо лише поточну вимогу розміру. Повідомлення клієнта та історія залишаться.' :
         'Збережемо уточнення від менеджера. Початкове повідомлення залишиться; наявність перевіряється окремо.';
-      if (!capture) { currentValue.textContent = '—'; authority.textContent = 'Не підтверджено'; provenance.textContent = 'Для уточнення потрібне підтверджене поточне джерело.'; return; }
+      if (!capture) { currentValue.textContent = '—'; authority.textContent = 'Не підтверджено'; scopeLabel.textContent = 'Поточна позиція не підтверджена.'; provenance.textContent = 'Для уточнення потрібне підтверджене поточне джерело.'; return; }
       const visible = staged || capture;
+      const scope = visible.context.scope;
+      const recipients = { self: 'Для себе', friend: 'Для друга', friend_female: 'Для подруги', mother: 'Для мами', father: 'Для тата' };
+      scopeLabel.textContent = [scope.order_id === null ? 'Замовлення ще не прив’язане' : 'Прив’язане замовлення',
+        `Позиція ${visible.context.active_index + 1}`,
+        Object.hasOwn(recipients, scope.recipient_id) ? recipients[scope.recipient_id] : 'Окремий отримувач'].join(' · ');
       const sourceId = visible.context.source.source_message_id;
       const refs = Array.isArray(visible.slot.source_refs) ? visible.slot.source_refs : [];
       const actor = refs.find(item => item && item.kind === 'commerce_transition' && id(item.actor_id));

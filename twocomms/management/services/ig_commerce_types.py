@@ -102,6 +102,26 @@ class CatalogGraph:
 
 
 @dataclass(frozen=True)
+class CommerceLineOperation:
+    """A source intent; selectors and applicability remain reducer-owned."""
+
+    operation: str
+    target_line_id: str = ""
+    target_line_index: int | None = None
+    target_garment_type: str = ""
+    exact_product_id: int | None = None
+    field_updates: Mapping[str, object] = field(default_factory=dict)
+    garment_type: str = ""
+    recipient_id: str = ""
+    copy_previous: bool = False
+    target_product_id: int | None = None
+    target_recipient_id: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "field_updates", immutable_mapping(self.field_updates))
+
+
+@dataclass(frozen=True)
 class CommerceTurnRequest:
     """Bounded model output consumed by deterministic catalog code."""
 
@@ -129,8 +149,16 @@ class CommerceTurnRequest:
     personalized_fit_requested: bool = False
     custom_print_requested: bool = False
     comparison_requested: bool = False
+    line_operations: tuple[CommerceLineOperation, ...] = ()
+    pending_line_clarification: str = ""
+    new_order_requested: bool = False
+    historical_order_reference: str = ""
+    historical_line_id: str = ""
+    historical_item_index: int | None = None
+    historical_recipient_id: str = ""
 
     def __post_init__(self):
+        object.__setattr__(self, "line_operations", tuple(self.line_operations))
         for field_name in (
             "field_updates",
             "hard",

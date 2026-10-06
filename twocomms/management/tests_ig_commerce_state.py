@@ -76,6 +76,9 @@ class CommerceStateFixture:
         )
 
     def select(self, product):
+        # These projection fixtures exercise the existing server-side legacy
+        # selection seam. Original customer replacement operations have their
+        # own source-bound suite and cannot borrow this trusted request.
         return CommerceTurnRequest(exact_product_id=product.pk)
 
 
@@ -167,7 +170,7 @@ class CommerceProjectionTests(CommerceStateFixture, TestCase):
         session.candidate_prompt_provider_ids = ["old-candidate-mid"]
         session.save()
 
-        apply_turn(self.client, self.message("replace"), self.select(self.third))
+        apply_turn(self.client, self.message("catalog-selection"), self.select(self.third))
         session.refresh_from_db()
 
         self.assertEqual(session.lines[0]["product_id"], self.classic.pk)
@@ -208,7 +211,7 @@ class CommerceProjectionTests(CommerceStateFixture, TestCase):
         session.query_constraints = {"query": "old product"}
         session.save()
 
-        apply_turn(self.client, self.message("replace-all"), self.select(self.third))
+        apply_turn(self.client, self.message("catalog-selection-all"), self.select(self.third))
         session.refresh_from_db()
 
         self.assertEqual(
@@ -239,7 +242,7 @@ class CommerceProjectionTests(CommerceStateFixture, TestCase):
             field_updates={"size": "L", "color": "green", "fit": "oversize", "quantity": "4"},
             hard={"back_decoration": "none"},
         )
-        apply_turn(self.client, self.message("replace-configured"), request)
+        apply_turn(self.client, self.message("catalog-selection-configured"), request)
         session.refresh_from_db()
 
         self.assertEqual(
@@ -255,6 +258,15 @@ class CommerceProjectionTests(CommerceStateFixture, TestCase):
         )
         self.assertEqual(session.selection_constraints, {"back_decoration": "none"})
         self.assertEqual(session.query_constraints, {})
+
+    def test_unresolved_original_replacement_cannot_borrow_legacy_selection_authority(self):
+        session = authoritative_session_for(self.client)
+        before = json.loads(json.dumps(session.lines))
+        with self.assertRaisesMessage(CommerceRevisionConflict, "line_source_unverified"):
+            apply_turn(self.client, self.message("replace"), self.select(self.third))
+        session.refresh_from_db()
+        self.assertEqual(session.lines, before)
+        self.assertFalse(IgCommerceTurnDecision.objects.filter(session=session).exists())
 
     def test_rejected_product_is_recorded_and_clears_its_configuration(self):
         session = authoritative_session_for(self.client)

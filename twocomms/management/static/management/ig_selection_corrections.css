@@ -19,6 +19,7 @@
 .ig-sc-button[hidden], .ig-sc-editor[hidden] { display: none; }
 .ig-sc-help, .ig-sc-provenance, .ig-sc-status, .ig-sc-impact { margin: 9px 0 0; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .ig-sc-provenance, .ig-sc-impact { color: #92a4bb; }
+.ig-sc-scope { margin: 8px 0 0; font-size: 11px; line-height: 1.6; color: #a4b5cc; overflow-wrap: anywhere; }
 .ig-sc-impact { margin-bottom: 14px; }
 .ig-sc-status:empty { display: none; }
 .ig-sc-status { padding-top: 6px; color: #b6c8de; }

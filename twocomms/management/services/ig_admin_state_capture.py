@@ -15,6 +15,9 @@ from management.services.ig_client_state_card import assemble_client_state, clie
 # budget. A catalog + exact-review fixture uses 48, leaving bounded headroom.
 MAX_READ_QUERIES = 64
 MAX_SOURCE_REFS = 16
+# The canonical all-line producer preloads <=64 current/copy transitions total.
+# This permits one bounded final source query; it does not raise SELECT budget.
+MAX_CART_SOURCE_REFS = 64
 MAX_IDENTIFIER = 2**63 - 1
 
 
@@ -62,11 +65,16 @@ def _namespace():
     return ingress_provider_namespace(row) if row else ""
 
 
-def _source_watermark(scope, namespace, sender_id, now):
+def _source_watermark(scope, namespace, sender_id, now, *, customer_only=False):
     from management.models import InstagramBotMessage
-    row = InstagramBotMessage.objects.filter(client_id=scope["client_id"], sender_id=sender_id,
+    rows = InstagramBotMessage.objects.filter(client_id=scope["client_id"], sender_id=sender_id,
         role__in=("user", "manager", "model"), provider_namespace=namespace,
-        pk__gte=scope["reset_floor"]).exclude(status="failed").annotate(
+        pk__gte=scope["reset_floor"]).exclude(status="failed")
+    if customer_only:
+        # Cart wishes are bounded by accepted customer ingress. Seller/model
+        # observations keep their separate broader admin/receipt watermark.
+        rows = rows.filter(role="user", source__in=("webhook", "poll"))
+    row = rows.annotate(
             event_time=Coalesce("provider_created_at", "created_at")).filter(event_time__lte=now).aggregate(
                 message_id=Max("pk"), event_at=Max("event_time"))
     return {"message_id": row["message_id"], "event_at": _stamp(row["event_at"]) or None}
@@ -76,7 +84,8 @@ def _source_rows(ids):
     from management.models import InstagramBotMessage
     return list(InstagramBotMessage.objects.filter(pk__in=ids).order_by("pk").values(
         "pk", "client_id", "sender_id", "role", "source", "status", "text", "provider_namespace",
-        "provider_created_at", "created_at"))
+        "provider_created_at", "created_at", "mid", "reply_to_provider_message_id", "quick_reply_payload",
+        "attachments", "attachment_media"))
 
 
 def _unavailable(client_id, now, reason, *, status="unavailable", revision=None, reads=0, historical=False):
@@ -222,8 +231,10 @@ def capture_payment_context(boundary, *, now=None):
 
 
 def _current_capture(client_id, expected_selection_revision, now):
-    from management.services.ig_commerce_projection import captured_selection_for
+    from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_checkout_readiness import selection_readiness
+    from management.services.ig_turn_intelligence import TurnContextError, validate_source_cart_capture
+    from management.services.ig_turn_capture import validate_current_source_cart_sources
 
     first = _owner_fence(client_id)
     if first is None:
@@ -253,8 +264,24 @@ def _current_capture(client_id, expected_selection_revision, now):
         if key in line and line[key] != expected:
             raise AdminStateReadError("selection_line_scope_unknown")
     namespace = _namespace()
-    from types import SimpleNamespace
-    selection = captured_selection_for(SimpleNamespace(pk=client_id), episode_id=scope["episode_id"], line_id=scope["line_id"] or None)
+    cart = capture_current_selection_lines(client_id, now=now, _owner_snapshot=first)
+    canonical_cart = cart.get("status") == "captured"
+    selection = {}
+    if canonical_cart:
+        head_boundary = {**scope, "source_namespace": namespace, "reset_id": (reset or {}).get("pk"),
+            "watermark": cart.get("source_watermark"), "selection_session_id": session["pk"] if session else None,
+            "selection_generation": session["generation"] if session else None, "selection_revision": revision}
+        try:
+            cart = validate_source_cart_capture(cart, head_boundary)
+        except TurnContextError as exc:
+            raise AdminStateReadError(exc.reason) from None
+        active = cart["lines"][cart["active_index"]] if cart["lines"] else {}
+        selection = deepcopy(active.get("source_selection") or {})
+    elif len(lines) > 1:
+        raise AdminStateReadError("source_cart_unavailable")
+    else:
+        cart = {**cart, "schema": "source-selections.v1", "status": "unavailable",
+            "coverage_complete": False, "lines": [], "reason": cart.get("reason") or "source_cart_unavailable"}
     if selection:
         expected_scope = {"client_id": client_id, "episode_id": scope["episode_id"], "line_id": scope["line_id"],
             "recipient_id": scope["recipient_id"], "reset_floor": reset_floor,
@@ -264,11 +291,19 @@ def _current_capture(client_id, expected_selection_revision, now):
                 selection["scope"].get(key) != value for key, value in expected_scope.items()):
             raise AdminStateReadError("current_selection_scope_changed")
     evidence = selection.get("evidence") or {}
-    ids = sorted({item.get("source_message_id") for item in evidence.values() if isinstance(item, dict)
-        and isinstance(item.get("source_message_id"), int) and not isinstance(item.get("source_message_id"), bool)})
-    if len(ids) > MAX_SOURCE_REFS:
+    ids = {item.get("source_message_id") for item in evidence.values() if isinstance(item, dict)
+        and isinstance(item.get("source_message_id"), int) and not isinstance(item.get("source_message_id"), bool)}
+    if canonical_cart:
+        ids = set(cart["fence"]["source_ids"])
+    ids = sorted(ids)
+    if len(ids) > (MAX_CART_SOURCE_REFS if canonical_cart else MAX_SOURCE_REFS):
         raise AdminStateReadError("state_source_budget_exceeded")
     messages = _source_rows(ids)
+    if canonical_cart:
+        try:
+            validate_current_source_cart_sources(cart, source_rows=messages)
+        except TurnContextError:
+            raise AdminStateReadError("current_source_changed") from None
     source_fence = _digest(messages)
     proof = {row["pk"]: row for row in messages}
     source_reason = ""
@@ -287,8 +322,14 @@ def _current_capture(client_id, expected_selection_revision, now):
     boundary = {**scope, "source_namespace": namespace, "reset_id": (reset or {}).get("pk"), "erasure_epoch": "",
         "source_watermark": watermark, "source_watermark_kind": "current_observation_vector",
         "selection_revision": revision, "view_mode": "current_admin", "historical": False}
+    if canonical_cart:
+        boundary.update(selection_session_id=cart["session_id"], selection_generation=cart["generation"],
+            selection_line_count=len(cart["lines"]), source_cart_capture_digest=cart["capture_digest"])
+    else:
+        boundary["selection_line_count"] = len(lines)
     components = {"source_selection": selection,
-        "source_selection_binding": {key: boundary[key] for key in (*scope, "source_namespace", "reset_id", "erasure_epoch")}}
+        "source_selection_binding": {key: boundary[key] for key in (*scope, "source_namespace", "reset_id", "erasure_epoch")},
+        "source_cart": cart}
     choices = selection.get("values") or {}
     readiness = selection_readiness(product_id=choices.get("product_id"), selection={}, size=choices.get("size", ""),
         fit=choices.get("fit_option_code", ""), color=choices.get("color", ""), quantity=choices.get("quantity", 1), strict=True)
@@ -312,6 +353,11 @@ def _current_capture(client_id, expected_selection_revision, now):
     if _digest(first) != _digest(final):
         raise AdminStateReadError("current_state_changed")
     final_messages = _source_rows(ids)
+    if canonical_cart:
+        try:
+            validate_current_source_cart_sources(cart, source_rows=final_messages)
+        except TurnContextError:
+            raise AdminStateReadError("current_source_changed") from None
     if source_fence != _digest(final_messages):
         raise AdminStateReadError("current_source_changed")
     if _namespace() != namespace or _source_watermark(scope, namespace, owner["igsid"], now) != watermark:

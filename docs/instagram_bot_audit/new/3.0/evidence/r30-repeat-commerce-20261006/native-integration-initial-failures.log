@@ -1,0 +1,38 @@
+................/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+.............................................Assisted attempt 56 provider identity/currency mismatch -> checking
+Assisted attempt 56 provider identity/currency mismatch -> checking
+.............................................................................................................................................................................................E...........................................................................................................................................................F..................................................................................................................................................................................................................ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+......................................................................................................................................................................................................................................................................................
+======================================================================
+ERROR: test_actual_sealed_factory_keeps_receipt_agreement_and_all_lines_without_payment_confirmation (management.tests_ig_multiline_context.MultilineCapturedContextTests.test_actual_sealed_factory_keeps_receipt_agreement_and_all_lines_without_payment_confirmation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/tests_ig_multiline_context.py", line 331, in test_actual_sealed_factory_keeps_receipt_agreement_and_all_lines_without_payment_confirmation
+    self.assertEqual(state["slots"]["receipt.observation"]["value"]["receipts"][0]["receipt_facts"]["amount"], "1900.00")
+                     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'receipt.observation'
+
+======================================================================
+FAIL: test_real_catalog_review_agreement_and_receipt_stay_within_read_budget (management.tests_ig_payment_captured_context.CapturedPaymentReadFenceTests.test_real_catalog_review_agreement_and_receipt_stay_within_read_budget)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/tests_ig_payment_captured_context.py", line 344, in test_real_catalog_review_agreement_and_receipt_stay_within_read_budget
+    self.assertEqual(result.status, "captured", result.as_dict())
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'unavailable' != 'captured'
+- unavailable
++ captured
+ : {'state': {'boundary': {'client_id': None, 'erasure_started': False, 'historical': False, 'reset_floor': 1, 'revision_id': None, 'view_mode': 'current_admin'}, 'captured_at': '2026-10-06T12:00:00+00:00', 'diagnostics': {'read_only': True}, 'digest': '673b47d2a252f2e383734b391f740b71d5351a998f952220831f17db95ddadc8', 'lines': [], 'omissions': [{'component': 'state', 'reason': 'capture_scope_unknown'}], 'schema': 'captured-client-state.v1', 'scope': {'client_id': None, 'episode_id': None, 'line_id': None, 'order_id': None, 'recipient_id': None, 'reset_floor': 1}, 'slots': {}, 'source_cart': {'coverage_complete': False, 'lines': [], 'reason': 'source_cart_unavailable', 'schema': 'source-selections.v1', 'status': 'unavailable'}, 'source_selection': {}, 'source_watermark': {'event_at': None, 'message_id': None}, 'status': 'unavailable'}, 'status': 'unavailable', 'reason': 'state_read_budget_exceeded', 'as_of': '2026-10-06T12:00:00+00:00', 'view_mode': 'current_admin', 'selection_revision': None, 'diagnostics': {'read_only': True, 'read_queries': 65, 'max_read_queries': 64}}
+
+----------------------------------------------------------------------
+Ran 930 tests in 203.415s
+
+FAILED (failures=1, errors=1)
+Found 930 test(s).
+System check identified no issues (0 silenced).

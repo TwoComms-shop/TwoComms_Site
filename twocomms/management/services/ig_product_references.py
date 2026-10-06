@@ -36,7 +36,7 @@ def _safe_hostname(parsed) -> str:
         return ""
 
 
-def _parse_owned_url(value: str) -> ProductReference:
+def _parse_owned_url(value: str, *, catalog_graph=None) -> ProductReference:
     try:
         parsed = urlsplit(value)
     except ValueError:
@@ -58,14 +58,18 @@ def _parse_owned_url(value: str) -> ProductReference:
     match = _PRODUCT_PATH.fullmatch(unquote(parsed.path or ""))
     if not match:
         return _empty(source=source, reason="not_product_url")
-    product = (
-        Product.objects.filter(
-            slug=match.group("slug").lower(),
-            status=ProductStatus.PUBLISHED,
+    if catalog_graph is not None:
+        matches = [row for row in catalog_graph.products if row.slug.lower() == match.group("slug").lower()]
+        product = matches[0] if len(matches) == 1 else None
+    else:
+        product = (
+            Product.objects.filter(
+                slug=match.group("slug").lower(),
+                status=ProductStatus.PUBLISHED,
+            )
+            .prefetch_related("color_variants__color", "fit_options")
+            .first()
         )
-        .prefetch_related("color_variants__color", "fit_options")
-        .first()
-    )
     if product is None:
         return _empty(source=source, reason="unknown_product")
 
@@ -74,24 +78,29 @@ def _parse_owned_url(value: str) -> ProductReference:
         for segment in (match.group("options") or "").strip("/").split("/")
         if segment
     ]
-    product_graph = None
-    if option_segments:
+    product_id = product.product_id if catalog_graph is not None else product.pk
+    product_graph = catalog_graph
+    if option_segments and product_graph is None:
         from .ig_catalog_graph import build_catalog_graph
 
-        product_graph = build_catalog_graph(product_ids=(product.pk,))
+        product_graph = build_catalog_graph(product_ids=(product_id,))
     known: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for variant in product.color_variants.all():
-        if variant.slug:
-            known[variant.slug.lower()].append(("color", variant.slug.lower()))
-    for option in product.fit_options.all():
-        if option.is_active and option.code:
+    variants = product.variants if catalog_graph is not None else product.color_variants.all()
+    for variant in variants:
+        slug = variant.color_slug if catalog_graph is not None else variant.slug
+        if slug:
+            known[slug.lower()].append(("color", slug.lower()))
+    fits = product.fits if catalog_graph is not None else product.fit_options.all()
+    for option in fits:
+        if (catalog_graph is not None or option.is_active) and option.code:
             known[option.code.lower()].append(("fit", option.code.lower()))
     for segment in option_segments:
         normalized_size = normalize_size_value(segment)
         if normalized_size in _KNOWN_SIZE_CODES:
             known[segment].append(("size", normalized_size))
     if product_graph and product_graph.products:
-        for configuration in product_graph.products[0].pricing.configurations:
+        graph_product = next((row for row in product_graph.products if row.product_id == product_id), None)
+        for configuration in graph_product.pricing.configurations if graph_product else ():
             for size in configuration.compatible_sizes:
                 normalized_size = normalize_size_value(size)
                 if normalized_size:
@@ -116,7 +125,7 @@ def _parse_owned_url(value: str) -> ProductReference:
         decision = rank_candidates(
             product_graph,
             CommerceTurnRequest(
-                exact_product_id=product.pk,
+                exact_product_id=product_id,
                 hard=constraints,
             ),
         )
@@ -124,7 +133,7 @@ def _parse_owned_url(value: str) -> ProductReference:
             return _empty(source=source, reason="incompatible_product_options")
 
     return ProductReference(
-        product_id=int(product.pk),
+        product_id=int(product_id),
         is_exact=True,
         source=source,
         reason="exact_storefront_product",
@@ -205,7 +214,7 @@ def _apply_media_evidence(result: ProductReference, media_evidence) -> ProductRe
     return result
 
 
-def resolve_product_reference(value: str | None, *, media_evidence=None) -> ProductReference:
+def resolve_product_reference(value: str | None, *, media_evidence=None, catalog_graph=None) -> ProductReference:
     """Resolve exact owned URLs; keep Instagram and screenshots as evidence."""
 
     urls = re.findall(r"https?://[^\s<>]+", str(value or ""))
@@ -221,7 +230,8 @@ def resolve_product_reference(value: str | None, *, media_evidence=None) -> Prod
         return _empty()
 
     normalized_urls = [url.rstrip(".,);]") for url in urls]
-    owned_results = [_parse_owned_url(url) for url in normalized_urls]
+    owned_results = [(_parse_owned_url(url, catalog_graph=catalog_graph) if catalog_graph is not None
+        else _parse_owned_url(url)) for url in normalized_urls]
     owned_results = [
         result for result in owned_results
         if result.source == ReferenceSource.STOREFRONT

@@ -1,0 +1,13 @@
+test_actual_eight_line_response_plan_and_all_facts_fit_context_cap_without_changing_artifact (management.tests_ig_multiline_context.MultilinePromptBudgetTests.test_actual_eight_line_response_plan_and_all_facts_fit_context_cap_without_changing_artifact) ... ok
+test_eight_positions_keep_all_values_and_exact_evidence_within_state_budget (management.tests_ig_multiline_context.MultilinePromptBudgetTests.test_eight_positions_keep_all_values_and_exact_evidence_within_state_budget) ... ok
+test_oversized_nonactive_requirement_refuses_whole_prompt_and_keeps_full_original (management.tests_ig_multiline_context.MultilinePromptBudgetTests.test_oversized_nonactive_requirement_refuses_whole_prompt_and_keeps_full_original) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.059s
+
+OK
+Found 3 test(s).
+Skipping setup of unused database(s): default.
+Verified 3 SimpleTestCase tests, databases=set(); skipDatabaseSetup; all connections forbidden
+COMBINED_SIZE {"current_cart_json_chars": 4999, "full_cart_json_chars": 77691, "line_count": 8, "obligation_count": 64, "plan_guidance_chars": 6561}
+ACCEPTED_METRICS {"builder_selected_chars": 11969, "full_dto_retained": true, "full_plan_digest_retained": true, "required_cart_chars": 5408, "required_plan_chars": 6561, "state_estimated_tokens": 1526, "state_oversized": false, "state_prompt_chars": 6062}

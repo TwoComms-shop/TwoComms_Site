@@ -1485,25 +1485,54 @@ def _wants_paylink(
 
 
 def _has_open_paid_deal(client) -> bool:
-    """Чи є оплачена угода, по якій замовлення ще не завершене.
+    """Block a duplicate invoice in the exact current purchase owner.
 
-    Саме це, а не «колись платив», є причиною не створювати новий рахунок:
-    гроші вже прийшли, і другий рахунок став би дублем. Коли ж замовлення
-    закрите (`order_created` + виконане) або скасоване, людина має повне право
-    купити знову — і це нормальний, очікуваний повторний продаж.
+    Unknown or changed ownership is also a conservative blocker. Historical
+    paid deals retain their fulfillment debt without blocking a proven new
+    current episode. This bool remains an invoice gate, not lifetime CRM truth.
     """
     if not getattr(client, "pk", None):
-        return False
-    from management.models import IgDeal
+        return True
+    from management.models import IgClient, IgCommercialEpisode, IgDeal
     from management.services.bot_payment_truth import verified_payment_q
 
-    return (
-        IgDeal.objects.filter(client=client)
-        .filter(verified_payment_q())
-        .exclude(status=IgDeal.Status.CANCELLED)
-        .filter(order__isnull=True)
-        .exists()
-    )
+    client_id = client.pk
+    episode_id = getattr(client, "current_commercial_episode_id", None)
+    client_fields = ("current_commercial_episode_id", "reply_permission_epoch", "privacy_erasure_started_at")
+    current = IgClient.objects.filter(pk=client_id).values(*client_fields).first()
+    if (not current or not episode_id
+            or current["current_commercial_episode_id"] != episode_id
+            or current["reply_permission_epoch"] != getattr(client, "reply_permission_epoch", None)
+            or current["privacy_erasure_started_at"] is not None):
+        return True
+    episode = IgCommercialEpisode.objects.select_related("deal").filter(
+        pk=episode_id, client_id=client_id, state=IgCommercialEpisode.State.ACTIVE,
+        open_slot=1, intended_order__isnull=True,
+    ).first()
+    if episode is None:
+        return True
+    deal = episode.deal if episode.deal_id else None
+    if episode.deal_id and (deal is None or deal.client_id != client_id or deal.order_id is not None):
+        return True
+    if deal is not None:
+        # Also fail closed for a lagging provider projection. These current
+        # row facts already prevent reuse in the authoritative quote writer.
+        if (deal.status in {IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED}
+                or deal.paid_at is not None or deal.paid_amount > 0
+                or deal.payment_status in {"paid", "prepaid"}
+                or deal.payment_truth in {IgDeal.PaymentTruth.CONFIRMED,
+                    IgDeal.PaymentTruth.PARTIALLY_REFUNDED, IgDeal.PaymentTruth.REFUNDED,
+                    IgDeal.PaymentTruth.REVERSED}
+                or IgDeal.objects.filter(pk=deal.pk, client_id=client_id).filter(verified_payment_q()).exists()):
+            return True
+    if IgClient.objects.filter(pk=client_id).values(*client_fields).first() != current:
+        return True
+    return not IgCommercialEpisode.objects.filter(
+        pk=episode_id, client_id=client_id, state=IgCommercialEpisode.State.ACTIVE,
+        open_slot=1, intended_order__isnull=True, deal_id=episode.deal_id,
+        **({"deal__client_id": client_id, "deal__order__isnull": True,
+            "deal__updated_at": deal.updated_at} if deal is not None else {}),
+    ).exists()
 
 
 def payment_link_allowed(client, control: dict, reply: str) -> bool:
@@ -1513,17 +1542,13 @@ def payment_link_allowed(client, control: dict, reply: str) -> bool:
     decision. The provider deal/link path is authoritative and must remain
     unreachable for a size/price question or an unresolved image.
     """
-    if not client or not isinstance(control, dict):
+    if not client or not getattr(client, "pk", None) or not isinstance(control, dict):
         return False
     if control.get("_invalid"):
         return False
     if getattr(client, "pk", None):
-        # Захист від дубля рахунку по **поточній незакритій** угоді, а не
-        # пожиттєва заборона продавати. Раніше тут стояв
-        # `client_has_verified_payment(client)`, тобто будь-хто, хто колись
-        # оплатив, більше ніколи не міг отримати посилання: постійний клієнт не
-        # мав можливості купити вдруге. W3 навчила систему бачити покупців —
-        # і цей гейт почав різати саме їх.
+        # A fresh current episode owns this invoice decision. An old paid deal
+        # without its order stays historical fulfillment debt, not new-cycle money.
         try:
             if _has_open_paid_deal(client):
                 return False
@@ -7855,7 +7880,14 @@ def _provider_reply_truth_context(client, control, reply_text):
         str(reply_text or ""),
         local_control,
     )
-    return build_reply_truth_context(client, control=resolved_control)
+    context = build_reply_truth_context(client, control=resolved_control)
+    if resolved_control.get("_price_claim_invalid"):
+        # A rejected exact configuration quote cannot borrow an authorized
+        # amount or range from a sibling proposal item. Typed controls belong
+        # to the caller and remain unchanged; these are local inference fields.
+        from dataclasses import replace
+        context = replace(context, authorized_prices=(), authorized_price_ranges=())
+    return context
 
 
 def gemini_generate(
@@ -8209,7 +8241,15 @@ def gemini_generate(
     from management.services.ig_response_guard import ProviderResponseGuard
 
     def reply_truth_context(control, reply_text):
-        context = _provider_reply_truth_context(client, control, reply_text)
+        if getattr(getattr(generation_boundary, "response_plan", None), "line_plans", ()):
+            if not callable(getattr(generation_boundary, "validate_response_truth", None)):
+                raise ValueError("multiline_truth_validator_unavailable")
+            from management.services.ig_reply_authority import build_reply_truth_context
+            # Several independently bound line prices are valid prose. The
+            # legacy single-amount extractor cannot supply their authority.
+            context = build_reply_truth_context(client, control=control)
+        else:
+            context = _provider_reply_truth_context(client, control, reply_text)
         captured_context = getattr(generation_boundary, "truth_context", None)
         return captured_context(context) if callable(captured_context) else context
 
@@ -8222,6 +8262,7 @@ def gemini_generate(
         ),
         programme=prize_programme,
         response_normalizer=getattr(generation_boundary, "normalize_response", None),
+        truth_validator=getattr(generation_boundary, "validate_response_truth", None),
     )
 
     def validate_attempt(parsed, *, usage=None):
@@ -9238,17 +9279,17 @@ def _persist_commerce_turn(row: InstagramBotMessage, *, media_evidence=None):
     """Reduce an inbound commerce event before legacy or model side effects."""
     if not row.client_id:
         return None, None
-    from management.services.ig_commerce_state import apply_turn
+    from management.services.ig_commerce_state import apply_turn, CommerceNonMutation
     from management.services.ig_commerce_replies import build_durable_reply_payload
     from management.services.ig_commerce_turns import understand_turn
 
     request = understand_turn(row.text, media_evidence=media_evidence)
-    return request, apply_turn(
-        row.client,
-        row,
-        request,
-        reply_builder=build_durable_reply_payload,
-    )
+    try:
+        return request, apply_turn(
+            row.client, row, request, reply_builder=build_durable_reply_payload,
+        )
+    except CommerceNonMutation:
+        return request, None
 
 
 def _durable_commerce_text(decision) -> str:

@@ -276,10 +276,39 @@ def _authority_from_projection(value) -> RevisionAuthorityBindingSet:
     )
 
 
+def _captured_reply_truth(plan, response, context):
+    """Prove each line first, then retain whole-reply business/URL checks."""
+    from management.services.ig_reply_truth import ReplyTruthResult, validate_reply_truth
+
+    if plan.plan_gap:
+        return ReplyTruthResult(False, (plan.plan_gap,))
+    if plan.configuration.get("reorder_observations"):
+        context = replace(context, payment_confirmed=False, order_created=False,
+            shipment_state="unknown", known_tracking_refs=(), approved_timing_claims=(),
+            explicitly_qualified_standard_dispatch_days=None, authorized_actions=())
+    reason = plan.validate_multiline_claims(response, context)
+    if reason:
+        return ReplyTruthResult(False, (reason,))
+    if plan.line_plans:
+        scoped = tuple(plan.line_truth_contexts(context).values())
+        # This aggregate is only a second, whole-reply guard. It cannot admit
+        # a price or preference rejected by the exact line check above.
+        keys = ("authorized_prices", "authorized_price_ranges", "allowed_sizes", "allowed_fits",
+                "allowed_colors", "source_chosen_sizes", "source_chosen_fits", "source_chosen_colors",
+                "audited_chosen_sizes")
+        context = replace(context, **{
+            key: tuple(dict.fromkeys(value for item in scoped for value in getattr(item, key)))
+            for key in keys
+        })
+    else:
+        context = plan.truth_context(context)
+    return validate_reply_truth(response.reply_text, context=context)
+
+
 class RevisionGenerationBoundary:
     """Request-local authority and CAS gate inside the existing two-call budget."""
 
-    def __init__(self, revision, token, settings_row, publication, *, has_images=False):
+    def __init__(self, revision, token, settings_row, publication, *, has_images=False, source_cart_capture=None):
         self.revision = revision
         self.token = token
         self.settings = settings_row
@@ -287,9 +316,19 @@ class RevisionGenerationBoundary:
         self.publication = publication
         self.has_images = has_images
         from management.services.ig_response_plan import capture_response_plan
-        self.response_plan = capture_response_plan(IgClient.objects.get(pk=revision.client_id), revision=revision)
+        client = IgClient.objects.get(pk=revision.client_id)
+        self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=source_cart_capture)
+        self.source_cart_fence = None
+        self.source_cart_reason = ""
+        if self.response_plan.source_cart_capture.get("lines"):
+            from management.services.ig_response_cart_fence import capture_source_cart_authority
+
+            cart = capture_source_cart_authority(client, self.response_plan.source_cart_capture, revision=revision)
+            self.source_cart_fence = cart.binding if cart.ready else None
+            self.source_cart_reason = cart.reason
         self.baseline = self._baseline()
         self.authority = None
+        self.checkout_cart_binding = None
         self.last_reasons = ()
         self.repaired = False
         self.programme = None
@@ -309,10 +348,12 @@ class RevisionGenerationBoundary:
             )
 
     def _baseline(self):
+        if self.response_plan.plan_gap or self.source_cart_reason:
+            return RevisionAuthorityBindingSet(False, (self.response_plan.plan_gap or self.source_cart_reason,))
         client = IgClient.objects.get(pk=self.revision.client_id)
         claims = [CLAIM_PUBLIC_POLICY_INPUTS]
         from management.services.ig_commerce_projection import source_preferences_for
-        if source_preferences_for(client):
+        if self.source_cart_fence or source_preferences_for(client):
             claims.append(CLAIM_SOURCE_PREFERENCES)
         if client.current_product_id:
             catalog = build_revision_authority_bindings(client, claims=(CLAIM_CATALOG_CONFIGURATION,), settings_obj=self.settings)
@@ -327,6 +368,7 @@ class RevisionGenerationBoundary:
                 claims.append(CLAIM_CURRENT_OFFER)
         return build_revision_authority_bindings(
             client, claims=claims, settings_obj=self.settings,
+            control={"source_cart_fence": self.source_cart_fence} if self.source_cart_fence else None,
         )
 
     @property
@@ -336,6 +378,9 @@ class RevisionGenerationBoundary:
 
     def truth_context(self, context):
         return self.response_plan.truth_context(context)
+
+    def validate_response_truth(self, response, context):
+        return _captured_reply_truth(self.response_plan, response, context)
 
     def check(self, authority=None):
         authority = authority or self.baseline
@@ -369,7 +414,13 @@ class RevisionGenerationBoundary:
     def response_authority(self, response):
         from management.services.ig_revision_intents import manager_case_reason
 
+        # This request-local proof is produced by the checkout owner. A prior
+        # candidate or model control cannot discharge the current cart's debt.
+        self.checkout_cart_binding = None
         control = response.control
+        if self.response_plan.configuration.get("reorder_observations") and (
+            set(control).intersection(SELECTION_KEYS | {"items", "paylink", "payment", "price_quoted"})):
+            return RevisionAuthorityBindingSet(False, ("reorder_resolution_required",))
         unsupported = set(control) - SUPPORTED_CONTROLS
         if unsupported:
             return RevisionAuthorityBindingSet(False, ("revision_domain_action_unsupported",))
@@ -393,6 +444,8 @@ class RevisionGenerationBoundary:
         if not case_reason and ((preference_keys and not preference_acknowledgement) or "price_quoted" in control or checkout_requested):
             claims.append(CLAIM_CATALOG_CONFIGURATION)
         authority_control = dict(control)
+        if self.source_cart_fence:
+            authority_control["source_cart_fence"] = self.source_cart_fence
         if checkout_requested:
             from management.services.ig_revision_checkout import authorize_revision_checkout
 
@@ -403,6 +456,8 @@ class RevisionGenerationBoundary:
             checkout_control, reasons = authorize_revision_checkout(
                 client, control, source_text,
                 sealed_sources=self.revision.bundle_snapshot["sources"],
+                source_cart_capture=self.response_plan.source_cart_capture or None,
+                source_cart_revision_id=self.revision.pk,
             )
             if reasons:
                 return RevisionAuthorityBindingSet(False, reasons)
@@ -425,10 +480,13 @@ class RevisionGenerationBoundary:
             actions.append("manager_escalation_intent")
         if self.programme is not None:
             actions.append("prize_review_case_create")
-        return build_revision_authority_bindings(
+        final_authority = build_revision_authority_bindings(
             client, claims=claims, control=authority_control,
             server_authorized_actions=actions, settings_obj=self.settings,
         )
+        if final_authority.ready and checkout_requested:
+            self.checkout_cart_binding = checkout_control.get("source_cart_binding")
+        return final_authority
 
     def contextual_fallback(self, *, policy_manifest):
         """Independently admit a local candidate; caller stores local provenance.
@@ -441,13 +499,14 @@ class RevisionGenerationBoundary:
             from management.services.ig_response_plan import capture_response_plan
             self.response_plan = capture_response_plan(IgClient.objects.get(pk=self.revision.client_id), revision=self.revision)
         client = IgClient.objects.get(pk=self.revision.client_id)
-        response, proof = build_source_preference_fallback(client, revision=self.revision)
+        response, proof = build_source_preference_fallback(client, revision=self.revision,
+            response_plan=self.response_plan if self.response_plan.line_plans else None)
         if response is None:
             return None, proof
         if self.has_images or self.revision.delivery_effects.exists():
             return None, {}
         from management.services.ig_commerce_projection import source_preferences_for
-        projection = source_preferences_for(client)
+        projection = {} if proof.get("source_cart_capture") else source_preferences_for(client)
         evidence = proof.get("current_source_preference") or projection.get("evidence", {}).get("fit_option_code") or {}
         receipt = (self.revision.action_receipts or {}).get("commerce_reduction") or {}
         if receipt.get("snapshot_digest") != self.revision.snapshot_digest or not any(
@@ -465,7 +524,8 @@ class RevisionGenerationBoundary:
             # price, availability or checkout claim. Do not require an exact
             # catalog configuration merely because a product is already set.
             self.baseline = build_revision_authority_bindings(
-                client, claims=(CLAIM_PUBLIC_POLICY_INPUTS, CLAIM_SOURCE_PREFERENCES) if projection else (CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=self.settings,
+                client, claims=(CLAIM_PUBLIC_POLICY_INPUTS, CLAIM_SOURCE_PREFERENCES) if projection or self.source_cart_fence else (CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=self.settings,
+                control={"source_cart_fence": self.source_cart_fence} if self.source_cart_fence else None,
             )
         decision = self.validate(response, policy_manifest=policy_manifest)
         if not decision.valid:
@@ -883,13 +943,17 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         return None, boundary, readiness.reasons
     from management.services.ig_reply_truth import validate_reply_truth
 
-    truth = validate_reply_truth(response.reply_text, context=boundary.truth_context(bot._provider_reply_truth_context(
-        IgClient.objects.get(pk=revision.client_id), response.control, response.reply_text,
-    )))
+    from management.services.ig_reply_authority import build_reply_truth_context
+    truth_client = IgClient.objects.get(pk=revision.client_id)
+    truth_context = (build_reply_truth_context(truth_client, control=response.control)
+        if boundary.response_plan.line_plans else bot._provider_reply_truth_context(truth_client, response.control, response.reply_text))
+    truth = boundary.validate_response_truth(response, truth_context)
     if not truth.valid:
         return None, boundary, truth.reasons
     from management.services.ig_response_debt import record_response_coverage
-    if not record_response_coverage(revision.pk, token, boundary.response_plan.coverage(response)):
+    if not record_response_coverage(revision.pk, token, boundary.response_plan.coverage(
+        response, checkout_cart_binding=boundary.checkout_cart_binding,
+    )):
         return None, boundary, ("response_coverage_cas_failed",)
     stored = store_revision_generation_proposal(
         revision.pk, token, source_message_ids=[source["message_id"] for source in sources],
@@ -901,6 +965,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         policy_manifest=failure.get("compiled_policy") or {}, authority=authority,
         prize_programme=boundary.programme,
         customer_route_capture=route_capture,
+        source_cart_capture=boundary.response_plan.source_cart_capture if boundary.source_cart_fence else None,
     )
     if not stored.stored:
         return None, boundary, stored.reasons
@@ -932,7 +997,7 @@ def _prepare_visible_content(revision, response, settings_row):
     return tuple(effects), reply, ()
 
 
-def _prepare_effects(revision, response, settings_row):
+def _prepare_effects(revision, response, settings_row, *, response_plan=None):
     from management.services import instagram_bot as bot
     from management.services.ig_revision_transport import prepare_text_effects
 
@@ -944,10 +1009,13 @@ def _prepare_effects(revision, response, settings_row):
 
     from management.services.ig_response_plan import capture_response_plan
     client = IgClient.objects.get(pk=revision.client_id)
-    response_plan = capture_response_plan(client, revision=revision)
-    truth = validate_reply_truth(reply, context=response_plan.truth_context(bot._provider_reply_truth_context(
-        client, response.control, reply,
-    )))
+    if response_plan is None:
+        response_plan = capture_response_plan(client, revision=revision,
+            source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
+    from management.services.ig_reply_authority import build_reply_truth_context
+    context = (build_reply_truth_context(client, control=response.control) if response_plan.line_plans
+        else bot._provider_reply_truth_context(client, response.control, reply))
+    truth = _captured_reply_truth(response_plan, replace(response, reply_text=reply), context)
     if not truth.valid:
         return (), truth.reasons
     prepared_text = prepare_text_effects(
@@ -1081,10 +1149,30 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     publication = PublicationBinding(pub["id"], pub["version"], pub["hash"])
     reply = receipt.get("static_reply_text") or receipt.get("reply_text") or ""
     from management.services.ig_response_plan import capture_response_plan
-    plan = capture_response_plan(revision.client, revision=revision)
-    truth = validate_reply_truth(reply, context=plan.truth_context(bot._provider_reply_truth_context(revision.client, {}, reply)))
+    original_cart = (receipt.get("proof") or {}).get("source_cart_capture")
+    plan = capture_response_plan(revision.client, revision=revision, source_cart_capture=original_cart)
+    from management.services.ig_reply_authority import build_reply_truth_context
+    context = (build_reply_truth_context(revision.client) if plan.line_plans
+        else bot._provider_reply_truth_context(revision.client, {}, reply))
+    truth = _captured_reply_truth(plan, ValidatedResponse(reply_text=reply), context)
     if not truth.valid:
         return RevisionLiveResult(revision.pk, "blocked", truth.reasons)
+    if plan.source_cart_capture.get("lines"):
+        from management.services.ig_response_cart_fence import capture_source_cart_authority
+
+        cart = capture_source_cart_authority(revision.client, plan.source_cart_capture, revision=revision)
+        if not cart.ready:
+            return RevisionLiveResult(revision.pk, "blocked", (cart.reason,))
+        old = [row for row in authority.fact_bindings if row["claim"] == CLAIM_SOURCE_PREFERENCES]
+        if old and (old[0].get("selector") or {}).get("source_cart_fence") != cart.binding:
+            return RevisionLiveResult(revision.pk, "blocked", ("deterministic_source_cart_changed",))
+        scoped = build_revision_authority_bindings(revision.client,
+            claims=(CLAIM_SOURCE_PREFERENCES,), control={"source_cart_fence": cart.binding}, settings_obj=settings_row)
+        if not scoped.ready:
+            return RevisionLiveResult(revision.pk, "blocked", scoped.reasons)
+        facts = tuple(row for row in authority.fact_bindings if row["claim"] != CLAIM_SOURCE_PREFERENCES) + scoped.fact_bindings
+        combined = sorted((*facts, *authority.offer_bindings), key=lambda item: item["claim"])
+        authority = replace(authority, fact_bindings=facts, authority_digest=_digest(combined))
     if receipt.get("origin") == "source_preference_fallback" or (receipt.get("origin") == "static_reply" and plan.obligations):
         from management.services.ig_response_debt import record_response_coverage
         coverage = (receipt.get("proof") or {}).get("coverage")
@@ -1258,7 +1346,8 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         execution = revision.generation_proposal.get("execution_binding") or {}
         if execution.get("settings_id") != settings_row.pk or not isinstance(execution.get("settings_permission_epoch"), int):
             return RevisionLiveResult(revision_id, "blocked", ("proposal_execution_binding_missing",))
-        boundary = RevisionGenerationBoundary(revision, token, settings_row, publication)
+        boundary = RevisionGenerationBoundary(revision, token, settings_row, publication,
+            source_cart_capture=revision.generation_proposal.get("source_cart_capture"))
         boundary.settings_epoch = execution["settings_permission_epoch"]
         boundary.authority = _authority_from_projection(revision.generation_proposal["authority"])
         original_publication = revision.generation_proposal["policy_manifest"]["instruction_publication"]
@@ -1394,7 +1483,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     if checkout_requested:
         effects, checkout_reply, reasons = _prepare_visible_content(revision, response, settings_row)
     else:
-        effects, reasons = _prepare_effects(revision, response, settings_row)
+        effects, reasons = _prepare_effects(revision, response, settings_row, response_plan=boundary.response_plan)
     if reasons:
         return RevisionLiveResult(revision_id, "blocked", reasons)
     # Credentials may perform provider I/O; obtain them before the short atomic
@@ -1411,6 +1500,8 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             if source.get("role") == "user" and not authorize_revision_checkout(
                 revision.client, response.control, source.get("text") or "",
                 sealed_sources=revision.bundle_snapshot["sources"],
+                source_cart_capture=boundary.response_plan.source_cart_capture or None,
+                source_cart_revision_id=revision.pk,
             )[1]
         ), None)
         if checkout_source is None:
@@ -1420,6 +1511,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
             publication=publication, generation_proposal_digest=revision.generation_proposal_digest,
             authority=authority, noncheckout_effects=effects, reply_text=checkout_reply,
+            source_cart_capture=boundary.response_plan.source_cart_capture or None,
         )
         if not checkout.planned:
             return RevisionLiveResult(revision_id, "blocked", checkout.reasons)

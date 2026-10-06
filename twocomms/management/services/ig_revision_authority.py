@@ -328,10 +328,42 @@ def _checkout_configuration_binding(client, control, episode):
     """An exact bounded cart, independently repriced by the checkout resolver."""
     from management.services.ig_checkout import CheckoutConfigurationError, validate_checkout_items
 
+    if any(key in control for key in ("source_cart_capture", "source_cart_binding", "source_cart_reference")):
+        from management.services.ig_revision_checkout import checkout_authority_control, compact_checkout_control
+        normalized, reasons = checkout_authority_control(client, control)
+        if reasons:
+            return None, reasons[0]
+        if "source_cart_reference" not in control and control.get("items") != normalized["items"]:
+            return None, "checkout_cart_configuration_changed"
+        try:
+            quote = validate_checkout_items(client=client, item_specs=normalized["items"], negotiated_total=None,
+                source_cart_binding=normalized["source_cart_binding"])
+        except CheckoutConfigurationError as exc:
+            return None, "checkout:" + exc.code
+        try:
+            selector = compact_checkout_control(normalized,
+                artifact=(control.get("source_cart_reference") or {}).get("artifact"))
+        except (TypeError, ValueError, KeyError):
+            return None, "checkout_generation_artifact_missing"
+        return _base_binding(
+            CLAIM_CATALOG_CONFIGURATION, client, episode, selector,
+            {"items": [item.digest_payload() for item in quote.items],
+             "source_cart_reference": selector["source_cart_reference"], "quote_digest": quote.digest},
+            product_ids=sorted({item.product.pk for item in quote.items}),
+            variant_ids=sorted({item.color_variant.pk for item in quote.items if item.color_variant}),
+            item_count=len(quote.items),
+        ), ""
+
     items = control.get("items")
     keys = {"product_id", "color_variant_id", "qty", "size", "fit_option_code", "option_values"}
     if not isinstance(items, (list, tuple)) or not 1 <= len(items) <= MAX_PRODUCTS:
         return None, "checkout_items_invalid"
+    if len(items) != 1:
+        return None, "checkout_cart_capture_missing"
+    from management.models import IgCommerceSelectionSession
+    session = IgCommerceSelectionSession.objects.filter(client_id=client.pk, open_slot=1, state="open").first()
+    if session is not None and len(session.lines or []) > 1:
+        return None, "checkout_cart_capture_missing"
     if any(not isinstance(row, Mapping) or set(row) - keys for row in items):
         return None, "checkout_items_invalid"
     try:
@@ -358,7 +390,7 @@ def _checkout_configuration_binding(client, control, episode):
 
 
 def _catalog_configuration_binding(client, control, episode):
-    if "items" in control:
+    if "items" in control or "source_cart_reference" in control:
         return _checkout_configuration_binding(client, control, episode)
     selector, reason = _configuration_selector(client, control)
     if reason:
@@ -760,6 +792,21 @@ def owned_checkout_business_rebind(old, fresh, *, before, after, checkout, prior
     return _canonical(normalized) == _canonical(before)
 
 
+def _source_cart_preferences_binding(client, control, episode):
+    """Persist the complete cart fence inside the existing preference claim."""
+    from management.services.ig_response_cart_fence import check_source_cart_authority
+
+    fence = control.get("source_cart_fence")
+    checked = check_source_cart_authority(client, fence)
+    if not checked.ready:
+        return None, checked.reason
+    selector = {"source_cart_fence": _jsonable(fence)}
+    return _base_binding(
+        CLAIM_SOURCE_PREFERENCES, client, episode, selector, selector,
+        session_id=fence["session_id"], source_message_ids=list(fence["source_ids"]),
+    ), ""
+
+
 def build_revision_authority_bindings(
     client,
     *,
@@ -802,15 +849,18 @@ def build_revision_authority_bindings(
     reasons: list[str] = []
     for claim in requested:
         if claim == CLAIM_SOURCE_PREFERENCES:
-            from management.services.ig_commerce_projection import source_preferences_for
+            if "source_cart_fence" in safe_control:
+                binding, reason = _source_cart_preferences_binding(fresh, safe_control, episode)
+            else:
+                from management.services.ig_commerce_projection import source_preferences_for
 
-            preferences = source_preferences_for(fresh)
-            binding, reason = (
-                (_base_binding(claim, fresh, episode, {}, preferences,
-                               session_id=preferences["session_id"],
-                               source_message_ids=sorted({row["source_message_id"] for row in preferences["evidence"].values()})), "")
-                if preferences else (None, "source_preferences_unavailable")
-            )
+                preferences = source_preferences_for(fresh)
+                binding, reason = (
+                    (_base_binding(claim, fresh, episode, {}, preferences,
+                                   session_id=preferences["session_id"],
+                                   source_message_ids=sorted({row["source_message_id"] for row in preferences["evidence"].values()})), "")
+                    if preferences else (None, "source_preferences_unavailable")
+                )
         elif claim == CLAIM_CATALOG_CONFIGURATION:
             binding, reason = _catalog_configuration_binding(
                 fresh, safe_control, episode
@@ -883,6 +933,11 @@ def _check_bindings(
         selector = expected.get("selector")
         if not isinstance(selector, Mapping):
             return False
+        if claim == CLAIM_SOURCE_PREFERENCES and "source_cart_fence" in selector:
+            from management.services.ig_response_cart_fence import check_source_cart_authority
+
+            if not check_source_cart_authority(client, selector["source_cart_fence"], revision=revision).ready:
+                return False
         rebuilt = build_revision_authority_bindings(
             client,
             claims=(claim,),

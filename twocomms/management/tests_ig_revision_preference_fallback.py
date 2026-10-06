@@ -30,10 +30,9 @@ class RevisionPreferenceFallbackIntegrationTests(TransactionTestCase):
     def _generate(self, *_args, **_kwargs):
         self.fail("An existing failed request must not start another provider generation")
 
-    def _fit_fixture(self, *, fit_text="Оверсайз", media=False):
-        sources = [self._message("Хочу оформить заказ", "fit-order"),
-                   self._message("Рост 190, вес 100, чёрная футболка", "fit-body"),
-                   self._message(fit_text, "fit-choice")]
+    def _fit_fixture(self, *, fit_text="Оверсайз", media=False, source_texts=None):
+        texts = source_texts or ["Хочу оформить заказ", "Рост 190, вес 100, чёрная футболка", fit_text]
+        sources = [self._message(text, f"fit-source-{index}") for index, text in enumerate(texts)]
         if media:
             sources[-1].attachment_media = [{
                 "source_part_id": "mp1_" + "7" * 32, "original_index": 0,

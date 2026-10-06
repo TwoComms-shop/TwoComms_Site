@@ -118,7 +118,11 @@ def _selection_state(client, product_id):
     return dict(state)
 
 
-def _fit_rows(product, *, strict=False):
+def _fit_rows(product, *, strict=False, _catalog_inputs=None):
+    if _catalog_inputs is not None:
+        if _catalog_inputs.get("product") is not product:
+            raise ValueError("catalog_product_mismatch")
+        return list(_catalog_inputs["fit_rows"])
     try:
         from storefront.models import ProductFitOption
 
@@ -219,7 +223,7 @@ def _disabled_sizes(variant, fit_code: str, *, strict=False) -> list[str]:
         return []
 
 
-def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict=False):
+def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict=False, _catalog_inputs=None):
     """Кольори, які реально можна купити за правилами вітрини.
 
     Свідомо **не** фільтруємо за числовим `ProductColorVariant.stock`: на проді
@@ -232,7 +236,7 @@ def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict
         from management.services.ig_catalog_pricing import resolve_product_pricing
         from productcolors.models import ProductColorVariant
 
-        rows = list(
+        rows = list(_catalog_inputs["variants"]) if _catalog_inputs is not None else list(
             ProductColorVariant.objects.filter(product=product)
             .select_related("color")
             .order_by("order", "id")
@@ -248,7 +252,7 @@ def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict
     for row in rows:
         name = str(getattr(getattr(row, "color", None), "name", "") or "").strip()
         try:
-            allowed = variant_allows_purchase(
+            allowed = row.pk in _catalog_inputs["allowed_variant_ids"] if _catalog_inputs is not None else variant_allows_purchase(
                 product,
                 row,
                 fit_code=fit_code,
@@ -278,28 +282,50 @@ def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict
 
 
 def _active_deal_state(client):
+    unknown = {"status": "unknown", "expires_at": None, "deal_id": None}
     try:
-        from management.models import IgDeal
+        from management.models import IgClient, IgCommercialEpisode, IgDeal
         from management.services.bot_payments import invoice_link_state
 
-        deal = (
-            IgDeal.objects.filter(client=client)
-            .exclude(status=IgDeal.Status.CANCELLED)
-            .order_by("-id")
+        client_id = getattr(client, "pk", None)
+        episode_id = getattr(client, "current_commercial_episode_id", None)
+        client_fields = ("current_commercial_episode_id", "reply_permission_epoch", "privacy_erasure_started_at")
+        current = IgClient.objects.filter(pk=client_id).values(*client_fields).first()
+        if (not current or not episode_id
+                or current["current_commercial_episode_id"] != episode_id
+                or current["reply_permission_epoch"] != getattr(client, "reply_permission_epoch", None)
+                or current["privacy_erasure_started_at"] is not None):
+            return unknown
+        episode = (
+            IgCommercialEpisode.objects.select_related("deal")
+            .filter(pk=episode_id, client_id=client_id, state=IgCommercialEpisode.State.ACTIVE,
+                    open_slot=1, intended_order__isnull=True)
             .first()
         )
+        if episode is None:
+            return unknown
+        deal = episode.deal if episode.deal_id else None
+        if episode.deal_id and (deal is None or deal.client_id != client_id or deal.order_id is not None):
+            return unknown
+        cancelled = deal is not None and deal.status == IgDeal.Status.CANCELLED
+        state = invoice_link_state(None if cancelled else deal)
+        # The reader may wait while a repeat cycle or privacy change commits.
+        # Never return the former cycle's link after that owner has changed.
+        if IgClient.objects.filter(pk=client_id).values(*client_fields).first() != current:
+            return unknown
+        if not IgCommercialEpisode.objects.filter(
+            pk=episode_id, client_id=client_id, state=IgCommercialEpisode.State.ACTIVE,
+            open_slot=1, intended_order__isnull=True, deal_id=episode.deal_id,
+            **({"deal__client_id": client_id, "deal__order__isnull": True,
+                "deal__updated_at": deal.updated_at} if deal is not None else {}),
+        ).exists():
+            return unknown
     except Exception:
-        return {"status": "none", "expires_at": None, "deal_id": None}
-    if deal is None:
-        return {"status": "none", "expires_at": None, "deal_id": None}
-    try:
-        state = invoice_link_state(deal)
-    except Exception:
-        state = {"status": "unknown", "expires_at": None}
+        return unknown
     return {
         "status": state.get("status") or "unknown",
         "expires_at": state.get("expires_at"),
-        "deal_id": deal.pk,
+        "deal_id": deal.pk if deal is not None and not cancelled else None,
     }
 
 
@@ -329,7 +355,7 @@ def checkout_readiness(
     return result
 
 
-def selection_readiness(*, product_id, selection, size, fit="", quantity=1, color="", strict=False):
+def selection_readiness(*, product_id, selection, size, fit="", quantity=1, color="", strict=False, _catalog_inputs=None):
     """Catalog facts for explicit selection inputs; never reads a client or deal.
 
     ``strict`` exposes unresolved applicability for read-only UI projections.
@@ -359,8 +385,17 @@ def selection_readiness(*, product_id, selection, size, fit="", quantity=1, colo
     try:
         from storefront.models import Product, ProductStatus
 
-        product = Product.objects.filter(pk=product_id).select_related("category").first()
+        if _catalog_inputs is not None:
+            if not strict or _catalog_inputs.get("product_id") != product_id:
+                raise ValueError("catalog_product_mismatch")
+            product = _catalog_inputs.get("product")
+            if product is not None and product.pk != product_id:
+                raise ValueError("catalog_product_mismatch")
+        else:
+            product = Product.objects.filter(pk=product_id).select_related("category").first()
     except Exception:
+        if _catalog_inputs is not None:
+            raise
         return result
     if product is None or product.status != ProductStatus.PUBLISHED:
         result["missing"] = ["product"]
@@ -382,7 +417,7 @@ def selection_readiness(*, product_id, selection, size, fit="", quantity=1, colo
         **({"kind": str(product.category.name)} if strict else {}),
     }
 
-    fit_rows = _fit_rows(product, **({"strict": True} if strict else {}))
+    fit_rows = _fit_rows(product, **({"strict": True} if strict else {}), _catalog_inputs=_catalog_inputs)
     fit_selected = str(
         fit or selection.get("fit_option_code") or ""
     ).strip().lower()
@@ -401,33 +436,41 @@ def selection_readiness(*, product_id, selection, size, fit="", quantity=1, colo
     preselected_variant = None
     preselected_variant_id = _int_or_none(selection.get("color_variant_id"))
     if preselected_variant_id:
-        try:
-            from productcolors.models import ProductColorVariant
+        if _catalog_inputs is not None:
+            preselected_variant = next((row for row in _catalog_inputs["variants"] if row.pk == preselected_variant_id), None)
+        else:
+            try:
+                from productcolors.models import ProductColorVariant
 
-            preselected_variant = (
-                ProductColorVariant.objects.filter(
-                    pk=preselected_variant_id, product=product
+                preselected_variant = (
+                    ProductColorVariant.objects.filter(
+                        pk=preselected_variant_id, product=product
+                    )
+                    .select_related("color")
+                    .first()
                 )
-                .select_related("color")
-                .first()
-            )
-        except Exception:
-            if strict:
-                raise
-            preselected_variant = None
+            except Exception:
+                if strict:
+                    raise
+                preselected_variant = None
     if preselected_variant is None:
-        try:
-            from productcolors.models import ProductColorVariant
-
-            variants = list(ProductColorVariant.objects.filter(product=product)[:2])
-            if len(variants) == 1:
+        if _catalog_inputs is not None:
+            variants = list(_catalog_inputs["variants"])
+            if len(variants) == 1 and not preselected_variant_id:
                 preselected_variant = variants[0]
-        except Exception:
-            if strict:
-                raise
-            preselected_variant = None
+        else:
+            try:
+                from productcolors.models import ProductColorVariant
 
-    grid = sizes_for_fit(product, fit_selected, variant=preselected_variant, **({"strict": True} if strict else {}))
+                variants = list(ProductColorVariant.objects.filter(product=product)[:2])
+                if len(variants) == 1:
+                    preselected_variant = variants[0]
+            except Exception:
+                if strict:
+                    raise
+                preselected_variant = None
+
+    grid = dict(_catalog_inputs["grid"]) if _catalog_inputs is not None else sizes_for_fit(product, fit_selected, variant=preselected_variant, **({"strict": True} if strict else {}))
     size_selected = str(
         size or ""
     ).strip().upper()
@@ -461,6 +504,7 @@ def selection_readiness(*, product_id, selection, size, fit="", quantity=1, colo
             size=size_selected,
             option_values=selected_option_values,
             **({"strict": True} if strict else {}),
+            _catalog_inputs=_catalog_inputs,
         )
     except Exception:
         colors = []
@@ -483,7 +527,7 @@ def selection_readiness(*, product_id, selection, size, fit="", quantity=1, colo
 
         option_variant = preselected_variant
         if option_variant is None and selected_variant_id:
-            option_variant = (
+            option_variant = next((row for row in _catalog_inputs["variants"] if row.pk == selected_variant_id), None) if _catalog_inputs is not None else (
                 ProductColorVariant.objects.filter(
                     pk=selected_variant_id, product=product
                 ).select_related("color").first()

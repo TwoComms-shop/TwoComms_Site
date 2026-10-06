@@ -19,12 +19,13 @@ class Node {
   all() { return [this, ...this.children.flatMap(child => child.all())]; }
 }
 function capture({ client = 12, revision = 3, digest = 'a', value = 'M', authority = 'customer_source' } = {}) {
+  const scope = { client_id: client, episode_id: null, order_id: null, line_id: 'line-1', recipient_id: 'self' };
   return { status: 'captured', view_mode: 'current_admin', selection_revision: revision,
-    state: { status: 'captured', boundary: { client_id: client, selection_revision: revision,
+    state: { status: 'captured', boundary: { ...scope, selection_revision: revision,
       view_mode: 'current_admin', historical: false, size_correction_context: {
         available: true, context_digest: digest.repeat(64), context: {
-          schema: 'size-correction-context.v1', field: 'size', scope: { client_id: client },
-          selection_revision: revision, value, source: { source_message_id: 34, authority }
+          schema: 'size-correction-context.v1', field: 'size', scope,
+          selection_revision: revision, active_index: 0, value, source: { source_message_id: 34, authority }
         }
       } }, slots: { 'choice.size': { authority, source_refs: [
         { kind: 'message', id: 34 }, { kind: 'commerce_transition', actor_id: 7 }
@@ -168,4 +169,20 @@ test('noop is a proven result and unavailable fresh card never grants editing', 
   const unavailable = capture(); unavailable.status = 'unavailable';
   f.controller.render(12, unavailable); assert.equal(f.field('ig-sc-size').disabled, true);
   assert.equal(f.action('save').disabled, true);
+});
+
+test('exact episode/order/line/recipient scope is visible before editing and mismatches deny editing', () => {
+  const f = fixture(), dto = capture();
+  const context = dto.state.boundary.size_correction_context.context;
+  Object.assign(context.scope, { episode_id: 41, order_id: 72, line_id: 'gift-hoodie', recipient_id: 'gift-recipient' });
+  Object.assign(dto.state.boundary, context.scope); context.active_index = 2;
+  assert.equal(f.controller.render(12, dto), true);
+  assert.match(f.field('ig-sc-scope').textContent, /Прив’язане замовлення.*Позиція 3.*Окремий отримувач/);
+  assert.doesNotMatch(f.field('ig-sc-scope').textContent, /gift-hoodie|gift-recipient|№41|№72/);
+  assert.equal(f.field('ig-sc-editor').hidden, true); assert.equal(f.calls.length, 0);
+  dto.state.boundary.line_id = 'different-position';
+  assert.equal(f.controller.render(12, dto), false); assert.equal(f.action('edit').disabled, true);
+  const unknown = capture(); f.controller.render(12, unknown);
+  assert.match(f.field('ig-sc-scope').textContent, /Замовлення ще не прив’язане.*Позиція 1.*Для себе/);
+  assert.doesNotMatch(f.field('ig-sc-scope').textContent, /line-1/);
 });

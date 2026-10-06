@@ -227,6 +227,7 @@ def validate_checkout_items(
     negotiated_total=None,
     requested_payment_amount=None,
     allow_promo=False,
+    source_cart_binding=None,
 ):
     from product_catalog.services import effective_cart_unit_price, variant_allows_purchase
     from product_catalog.size_grid_services import (
@@ -244,11 +245,19 @@ def validate_checkout_items(
         raise CheckoutConfigurationError("invalid_items")
     if len(item_specs) > MAX_CHECKOUT_ITEMS:
         raise CheckoutConfigurationError("too_many_items")
+    source_lines = None
+    if source_cart_binding is not None:
+        from management.services.ig_revision_cart_binding import validate_quote_source_positions
+        source = validate_quote_source_positions(binding=source_cart_binding,
+            client_id=client.pk, item_specs=item_specs)
+        if not source.ok:
+            raise CheckoutConfigurationError("source_cart_binding_invalid", reason=source.reason)
+        source_lines = source.binding["lines"]
 
     evidence = evidence if isinstance(evidence, dict) else {}
     evidence_ids = _normalize_message_ids(evidence.get("message_ids"))
     normalized = []
-    identities = set()
+    identities = {}
     total_quantity = 0
     missing_fields = set()
 
@@ -266,7 +275,7 @@ def validate_checkout_items(
         if total_quantity > MAX_CHECKOUT_QUANTITY:
             raise CheckoutConfigurationError("aggregate_quantity_limit")
 
-        product = Product.objects.filter(pk=product_id).first()
+        product = Product.objects.select_related("category", "catalog", "size_grid").filter(pk=product_id).first()
         if product is None:
             raise CheckoutConfigurationError("invalid_product", item_index=index)
         if product.status != ProductStatus.PUBLISHED:
@@ -304,6 +313,8 @@ def validate_checkout_items(
             .filter(product=product)
             .order_by("order", "id")
         )
+        from management.services.ig_catalog_pricing import prepare_pricing_context
+        prepare_pricing_context([product], color_variants)
         variant = None
         if color_value not in (None, "", False, 0, "0"):
             try:
@@ -465,9 +476,15 @@ def validate_checkout_items(
             fit_code,
             json.dumps(option_values, ensure_ascii=True, sort_keys=True),
         )
-        if identity in identities:
-            raise CheckoutConfigurationError("duplicate_items", item_index=index)
-        identities.add(identity)
+        previous = identities.get(identity, [])
+        if previous:
+            if source_lines is None:
+                raise CheckoutConfigurationError("duplicate_items", item_index=index)
+            recipient = source_lines[index]["recipient_id"]
+            if any(source_lines[position]["recipient_id"] == recipient for position in previous):
+                raise CheckoutConfigurationError("duplicate_recipient_items", item_index=index,
+                    reason="source_cart_quantity_clarification_required")
+        identities.setdefault(identity, []).append(index)
 
         color = getattr(variant, "color", None) if variant else None
         normalized.append(ValidatedCheckoutItem(
@@ -514,6 +531,17 @@ def validate_checkout_items(
                     if brigade_pricing.lines[str(index)].bundle_allocations else {})
         for index, item in enumerate(normalized)
     ]
+    # Distinct recipients retain distinct quote lines, but consume the same
+    # tracked variant stock. Check their aggregate using the existing stock
+    # semantics (zero is untracked/made-to-order, never invented scarcity).
+    variant_quantities = {}
+    for index, item in enumerate(normalized):
+        if item.color_variant is not None:
+            variant_quantities.setdefault(item.color_variant.pk, [item.color_variant, 0, index])[1] += item.quantity
+    for variant, quantity, index in variant_quantities.values():
+        if tracked_stock_shortfall(variant, quantity):
+            raise CheckoutConfigurationError("insufficient_stock", item_index=index,
+                reason="tracked_stock_shortfall")
     catalog_total = sum((item.catalog_line_total for item in normalized), Decimal("0.00"))
     if catalog_total <= 0 or catalog_total > MAX_CHECKOUT_VALUE:
         raise CheckoutConfigurationError("invalid_catalog_total")
@@ -603,8 +631,8 @@ def _deal_item_snapshot(item):
     }
 
 
-def _revision_snapshot(quote):
-    return {
+def _revision_snapshot(quote, *, source_cart_binding=None, source_cart_capture=None):
+    snapshot = {
         "items": [_deal_item_snapshot(item) for item in quote.items],
         "catalog_total": str(quote.catalog_total),
         "negotiated_discount": str(quote.negotiated_discount),
@@ -613,6 +641,34 @@ def _revision_snapshot(quote):
         "pay_type": quote.pay_type,
         "digest": quote.digest,
     }
+    if source_cart_binding is not None:
+        from copy import deepcopy
+        snapshot["source_cart_binding"] = deepcopy(source_cart_binding)
+        snapshot["source_cart_capture"] = deepcopy(source_cart_capture)
+    return snapshot
+
+
+def _same_revision_source_cart(proposal, binding, capture):
+    """Money equality cannot replay a different source/recipient/head artifact."""
+    revision = proposal.revisions.filter(revision=proposal.revision).first()
+    snapshot = revision.snapshot if revision is not None else {}
+    if not isinstance(snapshot, dict):
+        return False
+    if binding is None:
+        return "source_cart_binding" not in snapshot and "source_cart_capture" not in snapshot
+    from management.services.ig_revision_cart_binding import same_checkout_source_capture
+    if not same_checkout_source_capture(snapshot.get("source_cart_capture"), capture):
+        return False
+    # Rebuild the original frozen binding against today's canonical source and
+    # strict catalog readiness. Only its approved owner hash may have changed;
+    # original capture, proofs, source hash and quote map stay intact.
+    from management.services.ig_revision_checkout import checkout_authority_control
+    original, reasons = checkout_authority_control(proposal.client, {
+        "source_cart_capture": snapshot["source_cart_capture"],
+        "source_cart_binding": snapshot.get("source_cart_binding"),
+    })
+    return (not reasons and original.get("source_cart_binding") == snapshot.get("source_cart_binding")
+            and original["source_cart_binding"]["quote_line_map"] == binding.get("quote_line_map"))
 
 
 def _sync_deal_and_episode(*, deal, quote):
@@ -724,11 +780,15 @@ def create_or_update_proposal(
     allow_promo=False,
     locale=None,
     deal=None,
+    source_cart_binding=None,
+    source_cart_capture=None,
+    checkout_owner_scope=None,
 ):
     from management.models import (
         IgCheckoutProposal,
         IgCheckoutRevision,
         IgClient,
+        IgCommercialEpisode,
         IgDeal,
     )
 
@@ -758,7 +818,55 @@ def create_or_update_proposal(
             None if new_v2_canary else requested_payment_amount
         ),
         allow_promo=allow_promo,
+        source_cart_binding=source_cart_binding,
     )
+    bound_cart = source_cart_binding is not None or source_cart_capture is not None or checkout_owner_scope is not None
+    if bound_cart:
+        # Reconstruct all selectors from the canonical capture while the client
+        # is locked. This is not an optional caller-authenticated cart payload.
+        from management.services.ig_revision_checkout import checkout_authority_control, _quote_items, lock_checkout_cart_sources
+        if not lock_checkout_cart_sources(locked_client, source_cart_capture):
+            raise CheckoutConfigurationError("checkout_cart_source_scope_invalid")
+        candidate, reasons = checkout_authority_control(locked_client, {
+            "source_cart_binding": source_cart_binding, "source_cart_capture": source_cart_capture,
+            "checkout_owner_scope": checkout_owner_scope,
+        })
+        if reasons or candidate.get("items") != _quote_items(quote):
+            raise CheckoutConfigurationError(reasons[0] if reasons else "checkout_cart_configuration_changed")
+    # A matching price/configuration digest cannot identify a purchase cycle.
+    # Locate only the client's exact current episode; NULL legacy scope never
+    # borrows the latest historical deal (which may already own paid money).
+    current_episode_id = locked_client.current_commercial_episode_id
+    null_open_episode_id = None
+    if current_episode_id is None:
+        open_episode = IgCommercialEpisode.objects.filter(
+            client_id=locked_client.pk, open_slot=1,
+        ).values("pk", "deal_id", "state", "intended_order_id").first()
+        if open_episode is not None:
+            if (open_episode["deal_id"] is not None or open_episode["intended_order_id"] is not None
+                    or open_episode["state"] != IgCommercialEpisode.State.ACTIVE):
+                # Missing current scope is not a request to supersede another
+                # open, already-bound purchase. Its source owner must resolve it.
+                raise CheckoutConfigurationError("checkout_episode_scope_unknown")
+            null_open_episode_id = open_episode["pk"]
+
+    def current_episode_scope():
+        if current_episode_id is None:
+            return None
+        episode = IgCommercialEpisode.objects.filter(
+            pk=current_episode_id, client_id=locked_client.pk,
+        ).values("pk", "deal_id", "state", "open_slot", "intended_order_id").first()
+        if episode is None:
+            raise CheckoutConfigurationError("checkout_episode_scope_changed")
+        if episode["intended_order_id"] is not None or episode["state"] in {
+            IgCommercialEpisode.State.ORDER_CREATED, IgCommercialEpisode.State.FULFILLED,
+        }:
+            raise CheckoutConfigurationError("checkout_episode_converted")
+        if episode["state"] != IgCommercialEpisode.State.ACTIVE or episode["open_slot"] != 1:
+            raise CheckoutConfigurationError("checkout_episode_stale")
+        return episode
+
+    current_episode = current_episode_scope()
     if deal is not None:
         deal = (
             IgDeal.objects.select_for_update()
@@ -767,17 +875,70 @@ def create_or_update_proposal(
         )
         if deal is None:
             raise CheckoutConfigurationError("invalid_deal")
-    else:
+    elif current_episode is not None and current_episode["deal_id"] is not None:
         deal = (
             IgDeal.objects.select_for_update()
-            .filter(client=locked_client, active_checkout_proposal__isnull=False)
-            .order_by("-id")
+            .filter(pk=current_episode["deal_id"], client=locked_client)
             .first()
         )
+        if deal is None:
+            raise CheckoutConfigurationError("checkout_episode_scope_changed")
+    # Preserve the existing Deal -> Proposal -> Attempt lock prefix. Episode
+    # reads add no earlier episode lock; re-read after a deal-lock wait so a
+    # concurrently completed conversion cannot pass the same-digest shortcut.
+    if deal is not None:
+        current_episode = current_episode_scope()
+        deal_episode_id = IgCommercialEpisode.objects.filter(deal_id=deal.pk).values_list("pk", flat=True).first()
+        if (current_episode is None and deal_episode_id is not None) or (
+            current_episode is not None and (
+                current_episode["deal_id"] not in {None, deal.pk}
+                or deal_episode_id not in {None, current_episode_id}
+            )
+        ):
+            raise CheckoutConfigurationError("checkout_episode_scope_changed")
+        if (deal.order_id or deal.paid_at is not None or deal.paid_amount > 0
+                or deal.status in {IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED}
+                or deal.payment_truth in {
+                    IgDeal.PaymentTruth.CONFIRMED, IgDeal.PaymentTruth.PARTIALLY_REFUNDED,
+                    IgDeal.PaymentTruth.REFUNDED, IgDeal.PaymentTruth.REVERSED,
+                }):
+            raise CheckoutConfigurationError("checkout_episode_converted")
     proposal_id = deal.active_checkout_proposal_id if deal is not None else None
+    detached_terminal_proposal = False
+    if deal is not None and proposal_id is None:
+        previous_proposal = IgCheckoutProposal.objects.filter(
+            deal_id=deal.pk,
+        ).order_by("-pk").values("pk", "status", "commercial_episode_id", "client_id").first()
+        if previous_proposal is not None:
+            if (previous_proposal["client_id"] != locked_client.pk
+                    or previous_proposal["commercial_episode_id"] != current_episode_id
+                    or previous_proposal["status"] not in {
+                        IgCheckoutProposal.Status.EXPIRED, IgCheckoutProposal.Status.CANCELLED,
+                    }):
+                raise CheckoutConfigurationError("checkout_episode_scope_changed")
+            # Local terminalization intentionally clears the fast pointer.
+            # Its exact current-deal receipt may still authorize the existing
+            # fresh-deal repair below; a historical proposal is never a fallback.
+            proposal_id = previous_proposal["pk"]
+            detached_terminal_proposal = True
     proposal = None
     if proposal_id:
-        proposal = IgCheckoutProposal.objects.select_for_update().get(pk=proposal_id)
+        proposal = IgCheckoutProposal.objects.select_for_update().filter(pk=proposal_id).first()
+        if proposal is None:
+            raise CheckoutConfigurationError("checkout_episode_scope_changed")
+        current_episode_scope()
+        if (proposal.client_id != locked_client.pk or proposal.deal_id != deal.pk
+                or proposal.commercial_episode_id != current_episode_id):
+            raise CheckoutConfigurationError("checkout_episode_scope_changed")
+        if (proposal.status == IgCheckoutProposal.Status.PAID
+                or proposal.paid_at is not None or proposal.winner_invoice_generation_id is not None):
+            raise CheckoutConfigurationError("checkout_episode_converted")
+        if not bound_cart:
+            original_revision = proposal.revisions.filter(revision=proposal.revision).first()
+            if original_revision is not None and isinstance(original_revision.snapshot, dict) and "source_cart_binding" in original_revision.snapshot:
+                # An unbound legacy retry/edit cannot remove proven line and
+                # recipient ownership from an already bound current offer.
+                raise CheckoutConfigurationError("checkout_cart_binding_missing")
     activate_v2 = bool(
         proposal.assisted_checkout_v2 if proposal is not None else new_v2_canary
     )
@@ -792,6 +953,7 @@ def create_or_update_proposal(
             negotiated_total=negotiated_total,
             requested_payment_amount=requested_payment_amount,
             allow_promo=allow_promo,
+            source_cart_binding=source_cart_binding,
         )
     if activate_v2 and quote.pay_type != "online_full":
         quote = validate_checkout_items(
@@ -802,6 +964,7 @@ def create_or_update_proposal(
             negotiated_total=negotiated_total,
             requested_payment_amount=None,
             allow_promo=allow_promo,
+            source_cart_binding=source_cart_binding,
         )
     payment_policy = None
     if activate_v2:
@@ -819,6 +982,7 @@ def create_or_update_proposal(
         from storefront.services.brigade_commerce import products_require_full_payment
         if products_require_full_payment([item.product for item in quote.items]):
             payment_policy = replace(payment_policy, policy=IgCheckoutProposal.PaymentPolicy.FULL_ONLY)
+    terminal_fresh_deal = False
     if proposal is not None:
         local_terminal = {}
         if proposal.payment_attempt_id:
@@ -827,9 +991,15 @@ def create_or_update_proposal(
             locked_attempt = PaymentAttempt.objects.select_for_update().get(
                 pk=proposal.payment_attempt_id
             )
+            if locked_attempt.order_id is not None or locked_attempt.status in {
+                PaymentAttempt.Status.PAID, PaymentAttempt.Status.PREPAID, PaymentAttempt.Status.CONVERTED,
+            }:
+                raise CheckoutConfigurationError("checkout_episode_converted")
             local_terminal = dict(
                 (locked_attempt.event_state or {}).get("local_terminalization") or {}
             )
+        if detached_terminal_proposal and not local_terminal:
+            raise CheckoutConfigurationError("checkout_episode_scope_changed")
         if (
             proposal.status in {
                 IgCheckoutProposal.Status.EXPIRED,
@@ -845,6 +1015,7 @@ def create_or_update_proposal(
                 deal.save(update_fields=["active_checkout_proposal", "updated_at"])
             proposal = None
             deal = None
+            terminal_fresh_deal = True
         elif proposal.is_expired:
             if proposal.status not in {
                 IgCheckoutProposal.Status.READY,
@@ -859,7 +1030,8 @@ def create_or_update_proposal(
             deal.active_checkout_proposal = None
             deal.save(update_fields=["active_checkout_proposal", "updated_at"])
             proposal = None
-        elif proposal.items_digest == quote.digest and proposal.allow_promo == bool(allow_promo):
+        elif (proposal.items_digest == quote.digest and proposal.allow_promo == bool(allow_promo)
+              and _same_revision_source_cart(proposal, source_cart_binding, source_cart_capture)):
             policy_fields = []
             if activate_v2 and payment_policy is not None:
                 for field_name, value in (
@@ -921,6 +1093,17 @@ def create_or_update_proposal(
         )
 
     episode = _sync_deal_and_episode(deal=deal, quote=quote)
+    if (episode.client_id != locked_client.pk or episode.deal_id != deal.pk
+            or episode.state != IgCommercialEpisode.State.ACTIVE or episode.open_slot != 1
+            or episode.intended_order_id is not None
+            or (null_open_episode_id is not None and episode.pk != null_open_episode_id)
+            or (current_episode_id is not None and not terminal_fresh_deal and episode.pk != current_episode_id)):
+        raise CheckoutConfigurationError("checkout_episode_scope_changed")
+    if locked_client.current_commercial_episode_id != episode.pk:
+        # Bind the exact materialized owner, including NULL legacy pointers
+        # and the existing proven local-terminal fresh-deal repair.
+        locked_client.current_commercial_episode = episode
+        locked_client.save(update_fields=["current_commercial_episode", "updated_at"])
     if proposal is None:
         proposal_values = {}
         if activate_v2 and payment_policy is not None:
@@ -1029,7 +1212,7 @@ def create_or_update_proposal(
         proposal=proposal,
         revision=revision_number,
         digest=quote.digest,
-        snapshot=_revision_snapshot(quote),
+        snapshot=_revision_snapshot(quote, source_cart_binding=source_cart_binding, source_cart_capture=source_cart_capture),
         source=revision_source,
         evidence_message_ids=list(quote.evidence_message_ids),
         source_watermark_message_id=max(quote.evidence_message_ids or (0,)),

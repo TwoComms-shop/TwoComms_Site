@@ -3,6 +3,7 @@ from django.db import transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from unittest.mock import patch
+import os
 
 from management.models import IgCommerceTurnDecision
 from management.services.ig_commerce_state import apply_turn
@@ -71,12 +72,22 @@ class SourceSizeSemanticsTests(SimpleTestCase):
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False)
 class SourceFactStateTests(CommerceStateFixture, TestCase):
+    def setUp(self):
+        super().setUp()
+        from management.models import InstagramBotSettings
+        environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.settings_row = InstagramBotSettings.objects.create(pk=1, ig_user_id="source-state-owner")
+
     def source(self, text):
+        from management.services.instagram_bot import ingress_provider_namespace
         self._source_counter = getattr(self, "_source_counter", 0) + 1
         source = self.message(f"{text} #{self._source_counter}")
         source.text = text
         source.source = "webhook"
-        source.save(update_fields=["source", "text"])
+        source.provider_namespace = ingress_provider_namespace(self.settings_row)
+        source.save(update_fields=["source", "text", "provider_namespace"])
         return source
 
     def test_size_before_identity_preserves_original_transition_and_episode(self):
@@ -244,19 +255,21 @@ class SourceFactStateTests(CommerceStateFixture, TestCase):
         decision = apply_turn(self.client, corrected, parse_turn(corrected.text), reply_payload={})
         self.assertEqual(decision.session.lines[0]["size"], "XL")
 
-    def test_explicit_repeat_does_not_inherit_previous_episode_selection(self):
+    def test_additional_unpaid_item_preserves_previous_episode_and_distinct_size(self):
         first = self.source("Classic размер L")
         old = apply_turn(self.client, first, resolve_source_product_request(self.client, first, parse_turn(first.text)), reply_payload={})
         second = self.source("Хочу ще одну розмір M")
         repeat = apply_turn(self.client, second, parse_turn(second.text), reply_payload={})
-        self.assertNotEqual(old.session.commercial_episode_id, repeat.session.commercial_episode_id)
-        self.assertNotEqual(old.session_id, repeat.session_id)
-        self.assertNotIn("product_id", repeat.session.lines[0])
-        self.assertEqual(repeat.session.lines[0]["size"], "M")
+        self.assertEqual(old.session.commercial_episode_id, repeat.session.commercial_episode_id)
+        self.assertEqual(old.session_id, repeat.session_id)
+        self.assertEqual(repeat.session.lines[0]["product_id"], self.classic.pk)
+        self.assertEqual(repeat.session.lines[0]["size"], "L")
+        self.assertEqual(repeat.session.lines[1]["product_id"], self.classic.pk)
+        self.assertEqual(repeat.session.lines[1]["size"], "M")
         self.assertTrue(repeat.session.query_constraints["purchase_requested"])
-        self.assertEqual(repeat.session.commercial_episode.repeat_evidence_message_ids, [second.pk])
+        self.assertFalse(repeat.session.commercial_episode.repeat_evidence_message_ids)
         old.session.refresh_from_db()
-        self.assertIsNone(old.session.open_slot)
+        self.assertEqual(old.session.open_slot, 1)
 
     def test_legacy_selection_synchronization_noop_or_visible_source_refusal(self):
         source = self.source("Classic размер L")
@@ -383,9 +396,9 @@ class SourceAdmissionTests(TransactionTestCase):
         self.assertEqual(IgCommerceTurnDecision.objects.count(), count)
         after = list(IgCommerceSelectionSession.objects.filter(client=fixture.customer).order_by("generation"))
         self.assertEqual(snapshots, [(row.pk, row.commercial_episode_id, row.snapshot()) for row in after])
-        self.assertEqual(len(after), 2)
-        self.assertEqual(after[-1].lines[0]["size"], "M")
-        self.assertNotIn("product_id", after[-1].lines[0])
+        self.assertEqual(len(after), 1)
+        self.assertEqual([row["size"] for row in after[0].lines], ["L", "M"])
+        self.assertEqual(after[0].lines[0]["product_id"], after[0].lines[1]["product_id"])
 
     def test_sealed_repeat_bundle_replay_keeps_original_source_episodes(self):
         self.assert_repeat_bundle_replay()

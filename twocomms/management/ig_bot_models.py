@@ -8695,7 +8695,15 @@ class IgCustomerTurnRevision(models.Model):
                     "technical_holding", "technical_holding_delivery",
                     "provider_safe_reply",
                     "response_coverage", "semantic_delivery_finalized",
+                    "commerce_source_observations",
                 }
+                if isinstance(self.action_receipts, dict):
+                    observation_keys = [key for key in self.action_receipts
+                        if isinstance(key, str) and key.startswith("commerce_observation:")
+                        and re.fullmatch(r"[1-9][0-9]{0,18}", key.removeprefix("commerce_observation:"))
+                        and 0 < int(key.removeprefix("commerce_observation:")) < 2 ** 63]
+                    if len(observation_keys) <= 64:
+                        allowed_receipts.update(observation_keys)
                 if (
                     not isinstance(self.action_receipts, dict)
                     or not set(self.action_receipts).issubset(allowed_receipts)

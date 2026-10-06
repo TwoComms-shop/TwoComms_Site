@@ -87,17 +87,32 @@ def _alias_has_configuration_marker(raw, match, field):
         or re.match(r"\s*(?:" + _CONFIGURATION_MARKERS[field] + r")\b", after, re.I))
 
 
-def _without_title_configuration(request, text, products, product_ids):
+def _line_alias_configuration_marker(raw, match, field):
+    """A following marker belongs to its following value when one is given."""
+    from management.services.ig_commerce_turns import _COLOR_WORDS, _FIT_WORDS, _find_prefix_value
+
+    before, after = raw[:match.start()], raw[match.end():]
+    if re.search(r"\b(?:" + _CONFIGURATION_MARKERS[field] + r")\s*[:=-]?\s*$", before, re.I):
+        return True
+    suffix = re.match(r"\s*(?:" + _CONFIGURATION_MARKERS[field] + r")\b", after, re.I)
+    if suffix is None:
+        return False
+    words = _FIT_WORDS if field == "fit" else _COLOR_WORDS
+    return not _find_prefix_value(after[suffix.end():], words)
+
+
+def _without_title_configuration(request, text, products, product_ids, *, marker_matcher=None):
     """Names such as Classic identify models unless a fit/color marker binds them."""
     from management.services.ig_commerce_turns import _COLOR_WORDS, _FIT_WORDS, _find_prefix_value
 
     raw = str(text or "")
     spans = tuple(_named_alias_spans(raw, products, product_ids))
+    marker_matcher = marker_matcher or _alias_has_configuration_marker
     updates = dict(request.field_updates)
     for field, words in (("fit", _FIT_WORDS), ("color", _COLOR_WORDS)):
         masked = list(raw)
         for match in spans:
-            if not _alias_has_configuration_marker(raw, match, field):
+            if not marker_matcher(raw, match, field):
                 masked[match.start():match.end()] = " " * (match.end() - match.start())
         value = _find_prefix_value("".join(masked), words)
         if value:
@@ -172,9 +187,124 @@ def _current_presentations(client, source):
     return tuple(group)
 
 
+def _line_named_product_ids(text, products):
+    """Per-clause exact names, with neither first-match nor model authority."""
+    positive, negative = set(), set()
+    for product in products:
+        for match in _named_alias_spans(text, (product,), (product.product_id,)):
+            if any(_line_alias_configuration_marker(text, match, field) for field in _CONFIGURATION_MARKERS):
+                continue
+            if match.group().casefold() in {"first", "second", "third"}:
+                after = text[match.end():]
+                if re.match(r"\s+(?:line|item)\b", after, re.I):
+                    continue
+                if re.match(r"\s+(?:hoodie|t-shirt|tshirt|футболк|худи|худі)", after, re.I):
+                    # A number-word model title plus a garment is ambiguous
+                    # with an ordinal row. Require an explicit SKU or row
+                    # reference instead of pinning either interpretation.
+                    positive.add(product.product_id)
+                    negative.add(product.product_id)
+                    continue
+            before = text[:match.start()].casefold()
+            negated = bool(re.search(
+                r"(?:^|[\s,;:])(?:не|ні|not|no)(?:\s+[\w-]+){0,3}\s*$"
+                r"|\b(?:do|does|did)n['’]t\s+(?:want|need|choose|select|order|buy)\s*$", before))
+            (negative if negated else positive).add(product.product_id)
+    return tuple(sorted(positive - negative)), bool(positive & negative)
+
+
+def resolve_line_operation_identities(source_text, request, *, catalog_graph):
+    """Canonical source reparse using one supplied reviewed catalog snapshot.
+
+    Empty/bounded graphs are allowed for historical parity checks. Admission
+    supplies the complete graph so omitted aliases cannot manufacture a unique
+    product. Typed operations deliberately have no presentation fallback.
+    """
+    from management.services.ig_commerce_turns import parse_turn, line_operation_source_clauses, _line_selector
+
+    products = tuple(catalog_graph.products)
+    # Quantity interpretation precedes operation kind (zero may mean remove).
+    # Reparse with exact reviewed name spans protected before that decision;
+    # otherwise a title/version token could change ADD into REMOVE or become
+    # source-confirmed quantity. Caller/model operation fields are ignored.
+    title_texts = tuple(sorted({match.group() for match in _named_alias_spans(
+        source_text, products, tuple(product.product_id for product in products))}))
+    if len(title_texts) > 64:
+        return replace(parse_turn(source_text, parsed_catalog_graph=catalog_graph), line_operations=(), pending_line_clarification="ambiguous_line_operation")
+    original = parse_turn(source_text, _quantity_title_texts=title_texts, parsed_catalog_graph=catalog_graph)
+    if original.pending_line_clarification or not original.line_operations:
+        return original
+    clauses = line_operation_source_clauses(source_text, _quantity_title_texts=title_texts,
+        parsed_catalog_graph=catalog_graph)
+    if len(clauses) != len(original.line_operations):
+        return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_operation")
+    by_id = {product.product_id: product for product in products}
+    resolved = []
+    for operation, (target_clause, clause) in zip(original.line_operations, clauses):
+        target_named, target_conflict = _line_named_product_ids(target_clause, products)
+        if target_conflict or len(target_named) > 1:
+            return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_target")
+        target_id = operation.target_product_id or (target_named[0] if target_named else None)
+        if target_id and (target_id not in by_id or (target_named and target_named != (target_id,))):
+            return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_target")
+        operation = replace(operation, target_product_id=target_id)
+        if target_named:
+            # Reviewed names such as Third are exact SKU selectors. They are
+            # not an ordinal cart index merely because the title is a number
+            # word. Real ID/index wording outside the alias remains binding.
+            masked = list(target_clause)
+            for match in _named_alias_spans(target_clause, products, target_named):
+                masked[match.start():match.end()] = " " * (match.end() - match.start())
+            selectors, pending = _line_selector("".join(masked))
+            if pending:
+                return replace(original, line_operations=(), pending_line_clarification=pending)
+            operation = replace(operation, **selectors)
+        if operation.operation == "replace" and not (target_id or operation.target_garment_type
+            or operation.target_line_id or operation.target_line_index is not None):
+            return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_target")
+        if operation.operation in {"remove", "select", "update"}:
+            if target_id:
+                operation = _without_title_configuration(operation, clause, products, (target_id,), marker_matcher=_line_alias_configuration_marker)
+            resolved.append(operation)
+            continue
+        named, conflict = _line_named_product_ids(clause, products)
+        if conflict or len(named) > 1:
+            return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_operation")
+        if operation.exact_product_id and (operation.exact_product_id not in by_id
+            or (named and named != (operation.exact_product_id,))):
+            return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_operation")
+        product_id = operation.exact_product_id or (named[0] if named else None)
+        if product_id:
+            product = by_id[product_id]
+            if operation.garment_type and product.garment_type and operation.garment_type != product.garment_type:
+                return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_operation")
+            # Reviewed titles such as Classic or Black identify a model.
+            # Only an explicit fit/color marker may also make a requirement.
+            operation = _without_title_configuration(operation, clause, products, (product_id,), marker_matcher=_line_alias_configuration_marker)
+            operation = replace(operation, exact_product_id=product_id,
+                garment_type=operation.garment_type or (product.garment_type if operation.operation in {"add", "replace"} else ""))
+        elif operation.operation == "replace" and not (operation.garment_type or operation.field_updates):
+            return replace(original, line_operations=(), pending_line_clarification="ambiguous_line_operation")
+        resolved.append(operation)
+    return replace(original, line_operations=tuple(resolved))
+
+
 def resolve_source_product_request(client, source, request, *, catalog_graph=None):
     """Resolve exact names or a customer's selection of one current presentation."""
     binding = {"source_message_id": source.pk, "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest()}
+    if request.line_operations or request.pending_line_clarification:
+        if (source.client_id != client.pk or source.sender_id != client.igsid
+            or source.role != "user" or source.source != "webhook" or source.status == "failed"
+            or not source.provider_namespace or client.privacy_erasure_started_at is not None):
+            return replace(request, line_operations=(), pending_line_clarification="line_source_unverified",
+                source_binding={**binding, "product_resolution": "unresolved"})
+        from management.services.ig_catalog_graph import build_catalog_graph
+
+        graph = catalog_graph if catalog_graph is not None else build_catalog_graph()
+        resolved = resolve_line_operation_identities(source.text, request, catalog_graph=graph)
+        return replace(resolved, source_binding={**binding, "product_resolution": "typed_source",
+            "catalog_digest": graph.digest,
+            "operation_product_ids": [operation.exact_product_id for operation in resolved.line_operations]})
     if request.exact_product_id:
         return replace(request, source_binding={**binding, "product_resolution": "exact_reference"})
     if request.reset_requested or request.new_purchase_requested or request.exchange_requested or request.rejected_product_ids:
@@ -202,6 +332,21 @@ def resolve_source_product_request(client, source, request, *, catalog_graph=Non
                 source_binding={**binding, "product_resolution": "exact_name"})
     if named:
         return replace(request, query=str(source.text or "")[:240], pending_clarification="which_product", source_binding={**binding, "product_resolution": "ambiguous", "candidate_product_ids": list(named)})
+    if (request.purchase_requested and not request.field_updates and not request.query
+        and not request.garment_type and not re.search(r"\b(?:цю|эту|this\s+one|choose|select)\b", source.text, re.I)):
+        # A general request to buy an already source-confirmed cart is not a
+        # new selection from a presentation. Preserve every current position;
+        # checkout will independently verify its exact captured configurations.
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.models import IgCommerceSelectionSession
+        cart = capture_current_selection_lines(client.pk)
+        rows = cart.get("lines") or []
+        if (cart.get("status") == "captured" and cart.get("coverage_complete") and rows
+            and all((row.get("fields") or {}).get("product_id", {}).get("status") == "confirmed" for row in rows)
+            and IgCommerceSelectionSession.objects.filter(pk=cart["session_id"], client=client,
+                revision=cart["selection_revision"], open_slot=1, pending_clarification="").exists()):
+            return replace(request, source_binding={**binding, "product_resolution": "owned_source_cart",
+                "session_id": cart["session_id"], "selection_revision": cart["selection_revision"]})
     choosing = request.purchase_requested or bool(request.field_updates.get("size")) or bool(re.search(
         r"\b(?:беру|обираю|выбираю|choose|select|this\s+one|цю|эту)\b", source.text, re.I))
     if choosing:

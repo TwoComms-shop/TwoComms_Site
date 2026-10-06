@@ -1683,9 +1683,9 @@ def _client_order_queryset(client):
     from orders.models import Order
 
     return Order.objects.filter(
-        Q(instagram_attribution__client=client)
-        | Q(ig_deals__client=client)
-        | Q(instagram_commercial_episode__client=client)
+        Q(instagram_attribution__client_id=client.pk)
+        | Q(ig_deals__client_id=client.pk)
+        | Q(instagram_commercial_episode__client_id=client.pk)
     ).distinct()
 
 

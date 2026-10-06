@@ -58,9 +58,15 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             state_inputs["source_selection_binding"] = value.get("scope") or {}
         elif key == "readiness":
             state_inputs[key] = {**(value.get("capture") or {}), "scope": value.get("scope") or {}}
-        elif key in {"payment_truth", "consent_state", "narrative", "manager_notes", "slots"}:
+        elif key == "source_cart":
+            state_inputs[key] = value.get("capture") or {}
+        elif key in {"payment_truth", "slots"}:
+            state_inputs[key] = value["capture"] if "capture" in value else value
+        elif key in {"consent_state", "narrative", "manager_notes"}:
             state_inputs[key] = value
-    state_inputs["observation_omissions"] = components.get("observation_omissions") or []
+    observation_omissions = components.get("observation_omissions") or []
+    state_inputs["observation_omissions"] = (observation_omissions.get("capture") or []
+        if isinstance(observation_omissions, dict) else observation_omissions)
     signals = components.get("signals") or {}
     signal_items = signals.get("items") or []
     if signal_items:
@@ -75,6 +81,9 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
     state_inputs.setdefault("slots", {}).update(policy_inputs.state_slots)
     state = assemble_client_state(boundary=boundary, components=state_inputs,
         captured_at=captured_at)
+    if state.as_dict()["status"] != "captured" and (state_inputs.get("source_cart") or {}).get("status") == "captured":
+        from management.services.ig_turn_intelligence import TurnContextError
+        raise TurnContextError("source_cart_state_unavailable")
     metadata = detached_payload(context.metadata)
     budget = metadata.get("budget") or {}
     versions = metadata.get("view_versions") or {}

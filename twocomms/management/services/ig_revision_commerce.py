@@ -18,6 +18,7 @@ from management.services.ig_commerce_source_identity import resolve_source_produ
 
 RECEIPT_KEY = "commerce_reduction"
 INGRESS_SOURCE_PRODUCER = "revision-inbound-commerce-v1"
+OBSERVATION_KEY = "commerce_source_observations"
 
 
 def source_producer_owned_q():
@@ -28,7 +29,8 @@ def source_producer_owned_q():
         message__commerce_turn_decision__request_payload__source_binding__producer=INGRESS_SOURCE_PRODUCER,
         message__commerce_turn_decision__delivery_required=False,
     )
-    return Q(pk__in=Subquery(sources.values("revision_id")))
+    return Q(pk__in=Subquery(sources.values("revision_id"))) | Q(
+        action_receipts__commerce_source_observations__producer=INGRESS_SOURCE_PRODUCER)
 
 
 @dataclass(frozen=True)
@@ -37,10 +39,62 @@ class RevisionCommerceResult:
     reason: str = ""
     decisions: tuple[dict, ...] = ()
     replayed: bool = False
+    observations: tuple[dict, ...] = ()
 
 
 class _Blocked(Exception):
     pass
+
+
+def _valid_observation(observation, client, source, floor):
+    """A no-mutation receipt still belongs to an exact original customer MID."""
+    return isinstance(observation, dict) and all((
+        observation.get("schema") == "commerce-source-observation.v1",
+        observation.get("classification") in {"neutral", "reorder_clarification"},
+        isinstance(observation.get("reason"), str) and 0 < len(observation["reason"]) <= 100,
+        observation.get("client_id") == client.pk,
+        observation.get("source_message_id") == source.pk,
+        observation.get("source_digest") == hashlib.sha256(str(source.text or "").encode()).hexdigest(),
+        observation.get("source_namespace") == source.provider_namespace,
+        observation.get("reset_floor") == floor,
+        observation.get("event_at") == (source.provider_created_at or source.created_at).isoformat(),
+        source.pk >= floor,
+    ))
+
+
+def _owned_source_observation(client, source, floor):
+    owner = IgCustomerTurnRevision.objects.filter(client=client, sources__message=source,
+        action_receipts__commerce_source_observations__producer=INGRESS_SOURCE_PRODUCER,
+        action_receipts__has_key=f"commerce_observation:{source.pk}").order_by("pk").first()
+    if owner is None:
+        return None
+    observation = (owner.action_receipts or {}).get(f"commerce_observation:{source.pk}")
+    if not _valid_observation(observation, client, source, floor):
+        raise _Blocked("commerce_observation_changed")
+    return deepcopy(observation)
+
+
+def _record_source_observation(client, source, floor, observation):
+    if not _valid_observation(observation, client, source, floor):
+        raise _Blocked("commerce_observation_changed")
+    # The existing revision/source ledger is the observation owner. A plain
+    # no-reply source needs no new commercial episode, session or decision.
+    owner = IgCustomerTurnRevision.objects.select_for_update().filter(
+        client=client, sources__message=source, active_slot=1).order_by("pk").first()
+    if owner is None:
+        return
+    receipts = owner.action_receipts or {}
+    key = f"commerce_observation:{source.pk}"
+    if key in receipts:
+        if receipts[key] != observation:
+            raise _Blocked("commerce_observation_changed")
+        return
+    if sum(name.startswith("commerce_observation:") for name in receipts) >= 64:
+        raise _Blocked("commerce_observation_bound")
+    owner.action_receipts = {**receipts, OBSERVATION_KEY: {
+        "schema": "revision-commerce-observations.v1", "producer": INGRESS_SOURCE_PRODUCER,
+    }, key: deepcopy(observation)}
+    owner.save(update_fields=["action_receipts", "updated_at"])
 
 
 def _decision_metadata(decision, source_digest):
@@ -62,7 +116,7 @@ def reduce_inbound_commerce_source(client, source, *, expected_provider_namespac
     if not connection.in_atomic_block:
         return RevisionCommerceResult(reason="inbound_client_transaction_required")
     from management.services.ig_commerce_turns import parse_turn
-    from management.services.ig_commerce_state import apply_turn
+    from management.services.ig_commerce_state import apply_turn, CommerceNonMutation
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     current = IgClient.objects.select_for_update().filter(pk=client.pk).first()
     owned = InstagramBotMessage.objects.select_for_update().filter(pk=source.pk,
@@ -73,7 +127,8 @@ def reduce_inbound_commerce_source(client, source, *, expected_provider_namespac
         return RevisionCommerceResult(reason="commerce_source_namespace_changed")
     if current.privacy_erasure_started_at is not None:
         return RevisionCommerceResult(reason="client_erasure_changed")
-    if owned.pk < conversation_route_reset_floor(current.pk):
+    reset_floor = conversation_route_reset_floor(current.pk)
+    if owned.pk < reset_floor:
         return RevisionCommerceResult(reason="commerce_source_before_scope")
     if owned.quick_reply_payload:
         return RevisionCommerceResult(True, "native_source_owned")
@@ -84,12 +139,27 @@ def reduce_inbound_commerce_source(client, source, *, expected_provider_namespac
         if binding and (binding.get("source_message_id") != owned.pk or binding.get("source_digest") != digest):
             return RevisionCommerceResult(reason="commerce_source_changed")
         return RevisionCommerceResult(True, "source_already_reduced", (_decision_metadata(existing, digest),), True)
+    try:
+        observation = _owned_source_observation(current, owned, reset_floor)
+    except _Blocked as exc:
+        return RevisionCommerceResult(reason=str(exc))
+    if observation is not None:
+        return RevisionCommerceResult(True, "source_already_observed", replayed=True, observations=(observation,))
     episode_floor = int(getattr(current.current_commercial_episode, "opened_watermark_message_id", 0) or 0)
     if owned.pk < episode_floor:
         return RevisionCommerceResult(reason="commerce_source_before_scope")
     request = resolve_source_product_request(current, owned, parse_turn(owned.text))
     request = replace(request, source_binding={**dict(request.source_binding), "producer": INGRESS_SOURCE_PRODUCER})
-    decision = apply_turn(current, owned, request, reply_payload={})
+    try:
+        decision = apply_turn(current, owned, request, reply_payload={})
+    except CommerceNonMutation as exc:
+        try:
+            _record_source_observation(current, owned, reset_floor, exc.observation)
+        except _Blocked as blocked:
+            return RevisionCommerceResult(reason=str(blocked))
+        _apply_source_language(current, owned, origin="inbound")
+        client.refresh_from_db()
+        return RevisionCommerceResult(True, "source_observed", observations=(deepcopy(exc.observation),))
     _apply_source_language(current, owned, origin="inbound")
     client.refresh_from_db()
     return RevisionCommerceResult(True, "source_reduced", (_decision_metadata(decision, digest),))
@@ -106,6 +176,9 @@ def _valid_scope_receipt(client, previous, *, reset_floor):
     ids = [row.get("decision_id") for row in rows]
     if scope.get("decision_ids") != ids:
         return False
+    observations = previous.get("observations") or []
+    if observations and scope.get("observation_ids") != [row.get("source_message_id") for row in observations]:
+        return False
     decisions = {row.pk: row for row in IgCommerceTurnDecision.objects.filter(pk__in=ids).select_related("session", "transition")}
     for row in rows:
         decision = decisions.get(row.get("decision_id"))
@@ -115,8 +188,11 @@ def _valid_scope_receipt(client, previous, *, reset_floor):
             or decision.session.commercial_episode_id != row.get("episode_id")):
             return False
     from management.models import IgCommerceSelectionSession
-    return IgCommerceSelectionSession.objects.filter(pk=scope.get("terminal_session_id"),
-        client=client, commercial_episode_id=client.current_commercial_episode_id, open_slot=1).exists()
+    sessions = IgCommerceSelectionSession.objects.filter(client=client,
+        commercial_episode_id=client.current_commercial_episode_id, open_slot=1)
+    if scope.get("terminal_session_id") is None:
+        return bool(observations) and not rows and not sessions.exists()
+    return sessions.filter(pk=scope["terminal_session_id"]).exists()
 
 
 def _has_owned_repeat_boundary(client, revision):
@@ -180,7 +256,7 @@ def reduce_revision_commerce(revision_id, token, *, settings_id, settings_permis
     identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
     if identity is None:
         return RevisionCommerceResult(reason="revision_missing")
-    from management.services.ig_commerce_state import apply_turn
+    from management.services.ig_commerce_state import apply_turn, CommerceNonMutation
     from management.services.ig_commerce_turns import understand_turn
 
     try:
@@ -213,9 +289,14 @@ def reduce_revision_commerce(revision_id, token, *, settings_id, settings_permis
                     raise _Blocked("commerce_decision_scope_changed")
                 for snapshot in revision.bundle_snapshot.get("sources") or []:
                     if not snapshot.get("quick_reply_payload"):
-                        _validated_sealed_source(client, revision, snapshot)
-                return RevisionCommerceResult(True, "already_reduced", tuple(previous["decisions"]), True)
+                        source = _validated_sealed_source(client, revision, snapshot)
+                        for observation in previous.get("observations") or []:
+                            if observation.get("source_message_id") == source.pk and not _valid_observation(observation, client, source, floor):
+                                raise _Blocked("commerce_observation_changed")
+                return RevisionCommerceResult(True, "already_reduced", tuple(previous["decisions"]), True,
+                    tuple(previous.get("observations") or []))
             decisions = []
+            observations = []
             catalog_graph = None
             for snapshot in revision.bundle_snapshot.get("sources") or []:
                 # Native button mutation has a separate global source ledger.
@@ -224,6 +305,10 @@ def reduce_revision_commerce(revision_id, token, *, settings_id, settings_permis
                 if int(snapshot.get("message_id") or 0) < floor:
                     raise _Blocked("commerce_source_before_scope")
                 source = _validated_sealed_source(client, revision, snapshot)
+                observation = _owned_source_observation(client, source, floor)
+                if observation is not None:
+                    observations.append(observation)
+                    continue
                 existing = IgCommerceTurnDecision.objects.filter(source_message_id=source.pk).first()
                 if existing is not None and existing.delivery_required:
                     raise _Blocked("legacy_commerce_delivery_owned")
@@ -242,7 +327,15 @@ def reduce_revision_commerce(revision_id, token, *, settings_id, settings_permis
                     request = resolve_source_product_request(client, source, request, catalog_graph=catalog_graph)
                 # The source fact is idempotent. Its old delivery fields never
                 # become a second send owner, and no source row is cloned.
-                decision = existing or apply_turn(client, source, request, reply_payload={})
+                try:
+                    decision = existing or apply_turn(client, source, request, reply_payload={})
+                except CommerceNonMutation as exc:
+                    if not _valid_observation(exc.observation, client, source, floor):
+                        raise _Blocked("commerce_observation_changed")
+                    observations.append(deepcopy(exc.observation))
+                    _apply_source_language(client, source, origin=revision.origin)
+                    client.refresh_from_db()
+                    continue
                 if existing is None:
                     _apply_source_language(client, source, origin=revision.origin)
                 client.refresh_from_db()
@@ -252,14 +345,16 @@ def reduce_revision_commerce(revision_id, token, *, settings_id, settings_permis
                 commercial_episode_id=client.current_commercial_episode_id, open_slot=1).values_list("pk", flat=True).first()
             scope_binding = {"terminal_episode_id": client.current_commercial_episode_id,
                 "terminal_session_id": terminal_session_id, "reset_floor": floor,
-                "decision_ids": [row["decision_id"] for row in decisions]}
+                "decision_ids": [row["decision_id"] for row in decisions],
+                "observation_ids": [row["source_message_id"] for row in observations]}
+            revision.refresh_from_db(fields=["action_receipts"])
             revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: {
                 "version": "revision-commerce-v1", "snapshot_digest": revision.snapshot_digest,
                 "scope_binding": {**scope_binding, "digest": _digest(scope_binding)},
-                "decisions": decisions, "recorded_at": timezone.now().isoformat(),
+                "decisions": decisions, "observations": observations, "recorded_at": timezone.now().isoformat(),
             }}
             revision.save(update_fields=["action_receipts", "updated_at"])
-            return RevisionCommerceResult(True, "reduced", tuple(decisions))
+            return RevisionCommerceResult(True, "reduced", tuple(decisions), observations=tuple(observations))
     except _Blocked as exc:
         return RevisionCommerceResult(reason=str(exc))
 
