@@ -11,7 +11,7 @@ from django.views.decorators.http import require_GET
 from management.bot_access import is_meta_bot_reviewer
 from management.models import AdminAuditLog, IgClient, InstagramBotMessage
 from management.services.ig_media_manifest import MediaManifestError, normalize_attachment_media
-from management.services.ig_private_media import acquire_blob_use, private_media_storage, release_blob_use
+from management.services.ig_private_media import acquire_blob_use, earliest_private_media_deadline, private_media_expired, private_media_storage, release_blob_use
 
 VIEW_PII_PERMISSION = "management.view_ig_conversation_pii"
 PRIVATE_REVIEW_MAX_BYTES = 6 * 1024 * 1024
@@ -82,6 +82,8 @@ def _safe_part(row, client, source_part_id: str, *, use_token: str) -> dict:
         or row.private_media_use_token != use_token
         or not row.private_media_use_until
         or row.private_media_use_until <= timezone.now()
+        or earliest_private_media_deadline(row) is None
+        or private_media_expired(row)
     ):
         raise PrivateMediaUnavailable
     try:

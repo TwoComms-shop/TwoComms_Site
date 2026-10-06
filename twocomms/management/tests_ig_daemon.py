@@ -1410,6 +1410,7 @@ class DaemonHeartbeatTests(SimpleTestCase):
         # ownership has separate database-backed tests and must not do I/O here.
         for target in (
             "management.management.commands.run_instagram_bot._revision_receipt_tick",
+            "management.management.commands.run_instagram_bot._private_media_cleanup_tick",
             "management.services.ig_webhook_inbox.drain_webhook_inbox",
         ):
             mocked = patch(target)

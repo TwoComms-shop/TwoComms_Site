@@ -1,0 +1,38 @@
+.......................................................ig_bot event=send level=error detail=provider receipt checkpoint failed
+.....ig_bot event=send level=error detail=HTTP 403 [permanent] помилка дозволів або політики Meta (code 10)
+.......ig_bot event=send level=error detail=HTTP 500 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.............ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+...ig_bot event=send level=error detail=provider receipt checkpoint failed
+....................................FF.....................
+======================================================================
+FAIL: test_database_is_disposable_mariadb_11_4 (management.tests_ig_mariadb_follow_ugc.InstagramFollowUgcMariaDbContractTests.test_database_is_disposable_mariadb_11_4)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_mariadb_follow_ugc.py", line 176, in test_database_is_disposable_mariadb_11_4
+    self.assertRegex(
+    ~~~~~~~~~~~~~~~~^
+        connection.settings_dict["NAME"],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        r"^test_twocomms_ig_[a-f0-9]{12}$",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+AssertionError: Regex didn't match: '^test_twocomms_ig_[a-f0-9]{12}$' not found in 'test_twocomms_ig_r30_gate'
+
+======================================================================
+FAIL: test_inflight_capture_cannot_leave_blob_after_privacy_success (management.tests_ig_mariadb_follow_ugc.PrivateMediaMariaDbConcurrencyTests.test_inflight_capture_cannot_leave_blob_after_privacy_success)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_mariadb_follow_ugc.py", line 101, in test_inflight_capture_cannot_leave_blob_after_privacy_success
+    self.assertTrue(download_started.wait(timeout=10))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 143 tests in 25.021s
+
+FAILED (failures=2)
+Found 143 test(s).
+System check identified no issues (0 silenced).
+maintenance active — daemon exit

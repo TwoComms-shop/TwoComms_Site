@@ -1922,7 +1922,7 @@ def _is_provider_media_link(url: str) -> bool:
         return False
 
 
-def _message_media_rows(message, media_evidence) -> list[dict]:
+def _message_media_rows(message, media_evidence, *, owner_verified=False, erasure_started=True, now=None) -> list[dict]:
     """Redacted per-part capture and inspection state for one message.
 
     ``sales_context["_media_evidence"]`` is scoring telemetry, not a transcript:
@@ -1954,11 +1954,17 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
     rows = []
     for item, public in list(zip(media, manifest, strict=True))[:_MESSAGE_MEDIA_LIMIT]:
         inspection = item.get("inspection") if isinstance(item.get("inspection"), dict) else {}
+        from management.services.ig_media_lifecycle_presentation import project_media_lifecycle_presentation
+        lifecycle = project_media_lifecycle_presentation(item,
+            message_state=getattr(message, "private_media_state", ""),
+            message_delete_after=getattr(message, "private_media_delete_after", None),
+            message_parts=media, owner_verified=owner_verified, erasure_started=erasure_started, now=now)
         preview_url = ""
         render_kind = _media_render_kind(item)
         if (
             item.get("status") == "owned"
             and item.get("private_storage") is True
+            and lifecycle["lifecycle"]["readable"] is True
             and (
                 render_kind in {"image", "audio", "video"}
                 or (
@@ -1982,6 +1988,7 @@ def _message_media_rows(message, media_evidence) -> list[dict]:
         render_url = preview_url if preview_url else ""
         rows.append({
             **public,
+            "media_lifecycle": lifecycle,
             "public_url": render_url,
             "media_kind": render_kind,
             "media_label": _media_display_label(
@@ -5706,6 +5713,8 @@ def bot_client_detail_api(request, client_id):
     if not c:
         return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
     observation_now = timezone.now()
+    if c.privacy_erasure_started_at:
+        return JsonResponse({"success": False, "code": "client_erasing"}, status=410)
     from management.services.ig_commerce_projection import captured_selection_for
     source_selection = captured_selection_for(c)
 
@@ -5749,13 +5758,17 @@ def bot_client_detail_api(request, client_id):
     media_evidence = (c.sales_context or {}).get("_media_evidence", []) if isinstance(c.sales_context, dict) else []
     messages = []
     for m in msg_rows:
-        media_rows = _message_media_rows(m, media_evidence)
+        media_rows = _message_media_rows(m, media_evidence,
+            owner_verified=m.client_id == c.pk and c.hidden_at is None,
+            erasure_started=bool(c.privacy_erasure_started_at), now=observation_now)
         messages.append({
             "id": m.id,
             "role": m.role,
             "text": _display_message_text(m, media_rows),
             "gemini_model": m.gemini_model,
-            "attachments": m.attachments or "",
+            # Presentation uses the bounded media rows. Historical provider
+            # URLs/storage payloads are never a second private-media fallback.
+            "attachments": "",
             "media": media_rows,
             "time": (m.provider_created_at or m.created_at).isoformat()
             if (m.provider_created_at or m.created_at)

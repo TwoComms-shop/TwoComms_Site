@@ -1,0 +1,9 @@
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 10.114s
+
+OK
+Found 9 test(s).
+✅ Migrated payment statuses successfully
+Migrated 0 existing managers to new level system
+System check identified no issues (0 silenced).

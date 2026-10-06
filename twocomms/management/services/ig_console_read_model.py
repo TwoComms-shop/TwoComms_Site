@@ -213,6 +213,11 @@ def _matches(item: dict, filters: dict) -> bool:
         return item["actionable"] or item["category"] == "errors"
     if category != "all" and item["category"] != category:
         return False
+    if category == "all" and item["kind"] == "legacy_event" and not item["actionable"]:
+        # Important events should not be drowned by harmless old rows whose
+        # free-text detail supplies no trustworthy metadata. Explicit unknown
+        # history still exposes their safe projection; scan cursors are unchanged.
+        return False
     return filters["include_routine"] or category == "routine" or item["category"] != "routine" or item["actionable"]
 
 

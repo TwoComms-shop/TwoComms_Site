@@ -1,0 +1,29 @@
+..........F....................................................................................
+======================================================================
+FAIL: test_expired_failed_and_unknown_owned_capture_cannot_touch_storage_or_mint_lease (management.tests_ig_media_expiry.PrivateMediaExpiryTests.test_expired_failed_and_unknown_owned_capture_cannot_touch_storage_or_mint_lease) (state='active', due=None)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_media_expiry.py", line 332, in test_expired_failed_and_unknown_owned_capture_cannot_touch_storage_or_mint_lease
+    storage.assert_not_called()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 947, in assert_not_called
+    raise AssertionError(msg)
+AssertionError: Expected '_private_media_storage' to not have been called. Called 1 times.
+Calls: [call(),
+ call().exists('ig_message_media/16/523e5b4caa6ba2b85b2e3fc8f7743369.jpg'),
+ call().exists().__bool__(),
+ call().open('ig_message_media/16/523e5b4caa6ba2b85b2e3fc8f7743369.jpg', 'rb'),
+ call().open().__enter__(),
+ call().open().__enter__().read(26),
+ call().open().__exit__(None, None, None),
+ call().delete('ig_message_media/16/523e5b4caa6ba2b85b2e3fc8f7743369.jpg'),
+ call().exists('ig_message_media/16/523e5b4caa6ba2b85b2e3fc8f7743369.jpg'),
+ call().exists().__bool__()].
+
+----------------------------------------------------------------------
+Ran 95 tests in 8.028s
+
+FAILED (failures=1)
+Found 95 test(s).
+System check identified no issues (0 silenced).
+maintenance active — daemon exit

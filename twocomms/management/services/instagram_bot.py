@@ -10943,13 +10943,15 @@ def _merge_attachment_media(
     owned_fields = {
         "status", "capture_state", "storage_name", "private_storage",
         "local_url", "mime", "bytes", "content_hash", "delete_after",
-        "inspection", "capture_attempts", "capture_next_attempt_at",
+        "inspection", "capture_attempts", "capture_next_attempt_at", "retention_policy",
     }
     for item in [*existing_normalized, *incoming_normalized]:
         url = str(item.get("url") or "").strip()
         tombstone = bool(item.get("url_metadata_expired"))
+        private_debt = bool((item.get("private_storage") is True and item.get("storage_name"))
+                            or item.get("prepared_blob"))
         if not url.startswith(("https://", "http://")) and not (
-            tombstone and item.get("source_part_id")
+            (tombstone or private_debt) and item.get("source_part_id")
         ):
             continue
         if url.startswith(("https://", "http://")):
@@ -11103,6 +11105,19 @@ def _media_part_capture_pending(item: dict) -> bool:
     return True
 
 
+def _media_capture_retention_allowed(locked, *, now=None):
+    """Initial capture is allowed; existing private expiry is never renewed."""
+    from management.services.ig_private_media import earliest_private_media_deadline
+
+    if locked.private_media_state in {"delete_pending", "deleting", "delete_failed", "deleted"}:
+        return False
+    now = now or timezone.now()
+    deadline = earliest_private_media_deadline(locked)
+    owned = any(isinstance(part, dict) and part.get("private_storage") is True
+                for part in (locked.attachment_media or []))
+    return deadline > now if deadline is not None else not owned
+
+
 def _claim_media_capture(
     message_id: int,
     source_part_id: str,
@@ -11112,9 +11127,7 @@ def _claim_media_capture(
         if not locked.media_capture_eligible or not _message_media_capture_owner_valid(locked):
             return None
         now = timezone.now()
-        if locked.private_media_state in {
-            "delete_pending", "deleting", "deleted",
-        }:
+        if not _media_capture_retention_allowed(locked, now=now):
             return None
         if locked.private_media_use_until and locked.private_media_use_until > now:
             return None
@@ -11214,7 +11227,7 @@ def _persist_prepared_media_blob(
         locked = InstagramBotMessage.objects.select_for_update().get(pk=message_id)
         if (
             not _message_media_capture_owner_valid(locked)
-            or locked.private_media_state in {"delete_pending", "deleting", "deleted"}
+            or not _media_capture_retention_allowed(locked)
             or locked.private_media_use_token != use_token
         ):
             return None
@@ -11245,7 +11258,7 @@ def _consume_prepared_refetch_attempt(
         locked = InstagramBotMessage.objects.select_for_update().get(pk=message_id)
         if (
             not _message_media_capture_owner_valid(locked)
-            or locked.private_media_state in {"delete_pending", "deleting", "deleted"}
+            or not _media_capture_retention_allowed(locked)
             or locked.private_media_use_token != use_token
         ):
             return None
@@ -11286,8 +11299,12 @@ def _finish_media_capture(
     *,
     use_token: str = "",
 ) -> list[dict]:
+    capture_matched = False
     with transaction.atomic():
         locked = InstagramBotMessage.objects.select_for_update().get(pk=message_id)
+        prior_state = locked.private_media_state
+        prior_retry = locked.private_media_delete_after
+        retention_fenced = not _media_capture_retention_allowed(locked)
         privacy_fenced = bool(
             not _message_media_capture_owner_valid(locked)
             or
@@ -11318,6 +11335,7 @@ def _finish_media_capture(
                 str(item.get("source_part_id") or "") == source_part_id
                 and item.get("capture_token") == token
             ):
+                capture_matched = True
                 item.update(updates)
                 if (
                     item.get("status") in {MEDIA_STATUS_UNAVAILABLE, "failed", "expired", "blocked"}
@@ -11327,11 +11345,11 @@ def _finish_media_capture(
                     item["url_metadata_delete_after"] = (
                         timezone.now() + timedelta(seconds=_failed_media_url_retention_seconds())
                     ).isoformat()
-                if privacy_fenced and updates.get("status") == MEDIA_STATUS_OWNED:
+                if (privacy_fenced or retention_fenced) and updates.get("status") == MEDIA_STATUS_OWNED:
                     # Retain the private name only as deletion debt. It is
                     # never exposed as owned media after the erasure fence.
                     item["status"] = "delete_pending"
-                    item["error_kind"] = "privacy_erasure"
+                    item["error_kind"] = "privacy_erasure" if privacy_fenced else "retention_elapsed"
                     item["capture_retryable"] = False
                     item["capture_terminal"] = True
                     item["resolution_required"] = False
@@ -11343,20 +11361,31 @@ def _finish_media_capture(
         locked.attachment_media = _explicit_media_states(media)
         update_fields = ["attachment_media"]
         delete_after_raw = str(updates.get("delete_after") or "").strip()
-        if updates.get("status") == MEDIA_STATUS_OWNED and delete_after_raw:
+        if capture_matched and updates.get("status") == MEDIA_STATUS_OWNED and delete_after_raw:
+            from management.services.ig_private_media import earliest_private_media_deadline
+
             try:
-                locked.private_media_delete_after = datetime.fromisoformat(
+                captured_deadline = datetime.fromisoformat(
                     delete_after_raw.replace("Z", "+00:00")
                 )
+                if timezone.is_naive(captured_deadline):
+                    raise ValueError("capture deadline must include timezone")
             except ValueError:
-                locked.private_media_delete_after = (
+                captured_deadline = (
                     timezone.now()
                     + timedelta(seconds=_private_media_retention_seconds())
                 )
+            earliest = earliest_private_media_deadline(locked, media=locked.attachment_media)
+            locked.private_media_delete_after = min(captured_deadline, earliest) if earliest else captured_deadline
             update_fields.append("private_media_delete_after")
-            if privacy_fenced:
-                locked.private_media_state = "delete_pending"
-                locked.private_media_delete_after = timezone.now()
+            if privacy_fenced or retention_fenced:
+                # Keep failed deletion's cadence. New bytes arriving after a
+                # deletion claim invalidate that claim and remain fresh debt.
+                locked.private_media_state = "delete_failed" if prior_state == "delete_failed" else "delete_pending"
+                locked.private_media_delete_after = prior_retry if prior_state == "delete_failed" else min(
+                    locked.private_media_delete_after, timezone.now())
+                locked.private_media_delete_token = ""
+                locked.private_media_delete_claimed_at = None
             else:
                 locked.private_media_state = "active"
                 locked.private_media_delete_token = ""
@@ -11413,6 +11442,28 @@ def _resume_prepared_media_blob(
     if not descriptor:
         return "none", None, item
     source_part_id = str(item.get("source_part_id") or "")
+    # Recovery is a new read admission, even though its bytes already exist.
+    # Recheck the locked, current owner and clock before any storage operation.
+    with transaction.atomic():
+        locked = InstagramBotMessage.objects.select_for_update().get(pk=row.pk)
+        current_part = next((part for part in (locked.attachment_media or [])
+            if isinstance(part, dict) and part.get("source_part_id") == source_part_id
+            and part.get("capture_token") == token), None)
+        allowed = (_message_media_capture_owner_valid(locked)
+            and _media_capture_retention_allowed(locked)
+            and locked.private_media_use_token == use_token
+            and locked.private_media_use_until is not None
+            and locked.private_media_use_until > timezone.now()
+            and current_part is not None
+            and current_part.get("prepared_blob") == descriptor)
+    if not allowed:
+        current = _finish_media_capture(row.pk, source_part_id, token, {
+            "status": MEDIA_STATUS_UNAVAILABLE, "error_kind": "capture_access_revoked",
+            "capture_retryable": False, "capture_terminal": True,
+            "capture_next_attempt_at": "", "resolution_required": False,
+            "resolution_action": "",
+        }, use_token=use_token)
+        return "failed", current, None
     try:
         prepared = prepared_part_updates(descriptor)["prepared_blob"]
         storage_name = str(prepared["storage_name"])
@@ -11452,14 +11503,16 @@ def _resume_prepared_media_blob(
         except Exception:
             stored_bytes = b""
         if prepared_blob_matches(prepared, stored_bytes):
+            from management.services.ig_private_media import current_private_media_retention_policy
+
             updates = owned_part_updates(
                 prepared,
                 verified_body_bytes=stored_bytes,
             )
-            updates["delete_after"] = (
-                timezone.now()
-                + timedelta(seconds=_private_media_retention_seconds())
-            ).isoformat()
+            policy = current_private_media_retention_policy()
+            updates["delete_after"] = policy["delete_after"]
+            updates["retention_policy"] = {**policy, "source_part_id": source_part_id,
+                                           "content_hash": updates["content_hash"]}
             current = _finish_media_capture(
                 row.pk,
                 source_part_id,
@@ -11530,12 +11583,28 @@ def _capture_message_media(
     deadline_at=None,
 ) -> list[dict]:
     """Own bounded live bytes once while preserving every durable metadata row."""
+    stored_media = getattr(row, "attachment_media", None) or []
+    if getattr(row, "pk", None):
+        current_owner = InstagramBotMessage.objects.filter(pk=row.pk).first()
+        if current_owner is None:
+            return []
+        stored_media = current_owner.attachment_media or []
+        has_private_debt = any(isinstance(part, dict) and (
+            (part.get("private_storage") is True and part.get("storage_name"))
+            or part.get("prepared_blob")) for part in stored_media)
+        # Check durable truth before normalization/merge can change evidence.
+        # Pure historical URL metadata still follows its existing projection.
+        if (not _media_capture_retention_allowed(current_owner)
+            or ((has_private_debt or current_owner.media_capture_eligible)
+                and not _message_media_capture_owner_valid(current_owner))):
+            return stored_media
     source = str(getattr(row, "source", "") or "")
     current = [
         dict(item)
-        for item in (getattr(row, "attachment_media", None) or [])
+        for item in stored_media
         if isinstance(item, dict) and (
-            item.get("url") or (
+            item.get("url") or (item.get("private_storage") is True and item.get("storage_name"))
+            or item.get("prepared_blob") or (
                 item.get("url_metadata_expired") is True and item.get("source_part_id")
             )
         )
@@ -11563,6 +11632,10 @@ def _capture_message_media(
         candidates.extend(_raw_live_media_for_row(row))
     current = _merge_attachment_media(current, candidates, message_scope=row.pk)
     for item in current:
+        if (item.get("private_storage") is True and item.get("storage_name")) or item.get("prepared_blob"):
+            # Missing transport URL/provenance cannot erase actual storage
+            # debt or turn privately stored bytes into historical metadata.
+            continue
         if _media_is_historical(item) or _is_instagram_permalink(item.get("url")) or (
             item.get("provenance") != MEDIA_PROVENANCE_LIVE_WEBHOOK
         ):
@@ -11582,6 +11655,11 @@ def _capture_message_media(
         for item in current
         if isinstance(item, dict)
     ):
+        current_owner = InstagramBotMessage.objects.filter(pk=row.pk).first()
+        if (current_owner is None or not _message_media_capture_owner_valid(current_owner)
+            or not _media_capture_retention_allowed(current_owner)):
+            row.attachment_media = current
+            return current
         # Fail before CDN download when production private storage is absent or
         # unsafe. The caller then takes the deterministic media-unavailable
         # manager route without crossing Gemini/provider boundaries.
@@ -11647,7 +11725,7 @@ def _capture_message_media(
         if (
             current_owner is None
             or not _message_media_capture_owner_valid(current_owner)
-            or current_owner.private_media_state in {"delete_pending", "deleting", "deleted"}
+            or not _media_capture_retention_allowed(current_owner)
             or current_owner.private_media_use_token != use_token
         ):
             if current_owner is None:
@@ -11740,11 +11818,12 @@ def _capture_message_media(
                 descriptor,
                 verified_body_bytes=verified_bytes,
             )
-            delete_after = (
-                timezone.now()
-                + timedelta(seconds=_private_media_retention_seconds())
-            )
-            updates["delete_after"] = delete_after.isoformat()
+            from management.services.ig_private_media import current_private_media_retention_policy
+
+            policy = current_private_media_retention_policy()
+            updates["delete_after"] = policy["delete_after"]
+            updates["retention_policy"] = {**policy, "source_part_id": source_part_id,
+                                           "content_hash": updates["content_hash"]}
             current = _finish_media_capture(
                 row.pk,
                 source_part_id,
@@ -11759,9 +11838,13 @@ def _capture_message_media(
                 for candidate in current
             )
             if not accepted:
-                from management.services.ig_private_media import delete_immediately
+                from management.services.ig_private_media import claim_deletion, delete_claimed_blob
 
-                delete_immediately([row.pk])
+                # The finalizer already owns the deletion fence/deadline. A
+                # failed deletion's retry must not be reset by capture cleanup.
+                deletion_claim = claim_deletion(row.pk)
+                if deletion_claim is not None:
+                    delete_claimed_blob(deletion_claim)
         except Exception as exc:
             from management.services import ig_media_url_policy
 
@@ -16449,7 +16532,6 @@ def _process_one_inside_reply_boundary(
 
 def process_pending(s: InstagramBotSettings | None = None, max_items: int = 15) -> int:
     s = s or InstagramBotSettings.load()
-    _maybe_purge_expired_private_media()
     from management.services.ig_revision_live import process_revision_finalizations
 
     finalized = process_revision_finalizations(max_items=max_items)

@@ -140,6 +140,52 @@ class ConsoleContinuationTests(TestCase):
         self.assertEqual([item["id"] for item in second["items"]], [error.pk])
         self.assertTrue(second["items"][0]["actionable"])
 
+    def test_default_skips_120_harmless_legacy_rows_but_preserves_current_and_uncertain_events(self):
+        legacy = [InstagramBotLog.objects.create(event="PRIVATE raw event", detail="PRIVATE customer@example.com", level="info")
+                  for _index in range(120)]
+        current = [self.append(scope={"client_id": 7, "message_id": 22}) for _index in range(2)]
+        warning = InstagramBotLog.objects.create(event="PRIVATE warning", detail="PRIVATE +380501112233", level="warning")
+        uncertain = self.append(kind="legacy_event", scope={"attempt_id": 5}, reason="delivery_unknown", level="info")
+        tail = InstagramBotLog.objects.create(event="PRIVATE raw tail", detail="PRIVATE_PROVIDER_BODY", level="info")
+        first = self.read()
+        self.assertEqual((first["items"], first["scanned_rows"], first["next_after_id"], first["has_more"]),
+                         ([], 120, legacy[-1].pk, True))
+        second = self.read(after_id=first["next_after_id"])
+        self.assertEqual([item["ids"] for item in second["items"]], [[row.pk for row in current], [warning.pk], [uncertain.pk]])
+        self.assertEqual(second["items"][0]["count"], 2)
+        self.assertTrue(all(item["actionable"] for item in second["items"][1:]))
+        self.assertEqual((second["scanned_rows"], second["next_after_id"], second["has_more"]), (5, tail.pk, False))
+        history_first = self.read(filters={"category": "unknown"})
+        history_second = self.read(after_id=history_first["next_after_id"], filters={"category": "unknown"})
+        self.assertEqual([item["id"] for item in history_first["items"]], [row.pk for row in legacy])
+        self.assertTrue(all(item["count"] == 1 for item in history_first["items"]))
+        self.assertEqual([item["id"] for item in history_second["items"]], [warning.pk, uncertain.pk, tail.pk])
+        self.assertEqual(history_second["next_after_id"], tail.pk)
+        self.assertFalse(history_second["has_more"])
+        for result in (first, second, history_first, history_second):
+            self.assertNotIn("PRIVATE", json.dumps(result))
+            self.assertNotIn("customer@example.com", json.dumps(result))
+            self.assertNotIn("+380501112233", json.dumps(result))
+
+    def test_retention_gap_and_scan_cursor_survive_hidden_legacy_page(self):
+        discarded = [InstagramBotLog.objects.create(event="PRIVATE", detail="PRIVATE", level="info") for _index in range(10)]
+        hidden = [InstagramBotLog.objects.create(event="PRIVATE", detail="PRIVATE", level="info") for _index in range(120)]
+        error = InstagramBotLog.objects.create(event="PRIVATE", detail="PRIVATE", level="error")
+        InstagramBotLog.objects.filter(pk__lte=discarded[-1].pk).delete()
+        first = self.read(after_id=discarded[0].pk)
+        self.assertEqual(first["items"], [])
+        self.assertEqual((first["retention_gap"], first["gap_reason"], first["lost_rows"]), (True, "before_oldest_available", None))
+        self.assertEqual(first["range"]["oldest_available_id"], hidden[0].pk)
+        self.assertEqual((first["next_after_id"], first["has_more"]), (hidden[-1].pk, True))
+        second = self.read(after_id=first["next_after_id"])
+        self.assertEqual([item["id"] for item in second["items"]], [error.pk])
+        self.assertFalse(second["retention_gap"])
+        self.assertFalse(second["has_more"])
+        history = self.read(after_id=discarded[0].pk, filters={"category": "unknown"})
+        self.assertEqual([item["id"] for item in history["items"]], [row.pk for row in hidden])
+        self.assertTrue(history["retention_gap"])
+        self.assertNotIn("PRIVATE", json.dumps(history))
+
     def test_pause_cursor_after_retention_reports_gap_without_invented_lost_count(self):
         rows = [self.append(scope={"message_id": index + 1}) for index in range(150)]
         paused_cursor = rows[10].pk
@@ -435,7 +481,7 @@ class ConsoleStatusIntegrationTests(TestCase):
         from management.services import instagram_bot
         InstagramBotLog.objects.create(event="PRIVATE name", detail="PRIVATE_PROVIDER_BODY +380501112233", level="error")
         instagram_bot.log("warning", "PRIVATE event", "PRIVATE body")
-        response = self.read()
+        response = self.read(category="unknown")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("PRIVATE", response.content.decode())
         self.assertNotIn("+380501112233", response.content.decode())

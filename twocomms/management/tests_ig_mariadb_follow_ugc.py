@@ -74,7 +74,7 @@ class PrivateMediaMariaDbConcurrencyTests(TransactionTestCase):
             if path.is_file()
         }
 
-        def delayed_download(_url):
+        def delayed_download(_url, *, failure_context=None, **_limits):
             download_started.set()
             if not finish_download.wait(timeout=10):
                 raise RuntimeError("capture test timeout")
@@ -98,11 +98,14 @@ class PrivateMediaMariaDbConcurrencyTests(TransactionTestCase):
         ):
             thread = Thread(target=capture, daemon=True)
             thread.start()
-            self.assertTrue(download_started.wait(timeout=10))
-            with self.assertRaises(RuntimeError):
-                _delete_direct_bot_records(client.username)
-            finish_download.set()
-            thread.join(timeout=15)
+            try:
+                self.assertTrue(download_started.wait(timeout=10),
+                    f"capture did not reach download; thread errors: {errors!r}")
+                with self.assertRaises(RuntimeError):
+                    _delete_direct_bot_records(client.username)
+            finally:
+                finish_download.set()
+                thread.join(timeout=15)
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
@@ -132,7 +135,7 @@ class PrivateMediaMariaDbConcurrencyTests(TransactionTestCase):
             client=client,
             role=InstagramBotMessage.Role.USER,
             private_media_state="active",
-            private_media_delete_after=timezone.now() - timedelta(seconds=1),
+            private_media_delete_after=timezone.now() + timedelta(minutes=2),
             attachment_media=[{
                 "status": "owned",
                 "private_storage": True,
@@ -142,10 +145,12 @@ class PrivateMediaMariaDbConcurrencyTests(TransactionTestCase):
         )
         acquired = Event()
         release = Event()
+        tokens = []
 
         def reader():
             close_old_connections()
             token = acquire_blob_use(row.pk, seconds=120)
+            tokens.append(token)
             acquired.set()
             release.wait(timeout=10)
             release_blob_use(row.pk, token)
@@ -154,6 +159,10 @@ class PrivateMediaMariaDbConcurrencyTests(TransactionTestCase):
         thread = Thread(target=reader, daemon=True)
         thread.start()
         self.assertTrue(acquired.wait(timeout=10))
+        self.assertTrue(tokens[0], "fixture must acquire the reader lease before expiry")
+        InstagramBotMessage.objects.filter(pk=row.pk).update(
+            private_media_delete_after=timezone.now() - timedelta(seconds=1),
+        )
         self.assertEqual(purge_due(now=timezone.now(), limit=1), 0)
         self.assertTrue(storage.exists(name))
         release.set()

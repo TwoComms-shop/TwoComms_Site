@@ -1,0 +1,14 @@
+.ig-media-lifecycle{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin-top:6px;font-size:11px;line-height:1.45;color:#aebaca;overflow-wrap:anywhere;min-width:0;max-width:100%}
+.ig-media-lifecycle__state{font-weight:650;color:#d8e4ef;background:rgba(136,160,190,.1);border:1px solid rgba(136,160,190,.15);border-radius:5px;padding:2px 6px;max-width:100%;box-sizing:border-box}
+.ig-media-lifecycle__disclosure{min-width:0;max-width:100%}
+.ig-media-lifecycle__summary{cursor:pointer;color:#aebaca;padding:4px 2px;line-height:1.4;min-height:20px;box-sizing:border-box}
+.ig-media-lifecycle__summary:hover{color:#e2eaf3}
+.ig-media-lifecycle__summary:focus-visible{outline:2px solid #91bce9;outline-offset:3px;border-radius:3px}
+.ig-media-lifecycle__disclosure[open]{flex-basis:100%}
+.ig-media-lifecycle__body{display:grid;gap:3px;padding:3px 0 4px 8px;border-left:2px solid rgba(136,160,190,.2)}
+.ig-media-lifecycle__detail{color:#bcc7d5}
+.ig-media-lifecycle__due,.ig-media-lifecycle__retry,.ig-media-lifecycle__policy{color:#9facbc}
+.ig-media-lifecycle--expired .ig-media-lifecycle__state,.ig-media-lifecycle--pending .ig-media-lifecycle__state{color:#efd28c}
+.ig-media-lifecycle--delete_failed .ig-media-lifecycle__state,.ig-media-lifecycle--delete_failed .ig-media-lifecycle__retry{color:#f1aaa7}
+.ig-media-lifecycle--deleted .ig-media-lifecycle__state{color:#a5c7b2}
+.ig-media-lifecycle--missing .ig-media-lifecycle__state,.ig-media-lifecycle--unverified .ig-media-lifecycle__state{color:#bcc3cc}

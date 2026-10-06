@@ -1049,6 +1049,7 @@ CUSTOMER_LANE = "customer_inbound"
 SERVICE_LANE_NOTIFICATIONS = "manager_notifications"
 SERVICE_LANE_PROFILES = "profile_refresh"
 SERVICE_LANE_RECLAIM_GUARD = "reclaim_lease_guard"
+SERVICE_LANE_PRIVATE_MEDIA = "private_media_cleanup"
 
 # Бюджет одной обслуживающей полосы на цикл. Величины разные, потому что цена
 # перерасхода разная: уведомления — сетевой I/O с внешним лимитом, профили —
@@ -1057,6 +1058,7 @@ SERVICE_LANE_BUDGET_SECONDS = {
     SERVICE_LANE_NOTIFICATIONS: 10.0,
     SERVICE_LANE_PROFILES: 15.0,
     SERVICE_LANE_RECLAIM_GUARD: 5.0,
+    SERVICE_LANE_PRIVATE_MEDIA: 5.0,
 }
 # Перерасход бюджета не прерывает уже начатый вызов (прервать чужой сетевой вызов
 # извне нельзя), но снимает у полосы право на следующие циклы. Так одна полоса не
@@ -1236,6 +1238,7 @@ def _reclaim_lease_guard() -> None:
 
 def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
     """Порядок цикла до ЭА.15 — сохранён целиком для отката по флагу."""
+    _SERVICE_LANES.begin_cycle()
     enabled = bool(settings_obj.is_enabled)
     interval = max(2, settings_obj.poll_interval_seconds or 3)
     try:
@@ -1281,6 +1284,7 @@ def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]
                 return enabled, last_poll
             bot_followups.process_due_followups(settings_obj)
         last_poll = now
+    _private_media_cleanup_tick()
     return enabled, last_poll
 
 
@@ -1366,6 +1370,32 @@ def _run_service_lanes(settings_obj) -> None:
         error_level="warning",
         min_interval_seconds=RECLAIM_GUARD_EVERY_SECONDS,
     )
+    _private_media_cleanup_tick()
+
+
+def _private_media_work_allowed():
+    if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+        return False
+    require_database_ready(lane=SERVICE_LANE_PRIVATE_MEDIA)
+    return True
+
+
+def _private_media_cleanup_tick():
+    """Existing privacy cleanup runs with its own bounded, pause-safe lane."""
+    if not _SERVICE_LANES.may_run(SERVICE_LANE_PRIVATE_MEDIA, 60):
+        return False
+    if not _private_media_work_allowed():
+        return False
+
+    def work():
+        from management.services.ig_private_media import purge_due
+
+        purge_due(limit=100, can_work=_private_media_work_allowed)
+        if _private_media_work_allowed():
+            bot.purge_expired_failed_media_url_metadata(limit=100)
+
+    return _run_service_lane(SERVICE_LANE_PRIVATE_MEDIA, work,
+        error_event="private_media_purge", error_level="warning", min_interval_seconds=60)
 
 
 def _revision_receipt_tick(settings_obj):

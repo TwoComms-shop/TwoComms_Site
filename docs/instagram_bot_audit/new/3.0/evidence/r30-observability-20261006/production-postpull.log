@@ -1,0 +1,65 @@
+maintenance active lease_id=r30-observability-29f4a5-release expires_at=1791310500
+From https://github.com/zainllw0w/TwoComms_Site
+   57f54d151..29f4a5255  main       -> origin/main
+Updating 57f54d151..29f4a5255
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   8 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |  18 +-
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   5 +
+ .../production-postpull.log                        |  35 ++
+ .../evidence/r30-observability-20261006/README.md  |  13 +
+ .../console-paused-refresh-accepted-native.log     |   7 +
+ .../console-paused-refresh-node.log                |   7 +
+ .../observability-final-native.log                 |   7 +
+ .../observability-fixed-sqlite.log                 |  10 +
+ .../observability-initial-sqlite.log               |  87 ++++
+ twocomms/management/bot_overview_views.py          |  51 +++
+ twocomms/management/bot_views.py                   |  87 ++--
+ twocomms/management/services/gemini_health.py      |  20 +-
+ .../management/services/gemini_v2_read_model.py    | 329 +++++++++++--
+ .../management/services/ig_console_read_model.py   | 328 +++++++++++++
+ twocomms/management/services/ig_daemon_health.py   |  12 +-
+ twocomms/management/services/ig_lane_health.py     | 114 +++--
+ .../management/services/ig_overview_read_model.py  | 442 ++++++++++++++++++
+ .../services/ig_permission_transitions.py          |  11 +-
+ twocomms/management/services/instagram_bot.py      |  38 +-
+ .../static/management/gemini_v2_panel.css          |  10 +
+ .../static/management/gemini_v2_panel.js           | 183 +++++++-
+ .../management/static/management/ig_console.js     | 168 +++++++
+ twocomms/management/templates/management/bot.html  | 102 +++--
+ twocomms/management/tests_gemini_api_ui.py         |  33 +-
+ .../tests_gemini_diagnostic_traffic_evidence.py    | 189 ++++++++
+ twocomms/management/tests_gemini_health_api.py     |  26 +-
+ twocomms/management/tests_gemini_v2_read_api.py    |  10 +
+ twocomms/management/tests_ig_console_read_model.py | 508 +++++++++++++++++++++
+ .../tests_ig_gemini_manifest_projection.py         | 396 ++++++++++++++++
+ .../management/tests_ig_overview_read_model.py     | 364 +++++++++++++++
+ 31 files changed, 3394 insertions(+), 224 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-legacy-human-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-legacy-human-20261006/production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-observability-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-observability-20261006/console-paused-refresh-accepted-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-observability-20261006/console-paused-refresh-node.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-observability-20261006/observability-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-observability-20261006/observability-fixed-sqlite.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-observability-20261006/observability-initial-sqlite.log
+ create mode 100644 twocomms/management/bot_overview_views.py
+ create mode 100644 twocomms/management/services/ig_console_read_model.py
+ create mode 100644 twocomms/management/services/ig_overview_read_model.py
+ create mode 100644 twocomms/management/static/management/ig_console.js
+ create mode 100644 twocomms/management/tests_gemini_diagnostic_traffic_evidence.py
+ create mode 100644 twocomms/management/tests_ig_console_read_model.py
+ create mode 100644 twocomms/management/tests_ig_gemini_manifest_projection.py
+ create mode 100644 twocomms/management/tests_ig_overview_read_model.py
+System check identified no issues (0 silenced).
+Running DTF asset minification before collectstatic...
+DTF minification complete: 3 files, 0 updated, saved 66648 bytes
+
+3 static files copied to '/home/qlknpodo/TWC/TwoComms_Site/twocomms/staticfiles', 736 unmodified, 1089 post-processed.
+Compressing... done
+Compressed 4 block(s) from 60 template(s) for 1 context(s).
+maintenance disabled
+daemon ready under supervisor — ok
+377 objects imported automatically (use -v 2 for details).
+
+{"health": {"main_healthy": true, "process_online": true, "process_pid": 2669562, "stalled": false, "supervisor": {"available": true, "child_pid": 2669562, "child_pid_matches_expected": true, "child_release_sha": "29f4a52553bd8ec8c1ed476bf462c302f4ddad8b", "last_ensure_seen_at": 1791309626.36, "observed_at": 1791309630.249, "restart_count": 0, "status": "current", "supervisor_release_sha": "29f4a52553bd8ec8c1ed476bf462c302f4ddad8b"}, "workers_healthy": true}, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "passive_readonly": {"attempts_count": 2, "attempts_schema": 1, "console_gap": false, "console_groups": 120, "console_has_more": true, "console_raw_details_absent": true, "console_schema": 1, "overview_components": {"attention": {"available": true, "freshness": "fresh"}, "daemon": {"available": true, "freshness": "fresh"}, "lanes": {"available": true, "freshness": "fresh"}, "memory_generation": {"available": true, "freshness": "fresh"}, "quotas": {"available": true, "freshness": "fresh"}, "routes": {"available": true, "freshness": "fresh"}, "tasks": {"available": true, "freshness": "fresh"}}, "overview_schema": "ig-overview.v1", "quotas_schema": 1}, "release_sha": "29f4a52553bd8ec8c1ed476bf462c302f4ddad8b"}
