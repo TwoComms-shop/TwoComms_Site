@@ -4551,6 +4551,7 @@ class BotInstruction(models.Model):
     trigger_codes = models.JSONField(default=list, db_default=[], blank=True)
     programme_metadata = models.JSONField(default=dict, db_default={}, blank=True)
     allowed_actions = models.JSONField(default=list, db_default=[], blank=True)
+    reviewed_source = models.JSONField(default=dict, db_default={}, blank=True)
     trust_scope = models.CharField(
         max_length=20,
         choices=TrustScope.choices,

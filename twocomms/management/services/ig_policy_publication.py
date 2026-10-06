@@ -223,7 +223,7 @@ def _instruction_item(row) -> dict:
             "allowed action has no current hard server consumer",
         )
     programme = _programme_metadata(row, tags)
-    return {
+    item = {
         "id": f"instruction:{source_id}",
         "source_id": source_id,
         "title": title,
@@ -237,6 +237,21 @@ def _instruction_item(row) -> dict:
         "allowed_actions": list(actions),
         "trust_scope": trust_scope,
     }
+    provenance = _reviewed_source(getattr(row, "reviewed_source", {}), body)
+    if provenance:
+        if trust_scope != "public_policy":
+            raise PolicyPublicationError("brand_provenance_scope_invalid", "reviewed brand source must be public policy")
+        item["reviewed_source"] = provenance
+    return item
+
+
+def _reviewed_source(value, body):
+    from management.services.ig_brand_source import BrandSourceError, validate_reviewed_source
+
+    try:
+        return validate_reviewed_source(value, body)
+    except BrandSourceError as exc:
+        raise PolicyPublicationError(exc.code, "reviewed brand provenance is invalid") from exc
 
 
 def snapshot_from_rows(rows) -> dict:
@@ -260,7 +275,15 @@ def _snapshot_items(snapshot) -> list[dict]:
         or len(snapshot["instructions"]) > MAX_INSTRUCTIONS
     ):
         raise PolicyPublicationError("invalid_policy_snapshot", "policy snapshot is invalid")
-    return list(snapshot["instructions"])
+    items = list(snapshot["instructions"])
+    for item in items:
+        if not isinstance(item, dict):
+            raise PolicyPublicationError("invalid_policy_snapshot", "instruction item is invalid")
+        if "reviewed_source" in item:
+            _reviewed_source(item["reviewed_source"], str(item.get("body") or ""))
+            if item.get("trust_scope") != "public_policy":
+                raise PolicyPublicationError("brand_provenance_scope_invalid", "reviewed brand source must be public policy")
+    return items
 
 
 def select_policy_snapshot(
@@ -354,10 +377,10 @@ def _current_rows(*, lock: bool):
 def draft_state() -> DraftState:
     from management.models import InstagramBotSettings
 
-    settings_obj = InstagramBotSettings.load()
+    settings_obj = InstagramBotSettings.objects.filter(pk=1).first()
     snapshot = snapshot_from_rows(_current_rows(lock=False))
     return DraftState(
-        revision=int(settings_obj.instruction_draft_revision or 0),
+        revision=int(getattr(settings_obj, "instruction_draft_revision", 0) or 0),
         snapshot=deepcopy(snapshot),
         snapshot_hash=snapshot_hash(snapshot),
     )
@@ -527,6 +550,9 @@ def _normalize_draft_values(values: dict) -> dict:
         raise PolicyPublicationError("invalid_instruction_priority", "priority must be integer")
     if not -10_000 <= priority <= 10_000:
         raise PolicyPublicationError("invalid_instruction_priority", "priority is outside bounds")
+    provenance = _reviewed_source(raw.get("reviewed_source", {}), body)
+    if provenance and trust_scope != "public_policy":
+        raise PolicyPublicationError("brand_provenance_scope_invalid", "reviewed brand source must be public policy")
     return {
         "title": title,
         "body": body,
@@ -538,6 +564,7 @@ def _normalize_draft_values(values: dict) -> dict:
         "programme_metadata": programme,
         "allowed_actions": list(actions),
         "trust_scope": trust_scope,
+        "reviewed_source": provenance,
     }
 
 
@@ -768,6 +795,8 @@ def rollback_instruction_policy(
     target = BotPolicyPublication.objects.filter(pk=target_publication_id).first()
     if head is None or target is None:
         raise PolicyPublicationError("publication_not_found", "publication does not exist")
+    if snapshot_hash(target.snapshot) != target.snapshot_hash:
+        raise PolicyPublicationError("rollback_target_hash_mismatch", "rollback target failed integrity validation")
     _validate_publishable(target.snapshot)
     publication = BotPolicyPublication.objects.create(
         version=_next_publication_version(BotPolicyPublication),

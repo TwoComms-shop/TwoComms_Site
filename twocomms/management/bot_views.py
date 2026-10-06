@@ -8183,8 +8183,20 @@ def bot_kb_api(request):
         }, status=409)
     settings_obj = InstagramBotSettings.objects.select_related(
         "active_instruction_publication"
-    ).get(pk=1)
-    head = settings_obj.active_instruction_publication
+    ).filter(pk=1).first()
+    head = settings_obj.active_instruction_publication if settings_obj else None
+    from .services.ig_policy_parity import read_policy_parity, reviewed_source_status
+    from .services.ig_brand_source import BrandSourceError, read_brand_source, source_preview
+
+    parity = read_policy_parity(settings_obj)
+    instruction_rows = list(BotInstruction.objects.all().order_by("priority", "id")[:300])
+    try:
+        brand = read_brand_source()
+        brand_preview = source_preview(brand, instruction_rows)
+        source_status = reviewed_source_status(instruction_rows, brand.source_hash)
+    except (BrandSourceError, OSError) as exc:
+        brand_preview = {"reason": getattr(exc, "code", "brand_source_unavailable"), "sections": []}
+        source_status = []
 
     def instruction_routing(instruction):
         from .services.bot_instruction_routing import split_instruction_tags
@@ -8217,11 +8229,12 @@ def bot_kb_api(request):
             "programme_kind": programme_kind,
             "allowed_actions": list(instruction.allowed_actions or []),
             "trust_scope": instruction.trust_scope,
+            "reviewed_source": instruction.reviewed_source,
         }
 
     instructions = [
         instruction_payload(i)
-        for i in BotInstruction.objects.all().order_by("priority", "id")[:300]
+        for i in instruction_rows
     ]
     quick_links = [
         {"id": q.id, "kind": q.kind, "label": q.label, "url": q.url,
@@ -8252,8 +8265,11 @@ def bot_kb_api(request):
                 }
                 if head is not None else None
             ),
-            "ready": head is not None,
-            "readiness_code": "" if head is not None else "active_publication_missing",
+            "ready": parity["ready"],
+            "readiness_code": parity["readiness"][0] if parity["readiness"] else "",
+            "parity": parity,
+            "brand_source": brand_preview,
+            "reviewed_sources": source_status,
             "has_unpublished_changes": bool(
                 head is None or head.snapshot_hash != draft.snapshot_hash
             ),
@@ -8299,6 +8315,22 @@ def bot_kb_save_api(request):
             }, status=409)
         expected_hash = str(request.POST.get("draft_hash") or "")
         try:
+            if op == "import_brand":
+                from .services.ig_brand_source import reviewed_import, BrandSourceError
+
+                try:
+                    instruction, state = reviewed_import(
+                        expected_revision=expected_revision, expected_snapshot_hash=expected_hash,
+                        expected_source_hash=str(request.POST.get("source_hash") or ""),
+                        section_key=str(request.POST.get("section_key") or ""),
+                        reviewed=request.POST.get("reviewed") == "1", actor=request.user,
+                    )
+                except BrandSourceError as exc:
+                    return JsonResponse({"success": False, "code": exc.code,
+                        "error": "Джерело не допущено або змінилося. Повторіть перегляд."},
+                        status=409 if exc.code == "brand_source_hash_conflict" else 400)
+                return JsonResponse({"success": True, "id": instruction.pk,
+                    "draft_revision": state.revision, "draft_hash": state.snapshot_hash})
             if op == "delete":
                 state = delete_instruction_draft(
                     expected_revision=expected_revision,
@@ -8459,6 +8491,21 @@ def bot_policy_preview_api(request):
     try:
         expected_revision = int(request.POST.get("draft_revision"))
         expected_hash = str(request.POST.get("draft_hash") or "")
+        if request.POST.get("source_kind") == "brand":
+            from .models import BotInstruction
+            from .services.ig_brand_source import BrandSourceError, read_brand_source, source_preview
+            from .services.ig_policy_publication import DraftRevisionConflict, draft_state
+
+            current = draft_state()
+            if current.revision != expected_revision or current.snapshot_hash != expected_hash:
+                raise DraftRevisionConflict()
+            try:
+                preview = source_preview(read_brand_source(), BotInstruction.objects.order_by("priority", "id"))
+            except (BrandSourceError, OSError) as exc:
+                return JsonResponse({"success": False, "code": getattr(exc, "code", "brand_source_unavailable"),
+                    "error": "Джерело brand.md не пройшло перевірку."}, status=400)
+            return JsonResponse({"success": True, "brand_source": preview,
+                "draft_revision": current.revision, "draft_hash": current.snapshot_hash})
         raw_tags = str(request.POST.get("audience_tags") or "")
         audience_tags = {
             value.strip().casefold()
@@ -8558,10 +8605,10 @@ def bot_policy_history_api(request):
         return blocked
     from .services.ig_policy_publication import publication_history
 
-    settings_obj = InstagramBotSettings.load()
+    settings_obj = InstagramBotSettings.objects.filter(pk=1).first()
     return JsonResponse({
         "success": True,
-        "active_publication_id": settings_obj.active_instruction_publication_id,
+        "active_publication_id": getattr(settings_obj, "active_instruction_publication_id", None),
         "history": publication_history(limit=50),
     })
 

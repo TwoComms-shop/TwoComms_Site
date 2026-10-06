@@ -43,6 +43,7 @@ TRACKING_NOISE_PATH_PREFIXES = (
     "/admin",
     "/admin-panel",
     "/api/",
+    "/bot/api/",
     "/cart/summary/",
     "/favorites/check/",
     "/favorites/toggle/",

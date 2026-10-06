@@ -1,0 +1,32 @@
+maintenance active lease_id=r30-954d2a1f0-release expires_at=1791280160
+From https://github.com/zainllw0w/TwoComms_Site
+   fde512614..954d2a1f0  main       -> origin/main
+Updating fde512614..954d2a1f0
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   4 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   2 +
+ .../r30-followup-episode-20261006/README.md        |  14 ++
+ .../combined-candidate.log                         |  17 ++
+ .../followup-relevance-head.log                    |  10 +
+ .../native-combined-candidate.log                  |  14 ++
+ .../p1-legacy-candidate.log                        |  11 +
+ twocomms/management/services/bot_followups.py      |  36 ++-
+ .../management/services/ig_revision_followups.py   | 158 +++++++++++++-
+ twocomms/management/services/ig_turn_intent.py     |  12 +-
+ .../tests_ig_followup_episode_binding.py           | 242 +++++++++++++++++++++
+ twocomms/management/tests_ig_followup_relevance.py |  22 +-
+ twocomms/management/tests_ig_revision_followups.py |   7 +
+ twocomms/management/tests_ig_revision_live.py      |   6 +
+ 14 files changed, 540 insertions(+), 15 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-followup-episode-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-followup-episode-20261006/combined-candidate.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-followup-episode-20261006/followup-relevance-head.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-followup-episode-20261006/native-combined-candidate.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-followup-episode-20261006/p1-legacy-candidate.log
+ create mode 100644 twocomms/management/tests_ig_followup_episode_binding.py
+System check identified no issues (0 silenced).
+maintenance disabled
+daemon ready under supervisor — ok
+375 objects imported automatically (use -v 2 for details).
+
+{"branch": "main", "commerce_binding_function": true, "dispatch_binding_guard": true, "health": {"main_age_seconds": 0.6, "main_healthy": true, "main_state": "idle", "process_age_seconds": 0.6, "process_online": true, "process_pid": 1199816, "stalled": false, "supervisor": {"available": true, "child_pid": 1199816, "child_pid_matches_expected": true, "child_release_sha": "954d2a1f0c03c6a97b7a47b3d8983fbea9eb1e3c", "last_ensure_seen_at": 1791279241.651, "observed_at": 1791279267.76, "restart_count": 1, "status": "current", "supervisor_release_sha": "fde51261434a0b13b3c68794b57a1c45db79f87d"}, "worker_stalled": false, "workers_healthy": true}, "legacy_optional_binding": true, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "release_sha": "954d2a1f0c03c6a97b7a47b3d8983fbea9eb1e3c"}

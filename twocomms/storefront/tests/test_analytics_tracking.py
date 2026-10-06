@@ -1,6 +1,7 @@
 import json
 from decimal import Decimal
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from django.db import DatabaseError
 from django.contrib.auth.models import AnonymousUser
@@ -17,6 +18,22 @@ from storefront.views.monobank import _apply_monobank_status
 
 
 class FirstLandingAttributionTests(TestCase):
+    def test_bot_api_direct_and_fetch_reads_do_not_create_analytics(self):
+        for mode in ("navigate", "cors"):
+            with self.subTest(mode=mode):
+                request = RequestFactory().get("/bot/api/kb/", HTTP_HOST="management.twocomms.shop",
+                    HTTP_USER_AGENT="Mozilla/5.0", HTTP_ACCEPT="text/html", HTTP_SEC_FETCH_MODE=mode)
+                request.user = SimpleNamespace(is_authenticated=True, is_staff=False)
+                SessionMiddleware(lambda req: None).process_request(request)
+                with self.assertNumQueries(0):
+                    AnalyticsIdentityMiddleware(lambda req: None).process_request(request)
+                    UTMTrackingMiddleware(lambda req: None).process_request(request)
+                    SimpleAnalyticsMiddleware(lambda req: None).process_request(request)
+                self.assertIsNone(request.session.session_key)
+        self.assertFalse(SiteSession.objects.exists())
+        self.assertFalse(PageView.objects.exists())
+        self.assertFalse(UTMSession.objects.exists())
+
     def _request(self, query=""):
         request = RequestFactory().get(
             "/catalog/" + query,
