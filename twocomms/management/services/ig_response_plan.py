@@ -49,6 +49,94 @@ CHOICE_ALIASES = {
 _NEGATED_CHOICE_RE = re.compile(
     r"\b(?:не|ні|not|no|never|(?:do|does|did|has|have|had|is|are|was|were|ca|wo|could|would|should|must|need)n['’]t)\b", re.I,
 )
+_PAYMENT_WORDS = re.compile(r"\b(?:оплат\w*|сплат\w*|сплач\w*|передоплат\w*|платіж\w*|плат[её]ж\w*|paid|payment|pay|чек\w*|квитанц\w*|receipt\w*|реквізит\w*|реквизит\w*|iban)\b", re.I)
+_RECEIPT_WORDS = re.compile(r"\b(?:чек\w*|квитанц\w*|receipt\w*)\b", re.I)
+_PAYMENT_CLAIM = re.compile(r"\b(?:оплатив|оплатила|оплатил|оплатили|сплатив|сплатила|сплачено|оплачено|paid)\b", re.I)
+_PAYMENT_PENDING = re.compile(r"перевір\w*|провер\w*|звір\w*|свер\w*|очіку\w*|ожида\w*|pending|under\s+review|(?:not|isn['’]t)\s+(?:yet\s+)?(?:verified|confirmed)|не\s+(?:підтвердж\w*|подтвержд\w*)", re.I)
+_RECEIPT_ACK = re.compile(r"(?:отрим\w*|одерж\w*|получ\w*|бач\w*|виж\w*|received|see|got)[^.!?\n]{0,45}(?:чек\w*|квитанц\w*|receipt\w*)|(?:чек\w*|квитанц\w*|receipt\w*)[^.!?\n]{0,45}(?:отрим\w*|получ\w*|received|under\s+review|перевір\w*|провер\w*)", re.I)
+_REPORTED_PAYMENT_ACK = re.compile(r"(?:повідом\w*|сообщ\w*|заяв\w*|reported|say|said)[^.!?\n]{0,60}(?:оплат\w*|сплат\w*|paid|payment)|(?:заяв\w*|reported)\s+(?:оплат\w*|payment)", re.I)
+_REPORTED_RECEIPT_ACK = re.compile(r"(?:повідом\w*|сообщ\w*|заяв\w*|reported|say|said)[^.!?\n]{0,60}(?:чек\w*|квитанц\w*|receipt\w*)", re.I)
+_PAYMENT_FORWARDED = re.compile(r"(?:передал\w*|передав\w*|передан\w*|передано|сповіст\w*|уведомил\w*|уведомлен\w*|forwarded|notified)[^.!?\n]{0,70}(?:менедж\w*|команд\w*|manager|team)|(?:менедж\w*|manager|team)[^.!?\n]{0,45}(?:уведомлен\w*|notified|сповіщ\w*)", re.I)
+
+
+def _payment_requests(text):
+    """Current source semantics; questions/negations never prove a payment."""
+    text = _unquoted_text(text)
+    result = set()
+    for clause in re.findall(r"[^,.!?;\n]+[?]?", text):
+        if not _PAYMENT_WORDS.search(clause):
+            continue
+        asking = "?" in clause or bool(re.search(r"\b(?:як|как|де|где|чи|ли|how|where|when|what|can|could|підкаж\w*|подскаж\w*)\b", clause, re.I))
+        negated = bool(_NEGATED_CHOICE_RE.search(clause))
+        instructions = bool(re.search(r"посилан\w*|ссыл\w*|лінк\w*|link|реквізит\w*|реквизит\w*|iban|як\s+оплат|как\s+оплат|how\s+(?:do\s+i\s+)?pay|надішл\w*|пришл\w*|send", clause, re.I))
+        asking = asking or bool(instructions and re.search(r"\b(?:дайт\w*|дайте|надішл\w*|пришл\w*|send|provide|please)\b", clause, re.I))
+        future = bool(re.search(r"\b(?:буду|збира\w*|собира\w*|will|going\s+to)\b", clause, re.I))
+        if not asking and not negated and not future:
+            if _RECEIPT_WORDS.search(clause) and not instructions:
+                result.add("payment:receipt")
+            elif _PAYMENT_CLAIM.search(clause) and not instructions:
+                result.add("payment:claim")
+        if asking or negated:
+            result.add("info:payment_instructions" if instructions else "info:payment")
+    return result
+
+
+def _captured_payment_observation(raw, current_sources):
+    """Keep only admitted observations of exact current USER sources, no PII."""
+    raw = raw if isinstance(raw, dict) else {}
+    if raw.get("reason"):
+        return {}
+    observation = raw.get("observation", raw)
+    if not isinstance(observation, dict) or observation.get("state") not in {"observed", "pending"}:
+        return {}
+    current_ids = {row["message_id"] for row in current_sources}
+    refs = raw.get("source_refs") or []
+    proven_ids = {ref.get("message_id", ref.get("id")) for ref in refs if isinstance(ref, dict)
+                  and re.fullmatch(r"[a-f0-9]{64}", str(ref.get("source_digest", ref.get("digest", ""))))}
+    ids = sorted(identity for identity in observation.get("source_message_ids") or []
+                 if type(identity) is int and identity in current_ids and identity in proven_ids)
+    if not ids:
+        return {}
+    receipts = []
+    for row in (observation.get("receipts") or [])[:8]:
+        if not isinstance(row, dict) or row.get("source_message_id") not in ids or row.get("role") != "receipt" or row.get("state") != "inspected":
+            continue
+        if not row.get("source_part_id") or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("content_hash") or "")):
+            continue
+        # Only document type/transfer outcome go into the plan, never banking PII.
+        facts = row.get("receipt_facts") or {}
+        transfer = facts.get("payment_status")
+        receipts.append({"source_message_id": row["source_message_id"], "source_part_id": str(row["source_part_id"])[:64],
+            "content_hash": row["content_hash"], "document_type": "receipt",
+            "reported_transfer_status": transfer if transfer in {"completed", "pending", "failed", "unknown"} else "unknown"})
+    return {"state": "observed" if receipts else "pending", "source_message_ids": ids,
+        "receipts": receipts, "payment_verified": False, "verification": "unresolved"}
+
+
+def _payment_covered(kind, response, plan, source_id):
+    # Final truth/action validation still owns authority. Coverage cannot turn
+    # a keyword, size ack, manager control or OCR into proof of money/forwarding.
+    if kind == "info:payment_instructions":
+        return bool(response.control.get("paylink"))
+    text = _unquoted_text(response.reply_text)
+    from management.services.ig_reply_truth import _claim_sentences, _has_positive_claim, _locally_negated
+    if plan.authority["payment_confirmed"]:
+        from management.services.ig_reply_truth import _PAYMENT_CLAIM_RE
+        if any("?" not in clause and _has_positive_claim(_PAYMENT_CLAIM_RE, clause)
+               for clause in _claim_sentences(text, ())):
+            return True
+    sentences = [clause for clause in re.findall(r"[^.!?\n]+[?]?", text) if "?" not in clause]
+    pending = any(_PAYMENT_WORDS.search(clause) and any(not _locally_negated(clause, match.start())
+        for match in _PAYMENT_PENDING.finditer(clause)) for clause in sentences)
+    receipt_ack = any(_has_positive_claim(_RECEIPT_ACK, clause) for clause in sentences)
+    claim_ack = any(_has_positive_claim(_REPORTED_PAYMENT_ACK, clause) for clause in sentences)
+    receipt_report_ack = any(_has_positive_claim(_REPORTED_RECEIPT_ACK, clause) for clause in sentences)
+    source_receipt = source_id in plan.payment_observation.get("source_message_ids", [])
+    if kind == "payment:receipt":
+        return (receipt_ack if source_receipt else receipt_report_ack) and pending
+    if kind == "payment:claim":
+        return (claim_ack or (receipt_ack and source_receipt)) and pending
+    return pending and bool(plan.payment_observation or plan.payment_claim_source_ids)
 
 
 def _unquoted_text(text):
@@ -133,6 +221,7 @@ def _requested_topics(text, parsed_topics=()):
             continue
         matched = presentation
         for topic, pattern in (
+            ("payment", _PAYMENT_WORDS.pattern),
             ("price", r"ціна|ціну|вартість|кошту|цена|цену|стоим|стоит|price|cost|how\s+much"),
             ("dispatch_timing", r"відправ|отправ|dispatch|ship(?:ped|ping)?\b"),
             ("shipping", r"достав|посилк|посылк|отрима|получу|deliver|arrival"),
@@ -205,6 +294,13 @@ class ResponsePlan:
     obligations: tuple[dict, ...]
     source_selection: dict = field(default_factory=dict)
     readiness_snapshot: dict = field(default_factory=dict)
+    payment_observation: dict = field(default_factory=dict)
+    payment_claim_source_ids: tuple[int, ...] = ()
+    payment_context_snapshot: dict = field(default_factory=dict)
+    payment_context_boundary: dict = field(default_factory=dict)
+    payment_context_fence: str = ""
+    payment_context_reason: str = ""
+    payment_context_captured_at: str = ""
 
     @property
     def digest(self):
@@ -212,10 +308,14 @@ class ResponsePlan:
                                         separators=(",", ":")).encode()).hexdigest()
 
     def as_dict(self):
-        return {"version": 1, "choices": self.choices, "evidence": self.evidence,
+        payload = {"version": 1, "choices": self.choices, "evidence": self.evidence,
                 "scope": self.scope, "configuration": self.configuration,
                 "next_selector": self.next_selector, "authority": self.authority,
                 "obligations": list(self.obligations)}
+        if self.payment_observation or self.payment_claim_source_ids:
+            payload.update(payment_observation=self.payment_observation,
+                payment_claim_source_ids=list(self.payment_claim_source_ids))
+        return payload
 
     def truth_context(self, context):
         # Source preferences authorize only acknowledgement of a wish. They
@@ -235,7 +335,12 @@ class ResponsePlan:
             "If applicability is unknown, do not assert that a requested size/fit/color is available. "
             "Ordinary selection uses product/size/fit/option/qty controls and never requires paylink/payment. "
             "item and objhandle controls are unsupported. Never promise an unsupported effect. "
-            "Answer each current request; a size acknowledgement alone does not complete purchase."
+            "Answer each current request; a size acknowledgement alone does not complete purchase or payment support. "
+            "Payment claims and receipt/OCR observations are reported evidence, never verified money. "
+            "For an owned observed receipt acknowledge receipt and state verification is pending; ask for genuinely missing facts. "
+            "For a text-only paid claim acknowledge what the customer reported without asserting receipt was read. "
+            "Only authority.payment_confirmed permits a verified-payment claim. Never claim a receipt was forwarded or the manager notified without a SENT notification proof. "
+            "A payment link or banking requisites are instructions, never proof of payment. Receipt acknowledgement completes only that customer response; managerial verification remains unresolved."
         )
         if self._audited_size():
             guidance += (
@@ -287,6 +392,12 @@ class ResponsePlan:
                     bare_size = re.search(r"\b(?:XS|S|M|L|XL|XXL|XXXL|XXXXL|[5-8]XL)\b", clause, re.I)
                     if values or bare_size or (chosen and re.search(r"\b" + re.escape(str(chosen)) + r"\b", clause, re.I)):
                         return "response_plan_audited_choice_misattributed"
+        if any(row["kind"].startswith(("payment:", "info:payment")) for row in self.obligations):
+            from management.services.ig_reply_truth import _claim_sentences, _has_positive_claim
+            if any("?" not in clause and _has_positive_claim(_PAYMENT_FORWARDED, clause)
+                   for clause in _claim_sentences(_unquoted_text(response.reply_text), ())):
+                # This observation reader has no notification-SENT capability.
+                return "response_plan_payment_forwarding_unverified"
         for field, selector in (("size", "size"), ("fit_option_code", "fit"), ("color", "color")):
             if not self.choices.get(field) or self.next_selector == selector:
                 continue
@@ -311,7 +422,8 @@ class ResponsePlan:
                 str(response.control.get("product") or "") == str(self.choices["product_id"])
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
             done = bool(acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
-                        or (kind.startswith("info:") and _topic_covered(kind, response, self))
+                        or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
+                        or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self))
                         or (kind.startswith("withdrawal:") and asks_next_selector(text, kind.split(":", 1)[1])))
             (covered if done else remaining).append(obligation["id"])
         dependent_kinds = {"purchase_requested", "model_query"}
@@ -321,13 +433,16 @@ class ResponsePlan:
         other_remaining = any(row["id"] in remaining and row["kind"] not in dependent_kinds for row in self.obligations)
         disposition = "complete" if not remaining else (
             "waiting_on_customer" if question and dependent_remaining and not other_remaining else "recovery")
-        return {"version": 1, "plan_digest": self.digest,
+        result = {"version": 1, "plan_digest": self.digest,
                 "source_message_ids": sorted({row["source_message_id"] for row in self.obligations}),
                 "covered": covered, "remaining": remaining, "disposition": disposition,
                 "next_selector": self.next_selector if question else "", "local": bool(local)}
+        if (self.payment_observation or self.payment_claim_source_ids) and not self.authority["payment_confirmed"]:
+            result["payment_verification"] = "unresolved"
+        return result
 
 
-def build_response_plan(*, preferences, readiness, context, sources=()):
+def build_response_plan(*, preferences, readiness, context, sources=(), payment_observation=None):
     """Pure constructor. Inputs must come from the existing scoped readers."""
     values = preferences.get("values") or {}
     watermark = max((int(row.get("message_id") or 0) for row in sources), default=0)
@@ -367,6 +482,9 @@ def build_response_plan(*, preferences, readiness, context, sources=()):
                  "recruitment_status": context.recruitment_status}
     from management.services.ig_commerce_turns import parse_turn
     current_sources = [row for row in sources[:64] if row.get("role") == "user"]
+    payment_observation = _captured_payment_observation(payment_observation, current_sources)
+    receipt_ids = set(payment_observation.get("source_message_ids") or [])
+    payment_claim_ids = set()
     obligations_list = []
     commerce_present = False
     for source in current_sources:
@@ -394,6 +512,16 @@ def build_response_plan(*, preferences, readiness, context, sources=()):
         if kinds:
             commerce_present = True
         topics = _requested_topics(source.get("text"), parse_turn(_unquoted_text(source.get("text"))).info_topics)
+        payment_kinds = _payment_requests(source.get("text"))
+        if source["message_id"] in receipt_ids:
+            payment_kinds.add("payment:receipt")
+        if payment_kinds:
+            commerce_present = True
+            # Replace its generic payment topic, keeping unrelated questions.
+            topics = [topic for topic in topics if not topic.startswith("info:payment")]
+            kinds.extend(sorted(payment_kinds))
+            if "payment:claim" in payment_kinds:
+                payment_claim_ids.add(source["message_id"])
         if "info:presentation" in topics:
             commerce_present = True
         if topics:
@@ -406,8 +534,49 @@ def build_response_plan(*, preferences, readiness, context, sources=()):
     # Outside this commerce slice existing intent and delivery contracts retain
     # responsibility. Within it, an independent source never vanishes.
     obligations = tuple(obligations_list) if commerce_present else ()
+    if obligations and all(row["kind"].startswith(("payment:", "info:payment")) for row in obligations):
+        next_selector = ""
     scope = {key: preferences[key] for key in ("session_id", "generation", "revision", "line_id", "active_index") if key in preferences}
-    return ResponsePlan(choices, evidence, scope, configuration, next_selector, authority, obligations)
+    return ResponsePlan(choices, evidence, scope, configuration, next_selector, authority, obligations,
+        payment_observation=payment_observation, payment_claim_source_ids=tuple(sorted(payment_claim_ids)))
+
+
+def _capture_payment_context(client, revision, sources, session, line):
+    """Read the exact sealed source boundary; optional failures are finite."""
+    from copy import deepcopy
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+    from management.models import IgFunnelResetAudit
+    from management.services.ig_admin_state_capture import capture_payment_context
+
+    if revision is None or not sources:
+        return {}, {}, "", "payment_context_sealed_source_unavailable", ""
+    namespaces = {row.get("source_namespace") for row in sources}
+    if len(namespaces) != 1 or not next(iter(namespaces)):
+        return {}, {}, "", "payment_context_namespace_unavailable", ""
+    clocks = []
+    for row in sources:
+        event = parse_datetime(str(row.get("provider_created_at") or row.get("observed_created_at") or ""))
+        if event is None or timezone.is_naive(event):
+            return {}, {}, "", "payment_context_event_time_unavailable", ""
+        clocks.append((event, int(row["message_id"])))
+    event, identity = max(clocks)
+    watermark = {"message_id": identity, "event_at": event.isoformat()}
+    reset = IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values("pk", "reset_after_message_id").first() or {}
+    episode = getattr(client, "current_commercial_episode", None)
+    boundary = {"client_id": client.pk, "episode_id": client.current_commercial_episode_id,
+        "order_id": getattr(episode, "intended_order_id", None), "line_id": str(line.get("line_id") or ""),
+        "recipient_id": str(line.get("recipient_id") or "self"), "reset_floor": int(reset.get("reset_after_message_id") or 0) + 1,
+        "source_namespace": next(iter(namespaces)), "reset_id": reset.get("pk"), "erasure_epoch": "",
+        "source_watermark": watermark, "watermark": deepcopy(watermark)}
+    if client.privacy_erasure_started_at or any(int(row["message_id"]) < boundary["reset_floor"] for row in sources):
+        return {}, boundary, "", "payment_context_scope_changed", ""
+    now = timezone.now()
+    first, reason, fence = capture_payment_context(boundary, now=now)
+    second, second_reason, second_fence = capture_payment_context(boundary, now=now)
+    if not fence or reason != second_reason or fence != second_fence:
+        return {}, boundary, "", "payment_context_changed", now.isoformat()
+    return deepcopy(first), boundary, fence, reason, now.isoformat()
 
 
 def capture_response_plan(client, *, revision=None):
@@ -449,8 +618,18 @@ def capture_response_plan(client, *, revision=None):
         context = ReplyTruthContext()
     else:
         context = build_reply_truth_context(client)
+    try:
+        payment_snapshot, payment_boundary, payment_fence, payment_reason, payment_at = _capture_payment_context(
+            client, revision, sources, session, line)
+    except Exception:
+        # Optional observation capture neither fabricates receipt truth nor
+        # relaxes the existing final money/source/permission guards.
+        payment_snapshot, payment_boundary, payment_fence, payment_reason, payment_at = {}, {}, "", "payment_context_unavailable", ""
+    slot = (payment_snapshot.get("slots") or {}).get("receipt.observation") or {}
+    payment_observation = {"observation": slot.get("value") or {}, "source_refs": slot.get("source_refs") or []}
     from management.services.ig_commerce_projection import captured_selection_from_preferences
-    plan = build_response_plan(preferences=preferences, readiness=readiness, context=context, sources=sources)
+    plan = build_response_plan(preferences=preferences, readiness=readiness, context=context,
+        sources=sources, payment_observation=payment_observation)
     if plan._audited_size():
         from management.services.ig_commerce_projection import _matching_legacy_selection
         legacy = _matching_legacy_selection(client)
@@ -463,4 +642,6 @@ def capture_response_plan(client, *, revision=None):
         plan = replace(plan, authority={**plan.authority, "audited_size_configuration_matches": matches})
     return replace(plan,
                    source_selection=captured_selection_from_preferences(client.pk, preferences),
-                   readiness_snapshot=readiness)
+                   readiness_snapshot=readiness, payment_context_snapshot=payment_snapshot,
+                   payment_context_boundary=payment_boundary, payment_context_fence=payment_fence,
+                   payment_context_reason=payment_reason, payment_context_captured_at=payment_at)

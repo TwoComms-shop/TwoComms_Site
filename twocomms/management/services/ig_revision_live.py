@@ -1152,6 +1152,16 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         if not token_value:
             return RevisionLiveResult(revision_id, "blocked", ("provider_not_configured",))
         return _drain_effects(revision, token, settings_row, token_value)
+    if not revision.generation_proposal_digest:
+        from management.services.ig_payment_observation import observe_payment_source
+
+        # Complete observations before the first context/proposal capture only.
+        # Execution-only continuations retain their immutable captured proposal;
+        # the independent source worker owns later observation/reconciliation.
+        # Existing authority/epoch/source guards still check every real effect.
+        for source in revision.bundle_snapshot.get("sources") or []:
+            observe_payment_source(int(source["message_id"]))
+        revision.client.refresh_from_db()
     # Incoming source facts have their own recipient/reset/privacy admission.
     # Output policy (no reply, static, disabled AI or manager pause) cannot erase
     # a customer's accepted choice or create send/effect authority from it.

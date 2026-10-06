@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 import hashlib
 import hmac
 import json
@@ -75,6 +76,50 @@ def authoritative_manager_decision(review):
     return decision
 
 
+def order_fulfillment_payment_verified(order):
+    """Authorize fulfillment from provider truth or an audited manager action."""
+    payload = order.payment_payload if isinstance(order.payment_payload, dict) else {}
+    reconciliation = payload.get("ig_payment_reconciliation") or {}
+    if isinstance(reconciliation, dict) and (
+        reconciliation.get("needs_reconciliation")
+        or reconciliation.get("automatic_fulfillment_blocked")
+    ):
+        return False
+    raw_paid = str(order.payment_status or "") in {"paid", "prepaid", "partial"}
+    if str(order.source or "") != "manual":
+        return raw_paid
+    action = payload.get("manual_payment_action") or {}
+    if raw_paid and isinstance(action, dict) and (
+        action.get("actor_id") and action.get("source") == "management_user"
+        and action.get("payment_status") == order.payment_status
+    ):
+        return True
+    if raw_paid and (payload.get("provider_payment_confirmed") or payload.get("legacy_payment_transition")):
+        return True
+    if not payload.get("manual_payment_evidence_confirmed"):
+        return False
+    try:
+        attribution = order.instagram_attribution
+    except Exception:
+        return False
+    review = attribution.payment_review
+    decision = authoritative_manager_decision(review)
+    if not decision or decision.pk != payload.get("manager_payment_decision_id"):
+        return False
+    from management.services.ig_commercial_episodes import payment_truth_snapshot
+    from management.services.ig_order_amounts import order_amounts
+
+    payable = order_amounts(order)["payable"]
+    amount = Decimal(decision.confirmed_amount or 0)
+    if (
+        decision.verification_scope == "full_payment" and amount != payable
+        or decision.verification_scope == "prepayment" and not 0 < amount < payable
+    ):
+        return False
+    truth = payment_truth_snapshot(review=review, order=order, decision=decision)
+    return bool(truth["authoritative_for_fulfillment"])
+
+
 def order_link_override_requirements(review, order):
     """Return the structured override contract shared by selector and mutation."""
     decision = authoritative_manager_decision(review)
@@ -133,6 +178,8 @@ def _item_snapshot(items):
             "product_id": item.product_id,
             "color_variant_id": item.color_variant_id,
             "title": item.title,
+            "is_custom": bool(item.product_id is None or getattr(item, "is_custom", False)),
+            "color_name_custom": getattr(item, "color_name_custom", "") or "",
             "size": item.size or "",
             "fit_option_code": getattr(item, "fit_option_code", "") or "",
             "fit_option_label": getattr(item, "fit_option_label", "") or "",
@@ -272,6 +319,8 @@ def _commercial_fingerprint(item):
         int(item.color_variant_id or 0),
         str(item.title or "").strip().casefold(),
         str(item.size or "").strip().casefold(),
+        str(getattr(item, "color_name_custom", "") or "").strip().casefold(),
+        bool(item.product_id is None or getattr(item, "is_custom", False)),
         str(getattr(item, "fit_option_code", "") or "").strip().casefold(),
         json.dumps(
             getattr(item, "option_values", {}) or {},
@@ -284,7 +333,16 @@ def _commercial_fingerprint(item):
     )
 
 
-@transaction.atomic
+def _review_link_transaction(function):
+    @wraps(function)
+    def guarded(review, *args, **kwargs):
+        from management.services.ig_payment_review import _payment_review_mutation
+        with _payment_review_mutation(review):
+            return function(review, *args, **kwargs)
+    return guarded
+
+
+@_review_link_transaction
 def link_existing_order_to_review(
     review,
     *,
@@ -301,11 +359,8 @@ def link_existing_order_to_review(
         IgPaymentProjection,
     )
 
-    locked_review = (
-        IgPaymentConfirmationReview.objects.select_for_update()
-        .select_related("client", "deal", "order")
-        .get(pk=review.pk)
-    )
+    from management.services.ig_payment_review import _lock_payment_review
+    locked_review = _lock_payment_review(review)
     client = locked_review.client
     if client.hidden_at:
         raise ValueError("Прихований клієнт виключений з операцій")
@@ -566,6 +621,9 @@ def link_existing_order_to_review(
     ])
     locked_review.order = order
     locked_review.save(update_fields=["order", "updated_at"])
+    from management.services.ig_order_assignments import _advance_stage_from_order
+
+    _advance_stage_from_order(client, order)
     if locked_review.deal_id:
         locked_review.deal.order = order
         locked_review.deal.status = IgDeal.Status.ORDER_CREATED

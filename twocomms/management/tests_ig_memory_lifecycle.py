@@ -1,12 +1,11 @@
 """Offline lifecycle hooks and the existing daemon's bounded memory ownership."""
 from datetime import timedelta
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
-from management.models import IgClient, IgConversationAnalysisJob, InstagramBotMessage, InstagramBotSettings
+from management.models import IgClient, IgConversationAnalysisJob, IgWorkerLaneState, InstagramBotMessage, InstagramBotSettings
 from management.services import instagram_bot as bot
 from management.services import ig_memory_producer as producer
 from management.services.ig_analysis_lane import owner_scope
@@ -92,12 +91,19 @@ class MemoryInboundLifecycleTests(TransactionTestCase):
 @override_settings(GOOGLE_INDEXING_ENABLED=False)
 class MemoryHumanLifecycleTests(TransactionTestCase):
     from management.tests_ig_human_reply import HumanReplyCommandTests
-    setUp = HumanReplyCommandTests.setUp
+    _physical_http = HumanReplyCommandTests._physical_http
+
+    def setUp(self):
+        # Reuse the physical callback fixture while retaining the real memory
+        # postcommit hook; this suite verifies that lifecycle, not a send stub.
+        memory_enqueue = bot._enqueue_memory_source_event
+        self.HumanReplyCommandTests.setUp(self)
+        self.memory.side_effect = memory_enqueue
 
     def test_exact_sent_postcommit_enqueues_once_and_replay_does_not_send(self):
         from management.services.ig_human_reply import create_human_reply_command, dispatch_human_reply_command
-        with patch("management.services.instagram_bot.send_text", return_value=SimpleNamespace(
-            ok=True, kind="", hint="", provider_message_ids=("mid-memory-human",))) as send, patch(
+        self.provider_mid = "mid-memory-human"
+        with patch(
             "management.services.ig_human_reply.InstagramBotSettings.load", return_value=self.settings):
             command = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово").command
             delivered = dispatch_human_reply_command(command.pk)
@@ -105,25 +111,29 @@ class MemoryHumanLifecycleTests(TransactionTestCase):
             self.assertEqual(self.customer.memory_producer_state["dirty"]["message_id"], delivered.reply_message_id)
             before = self.customer.memory_producer_state
             dispatch_human_reply_command(command.pk)
-        self.assertEqual(send.call_count, 1)
+        self.assertEqual(self.http.call_count, 1)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.memory_producer_state, before)
 
     def test_unknown_human_reply_never_enqueues(self):
         from management.services.ig_human_reply import create_human_reply_command, dispatch_human_reply_command
-        for kind in ("unknown",):
-            with self.subTest(kind=kind), patch("management.services.instagram_bot.send_text", return_value=SimpleNamespace(
-                ok=False, kind=kind, hint="offline", provider_message_ids=())), patch(
-                "management.services.ig_human_reply.InstagramBotSettings.load", return_value=self.settings):
-                command = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово").command
-                dispatch_human_reply_command(command.pk)
-                self.customer.refresh_from_db()
-                self.assertIsNone(self.customer.memory_dirty_at)
+        self.provider_exception = TimeoutError("controlled unknown delivery")
+        with patch("management.services.ig_human_reply.InstagramBotSettings.load", return_value=self.settings):
+            command = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово").command
+            delivered = dispatch_human_reply_command(command.pk)
+        self.assertEqual(delivered.state, "unknown")
+        self.assertEqual(self.http.call_count, 1)
+        self.customer.refresh_from_db()
+        self.assertIsNone(self.customer.memory_dirty_at)
 
     def test_failed_human_reply_never_enqueues(self):
         from management.services.ig_human_reply import create_human_reply_command, dispatch_human_reply_command
-        with patch("management.services.instagram_bot.send_text", return_value=SimpleNamespace(
-            ok=False, kind="failed", hint="offline", provider_message_ids=())), patch(
+        def rejected_http(*args, **kwargs):
+            self._physical_http(*args, **kwargs)
+            return 400, '{"error":{"message":"controlled rejection","code":100}}'
+
+        self.http.side_effect = rejected_http
+        with patch(
             "management.services.ig_human_reply.InstagramBotSettings.load", return_value=self.settings):
             command = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово").command
             dispatch_human_reply_command(command.pk)
@@ -132,13 +142,22 @@ class MemoryHumanLifecycleTests(TransactionTestCase):
 
     def test_partial_unknown_human_receipt_never_enqueues(self):
         from management.services.ig_human_reply import create_human_reply_command, dispatch_human_reply_command
-        with patch("management.services.instagram_bot.send_text", return_value=SimpleNamespace(
-            ok=False, kind="unknown", hint="partial", provider_message_ids=("mid-partial",))), patch(
+        self.provider_mid = "mid-partial"
+
+        def partial_http(*args, **kwargs):
+            result = self._physical_http(*args, **kwargs)
+            if self.http.call_count > 1:
+                raise TimeoutError("controlled partial delivery")
+            return result
+
+        self.http.side_effect = partial_http
+        with patch(
             "management.services.ig_human_reply.InstagramBotSettings.load", return_value=self.settings):
-            command = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово").command
+            command = create_human_reply_command(self.customer.pk, actor=self.actor, text="Готово. " * 130).command
             delivered = dispatch_human_reply_command(command.pk)
         self.assertEqual(delivered.state, "unknown")
         self.assertEqual(delivered.provider_message_ids, ["mid-partial"])
+        self.assertEqual(self.http.call_count, 2)
         self.customer.refresh_from_db()
         self.assertIsNone(self.customer.memory_dirty_at)
 
@@ -202,16 +221,25 @@ class MemoryRevisionLifecycleTests(TransactionTestCase):
                    GEMINI_NONLIVE_ADMISSION_MODE="enforce")
 class MemoryDaemonOwnershipTests(TransactionTestCase):
     def setUp(self):
+        # This suite owns memory scheduling; receipt-worker behavior has its
+        # own fenced scheduling tests and must not claim unrelated fixtures.
+        observations = patch("management.services.ig_payment_observation.drain_payment_observations")
+        observations.start()
+        self.addCleanup(observations.stop)
+        # Simple daemon startup fixtures may retain their simulated durable
+        # lane between classes. This fixture owns a new, unfrozen generation.
+        IgWorkerLaneState.objects.filter(lane_key="conversation_analysis").delete()
         InstagramBotSettings.objects.create(pk=1, is_enabled=False)
         self.customer = IgClient.objects.create(igsid="memory-daemon-customer")
         self.source = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
             role="user", source="webhook", status="done", text="L", mid="memory-daemon-source",
             provider_namespace="instagram_login:owner", provider_created_at=timezone.now())
         self.owner_context = owner_scope(lease_seconds=3600)
-        self.owner_context.__enter__()
+        self.assertIsNotNone(self.owner_context.__enter__())
         self.addCleanup(self.owner_context.__exit__, None, None, None)
-        producer.enqueue_memory_source(self.source.pk)
-        self.claim = producer.claim_memory_job(client_id=self.customer.pk, now=timezone.now()+timedelta(seconds=4))
+        self.assertTrue(producer.enqueue_memory_source(self.source.pk).queued)
+        self.customer.refresh_from_db()
+        self.claim = producer.claim_memory_job(client_id=self.customer.pk, now=self.customer.memory_due_at)
         self.assertIsNotNone(self.claim)
 
     def test_analysis_priority_guard_read_only_and_current(self):

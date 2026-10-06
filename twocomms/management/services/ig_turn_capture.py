@@ -416,6 +416,30 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     readiness = getattr(plan, "readiness_snapshot", None)
     if isinstance(readiness, dict) and readiness:
         components["readiness"] = dict(scope=scope, capture=deepcopy(readiness))
+    # Capture agreement/receipt and exact episode payment once using the same
+    # source-verifying read model as admin. The sealed watermark excludes later
+    # messages; optional context failures never fabricate payment completion.
+    def payment_context_capture():
+        from management.services.ig_admin_state_capture import capture_payment_context
+        from management.services.ig_client_state_card import CAPTURE_SCOPE_KEYS
+        prior = getattr(plan, "payment_context_snapshot", None)
+        prior_boundary = getattr(plan, "payment_context_boundary", None)
+        prior_fence = getattr(plan, "payment_context_fence", "")
+        if prior_fence and isinstance(prior, dict) and isinstance(prior_boundary, dict):
+            if any(prior_boundary.get(key) != boundary.get(key) for key in (*CAPTURE_SCOPE_KEYS, "source_watermark")):
+                raise TurnContextError("payment_context_scope_changed")
+            first, reason, fence = deepcopy(prior), getattr(plan, "payment_context_reason", ""), prior_fence
+        else:
+            first, reason, fence = capture_payment_context(boundary, now=captured_at)
+        _, second_reason, second_fence = capture_payment_context(boundary, now=captured_at)
+        if reason != second_reason or fence != second_fence:
+            raise TurnContextError("payment_context_changed")
+        return first
+    payment_context = optional("payment_context", payment_context_capture)
+    components.update({key: value for key, value in payment_context.items() if key in {"slots", "payment_truth"}})
+    components["observation_omissions"] = payment_context.get("omissions") or []
+    omissions.extend({"block_id": "state:" + item["component"], "reason": item["reason"]}
+        for item in payment_context.get("omissions") or [])
     try:
         captured_history, history_reason = _history(client, boundary, sources, history)
     except TurnContextError:

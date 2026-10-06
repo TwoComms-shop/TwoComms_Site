@@ -2,6 +2,7 @@ import hashlib
 import tempfile
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
@@ -120,3 +121,108 @@ class PrivateMediaPreviewTests(TestCase):
                     ))
                     self.assertEqual(response.status_code, 404)
                     self.assertIn("no-store", response["Cache-Control"])
+
+    def _assert_expired_preview(self, *, source_deadline=None, part_deadline=None):
+        from management import ig_private_media_views as views
+
+        frozen = timezone.now()
+        with tempfile.TemporaryDirectory() as root, override_settings(
+            IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
+        ), patch.object(views.timezone, "now", return_value=frozen):
+            row, part_id = self._message()
+            if source_deadline is not None:
+                row.private_media_delete_after = source_deadline(frozen)
+            if part_deadline is not None:
+                row.attachment_media[0]["delete_after"] = part_deadline(frozen)
+            row.save(update_fields=["private_media_delete_after", "attachment_media"])
+            with patch.object(views, "acquire_blob_use") as acquire, patch.object(views, "_read_current_bytes") as read:
+                response = self.client.get(reverse(
+                    "management_bot_private_media_preview", args=[row.pk, part_id],
+                ))
+            acquire.assert_not_called()
+            read.assert_not_called()
+            self.assertEqual(response.status_code, 404)
+            self.assertIn("no-store", response["Cache-Control"])
+            self.assertFalse(AdminAuditLog.objects.filter(
+                action="ig_private_media.preview", entity_id=str(row.pk),
+            ).exists())
+
+    def test_expired_message_deadline_denies_before_lease_and_bytes(self):
+        self._assert_expired_preview(source_deadline=lambda now: now)
+
+    def test_expired_part_deadline_denies_before_lease_and_bytes(self):
+        self._assert_expired_preview(part_deadline=lambda now: (now - timedelta(seconds=1)).isoformat())
+
+    def test_malformed_or_naive_part_deadline_denies_before_bytes(self):
+        for value in ("not-a-date", "2026-02-30T12:00:00+00:00", "2026-10-06T12:00:00", "", 123):
+            with self.subTest(value=value):
+                self._assert_expired_preview(part_deadline=lambda now, value=value: value)
+
+    def test_malformed_or_naive_message_deadline_is_not_a_retention_proof(self):
+        from management import ig_private_media_views as views
+
+        frozen = timezone.now()
+        with tempfile.TemporaryDirectory() as root, override_settings(
+            IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
+        ), patch.object(views.timezone, "now", return_value=frozen):
+            row, part_id = self._message()
+            for value in (frozen.replace(tzinfo=None) + timedelta(hours=1),
+                          "not-a-date", "2026-02-30T12:00:00+00:00", "", 123):
+                with self.subTest(value=value):
+                    row.private_media_delete_after = value
+                    with self.assertRaises(views.PrivateMediaUnavailable):
+                        views._safe_part(row, row.client, part_id, use_token=None)
+
+    def test_future_part_deadline_preserves_authorized_preview(self):
+        from management import ig_private_media_views as views
+
+        frozen = timezone.now()
+        with tempfile.TemporaryDirectory() as root, override_settings(
+            IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
+        ), patch.object(views.timezone, "now", return_value=frozen):
+            row, part_id = self._message()
+            row.attachment_media[0]["delete_after"] = (frozen + timedelta(minutes=20)).isoformat()
+            row.save(update_fields=["attachment_media"])
+            response = self.client.get(reverse(
+                "management_bot_private_media_preview", args=[row.pk, part_id],
+            ))
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("no-store", response["Cache-Control"])
+
+    def test_deadline_expiring_while_waiting_is_rechecked_before_bytes(self):
+        from management import ig_private_media_views as views
+
+        for deadline_owner in ("message", "part"):
+            with self.subTest(deadline_owner=deadline_owner), tempfile.TemporaryDirectory() as root, override_settings(
+                IG_PRIVATE_MEDIA_ROOT=str(Path(root).resolve()),
+            ):
+                frozen = timezone.now()
+                clock = {"now": frozen}
+                acquire_original = views.acquire_blob_use
+                with patch.object(views.timezone, "now", side_effect=lambda: clock["now"]):
+                    row, part_id = self._message()
+                    deadline = frozen + timedelta(seconds=20)
+                    if deadline_owner == "message":
+                        row.private_media_delete_after = deadline
+                    else:
+                        row.attachment_media[0]["delete_after"] = deadline.isoformat()
+                    row.save(update_fields=["private_media_delete_after", "attachment_media"])
+
+                    def delayed_acquire(message_id, *, seconds):
+                        token = acquire_original(message_id, seconds=seconds)
+                        clock["now"] = frozen + timedelta(seconds=30)
+                        return token
+
+                    with patch.object(views, "acquire_blob_use", side_effect=delayed_acquire), patch.object(views, "_read_current_bytes") as read:
+                        response = self.client.get(reverse(
+                            "management_bot_private_media_preview", args=[row.pk, part_id],
+                        ))
+                    read.assert_not_called()
+                    self.assertEqual(response.status_code, 404)
+                    self.assertIn("no-store", response["Cache-Control"])
+                    row.refresh_from_db()
+                    self.assertEqual(row.private_media_use_token, "")
+                    self.assertIsNone(row.private_media_use_until)
+                    self.assertFalse(AdminAuditLog.objects.filter(
+                        action="ig_private_media.preview", entity_id=str(row.pk),
+                    ).exists())

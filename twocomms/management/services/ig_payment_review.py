@@ -7,6 +7,8 @@ from datetime import datetime, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+from contextlib import contextmanager
+from functools import wraps
 from urllib.parse import urljoin
 
 from django.conf import settings
@@ -30,11 +32,38 @@ _NON_EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _AFFIRMATION_RE = re.compile(
-    r"(?:я\s+(?:вже\s+)?оплат\w*|(?:оплат\w*|сплач\w*|переказ\w*|перевод\w*)\s+"
+    r"(?:\b(?:оплатив|оплатила|оплатил|оплатили|сплатив|сплатила|сплачено|оплачено|перевів|перевела|перевел)\b|"
+    r"я\s+(?:вже\s+)?оплат(?:ив|ила|ил|или)\b|(?:оплат\w*|сплач\w*|переказ\w*|перевод\w*)\s+"
     r"(?:вже\s+)?(?:зроб\w*|викон\w*|готов\w*)|\bчек(?:а|у|ом)?\b|"
     r"\bквитанц\w*\b|receipt|paid)",
     re.IGNORECASE,
 )
+_PAYMENT_INSTRUCTION_RE = re.compile(
+    r"\b(?:iban|реквізит\w*|реквизит\w*|рахунок|сч[её]т|до\s+сплати|картк\w*|карта)\b|"
+    r"\b\d+(?:[.,]\d+)?\s*грн\b.{0,70}(?:достав\w*|=)", re.IGNORECASE,
+)
+
+
+def _is_explicit_payment_claim(text: str) -> bool:
+    """A completed customer assertion, never a request, question or negation."""
+    low = " ".join(str(text or "").split()).casefold()
+    if not _AFFIRMATION_RE.search(low):
+        return False
+    if _NON_EVIDENCE_RE.search(low) and not re.search(r"\b(?:чек(?:а|у|ом)?|квитанц\w*|receipt)\b", low):
+        return False
+    if re.search(r"\b(?:не|ще\s+не|ещ[её]\s+не|not|haven't|hasn't)\s+(?:\w+\s+){0,2}(?:оплат\w*|сплат\w*|сплач\w*|переказ\w*|перев\w*|paid|надісл\w*|відправ\w*|отправ\w*|получ\w*)", low):
+        return False
+    if re.search(r"\b(?:надішл\w*|надсил\w*|пришл\w*|скин\w*|відправ\w*|отправ\w*|можна|можно|де|где|як|как)\b.{0,35}\b(?:чек\w*|квитанц\w*|receipt)\b", low):
+        return False
+    if re.search(r"\b(?:вкладайте|вкладіть|вкладати|вкласти|кладіть|класти|покладіть|покласти|положите|положить|ложите|вложите|вложить)\b", low) and re.search(r"\b(?:чек\w*|квитанц\w*|receipt)\b", low):
+        return False
+    if re.search(r"\bбез\s+(?:чек\w*|квитанц\w*|receipt)\b", low):
+        return False
+    if re.search(r"\b(?:чек\w*|квитанц\w*|receipt)\b.{0,25}\b(?:ще\s+не|ещ[её]\s+не|нема\w*|нет|буде|будет)", low):
+        return False
+    if "?" in low and not re.search(r"\b(?:ось|вот)\s+(?:чек|квитанц\w*)\b", low):
+        return False
+    return True
 _AMOUNT_RE = re.compile(r"(?<!\d)(\d{2,6}(?:[.,]\d{1,2})?)\s*(?:грн|uah|₴)", re.IGNORECASE)
 _FIT_RE = re.compile(
     r"(?P<fit>базов\w*|класич\w*|classic|basic|оверсайз\w*|oversize)"
@@ -274,7 +303,7 @@ def _raw_media_by_mid(client) -> dict[str, list[dict]]:
 
     for mid, items in list(recovered.items()):
         recovered[mid] = normalize_attachment_media(
-            items[:8],
+            items,
             message_scope=f"raw-message:{mid}",
             identity_origin="ingress",
         )
@@ -387,7 +416,7 @@ def classify_media_items(
     """
     normalized_text = " ".join(str(text or "").split())
     if explicit_claim is None:
-        explicit_claim = bool(_AFFIRMATION_RE.search(normalized_text)) and not _NON_EVIDENCE_RE.search(normalized_text)
+        explicit_claim = _is_explicit_payment_claim(normalized_text)
     intent = _media_intent(
         normalized_text,
         payment_context=payment_context,
@@ -399,6 +428,24 @@ def classify_media_items(
         if not isinstance(raw, dict) or not raw.get("url"):
             continue
         item = dict(raw)
+        from management.services.ig_receipt_inspection import bound_receipt_inspection
+        inspection = bound_receipt_inspection(item)
+        if inspection:
+            keep_catalog_domain = bool(
+                inspection["role"] == "product" and item.get("catalog_match_allowed") is True
+                and item.get("role") not in {"receipt", "payment_candidate"}
+            )
+            item["role"] = inspection["role"]
+            item["payment_evidence"] = inspection["role"] in {"receipt", "payment_candidate"}
+            item["catalog_match_allowed"] = keep_catalog_domain
+            item["uncertainties"] = inspection.get("uncertainties", [])
+            if inspection["role"] == "receipt":
+                item["receipt_facts"] = inspection["receipt_facts"]
+            else:
+                item.pop("receipt_facts", None)
+            result.append(item)
+            continue
+        item.pop("receipt_facts", None)
         media_type = str(item.get("type") or "image").casefold()
         if media_type in _PRODUCT_MEDIA_TYPES:
             # Meta's explicit post/share type is stronger than surrounding
@@ -492,7 +539,7 @@ def _augment_messages_with_raw_media(client, messages) -> list[dict]:
         # Keep the old attachments contract intact for callers that only know
         # how to consume a JSON list of URLs, while exposing structured media
         # evidence to the review UI and catalog matcher.
-        item["media"] = media[:8]
+        item["media"] = media
         if media and not item.get("attachments"):
             item["attachments"] = json.dumps(
                 [row["url"] for row in media if row.get("url")], ensure_ascii=False
@@ -548,7 +595,6 @@ def _augment_messages_with_raw_media(client, messages) -> list[dict]:
                 target.setdefault("media", [])
                 if not any(row.get("url") == attachment.get("url") for row in target["media"]):
                     target["media"].append(attachment)
-                target["media"] = target["media"][:8]
                 if not target.get("attachments"):
                     target["attachments"] = json.dumps(
                         [row["url"] for row in target["media"] if row.get("url")], ensure_ascii=False
@@ -564,7 +610,7 @@ def _persist_review_media(media: list[dict]) -> list[dict]:
     this projection stage must not duplicate those bytes into ``default_storage``.
     """
     result = []
-    for item in media[:8]:
+    for item in media:
         row = dict(item) if isinstance(item, dict) else item
         if isinstance(row, dict) and _live_owned_media(row):
             # Older review rows may carry a public copy from the removed path.
@@ -581,6 +627,8 @@ def _resolve_payment_media_candidates(media: list[dict]) -> list[dict]:
         index for index, item in enumerate(result)
         if (
             item.get("role") == "payment_candidate"
+            and not item.get("receipt_inspection")
+            and item.get("inspection_eligible") is True
             and item.get("url")
             and not _historical_media(item)
             and (_live_owned_media(item) or _safe_local_media_url(item))
@@ -674,11 +722,11 @@ def _reconcile_payment_evidence_after_media_resolution(extracted: dict, media: l
         except (TypeError, ValueError):
             message_id = 0
         quote = str(entry.get("quote") or "")
-        explicit_statement = bool(_AFFIRMATION_RE.search(quote) and not _NON_EVIDENCE_RE.search(quote))
+        explicit_statement = _is_explicit_payment_claim(quote)
         payment_role = bool(roles_by_message.get(message_id, set()).intersection({"receipt", "payment_candidate"}))
         if explicit_statement or payment_role:
             kept.append(entry)
-    extracted["evidence"] = kept[-20:]
+    extracted["evidence"] = kept
     extracted["message_ids"] = [entry.get("message_id") for entry in kept if entry.get("message_id")]
     extracted["needs_review"] = bool(kept)
     return extracted
@@ -761,6 +809,11 @@ def _select_review_deal(client, catalog_matches: list[dict]):
 def _apply_validated_conversation_price_to_draft(draft: dict, messages, catalog_matches: list[dict]) -> dict:
     """Apply only a human-authorized, product-bound price to a review draft."""
     if not isinstance(draft, dict):
+        return draft
+    agreement = draft.get("agreement") or {}
+    if agreement.get("items") and agreement.get("merchandise_total"):
+        # Accepted manager configuration/price is already source qualified.
+        # Shipping is a separate amount and cannot become a garment unit price.
         return draft
     items = draft.get("items") if isinstance(draft.get("items"), list) else []
     matches = [match for match in (catalog_matches or []) if isinstance(match, dict) and match.get("status") == "matched"]
@@ -1082,6 +1135,9 @@ def extract_payment_review_evidence(messages) -> dict:
     customer_messages = []
     context_messages = []
     raw_messages = list(messages or ())
+    from management.services.ig_conversation_agreement import extract_conversation_agreement
+
+    agreement = extract_conversation_agreement(raw_messages)
     customer_order_seen = False
     last_customer_purchase_index = None
     last_manager_payment_index = None
@@ -1101,18 +1157,23 @@ def extract_payment_review_evidence(messages) -> dict:
         except (TypeError, ValueError):
             message_id = 0
         media = [dict(item) for item in raw_media if isinstance(item, dict) and item.get("url")]
-        explicit_claim = bool(_AFFIRMATION_RE.search(text)) and not _NON_EVIDENCE_RE.search(text)
+        explicit_claim = _is_explicit_payment_claim(text)
+        if explicit_claim and re.search(r"\b(?:чек(?:а|у|ом)?|квитанц\w*|receipt)\b", text, re.IGNORECASE):
+            for url in re.findall(r"https?://[^\s<>]+", text):
+                if not any(item.get("url") == url for item in media):
+                    media.append({"url": url[:1200], "type": "receipt_link", "message_id": message_id,
+                                  "source_message_id": message_id, "uncertain": True})
         payment_text = bool(text and _PAYMENT_EVIDENCE_RE.search(text) and not _NON_EVIDENCE_RE.search(text))
         payment_context = bool(
             customer_order_seen
             and (
                 (
                     last_manager_payment_index is not None
-                    and message_index - last_manager_payment_index == 1
+                    and message_index - last_manager_payment_index <= 24
                 )
                 or (
                     last_customer_payment_commitment_index is not None
-                    and message_index - last_customer_payment_commitment_index == 1
+                    and message_index - last_customer_payment_commitment_index <= (12 if agreement.get("items") else 1)
                 )
             )
         )
@@ -1142,7 +1203,7 @@ def extract_payment_review_evidence(messages) -> dict:
             "role": role,
             "quote": raw_text[:500],
             "attachments": attachments[:500],
-            "media": media[:8],
+            "media": media,
         })
         for amount_match in _AMOUNT_RE.finditer(text):
             amount = amount_match.group(1)
@@ -1187,7 +1248,7 @@ def extract_payment_review_evidence(messages) -> dict:
                     "role": role,
                     "quote": text[:300],
                     "attachments": attachments[:500],
-                    "media": media[:8],
+                    "media": media,
                 })
             if (
                 payment_text
@@ -1200,8 +1261,10 @@ def extract_payment_review_evidence(messages) -> dict:
                 last_customer_purchase_index = message_index
             if _CUSTOMER_PAYMENT_COMMITMENT_RE.search(text):
                 last_customer_payment_commitment_index = message_index
-        elif payment_text:
+        elif payment_text or _PAYMENT_INSTRUCTION_RE.search(text):
             last_manager_payment_index = message_index
+        if role not in _CUSTOMER_ROLES and agreement.get("items"):
+            customer_order_seen = True
 
     # A single explicit quantity describes the only extracted line; numbered
     # lines remain independent so classic and oversize are never collapsed.
@@ -1291,16 +1354,99 @@ def extract_payment_review_evidence(messages) -> dict:
         "packaging_preference": packaging_preference,
         "delivery": delivery,
         "context_messages": context_messages[-80:],
-        "media": media_audit[:40],
+        "media": media_audit,
     }
+    agreed_items = agreement.get("items") or []
+    if agreed_items:
+        order_draft["items"] = [dict(item) for item in agreed_items]
+    for key in (
+        "merchandise_total", "delivery_total", "delivery_amount", "payable_total",
+        "currency", "evidence_message_ids", "amount_source_message_id",
+    ):
+        if agreement.get(key) not in (None, "", []):
+            order_draft[key] = agreement[key]
+    if agreement.get("merchandise_total"):
+        order_draft["quoted_total"] = agreement["merchandise_total"]
+    order_draft["agreement"] = agreement
+    shipping = agreement.get("shipping") or {}
+    for key in ("full_name", "phone", "city", "office"):
+        if shipping.get(key):
+            order_draft["delivery"][key] = shipping[key]
+    order_draft["delivery_field_evidence"] = shipping.get("field_evidence") or {}
+    packaging = agreement.get("packaging") or {}
+    order_draft["packaging"] = packaging
+    for key in ("gift", "exclude_receipt"):
+        if key in packaging:
+            order_draft[key] = packaging[key]
+    order_draft["uncertainty_reasons"] = list(dict.fromkeys([
+        *order_draft["uncertainty_reasons"], *(agreement.get("uncertainty_reasons") or []),
+    ]))
+    reported_amounts = [
+        {
+            "message_id": item.get("source_message_id") or item.get("message_id"),
+            "source_part_id": item.get("source_part_id", ""),
+            "amount": (item.get("receipt_facts") or {}).get("amount", ""),
+            "currency": (item.get("receipt_facts") or {}).get("currency", ""),
+            "payment_status": (item.get("receipt_facts") or {}).get("payment_status", "unknown"),
+            "verification_source": "receipt_reported",
+        }
+        for item in media_audit
+        if isinstance(item.get("receipt_facts"), dict) and item["receipt_facts"].get("amount")
+    ]
+    receipt_review_findings = []
+    instruction = agreement.get("payment_instruction") or {}
+    expected_amount = _positive_money(order_draft.get("payable_total"))
+    expected_currency = str(order_draft.get("currency") or "UAH").upper()
+    expected_iban = str(instruction.get("iban") or "").replace(" ", "").upper()
+    for item in media_audit:
+        facts = item.get("receipt_facts")
+        if not isinstance(facts, dict):
+            continue
+        reasons = list(item.get("uncertainties") or [])
+        reported_amount = _positive_money(facts.get("amount"))
+        if expected_amount and reported_amount and expected_amount != reported_amount:
+            reasons.append("receipt_amount_mismatch")
+        if facts.get("currency") and facts["currency"] != expected_currency:
+            reasons.append("receipt_currency_mismatch")
+        if expected_iban and facts.get("recipient_iban") and facts["recipient_iban"] != expected_iban:
+            reasons.append("receipt_recipient_mismatch")
+        if facts.get("payment_status") in {"pending", "failed", "unknown"}:
+            reasons.append("receipt_transfer_" + facts["payment_status"])
+        receipt_review_findings.append({
+            "message_id": item.get("source_message_id") or item.get("message_id"),
+            "source_part_id": item.get("source_part_id", ""),
+            "reason_codes": list(dict.fromkeys(reasons)), "requires_human_review": True,
+            "provider_confirmed": False,
+        })
+    manager_confirmation_observations = []
+    for context in context_messages:
+        quote = context["quote"]
+        if context["role"] != "manager" or re.search(r"\b(?:не|ще|ещ[её])\b|\?", quote, re.IGNORECASE):
+            continue
+        if _manager_full_payment_statement(quote)[0] or re.search(
+            r"\b(?:оплат\w*\s+(?:отрим\w*|получ\w*|підтвердж\w*|подтвержд\w*)|"
+            r"(?:отрим\w*|получ\w*|підтвердж\w*|подтвержд\w*)\s+оплат\w*)\b",
+            quote, re.IGNORECASE,
+        ):
+            amounts = sorted({match.group(1).replace(",", ".") for match in _AMOUNT_RE.finditer(quote)})
+            manager_confirmation_observations.append({
+                "message_id": context["message_id"], "role": "manager",
+                "amount": amounts[0] if len(amounts) == 1 else "",
+                "currency": "UAH", "verification_source": "manager_chat_observation",
+                "requires_human_review": True, "authoritative_for_fulfillment": False,
+            })
     return {
         "needs_review": bool(evidence),
         "provider_confirmed": False,
         "message_ids": [item["message_id"] for item in evidence if item["message_id"]],
-        "evidence": evidence[-20:],
+        "evidence": evidence,
         "amount_evidence": amount_evidence[-20:],
+        "reported_payment_amounts": reported_amounts,
+        "receipt_review_findings": receipt_review_findings,
+        "agreement": agreement,
+        "manager_confirmation_observations": manager_confirmation_observations,
         "order_draft": order_draft,
-        "media": media_audit[:40],
+        "media": media_audit,
     }
 
 
@@ -1334,7 +1480,21 @@ def _deal_payload(deal) -> dict:
 def _alert_text(review, client) -> str:
     evidence = review.evidence if isinstance(review.evidence, dict) else {}
     draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
-    amount = draft.get("quoted_total") or "не вказано"
+    amount = _positive_money(draft.get("payable_total") or draft.get("quoted_total"))
+    merchandise = _positive_money(draft.get("merchandise_total"))
+    delivery = _positive_money(draft.get("delivery_amount") or draft.get("delivery_total"))
+    agreement = draft.get("agreement") if isinstance(draft.get("agreement"), dict) else {}
+    agreed_amounts = agreement.get("amounts") if isinstance(agreement.get("amounts"), dict) else {}
+    source_id = draft.get("amount_source_message_id")
+    shipping_split = bool(
+        amount and merchandise and delivery and merchandise + delivery == amount
+        and agreement.get("schema") == "conversation-agreement.v1"
+        and source_id and source_id == agreed_amounts.get("source_message_id")
+        and source_id in (agreement.get("source_message_ids") or [])
+        and merchandise == _positive_money(agreed_amounts.get("merchandise_total"))
+        and delivery == _positive_money(agreed_amounts.get("delivery_amount"))
+        and amount == _positive_money(agreed_amounts.get("payable_total"))
+    )
     media = evidence.get("media") if isinstance(evidence.get("media"), list) else []
     receipts = [item for item in media if item.get("role") == "receipt"]
     payment_candidates = [item for item in media if item.get("role") == "payment_candidate"]
@@ -1342,16 +1502,25 @@ def _alert_text(review, client) -> str:
         format_operator_alert,
     )
 
-    return format_operator_alert(
+    alert = format_operator_alert(
         "⚠️ Instagram: потрібна перевірка заяви про оплату",
         event_type="payment_review",
         client_id=getattr(client, "pk", None),
         review_id=review.pk,
-        amount=amount,
+        amount=f"{amount:.2f}" if amount else None,
         status="provider_unconfirmed",
         counts={"receipt_evidence": len(receipts), "unresolved_media": len(payment_candidates)},
         instruction_code="payment_review",
     )
+    if shipping_split:
+        # Only bounded numeric facts from this review's same-source agreement
+        # enter Telegram; customer text and requisites remain inside CRM.
+        alert = alert.replace(
+            "\nСтатус:",
+            f"\nТовар: {merchandise:.2f} грн\nДоставка: {delivery:.2f} грн\nСтатус:",
+            1,
+        )
+    return alert
 
 
 def _review_keyboard(review) -> dict:
@@ -1697,6 +1866,74 @@ def _payment_review_notification_is_sending(review) -> bool:
     ).exists()
 
 
+@contextmanager
+def _payment_review_mutation(review, *, optional=False):
+    """Enter the shared episode barrier before acquiring database row locks."""
+    from management.ig_bot_models import IgPaymentConfirmationReview
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+
+    review_id = getattr(review, "pk", review)
+    identity = IgPaymentConfirmationReview.objects.filter(pk=review_id).values_list("client_id", flat=True).first()
+    if identity is None:
+        if optional:
+            yield False
+            return
+        raise IgPaymentConfirmationReview.DoesNotExist("Payment review unavailable")
+    expected = getattr(review, "client_id", None)
+    if expected is not None and expected != identity:
+        raise ValueError("Клієнт перевірки оплати змінився.")
+    with commercial_episode_client_lock(identity), transaction.atomic():
+        yield True
+
+
+def _payment_review_transaction(function):
+    @wraps(function)
+    def guarded(review, *args, **kwargs):
+        with _payment_review_mutation(review):
+            return function(review, *args, **kwargs)
+    return guarded
+
+
+def _lock_payment_review(review, *, related=(), optional=False):
+    """Lock client before review and recheck the exact owner after acquisition."""
+    from management.ig_bot_models import IgClient, IgPaymentConfirmationReview
+
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("Payment review locks require transaction.atomic")
+    review_id = getattr(review, "pk", review)
+    identity = IgPaymentConfirmationReview.objects.filter(pk=review_id).values_list("client_id", flat=True).first()
+    expected_client_id = getattr(review, "client_id", None)
+    if identity is None:
+        if optional:
+            return None
+        raise IgPaymentConfirmationReview.DoesNotExist("Payment review unavailable")
+    if expected_client_id is not None and expected_client_id != identity:
+        raise ValueError("Клієнт перевірки оплати змінився.")
+    client = IgClient.objects.select_for_update().filter(pk=identity).first()
+    locked = None
+    if client is not None:
+        locked = IgPaymentConfirmationReview.objects.select_for_update().filter(
+            pk=review_id, client_id=identity,
+        ).select_related(None).first()
+    if locked is None:
+        if optional:
+            return None
+        raise IgPaymentConfirmationReview.DoesNotExist("Payment review owner changed")
+    relations = tuple(name for name in related if name != "client")
+    if relations:
+        # Joined FOR UPDATE would implicitly lock deal/order rows before the
+        # caller's explicit projection/order sequence. Hydrate without locks
+        # after the exact client and review rows have been acquired.
+        hydrated = IgPaymentConfirmationReview.objects.filter(
+            pk=review_id, client_id=identity,
+        ).select_related(*relations).first()
+        if hydrated is None:
+            raise IgPaymentConfirmationReview.DoesNotExist("Payment review owner changed")
+        locked = hydrated
+    locked.client = client
+    return locked
+
+
 def reconcile_duplicate_payment_review(
     review,
     *,
@@ -1714,10 +1951,10 @@ def reconcile_duplicate_payment_review(
 
     if not review:
         return None
-    with transaction.atomic():
-        review = IgPaymentConfirmationReview.objects.select_for_update().filter(
-            pk=review.pk,
-        ).select_related("order").first()
+    with _payment_review_mutation(review, optional=True) as available:
+        if not available:
+            return None
+        review = _lock_payment_review(review, related=("order",), optional=True)
         if not review or review.status in {
             IgPaymentConfirmationReview.Status.CANCELLED,
             IgPaymentConfirmationReview.Status.SUPERSEDED,
@@ -1753,7 +1990,7 @@ def reconcile_duplicate_payment_review(
                     order_id__isnull=False,
                 )
             )
-        candidates = list(candidate_query.select_related("order"))
+        candidates = list(candidate_query.select_related(None))
         matches = [
             row for row in candidates
             if _payment_review_reconciliation_identity(
@@ -1870,6 +2107,10 @@ def _claim_review_context(extracted: dict, *, claim_anchor: str) -> dict:
         "claim_anchor": claim_anchor,
         "messages": extracted.get("evidence", []),
         "amount_evidence": extracted.get("amount_evidence", []),
+        "reported_payment_amounts": extracted.get("reported_payment_amounts", []),
+        "receipt_review_findings": extracted.get("receipt_review_findings", []),
+        "agreement": extracted.get("agreement", {}),
+        "manager_confirmation_observations": extracted.get("manager_confirmation_observations", []),
         "order_draft": extracted.get("order_draft", {}),
         "media": extracted.get("media", []),
         "media_audit_v3": False,
@@ -1895,14 +2136,42 @@ def _pending_review_matches_payment_evidence(review, extracted: dict) -> bool:
 def _claim_payment_review(client, *, extracted: dict, watermark: int, claim_anchor: str):
     """Create one durable claim inside the client's current commercial episode."""
     from management.ig_bot_models import IgClient, IgPaymentConfirmationReview
-    from management.services.ig_commercial_episodes import ensure_open_episode_for_locked_client
+    from management.services.ig_commercial_episodes import ensure_open_episode_for_locked_client, commercial_episode_client_lock
 
-    with transaction.atomic():
+    with commercial_episode_client_lock(client.pk), transaction.atomic():
         locked_client = IgClient.objects.select_for_update().get(pk=client.pk)
+        from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+        if (
+            locked_client.hidden_at or locked_client.privacy_erasure_started_at
+            or int(watermark or 0) <= _query_latest_reset_after_message_id(client.pk)
+        ):
+            return None, False
+        from management.services.ig_conversation_agreement import initial_agreement_transfer_sources, persist_conversation_agreement
+        transfer = initial_agreement_transfer_sources(locked_client) if not locked_client.current_commercial_episode_id else {}
         episode = ensure_open_episode_for_locked_client(
             locked_client,
             materialization_prefix="ig-payment-review-v2",
         )
+        if transfer.get("messages") and not transfer.get("reason"):
+            # This is solely the fresh None→first episode transition validated
+            # above; an existing cycle's floor is never widened.
+            if episode.sequence != 1 or episode.opened_watermark_message_id != 0:
+                raise ValueError("Початковий епізод змінився під час перенесення джерел.")
+            episode.opened_watermark_message_id = transfer["source_floor"]
+            episode.save(update_fields=["opened_watermark_message_id", "updated_at"])
+            rebound = persist_conversation_agreement(
+                locked_client, transfer["messages"], watermark=transfer["agreement"]["watermark_message_id"],
+            )
+            if not rebound.get("persisted"):
+                raise ValueError("Підтверджені джерела першої перевірки змінилися.")
+            from management.services.ig_commercial_episodes import append_episode_event
+            append_episode_event(
+                episode, dedupe_key=f"episode:{episode.pk}:initial-agreement-transfer",
+                event_type="agreement_scope_transfer", source="conversation_agreement",
+                evidence={"source_message_ids": transfer["source_message_ids"],
+                          "source_agreement_digest": transfer["agreement_digest"],
+                          "from_episode_id": None, "to_episode_id": episode.pk},
+            )
         dedupe_key = f"ig-payment-review:v2:{locked_client.pk}:{episode.pk}:{claim_anchor}"
         exact = IgPaymentConfirmationReview.objects.select_for_update().filter(
             dedupe_key=dedupe_key,
@@ -1949,6 +2218,17 @@ def _review_media_needs_owned_retry(evidence: dict) -> bool:
         and (
             item.get("status") in {"pending", "acquiring"}
             or (
+                isinstance(item.get("receipt_inspection"), dict)
+                and item["receipt_inspection"].get("state") == "deferred"
+                and item["receipt_inspection"].get("reason") in {
+                    "receipt_inspection_deferred", "receipt_inspection_failed",
+                    "receipt_provider_failed", "receipt_quota_unavailable", "receipt_image_busy",
+                    "receipt_observation_missing", "receipt_observation_not_persisted",
+                    "receipt_observation_unbound",
+                    "receipt_inspection_not_persisted", "receipt_image_budget", "receipt_source_changed",
+                }
+            )
+            or (
                 item.get("status") == "unavailable"
                 and max(0, int(item.get("capture_attempts") or 0)) < 2
             )
@@ -1964,10 +2244,10 @@ def _merge_review_media(current: list[dict], incoming: list[dict]) -> list[dict]
         if not isinstance(raw, dict) or not raw.get("url"):
             continue
         item = dict(raw)
-        url = str(item.get("url") or "")
-        position = positions.get(url)
+        identity = str(item.get("source_part_id") or item.get("storage_name") or item.get("url") or "")
+        position = positions.get(identity)
         if position is None:
-            positions[url] = len(merged)
+            positions[identity] = len(merged)
             merged.append(item)
             continue
         stored = merged[position]
@@ -2005,6 +2285,10 @@ def _refresh_pending_review_context(review, extracted: dict, *, watermark: int) 
         **current,
         "messages": extracted.get("evidence", []),
         "amount_evidence": extracted.get("amount_evidence", []),
+        "reported_payment_amounts": extracted.get("reported_payment_amounts", []),
+        "receipt_review_findings": extracted.get("receipt_review_findings", []),
+        "agreement": extracted.get("agreement", {}),
+        "manager_confirmation_observations": extracted.get("manager_confirmation_observations", []),
         "order_draft": merged_draft,
         "media": merged_media,
     }
@@ -2020,9 +2304,281 @@ def _refresh_pending_review_context(review, extracted: dict, *, watermark: int) 
         review.save(update_fields=update_fields)
 
 
-def create_payment_review(client, *, watermark: int = 0, messages=None):
+def _payment_notification_material(review) -> dict:
+    """Hash finite financial facts, excluding transcript noise and retry metadata."""
+    from management.services.ig_receipt_inspection import bound_receipt_inspection
+
+    evidence = review.evidence if isinstance(review.evidence, dict) else {}
+    draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
+    candidate = payment_confirmation_candidate(review)
+    candidate = {key: value for key, value in candidate.items() if key != "digest"}
+    sources = set()
+
+    def source(value):
+        if not isinstance(value, bool) and str(value).isdigit() and 0 < int(value) < 2**63:
+            sources.add(int(value))
+            return int(value)
+        return 0
+
+    claims = sorted({source(row.get("message_id")) for row in evidence.get("messages") or []
+                     if isinstance(row, dict) and row.get("role") in _CUSTOMER_ROLES})
+    receipts = []
+    for item in evidence.get("media") or []:
+        if not isinstance(item, dict) or item.get("role") not in {"receipt", "payment_candidate"}:
+            continue
+        inspection = bound_receipt_inspection(item)
+        receipts.append({
+            "message_id": source(item.get("source_message_id") or item.get("message_id")),
+            "part_id": str(item.get("source_part_id") or "")[:128],
+            "content_hash": str(item.get("content_hash") or "")[:128],
+            "role": item["role"],
+            "reported_facts": (inspection or {}).get("receipt_facts") or {},
+        })
+    accepted = []
+    for item in draft.get("items") or []:
+        if not isinstance(item, dict) or not item.get("acceptance_message_id"):
+            continue
+        accepted.append({
+            key: _fingerprint_text(item.get(key))[:512]
+            for key in ("product_id", "color_variant_id", "title", "size", "fit", "fit_option_code",
+                        "color_name", "color", "qty", "unit_price", "configuration_authority")
+        } | {"unit_price": str(_positive_money(item.get("unit_price")) or ""),
+             "source_message_id": source(item.get("source_message_id")),
+             "acceptance_message_id": source(item.get("acceptance_message_id"))})
+        for value in item.get("price_evidence_message_ids") or []:
+            source(value)
+    for value in candidate.get("evidence_message_ids") or []:
+        source(value)
+    amount_source = source(draft.get("amount_source_message_id"))
+    observations = [{"message_id": source(row.get("message_id")),
+                     "amount": str(_positive_money(row.get("amount")) or ""),
+                     "currency": str(row.get("currency") or "")[:8]}
+                    for row in evidence.get("manager_confirmation_observations") or [] if isinstance(row, dict)]
+    if len(receipts) > 256 or len(accepted) > 50 or len(sources) > 512 or len(observations) > 80:
+        return {}
+    payload = {
+        "candidate": candidate, "claims": claims,
+        "receipts": sorted(receipts, key=lambda row: json.dumps(row, sort_keys=True)),
+        "accepted_items": sorted(accepted, key=lambda row: json.dumps(row, sort_keys=True)),
+        "amounts": {key: str(_positive_money(draft.get(key)) or "")
+                    for key in ("quoted_total", "merchandise_total", "delivery_amount", "delivery_total", "payable_total")},
+        "amount_source_message_id": amount_source,
+        "manager_observations": observations,
+    }
+    return {"schema": "payment-notification-material.v1",
+            "material_digest": hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True,
+                separators=(",", ":")).encode()).hexdigest(), "source_message_ids": sorted(sources)}
+
+
+def _payment_notification_scope_current(review, material, *, strict_sources=False) -> bool:
+    from management.ig_bot_models import IgCommercialEpisode
+    from management.models import InstagramBotMessage
+    from management.services.ig_admin_state_capture import _namespace
+    from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+
+    client = review.client
+    if review.status != review.Status.PENDING or client.hidden_at or client.privacy_erasure_started_at or client.is_blocked:
+        return False
+    episode = IgCommercialEpisode.objects.select_for_update().filter(pk=client.current_commercial_episode_id,
+        client_id=client.pk, open_slot=1, primary_payment_review_id=review.pk).first()
+    if episode is None:
+        return False
+    floor = max(int(episode.opened_watermark_message_id or 0), _query_latest_reset_after_message_id(client.pk) + 1)
+    if int(review.watermark_message_id or 0) < floor:
+        return False
+    if not strict_sources:
+        return True
+    ids = material.get("source_message_ids") or []
+    namespace = _namespace()
+    if not namespace or not ids or min(ids) < floor or max(ids) > int(review.watermark_message_id or 0):
+        return False
+    from management.services.ig_memory_producer import _source_allowed as source_admitted, _namespaces
+    rows = list(InstagramBotMessage.objects.filter(pk__in=ids, client_id=client.pk, sender_id=client.igsid))
+    namespaces = _namespaces(rows)
+    if len(rows) != len(ids) or any(not source_admitted(row) or namespaces.get(row.pk) != namespace
+            or (row.role != "user" and row.status != "done")
+            or (row.role == "manager" and row.source == "human_reply" and row.send_state != "sent") for row in rows):
+        return False
+    from management.services.ig_conversation_agreement import _proof, _row
+    draft = (review.evidence or {}).get("order_draft") or {}
+    agreement = draft.get("agreement") or {}
+    proofs = agreement.get("evidence") or {}
+    if any(str(row.pk) in proofs and proofs[str(row.pk)] != _proof(_row(row)) for row in rows):
+        return False
+    from management.services.ig_receipt_inspection import _source_allowed
+    for media in (review.evidence or {}).get("media") or []:
+        if isinstance(media, dict) and media.get("role") in {"receipt", "payment_candidate"} and media.get("content_hash"):
+            if _source_allowed(media, "") is not True:
+                return False
+    return True
+
+
+def _queue_payment_review_notification(review, *, previous_material=None, require_deferred=False, notification_id=None) -> bool:
+    """Queue a material revision of one canonical notification; never perform IO."""
+    from management.ig_bot_models import IgBotNotification, IgBotNotificationAudit
+    from management.services.instagram_bot import notify_manager
+
+    with _payment_review_mutation(review, optional=True) as available:
+        if not available:
+            return False
+        locked = _lock_payment_review(review, optional=True)
+        if locked is None:
+            return False
+        if not isinstance(locked.evidence, dict):
+            return False
+        evidence = dict(locked.evidence)
+        material = _payment_notification_material(locked)
+        if not material or not _payment_notification_scope_current(locked, material):
+            return False
+        row = IgBotNotification.objects.select_for_update().filter(dedupe_key=locked.dedupe_key).first()
+        if row and (row.client_id != locked.client_id or row.event_type != "payment_review"):
+            return False
+        if row and (not isinstance(row.payload, dict)
+                    or not isinstance(row.payload.get("payment_candidate", {}), dict)):
+            return False
+        if notification_id is not None and (row is None or row.pk != notification_id):
+            return False
+        marker = evidence.get("deferred_payment_notification") or {}
+        if require_deferred and (row is None or not isinstance(marker, dict)
+                or marker.get("schema") != "payment-notification-deferred.v1"
+                or type(marker.get("notification_id")) is not int
+                or marker.get("notification_id") != row.pk
+                or marker.get("material_digest") != material["material_digest"]):
+            return False
+        payload = row.payload if row and isinstance(row.payload, dict) else {}
+        if "payment_notification_revision" in payload and not isinstance(payload["payment_notification_revision"], dict):
+            return False
+        revision = payload.get("payment_notification_revision") or evidence.get("payment_notification_revision") or {}
+        if not isinstance(revision, dict) or (revision and (
+            revision.get("schema") != "payment-notification-revision.v1"
+            or type(revision.get("version")) is not int or not 0 <= revision["version"] < 1000000
+            or not re.fullmatch(r"[a-f0-9]{64}", str(revision.get("material_digest") or ""))
+        )):
+            return False
+        baseline = revision.get("material_digest") or (previous_material or {}).get("material_digest")
+        if row and baseline is None:
+            # Legacy payloads have no receipt descriptor. Compare their actual
+            # money candidate; future revisions carry the complete descriptor.
+            old_candidate = payload.get("payment_candidate") or {}
+            new_candidate = payment_confirmation_candidate(locked)
+            baseline = material["material_digest"] if {
+                key: value for key, value in old_candidate.items() if key != "digest"
+            } == {key: value for key, value in new_candidate.items() if key != "digest"} else "legacy_changed"
+        changed = row is None or baseline != material["material_digest"]
+        if not changed:
+            if "deferred_payment_notification" in evidence:
+                evidence.pop("deferred_payment_notification")
+                locked.evidence = evidence
+                locked.save(update_fields=["evidence", "updated_at"])
+            return False
+        if row and not _payment_notification_scope_current(locked, material, strict_sources=True):
+            return False
+        if row and row.status in {row.Status.SENDING, row.Status.UNKNOWN, row.Status.DEAD_LETTER}:
+            pending = {"schema": "payment-notification-deferred.v1", "notification_id": row.pk,
+                       "material_digest": material["material_digest"], "delivery_state": row.status}
+            if marker != pending:
+                evidence["deferred_payment_notification"] = pending
+                locked.evidence = evidence
+                locked.save(update_fields=["evidence", "updated_at"])
+            return False
+        previous_id = str(payload.get("main_delivery_message_id") or getattr(row, "telegram_message_id", "") or "")
+        known_receipt = bool(re.fullmatch(r"[1-9][0-9]{0,18}", previous_id) and int(previous_id) < 2**63)
+        if require_deferred and (row.status not in {row.Status.SENT, row.Status.RESOLVED} or not known_receipt):
+            return False
+        if row and row.status in {row.Status.SENT, row.Status.RESOLVED} and not known_receipt:
+            return False
+        old_version = revision.get("version")
+        old_version = int(old_version) if type(old_version) is int and 0 <= old_version < 1000000 else 0
+        version = old_version + 1
+        metadata = {"payment_review_id": locked.pk, "payment_candidate": payment_confirmation_candidate(locked),
+                    "requires_human_review": True, "payment_notification_revision": {
+                        "schema": "payment-notification-revision.v1", "version": version,
+                        "material_digest": material["material_digest"],
+                        "prior_telegram_message_id": previous_id[:64]}}
+        if row:
+            old_candidate = payload.get("payment_candidate") or {}
+            note = json.dumps({"version": old_version, "telegram_message_id": previous_id[:64],
+                "candidate_digest": str(old_candidate.get("digest") or "")[:64],
+                "material_digest": str(baseline or "")[:64], "amount": str(old_candidate.get("amount") or "")[:24],
+                "order_total": str(old_candidate.get("order_total") or "")[:24],
+                "scope": str(old_candidate.get("scope") or "")[:24]}, separators=(",", ":"))
+            IgBotNotificationAudit.objects.create(notification=row, action="payment_material_revision",
+                from_status=row.status, to_status=row.Status.PENDING, note=note[:500])
+            # Clear every old delivery receipt before writing the new summary.
+            # The old Telegram button must fail the existing exact-ID gate.
+            row.payload = {}
+            row.telegram_message_id = ""
+            row.status = row.Status.PENDING
+            row.sent_at = None
+            row.next_attempt_at = max(timezone.now(), row.next_attempt_at or timezone.now())
+            row.save(update_fields=["payload", "telegram_message_id", "status", "sent_at", "next_attempt_at", "updated_at"])
+        queued = notify_manager(_alert_text(locked, locked.client), dedupe_key=locked.dedupe_key,
+            event_type="payment_review", client=locked.client, reply_markup=_review_keyboard(locked),
+            metadata=metadata, deliver_immediately=False, raise_on_error=True)
+        if queued:
+            evidence.pop("deferred_payment_notification", None)
+            evidence["payment_notification_revision"] = metadata["payment_notification_revision"]
+            locked.evidence = evidence
+            locked.save(update_fields=["evidence", "updated_at"])
+            if hasattr(review, "evidence"):
+                review.evidence = evidence
+        return bool(queued)
+
+
+def refresh_deferred_payment_review_notification(review_id, *, notification_id=None) -> bool:
+    """Bounded completion hook after a known send; queue only, no provider IO."""
+    if isinstance(review_id, bool) or not str(review_id).isdigit() or not 0 < int(review_id) < 2**63:
+        return False
+    if notification_id is not None and (type(notification_id) is not int or not 0 < notification_id < 2**63):
+        return False
+    return _queue_payment_review_notification(int(review_id), require_deferred=True, notification_id=notification_id)
+
+
+def _inspect_payment_messages(client, messages, *, watermark=0, allow_provider=True, pre_dispatch_guard=None):
+    """Discover the current receipt, with exact private-media source bindings."""
+    from management.services.ig_receipt_inspection import inspect_receipt_media
+    rows = [dict(row) for row in messages if isinstance(row, dict)]
+    preliminary = extract_payment_review_evidence(rows)
+    classified = {
+        (int(item.get("message_id") or 0), str(item.get("source_part_id") or item.get("url") or "")): item
+        for item in preliminary.get("media") or []
+    }
+    user_ids = [int(row.get("id") or 0) for row in rows if row.get("role") in _CUSTOMER_ROLES]
+    latest_user_id = max((value for value in user_ids if not watermark or value <= watermark), default=0)
+    media = []
+    for row in rows:
+        message_id = int(row.get("id") or 0)
+        if row.get("role") not in _CUSTOMER_ROLES:
+            continue
+        for original in row.get("media") or []:
+            key = (message_id, str(original.get("source_part_id") or original.get("url") or ""))
+            item = {**original, **classified.get(key, {})}
+            item["message_id"] = message_id
+            item["source_message_id"] = message_id
+            item["inspection_eligible"] = message_id == latest_user_id
+            if (
+                str(item.get("type") or "").lower() in {"file", "document", "link", "receipt_link"}
+                or item.get("mime") == "application/pdf"
+            ) and item.get("role") not in {"receipt", "payment_candidate"}:
+                item["inspection_eligible"] = False
+            media.append(item)
+    inspected = inspect_receipt_media(
+        media, context_messages=rows, allow_provider=allow_provider, pre_dispatch_guard=pre_dispatch_guard,
+    )
+    enriched_by_id = {}
+    for item in inspected:
+        enriched_by_id.setdefault(int(item.get("source_message_id") or item.get("message_id") or 0), []).append(item)
+    for row in rows:
+        message_id = int(row.get("id") or 0)
+        if message_id not in enriched_by_id:
+            continue
+        row["media"] = enriched_by_id[message_id]
+    return rows
+
+
+def create_payment_review(client, *, watermark: int = 0, messages=None, allow_provider: bool = True, pre_dispatch_guard=None):
     """Persist one review per payment claim before any costly media enrichment."""
-    if not client or client.hidden_at:
+    if not client or client.hidden_at or getattr(client, "privacy_erasure_started_at", None):
         return None
     from management.ig_bot_models import IgCommercialEpisode
     from management.models import InstagramBotMessage
@@ -2034,6 +2590,8 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
         ).values_list("opened_watermark_message_id", flat=True).first()
         or 0
     )
+    from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+    episode_floor = max(episode_floor, _query_latest_reset_after_message_id(client.pk) + 1)
     if messages is None:
         message_query = InstagramBotMessage.objects.filter(client_id=client.pk)
         if episode_floor:
@@ -2048,6 +2606,11 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
             "attachments": row.attachments,
             "attachment_media": row.attachment_media,
             "source": row.source,
+            "status": row.status,
+            "send_state": row.send_state,
+            "provider_message_id": row.provider_message_id,
+            "provider_created_at": row.provider_created_at.isoformat() if row.provider_created_at else "",
+            "provider_namespace": row.provider_namespace,
             "media_capture_eligible": bool(row.media_capture_eligible),
             "created_at": row.created_at.isoformat(),
         } for row in rows]
@@ -2067,6 +2630,14 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
                 scoped_messages.append(message)
         messages = scoped_messages
     messages = _augment_messages_with_raw_media(client, messages)
+    # Generic owned receipts must be discovered before the needs_review gate;
+    # otherwise an image without a caption never reaches the review ledger.
+    initial_evidence = extract_payment_review_evidence(messages)
+    messages = _inspect_payment_messages(
+        client, messages, watermark=watermark,
+        allow_provider=allow_provider and not initial_evidence["needs_review"],
+        pre_dispatch_guard=pre_dispatch_guard,
+    )
     extracted = extract_payment_review_evidence(messages)
     if not extracted["needs_review"]:
         return None
@@ -2086,7 +2657,10 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
             watermark=watermark,
             claim_anchor=claim_anchor,
         )
+        if review is None:
+            return None
         current_evidence = review.evidence if isinstance(review.evidence, dict) else {}
+        previous_material = _payment_notification_material(review)
         if not created:
             # A terminal review is an audited manager decision about this exact
             # claim. A real resubmission has a new source message and therefore
@@ -2101,9 +2675,18 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
                 )
             ):
                 _refresh_pending_review_context(review, extracted, watermark=watermark)
+                _queue_payment_review_notification(review, previous_material=previous_material)
                 return review
 
-        resolved_media = _resolve_payment_media_candidates(extracted.get("media") or [])
+        if initial_evidence["needs_review"] and allow_provider:
+            messages = _inspect_payment_messages(
+                client, messages, watermark=watermark, allow_provider=True, pre_dispatch_guard=pre_dispatch_guard,
+            )
+            extracted = extract_payment_review_evidence(messages)
+        resolved_media = (
+            _resolve_payment_media_candidates(extracted.get("media") or [])
+            if allow_provider else extracted.get("media") or []
+        )
         enriched_media = _persist_review_media(resolved_media)
         for item in enriched_media:
             item["message_id"] = item.get("message_id") or None
@@ -2125,7 +2708,7 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
             return None
         extracted["media"] = enriched_media
         extracted["order_draft"]["media"] = enriched_media
-        catalog_matches = _catalog_matches_for_media(enriched_media)
+        catalog_matches = _catalog_matches_for_media(enriched_media) if allow_provider else []
         for media_item in enriched_media:
             bound_matches = media_item.get("catalog_matches") if isinstance(media_item.get("catalog_matches"), list) else []
             if bound_matches:
@@ -2144,30 +2727,23 @@ def create_payment_review(client, *, watermark: int = 0, messages=None):
             "claim_anchor": current_evidence.get("claim_anchor") or claim_anchor,
             "messages": extracted["evidence"],
             "amount_evidence": extracted["amount_evidence"],
+            "reported_payment_amounts": extracted.get("reported_payment_amounts", []),
+            "receipt_review_findings": extracted.get("receipt_review_findings", []),
+            "agreement": extracted.get("agreement", {}),
+            "manager_confirmation_observations": extracted.get("manager_confirmation_observations", []),
             "order_draft": extracted["order_draft"],
             "media": enriched_media,
             "catalog_match": extracted.get("catalog_match", {}),
             "catalog_matches": extracted.get("catalog_matches", []),
             "media_audit_v3": True,
             "deal": _deal_payload(deal),
+            **{key: current_evidence[key] for key in ("payment_notification_revision", "deferred_payment_notification") if key in current_evidence},
         }
         review.deal = deal
         review.watermark_message_id = max(int(review.watermark_message_id or 0), watermark)
         review.save(update_fields=["evidence", "deal", "watermark_message_id", "updated_at"])
 
-        from management.services.instagram_bot import notify_manager
-
-        notify_manager(
-            _alert_text(review, client),
-            dedupe_key=review.dedupe_key,
-            event_type="payment_review",
-            client=client,
-            reply_markup=_review_keyboard(review),
-            metadata={
-                "payment_candidate": payment_confirmation_candidate(review),
-                "requires_human_review": True,
-            },
-        )
+        _queue_payment_review_notification(review, previous_material=previous_material)
         return review
 
 
@@ -2187,6 +2763,29 @@ def _decision_stage_after(client, decision: str, verification_scope: str = "") -
     return getattr(client, "stage", "") or IgClient.Stage.CHECKOUT
 
 
+def _review_can_change_current_stage(review) -> bool:
+    from management.ig_bot_models import IgClient, IgCommercialEpisode
+    from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+
+    client = review.client
+    if client.stage in {IgClient.Stage.DONE, IgClient.Stage.ORDER_CREATED}:
+        return False
+    reset_boundary = _query_latest_reset_after_message_id(client.pk)
+    if reset_boundary and int(review.watermark_message_id or 0) <= reset_boundary:
+        return False
+    current = IgCommercialEpisode.objects.filter(client_id=client.pk, open_slot=1).first()
+    review_episode = IgCommercialEpisode.objects.filter(primary_payment_review_id=review.pk).first()
+    if review_episode is not None:
+        return bool(current and current.pk == review_episode.pk)
+    if current is None:
+        return not client.current_commercial_episode_id
+    return bool(
+        current.primary_payment_review_id in {None, review.pk}
+        and current.deal_id in {None, review.deal_id}
+        and int(review.watermark_message_id or 0) >= int(current.opened_watermark_message_id or 0)
+    )
+
+
 def _positive_money(value) -> Decimal | None:
     try:
         raw = Decimal(str(value))
@@ -2196,6 +2795,149 @@ def _positive_money(value) -> Decimal | None:
     except (InvalidOperation, TypeError, ValueError):
         return None
     return amount if Decimal("0.00") < amount <= Decimal("9999999999.99") else None
+
+
+def _manager_full_payment_statement(text):
+    low = " ".join(str(text or "").split()).casefold()
+    if (
+        re.search(r"[?«»“”\"+=]|\b(?:не|ні|нет|no|not|never|without|unpaid|pending|processing|unknown|failed|declined|scheduled|буде|будет|пізніше|потом|чекаємо|ожидаем)\b", low)
+        or re.search(r"\b(?:hasn|haven|didn|wasn|weren|isn|aren|won|wouldn|couldn|shouldn)['’]t\b", low)
+        or re.search(r"\b(?:if|unless|maybe|perhaps|possibly|якщо|если|може|может|мабуть|ймовірно|возможно|вероятно|нібито|начебто)\b", low)
+        or re.search(r"\b(?:передоплат\w*|аванс\w*|deposit|prepay\w*)\b", low)
+        or re.search(r"[$€]|\b(?:usd|eur|руб\w*|долар\w*|доллар\w*|євро|евро)\b", low)
+        or re.search(r"\b(?:according\s+to|за\s+словами|зі\s+слів|со\s+слов|по\s+словам|мені\s+сказали|мне\s+сказали|they\s+said)\b", low)
+        or re.search(r"\b(?:клієнт\w*|клиент\w*|покуп\w*|client|customer|buyer|user)\b.{0,50}\b(?:каж\w*|говор\w*|сказ\w*|напис\w*|повідом\w*|сообщ\w*|ствердж\w*|утвержд\w*|says?|said|reports?|reported|claims?|claimed|wrote)\b", low)
+        or re.search(r"\b(?:на|в|у|on|in)\s+(?:the\s+)?(?:квитанц\w*|чек\w*|скрин\w*|скрін\w*|receipt|screenshot)\b", low)
+        or re.search(r"\b(?:написано|зазначено|вказано|указано|written|reported|claimed)\b", low)
+        or re.search(r"\b(?:потрібн\w*|треба|нужн\w*|необхідн\w*|requires?|awaiting|needs?)\b.{0,40}\b(?:перевір\w*|провер\w*|звір\w*|review|check|verification)\b", low)
+        or re.search(r"\b(?:на|у|в|under)\s+(?:перевір\w*|провер\w*|review)\b", low)
+    ):
+        return False, None
+    positive = re.search(
+        r"\b(?:оплачено|сплачено|оплачена|payment\s+(?:received|confirmed)|"
+        r"оплат\w*\s+(?:отрим\w*|получ\w*|підтвердж\w*|подтвержд\w*|надійш\w*)|"
+        r"(?:отрим\w*|получ\w*|підтвердж\w*|подтвержд\w*)\s+оплат\w*)\b", low,
+    )
+    if not positive:
+        return False, None
+    # A keyword inside another person's assertion is not this manager's own
+    # confirmation. Admit a direct statement, optionally preceded by an own
+    # check/acknowledgement; unfamiliar prose remains an explicit review step.
+    prefix = low[:positive.start()].strip(" ,.;:!—-")
+    own_intro = re.fullmatch(
+        r"(?:(?:я|ми|i|we)\s+)?(?:(?:вже|уже|have|already)\s+)?"
+        r"(?:перевірив\w*|перевірила|перевірено|звірив\w*|проверил\w*|проверено|сверил\w*|checked|verified|confirmed)"
+        r"(?:\s+(?:the\s+)?(?:чек\w*|квитанц\w*|рахунок|платіж|платеж|оплат\w*|account|receipt|bank|ledger|statement))?",
+        prefix,
+    )
+    if prefix and prefix not in {"я", "ми", "i", "we", "так", "добре", "ок", "okay", "yes"} and not own_intro:
+        return False, None
+    matches = list(_AMOUNT_RE.finditer(low))
+    if re.search(r"\d", low) and not matches:
+        return False, None
+    values = {_positive_money(match.group(1).replace(",", ".")) for match in matches}
+    if len(values) > 1 or None in values:
+        return False, None
+    return True, next(iter(values), None)
+
+
+def apply_authenticated_manager_payment_confirmation(message_id, *, observation_guard=None):
+    """Treat a proven, authorized SENT human statement as one payment decision.
+
+    External Meta echoes carry no authenticated principal and remain review
+    observations. This adapter performs only local audited effects.
+    """
+    from management.bot_access import MANAGE_IG_PAYMENTS_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION, has_all_bot_capabilities
+    from management.ig_bot_models import HumanReplyCommand, IgClient, IgCommercialEpisode, IgPaymentConfirmationReview
+    from management.ig_human_reply_models import HumanReplyPart
+    from management.models import InstagramBotMessage, InstagramBotSettings
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+    from management.services.ig_human_reply_delivery import _part_rows, _valid_plan, _current_context_reason
+    from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+    from management.services.instagram_bot import ingress_provider_namespace
+
+    source = InstagramBotMessage.objects.filter(pk=message_id).first()
+    if source is None or source.source != "human_reply" or source.role != "manager" or source.status != "done" or source.send_state != "sent":
+        return None
+    positive, reported = _manager_full_payment_statement(source.text)
+    if not positive:
+        return None
+    with commercial_episode_client_lock(source.client_id), transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=source.client_id).first()
+        source = InstagramBotMessage.objects.select_for_update().filter(pk=message_id, client_id=source.client_id).first()
+        if (
+            client is None or source is None or client.hidden_at or client.privacy_erasure_started_at or client.is_blocked
+            or source.sender_id != client.igsid or source.pk <= _query_latest_reset_after_message_id(client.pk)
+            or source.provider_namespace != ingress_provider_namespace(InstagramBotSettings.load())
+            or not source.provider_message_id
+            or source.delivery_provider_message_ids != [source.provider_message_id]
+            or source.source != "human_reply" or source.role != "manager" or source.status != "done" or source.send_state != "sent"
+        ):
+            return None
+        positive, reported = _manager_full_payment_statement(source.text)
+        if not positive or (observation_guard is not None and observation_guard() is not True):
+            return None
+        parts = list(HumanReplyPart.objects.select_for_update().filter(
+            client_id=client.pk, provider_namespace=source.provider_namespace,
+            provider_message_id=source.provider_message_id, state=HumanReplyPart.State.SENT,
+        )[:2])
+        if len(parts) != 1:
+            return None
+        part = parts[0]
+        command = HumanReplyCommand.objects.select_for_update().select_related("actor", "context_message").filter(pk=part.command_id).first()
+        if (
+            command is None or command.state != command.State.SENT or command.actor is None
+            or part.actor_id_snapshot != command.actor_id or part.text != source.text
+            or source.send_idempotency_key != f"human:{command.operation_id}:part:{part.ordinal}"
+            or command.client_id != client.pk or command.recipient_igsid != client.igsid
+            or command.provider_namespace != source.provider_namespace
+            or not _valid_plan(command, _part_rows(command), current_owner=False)
+            or _current_context_reason(command)
+            or not has_all_bot_capabilities(command.actor, MANAGE_IG_PAYMENTS_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION)
+            or not _manager_full_payment_statement(command.text)[0]
+        ):
+            return None
+        later_manager_rows = InstagramBotMessage.objects.filter(
+            client_id=client.pk, role="manager", provider_namespace=source.provider_namespace,
+            pk__gt=source.pk, status="done", source__in={"human_reply", "echo", "manager", "manual"},
+        ).exclude(provider_message_id__in=command.provider_message_ids or [])
+        if later_manager_rows.exists():
+            return None
+        current = IgCommercialEpisode.objects.select_for_update().filter(client=client, open_slot=1).first()
+        if not current or client.current_commercial_episode_id != current.pk or not current.primary_payment_review_id:
+            return None
+        if (
+            source.pk < int(current.opened_watermark_message_id or 0)
+            or not command.context_message or command.context_message.client_id != client.pk
+            or command.context_message.role != "user"
+            or command.context_message.pk < int(current.opened_watermark_message_id or 0)
+        ):
+            return None
+        candidates = list(IgPaymentConfirmationReview.objects.select_for_update().filter(
+            client=client, status=IgPaymentConfirmationReview.Status.PENDING,
+            watermark_message_id__gte=int(current.opened_watermark_message_id or 0),
+            watermark_message_id__lte=source.pk,
+        )[:2])
+        if len(candidates) != 1 or candidates[0].pk != current.primary_payment_review_id:
+            return None
+        review = candidates[0]
+        try:
+            candidate = resolve_review_payment_amount(review)
+            exact = reported or candidate["amount"]
+            if candidate["order_total"] is None or exact != candidate["order_total"]:
+                return None
+            if reported is None and candidate["scope"] != "full_payment":
+                return None
+            if observation_guard is not None and observation_guard() is not True:
+                return None
+            return record_review_decision(
+                review, actor=command.actor, decision="manager_verified", verification_scope="full_payment",
+                confirmed_amount=exact, order_total_amount=candidate["order_total"],
+                reason_code="authenticated_manager_chat_confirmation",
+                reason_text=f"human_command:{command.pk}; part:{part.pk}; source_message:{source.pk}",
+            )
+        except ValueError:
+            return None
 
 
 def resolve_review_payment_amount(
@@ -2216,7 +2958,15 @@ def resolve_review_payment_amount(
     draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
     deal = getattr(review, "deal", None)
     deal_total = _positive_money(getattr(deal, "amount", None))
-    review_total = _positive_money(draft.get("quoted_total"))
+    review_total = _positive_money(draft.get("payable_total") or draft.get("quoted_total"))
+    merchandise_total = _positive_money(draft.get("merchandise_total"))
+    delivery_amount = _positive_money(draft.get("delivery_amount") or draft.get("delivery_total"))
+    shipping_split = bool(
+        merchandise_total and delivery_amount and review_total
+        and merchandise_total + delivery_amount == review_total
+    )
+    if shipping_split and deal_total == merchandise_total:
+        deal_total = review_total
     if deal_total is not None and review_total is not None and deal_total != review_total:
         raise ValueError(
             "Сума угоди та узгоджена сума з переписки суперечать одна одній; потрібна ручна перевірка."
@@ -2254,6 +3004,8 @@ def resolve_review_payment_amount(
         elif deal.pay_type == deal.PayType.ONLINE_FULL:
             inferred_scope = inferred_scope or IgPaymentReviewDecision.VerificationScope.FULL_PAYMENT
         evidence_amount = _positive_money(deal.payable_amount())
+        if shipping_split and deal.pay_type == deal.PayType.ONLINE_FULL and evidence_amount == merchandise_total:
+            evidence_amount = review_total
         if evidence_amount:
             evidence_source = "deal_requested_amount"
             evidence_ids = [
@@ -2453,14 +3205,10 @@ def record_review_decision(
     else:
         raise ValueError("Автор рішення не визначений")
 
-    with transaction.atomic():
-        locked = (
-            IgPaymentConfirmationReview.objects.select_for_update()
-            .select_related("client", "deal")
-            .get(pk=review.pk)
-        )
+    with _payment_review_mutation(review):
+        locked = _lock_payment_review(review, related=("deal",))
         locked._transitioned = False
-        if locked.client.hidden_at:
+        if locked.client.hidden_at or locked.client.privacy_erasure_started_at:
             raise ValueError("Прихований клієнт виключений з операцій.")
         clarification = False
         if locked.status != IgPaymentConfirmationReview.Status.PENDING:
@@ -2520,6 +3268,22 @@ def record_review_decision(
             decision,
             verification_scope,
         )
+        if not _review_can_change_current_stage(locked):
+            stage_after = stage_before
+        elif decision == IgPaymentReviewDecision.Decision.MANAGER_VERIFIED:
+            from types import SimpleNamespace
+            from management.services.ig_commercial_episodes import payment_truth_snapshot
+
+            proposed = SimpleNamespace(
+                decision=decision, verification_source="manager", verification_scope=verification_scope,
+                confirmed_amount=amount_contract["amount"], order_total_amount=amount_contract["order_total"],
+                order_total_source=amount_contract["order_total_source"], currency=amount_contract["currency"],
+                actor_source=actor_source, actor_external_id=actor_external_id,
+            )
+            # Even an audited approval cannot hide a conflicting bank ledger.
+            snapshot = payment_truth_snapshot(review=locked, decision=proposed)
+            if snapshot["needs_reconciliation"]:
+                stage_after = stage_before
         review_status_before = locked.status
         now = timezone.now()
         update_fields = ["updated_at"]
@@ -2576,6 +3340,12 @@ def record_review_decision(
             )
         from management.services.ig_commercial_episodes import sync_episode_payment
 
+        if decision == IgPaymentReviewDecision.Decision.MANAGER_VERIFIED and not clarification:
+            from orders.services.ig_review_order_builder import create_order_from_payment_review
+
+            # The approval transaction owns order materialization. Incomplete
+            # verified facts remain an explicit manager completion step.
+            locked.order_creation_result = create_order_from_payment_review(locked, actor=actor)
         sync_episode_payment(review=locked, deal=locked.deal if locked.deal_id else None)
         from management.services.bot_conversation_analysis import schedule_client_truth_analysis
 
@@ -2594,7 +3364,7 @@ def record_review_decision(
     return locked
 
 
-@transaction.atomic
+@_payment_review_transaction
 def archive_historical_paid_review(
     review,
     *,
@@ -2634,12 +3404,8 @@ def archive_historical_paid_review(
         if resolved_outcome not in allowed_outcomes:
             raise ValueError("Результат історичного завершення не підтримується.")
 
-    locked = (
-        IgPaymentConfirmationReview.objects.select_for_update()
-        .select_related("client")
-        .get(pk=review.pk)
-    )
-    client = IgClient.objects.select_for_update().get(pk=locked.client_id)
+    locked = _lock_payment_review(review)
+    client = locked.client
     if client.hidden_at:
         raise ValueError("Прихований клієнт виключений з операцій.")
     if locked.resolution_kind == locked.ResolutionKind.HISTORICAL_PAID_ARCHIVED:
@@ -2789,7 +3555,7 @@ def archive_historical_paid_review(
     return locked
 
 
-@transaction.atomic
+@_payment_review_transaction
 def correct_false_historical_purchase(review, *, actor, reason: str):
     """Auditably retract a false legacy-purchase classification.
 
@@ -2825,12 +3591,8 @@ def correct_false_historical_purchase(review, *, actor, reason: str):
     ):
         raise ValueError("Виправити історичну покупку може лише менеджер.")
 
-    locked = (
-        IgPaymentConfirmationReview.objects.select_for_update()
-        .select_related("client", "deal", "order")
-        .get(pk=review.pk)
-    )
-    client = IgClient.objects.select_for_update().get(pk=locked.client_id)
+    locked = _lock_payment_review(review, related=("deal", "order"))
+    client = locked.client
     previous_retraction = (
         IgPaymentReviewDecision.objects.filter(
             review=locked,
@@ -3055,7 +3817,7 @@ def correct_false_historical_purchase(review, *, actor, reason: str):
     return locked
 
 
-@transaction.atomic
+@_payment_review_transaction
 def resolve_historical_paid_review(
     review,
     *,
@@ -3103,12 +3865,8 @@ def resolve_historical_paid_review(
     if exact_amount is not None and amount_unrecoverable:
         raise ValueError("Оберіть точну суму або неможливість її відновити, але не обидва варіанти.")
 
-    locked = (
-        IgPaymentConfirmationReview.objects.select_for_update()
-        .select_related("client", "deal")
-        .get(pk=review.pk)
-    )
-    client = IgClient.objects.select_for_update().get(pk=locked.client_id)
+    locked = _lock_payment_review(review, related=("deal",))
+    client = locked.client
     if client.hidden_at:
         raise ValueError("Прихований клієнт виключений з операцій.")
     if locked.resolution_kind == locked.ResolutionKind.HISTORICAL_PAID_ARCHIVED:
@@ -3252,8 +4010,8 @@ def confirm_review(
             telegram_decision=telegram_decision,
         )
 
-    with transaction.atomic():
-        locked = IgPaymentConfirmationReview.objects.select_for_update().get(pk=review.pk)
+    with _payment_review_mutation(review):
+        locked = _lock_payment_review(review)
         locked._transitioned = False
         if locked.status == IgPaymentConfirmationReview.Status.PENDING:
             locked.status = IgPaymentConfirmationReview.Status.CONFIRMED
@@ -3291,8 +4049,8 @@ def cancel_review(
             telegram_decision=telegram_decision,
         )
 
-    with transaction.atomic():
-        locked = IgPaymentConfirmationReview.objects.select_for_update().get(pk=review.pk)
+    with _payment_review_mutation(review):
+        locked = _lock_payment_review(review)
         locked._transitioned = False
         if locked.status == IgPaymentConfirmationReview.Status.PENDING:
             locked.status = IgPaymentConfirmationReview.Status.CANCELLED

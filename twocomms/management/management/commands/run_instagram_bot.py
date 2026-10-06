@@ -633,7 +633,7 @@ def _memory_background_tick():
 
 
 def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generation=None):
-    """Drain durable CRM-analysis jobs without coupling them to reply enablement."""
+    """Drain source observations and CRM analysis independently of reply enablement."""
     from management.services.bot_conversation_analysis import (
         process_due_analysis,
         reconcile_analysis_jobs,
@@ -715,6 +715,36 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
                                     bot.log("error", "memory_source_reconcile", type(exc).__name__)
                                 except Exception:
                                     pass
+                    if stop_event.is_set():
+                        return
+                    if lane_owner is not None and not renew_owner(
+                        owner_token=lane_owner["owner_token"],
+                        generation=lane_owner["generation"],
+                    ):
+                        stop_event.set()
+                        return
+                    if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                        try:
+                            from management.services.ig_payment_observation import drain_payment_observations
+
+                            # OCR may consume its complete provider deadline.
+                            # Keep this singleton-owned work off the customer
+                            # reply lane, even while replies/AI are disabled.
+                            drain_payment_observations(max_items=1)
+                        except Exception as exc:
+                            _raise_disconnected_database(exc, lane="analysis_worker")
+                            try:
+                                bot.log("warning", "payment_observation_drain_deferred", type(exc).__name__)
+                            except Exception:
+                                pass
+                    if stop_event.is_set():
+                        return
+                    if lane_owner is not None and not renew_owner(
+                        owner_token=lane_owner["owner_token"],
+                        generation=lane_owner["generation"],
+                    ):
+                        stop_event.set()
+                        return
                     try:
                         process_due_analysis(limit=1)
                     except Exception as exc:

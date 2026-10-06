@@ -16,6 +16,7 @@
 import threading
 import time
 from datetime import timedelta
+from unittest import skipUnless
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -90,6 +91,7 @@ class AnalysisWorkerOwnershipTests(SimpleTestCase):
             patch("management.services.bot_conversation_analysis.process_due_analysis") as process,
             patch("management.services.bot_conversation_analysis.reconcile_analysis_jobs") as reconcile,
             patch("management.services.ig_analysis_events.process_due_analysis_events") as events,
+            patch("management.services.ig_payment_observation.drain_payment_observations") as observations,
         ):
             _analysis_worker(stop_event, "lost-owner", 7)
 
@@ -97,6 +99,7 @@ class AnalysisWorkerOwnershipTests(SimpleTestCase):
         process.assert_not_called()
         reconcile.assert_not_called()
         events.assert_not_called()
+        observations.assert_not_called()
 
 
 def _settings(**kwargs):
@@ -1015,20 +1018,13 @@ class DaemonStartupObservabilityTests(SimpleTestCase):
         self.assertEqual(leaked, set())
 
 
+@skipUnless(connection.vendor == "mysql", "lease contract requires MariaDB/InnoDB, not SQLite")
 class MariaDbLeaseContractTests(TestCase):
     """ЭА.14 — контракт lease на реальном engine, а не только на SQLite.
 
     Пропускается на SQLite: он не воспроизводит ни `SELECT ... FOR UPDATE`, ни
     поведение InnoDB при конкурентном обновлении. Запускается в MariaDB-профиле.
     """
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        if connection.vendor != "mysql":
-            raise __import__("unittest").SkipTest(
-                "lease contract requires MariaDB/InnoDB, not SQLite"
-            )
 
     def test_conditional_claim_update_is_atomic_under_innodb(self):
         client_row = IgClient.objects.create(igsid="lease-mysql")

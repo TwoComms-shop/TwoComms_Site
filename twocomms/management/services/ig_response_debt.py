@@ -45,6 +45,9 @@ def record_response_coverage(revision_id, token, coverage):
         return False
     plan_digest = coverage.get("plan_digest", "")
     next_selector = coverage.get("next_selector", "")
+    payment_verification = coverage.get("payment_verification")
+    if payment_verification not in (None, "unresolved"):
+        return False
     if (not isinstance(plan_digest, str) or (plan_digest and (len(plan_digest) != 64 or any(char not in "0123456789abcdef" for char in plan_digest)))
         or not isinstance(next_selector, str)
         or (next_selector not in {"", "model", "size", "color", "fit", "variant", "options", "quantity", "product"}
@@ -75,6 +78,11 @@ def record_response_coverage(revision_id, token, coverage):
             or not _sources_unchanged(revision)):
             return False
         source_ids = [row["message_id"] for row in revision.bundle_snapshot.get("sources", ())]
+        if payment_verification == "unresolved":
+            payment_ids = [int(match.group(1)) for item in covered + remaining
+                if (match := re.fullmatch(r"([1-9]\d*):(?:payment:(?:receipt|claim)|info:payment(?:_instructions)?)", item))]
+            if not payment_ids or any(identity not in source_ids for identity in payment_ids):
+                return False
         receipt = {"version": 1, "snapshot_digest": revision.snapshot_digest,
                    "source_message_ids": source_ids, "covered": list(dict.fromkeys(covered)),
                    "remaining": list(dict.fromkeys(remaining)), "disposition": coverage["disposition"]}
@@ -82,6 +90,10 @@ def record_response_coverage(revision_id, token, coverage):
             receipt["plan_digest"] = plan_digest
         if next_selector:
             receipt["next_selector"] = next_selector
+        if payment_verification == "unresolved":
+            # A source-bound managerial check still owed after the customer
+            # acknowledgement. This marker creates no money or send rights.
+            receipt["payment_verification"] = "unresolved"
         receipt["digest"] = _digest(receipt)
         existing = (revision.action_receipts or {}).get(COVERAGE_KEY)
         if existing and existing != receipt:

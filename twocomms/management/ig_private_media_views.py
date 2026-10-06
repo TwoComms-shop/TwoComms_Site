@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 from collections.abc import Mapping
+from datetime import datetime
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_GET
 from management.bot_access import is_meta_bot_reviewer
 from management.models import AdminAuditLog, IgClient, InstagramBotMessage
@@ -66,7 +68,18 @@ def _can_preview(user) -> bool:
     )
 
 
-def _safe_part(row, client, source_part_id: str, *, use_token: str) -> dict:
+def _retention_current(value, *, now) -> bool:
+    if value is None:
+        return True
+    try:
+        deadline = value if isinstance(value, datetime) else parse_datetime(value) if isinstance(value, str) else None
+    except (TypeError, ValueError):
+        return False
+    return bool(deadline is not None and timezone.is_aware(deadline) and deadline > now)
+
+
+def _safe_part(row, client, source_part_id: str, *, use_token: str | None) -> dict:
+    now = timezone.now()
     if (
         row is None
         or client is None
@@ -79,9 +92,12 @@ def _safe_part(row, client, source_part_id: str, *, use_token: str) -> dict:
         or client.privacy_erasure_started_at is not None
         or row.private_media_state in _DELETED_STATES
         or row.private_media_state != InstagramBotMessage.PrivateMediaState.ACTIVE
-        or row.private_media_use_token != use_token
-        or not row.private_media_use_until
-        or row.private_media_use_until <= timezone.now()
+        or not _retention_current(row.private_media_delete_after, now=now)
+        or (use_token is not None and (
+            row.private_media_use_token != use_token
+            or not row.private_media_use_until
+            or row.private_media_use_until <= now
+        ))
     ):
         raise PrivateMediaUnavailable
     try:
@@ -104,6 +120,7 @@ def _safe_part(row, client, source_part_id: str, *, use_token: str) -> dict:
         or part.get("private_storage") is not True
         or not str(part.get("storage_name") or "").strip()
         or mime not in _PREVIEW_MIMES
+        or not _retention_current(part.get("delete_after"), now=now)
     ):
         raise PrivateMediaUnavailable
     part["mime"] = mime
@@ -169,6 +186,13 @@ def private_media_preview(request, message_id: int, source_part_id: str):
     token = ""
     try:
         client_id = _identity_snapshot(message_id)
+        source = InstagramBotMessage.objects.select_related("client").filter(
+            pk=message_id, client_id=client_id,
+        ).first()
+        # Reject expired/malformed retention before leasing any private bytes.
+        # The locked check below repeats this after waiting for owner/source.
+        _safe_part(source, source.client if source is not None else None,
+            source_part_id, use_token=None)
         token = acquire_blob_use(message_id, seconds=60)
         if not token:
             raise PrivateMediaUnavailable

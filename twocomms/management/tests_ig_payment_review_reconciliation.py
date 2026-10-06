@@ -4,9 +4,9 @@ from datetime import timedelta
 
 from django.core.management import call_command
 from django.test import TestCase
-from django.utils import timezone
 
 from management.ig_bot_models import IgBotNotification, IgClient, IgPaymentConfirmationReview
+from management.services.ig_payment_review import LEGACY_PAYMENT_REVIEW_REPAIR_CUTOFF
 
 
 class PaymentReviewReconciliationCommandTests(TestCase):
@@ -58,7 +58,7 @@ class PaymentReviewReconciliationCommandTests(TestCase):
         # never current payment claims.
         IgPaymentConfirmationReview.objects.filter(
             pk__in=[self.canonical.pk, self.duplicate.pk, self.unrelated.pk],
-        ).update(created_at=timezone.now() - timedelta(days=10))
+        ).update(created_at=LEGACY_PAYMENT_REVIEW_REPAIR_CUTOFF - timedelta(days=10))
 
     def test_command_is_dry_run_by_default_then_idempotently_applies_exact_receipt_merges(self):
         preview_stdout = io.StringIO()
@@ -128,7 +128,7 @@ class PaymentReviewReconciliationCommandTests(TestCase):
         )
         IgPaymentConfirmationReview.objects.filter(
             pk__in=[first.pk, second.pk],
-        ).update(created_at=timezone.now() - timedelta(days=10))
+        ).update(created_at=LEGACY_PAYMENT_REVIEW_REPAIR_CUTOFF - timedelta(days=10))
 
         stdout = io.StringIO()
         call_command(
@@ -204,7 +204,7 @@ class PaymentReviewReconciliationCommandTests(TestCase):
         )
         IgPaymentConfirmationReview.objects.filter(
             pk__in=[first.pk, second.pk],
-        ).update(created_at=timezone.now() - timedelta(days=10))
+        ).update(created_at=LEGACY_PAYMENT_REVIEW_REPAIR_CUTOFF - timedelta(days=10))
 
         stdout = io.StringIO()
         call_command(

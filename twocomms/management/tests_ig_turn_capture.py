@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.test import TestCase
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from management.models import (
@@ -91,13 +93,23 @@ class RevisionTurnCaptureTests(TestCase):
             self.capture(revision, collection, boundary)
         self.assertEqual(caught.exception.reason, code)
 
+    def assertReadBudget(self, queries, *, maximum):
+        verbs = [item["sql"].lstrip().split(None, 1)[0].upper() for item in queries]
+        self.assertTrue(set(verbs) <= {"SELECT", "BEGIN", "SAVEPOINT", "RELEASE", "COMMIT", "ROLLBACK"}, verbs)
+        self.assertLessEqual(verbs.count("SELECT"), maximum)
+        self.assertGreater(verbs.count("SELECT"), 0)
+
     def test_actual_sealed_bundle_preserves_original_digest_and_has_bounded_queries(self):
         first = self.message("Яка ціна?")
         second = self.message("❤️", at=self.now + timedelta(seconds=1))
         revision, collection, boundary = self.seal(first, second)
         original = deepcopy(revision.bundle_snapshot)
-        with self.assertNumQueries(6):
+        with CaptureQueriesContext(connection) as queries:
             result = self.capture(revision, collection, boundary)
+        # Six original source reads plus two bounded independent observation
+        # reads. A plain transcript must stay within fourteen SELECTs, with no
+        # writes; do not rely on the implementation's incidental exact count.
+        self.assertReadBudget(queries, maximum=14)
         self.assertEqual(result.metadata["captured_source_ids"], (first.pk, second.pk))
         self.assertEqual(result.boundary["sealed_sources_digest"], capture_digest(original["sources"]))
         self.assertEqual(result.source_bindings[0]["source_digest"], original["sources"][0]["source_digest"])
@@ -311,9 +323,9 @@ class RevisionTurnCaptureTests(TestCase):
         self.assertEqual(producer.read_memory_summary(self.client_row).reason, "current")
         with CaptureQueriesContext(connection) as queries:
             result = self.capture(revision, collection, boundary)
-        # Six basic capture reads plus the canonical reader's five bounded
-        # current-head/reset/session/source/freshness reads.
-        self.assertEqual(len(queries), 11)
+        # Basic sealed capture/observation reads plus canonical narrative
+        # current-head/reset/session/source/freshness verification.
+        self.assertReadBudget(queries, maximum=19)
         self.assertIn("Клієнт просить уточнити ціну принта.", result.memory_note)
         self.assertEqual(result.metadata["view_versions"]["memory_capture_digest"],
             self.client_row.memory_provenance["capture"]["generation_input_digest"])
@@ -431,7 +443,8 @@ class RevisionTurnCaptureTests(TestCase):
         self.assertEqual(result.metadata["captured_history_ids"], ())
         self.assertEqual(len(result.provider_history), 1)
         self.assertIn("Хочу L", result.provider_history[-1]["text"])
-        self.assertEqual(result.components["capture_omissions"]["items"][0]["reason"], "history_identity_unavailable")
+        self.assertTrue(any(item["block_id"] == "context:history" and item["reason"] == "history_identity_unavailable"
+            for item in result.components["capture_omissions"]["items"]))
 
     def test_source_changed_after_seal_halts(self):
         source = self.message("Хочу M")

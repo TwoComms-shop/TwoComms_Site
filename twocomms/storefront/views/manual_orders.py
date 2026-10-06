@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 
 from django.contrib.admin.views.decorators import staff_member_required
@@ -176,6 +177,10 @@ def _build_order_initial(order):
                 'unit_price': float(item.unit_price or 0),
                 'qty': item.qty,
                 'size': item.size or '',
+                'fit_option_code': item.fit_option_code or '',
+                'fit_option_label': item.fit_option_label or '',
+                'option_values': item.option_values or {},
+                'option_labels': item.option_labels or {},
                 'color_name': item.color_name_custom or '',
                 'image': image,
             })
@@ -191,6 +196,8 @@ def _build_order_initial(order):
                 'size': item.size or '',
                 'fit_option_code': item.fit_option_code or '',
                 'fit_option_label': item.fit_option_label or '',
+                'option_values': item.option_values or {},
+                'option_labels': item.option_labels or {},
                 'image': image,
             })
     delivery_display = get_order_nova_poshta_point(order)
@@ -370,7 +377,7 @@ def _decimal_or_none(raw):
         value = Decimal(str(raw))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    if value < 0:
+    if not value.is_finite() or value < 0:
         return None
     return value.quantize(Decimal('0.01'))
 
@@ -384,8 +391,49 @@ def _review_quoted_total(review):
             return amount
     evidence = review.evidence if isinstance(review.evidence, dict) else {}
     draft = evidence.get('order_draft') if isinstance(evidence.get('order_draft'), dict) else {}
-    amount = _decimal_or_none(draft.get('quoted_total'))
+    amount = _decimal_or_none(draft.get('merchandise_total') or draft.get('quoted_total'))
     return amount if amount is not None and amount > 0 else None
+
+
+def _review_delivery_contract(review, *, merchandise_total, actor):
+    """Keep reviewed prepaid carriage separate from garment prices."""
+    if review is None:
+        return None
+    evidence = review.evidence if isinstance(review.evidence, dict) else {}
+    draft = evidence.get('order_draft') if isinstance(evidence.get('order_draft'), dict) else {}
+    delivery = _decimal_or_none(draft.get('delivery_amount') or draft.get('delivery_total'))
+    if delivery is None or delivery <= 0:
+        return None
+    quoted_merchandise = _decimal_or_none(draft.get('merchandise_total') or draft.get('quoted_total'))
+    quoted_payable = _decimal_or_none(draft.get('payable_total'))
+    if quoted_merchandise is None or quoted_payable != quoted_merchandise + delivery:
+        raise ValueError('Сума товарів, доставки та повної оплати потребує звірки.')
+    decision = _authoritative_manager_payment_decision(review)
+    payable = merchandise_total + delivery
+    prepaid = bool(
+        decision and decision.verification_scope == 'full_payment'
+        and Decimal(decision.confirmed_amount or 0) == payable
+    )
+    evidence_ids = {
+        int(value) for value in (draft.get('amount_evidence_message_ids') or [])
+        if str(value).isdigit()
+    }
+    for key in ('amount_source_message_id', 'delivery_source_message_id'):
+        if str(draft.get(key) or '').isdigit():
+            evidence_ids.add(int(draft[key]))
+    if not evidence_ids:
+        raise ValueError('Для суми доставки потрібне повідомлення-джерело з переписки.')
+    return {
+        'merchandise_total': f'{merchandise_total:.2f}',
+        'delivery_amount': f'{delivery:.2f}',
+        'payable_total': f'{payable:.2f}',
+        'prepaid': prepaid,
+        'payer_type': 'Sender' if prepaid else 'Recipient',
+        'review_id': review.pk,
+        'decision_id': getattr(decision, 'pk', None),
+        'actor_id': actor.pk,
+        'evidence_message_ids': sorted(evidence_ids),
+    }
 
 
 def _price_override_payload(data, *, quoted_total, actual_total, actor, review):
@@ -787,7 +835,7 @@ def _build_ig_review_initial(review):
         products = Product.objects.in_bulk(product_ids) if product_ids else {}
         items = []
         for draft_item in raw_draft_items:
-            fit = draft_item.get("fit") or ""
+            fit = draft_item.get("fit_option_code") or draft_item.get("fit") or ""
             catalog = draft_item.get("catalog") if isinstance(draft_item.get("catalog"), dict) else {}
             try:
                 product_id = int(draft_item.get("product_id") or catalog.get("product_id"))
@@ -796,7 +844,10 @@ def _build_ig_review_initial(review):
             product = products.get(product_id)
             fit_code, fit_label = _normalize_review_fit(product, fit)
             title = (getattr(product, "title", "") or catalog.get("title") or draft_item.get("title") or "Товар з переписки")
-            if not product and fit and "не ідентифіковано" not in title.lower():
+            if (
+                not product and fit and "не ідентифіковано" not in title.lower()
+                and draft_item.get("identity_kind") != "offsite_named"
+            ):
                 title = f"{title} · товар потребує вибору"
             image = ""
             if product:
@@ -804,6 +855,20 @@ def _build_ig_review_initial(review):
                     image = getattr(getattr(product, "display_image", None), "url", "") or ""
                 except Exception:
                     image = ""
+            reference_ids = {
+                int(value) for value in (
+                    draft_item.get("reference_message_ids")
+                    or draft_item.get("product_reference_message_ids") or []
+                ) if str(value).isdigit()
+            }
+            for key in ("source_message_id", "reference_message_id", "acceptance_message_id"):
+                if str(draft_item.get(key) or "").isdigit():
+                    reference_ids.add(int(draft_item[key]))
+            option_values = dict(draft_item.get("option_values") or {}) if isinstance(draft_item.get("option_values"), dict) else {}
+            if reference_ids:
+                option_values["_reference_message_ids"] = sorted(reference_ids)
+            if draft_item.get("garment_type"):
+                option_values["garment_type"] = draft_item["garment_type"]
             raw_price = draft_item.get("unit_price")
             price_requires_input = raw_price in (None, "")
             items.append({
@@ -817,9 +882,9 @@ def _build_ig_review_initial(review):
                 "size": draft_item.get("size") or "",
                 "fit_option_code": fit_code,
                 "fit_option_label": fit_label,
-                "option_values": draft_item.get("option_values") if isinstance(draft_item.get("option_values"), dict) else {},
+                "option_values": option_values,
                 "option_labels": draft_item.get("option_labels") if isinstance(draft_item.get("option_labels"), dict) else {},
-                "color_name": "",
+                "color_name": draft_item.get("color_name") or draft_item.get("color_name_custom") or draft_item.get("color") or "",
                 "image": image,
                 "product_url": catalog.get("url") or (f"https://twocomms.shop/product/{product.slug}/" if product else ""),
             })
@@ -841,6 +906,9 @@ def _build_ig_review_initial(review):
         return {
             "review_id": review.pk,
             "quoted_total": quoted_total,
+            "merchandise_total": draft.get("merchandise_total") or quoted_total,
+            "delivery_amount": draft.get("delivery_amount") or draft.get("delivery_total") or "",
+            "payable_total": draft.get("payable_total") or quoted_total,
             "uncertainty_reasons": reasons,
             "full_name": delivery.get("full_name") or "",
             "phone": delivery.get("phone") or "",
@@ -951,6 +1019,26 @@ def _form_context(*, order=None, prefill=None, ig_client=None):
     return context
 
 
+@contextmanager
+def _manual_order_mutation(payment_review, ig_client):
+    """Acquire the Instagram barrier before this entry point takes DB locks."""
+    if payment_review is not None:
+        from management.services.ig_payment_review import _payment_review_mutation
+        with _payment_review_mutation(payment_review):
+            yield
+    elif ig_client is not None:
+        from management.models import IgClient
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock
+        with commercial_episode_client_lock(ig_client.pk), transaction.atomic():
+            current = IgClient.objects.select_for_update().get(pk=ig_client.pk)
+            if current.hidden_at is not None:
+                raise ValueError('Instagram-клієнт недоступний.')
+            yield
+    else:
+        with transaction.atomic():
+            yield
+
+
 @staff_member_required
 @require_http_methods(["GET", "POST"])
 def manual_order_create(request):
@@ -1055,21 +1143,18 @@ def manual_order_create(request):
     sale_source = str(data.get('sale_source') or '').strip()[:120]
     manager_comment = str(data.get('manager_comment') or '').strip()
     try:
-        with transaction.atomic():
+        with _manual_order_mutation(payment_review, ig_client):
             manager_decision = None
             if payment_review:
                 from management.ig_bot_models import IgPaymentConfirmationReview
 
-                payment_review = (
-                    IgPaymentConfirmationReview.objects.select_for_update()
-                    .select_related("deal", "order")
-                    .filter(
-                        pk=payment_review.pk,
-                        status=IgPaymentConfirmationReview.Status.CONFIRMED,
-                        client__hidden_at__isnull=True,
-                    )
-                    .first()
-                )
+                from management.services.ig_payment_review import _lock_payment_review
+                payment_review = _lock_payment_review(payment_review)
+                if (
+                    payment_review.status != IgPaymentConfirmationReview.Status.CONFIRMED
+                    or payment_review.client.hidden_at is not None
+                ):
+                    raise ValueError('Підтвердження оплати недоступне.')
                 manager_decision = (
                     _authoritative_manager_payment_decision(payment_review)
                     if payment_review
@@ -1127,6 +1212,12 @@ def manual_order_create(request):
                 if payment_review
                 else None
             )
+            delivery_contract = _review_delivery_contract(
+                payment_review, merchandise_total=total_sum, actor=request.user,
+            )
+            payable_total = total_sum + (
+                Decimal(delivery_contract['delivery_amount']) if delivery_contract else Decimal('0.00')
+            )
             payment_episode = None
             if payment_review:
                 from management.services.ig_commercial_episodes import ensure_episode_for_review
@@ -1159,7 +1250,7 @@ def manual_order_create(request):
             if manager_decision is not None:
                 effective_pay_type = (
                     'prepayment'
-                    if manager_confirmed_amount < total_sum
+                    if manager_confirmed_amount < payable_total
                     else 'online_full'
                 )
                 effective_preset_key = (
@@ -1182,6 +1273,14 @@ def manual_order_create(request):
                 'manager_comment': manager_comment,
                 'payment_payload': {
                     'manual_payment_preset': effective_preset_key,
+                    **({'instagram_delivery_contract': delivery_contract} if delivery_contract else {}),
+                    **({'manual_payment_action': {
+                        'actor_id': request.user.pk,
+                        'source': 'management_user',
+                        'payment_status': preset['payment_status'],
+                        'payment_preset': preset_key,
+                        'recorded_at': timezone.now().isoformat(),
+                    }} if not payment_review and preset['payment_status'] in {'paid', 'prepaid'} else {}),
                     **({
                         'instagram_payment_review_id': payment_review.pk,
                         'instagram_commercial_episode_id': payment_episode.pk,
@@ -1216,6 +1315,7 @@ def manual_order_create(request):
                     },
                     expected_items=order_items,
                     declared_total=total_sum,
+                    expected_delivery_contract=delivery_contract,
                 )
             if order_created:
                 apply_nova_poshta_refs(order, delivery['refs'])
@@ -1235,9 +1335,10 @@ def manual_order_create(request):
                     payment_source="manager_verified",
                     created_by=request.user,
                 )
-            for item in order_items:
-                item.order = order
-            OrderItem.objects.bulk_create(order_items)
+            if order_created:
+                for item in order_items:
+                    item.order = order
+                OrderItem.objects.bulk_create(order_items)
             order.total_sum = total_sum
             if price_override:
                 payload = dict(order.payment_payload or {})
@@ -1314,10 +1415,11 @@ def manual_order_create(request):
             status=500,
         )
 
-    try:
-        telegram_notifier.send_new_order_notification(order)
-    except Exception:
-        logger.exception('Failed to send Telegram notification for manual order %s', order.pk)
+    if order_created:
+        try:
+            telegram_notifier.send_new_order_notification(order)
+        except Exception:
+            logger.exception('Failed to send Telegram notification for manual order %s', order.pk)
 
     return JsonResponse({
         'success': True,
@@ -1386,6 +1488,14 @@ def manual_order_edit(request, order_id):
             locked.manager_comment = manager_comment
             payment_payload = dict(locked.payment_payload or {})
             payment_payload['manual_payment_preset'] = preset_key
+            if preset['payment_status'] in {'paid', 'prepaid'}:
+                payment_payload['manual_payment_action'] = {
+                    'actor_id': request.user.pk,
+                    'source': 'management_user',
+                    'payment_status': preset['payment_status'],
+                    'payment_preset': preset_key,
+                    'recorded_at': timezone.now().isoformat(),
+                }
             locked.payment_payload = payment_payload
 
             if delivery is not None:

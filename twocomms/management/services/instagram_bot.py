@@ -2832,10 +2832,15 @@ def _handle_echo(
     settings_row = InstagramBotSettings.load()
     namespace = provider_namespace or ingress_provider_namespace(settings_row)
     if mid and uses_revision_echo_scope(namespace, recipient_igsid, mid=mid):
-        return observe_and_project_echo(
+        observed = observe_and_project_echo(
             settings_row, namespace=namespace, recipient=recipient_igsid, mid=mid,
             text=text, attachments=attachments, received_at=received_at,
         )
+        manager_source = InstagramBotMessage.objects.filter(mid=mid,
+            role=InstagramBotMessage.Role.MANAGER, sender_id=recipient_igsid).first()
+        if manager_source is not None:
+            _enqueue_payment_observation_event(manager_source.pk)
+        return observed
     # Позитивна ознака «це наше» перевіряється ПЕРШОЮ і до будь-якої зміни
     # стану клієнта. Раніше єдиною перевіркою був відпечаток по тексту, а в
     # медіа-echo тексту немає — тому карусель бота вмикала `manager_takeover`,
@@ -2938,6 +2943,7 @@ def _handle_echo(
     if applied:
         if msg is not None:
             _enqueue_memory_source_event(msg.pk)
+            _enqueue_payment_observation_event(msg.pk)
         if msg is not None and not persistence_only:
             from management.services import bot_sales_classifier
 
@@ -4099,6 +4105,24 @@ def _finish_notification(
             "status", "telegram_message_id", "last_error", "failure_kind",
             "sent_at", "next_attempt_at", "updated_at",
         ])
+        if delivery_succeeded and row.event_type == "payment_review":
+            # A receipt can arrive while the previous summary crosses Telegram.
+            # Finish that exact delivery first; its durable material revision
+            # may then queue a fresh summary without another transport here.
+            payment_review_id = (row.payload or {}).get("payment_review_id") if isinstance(row.payload, dict) else None
+            if type(payment_review_id) is int and payment_review_id > 0:
+                def refresh_payment_summary(review_id=payment_review_id, notification_id=row.pk):
+                    try:
+                        from management.services.ig_payment_review import refresh_deferred_payment_review_notification
+
+                        refresh_deferred_payment_review_notification(review_id, notification_id=notification_id)
+                    except Exception as exc:
+                        # The durable marker remains available for replay.
+                        log("warning", "payment_notification_refresh_deferred", type(exc).__name__,
+                            kind="manager_notification", reason="retry_deferred",
+                            scope={"notification_id": notification_id})
+
+                transaction.on_commit(refresh_payment_summary, robust=True)
         return delivery_succeeded
 
 
@@ -11372,6 +11396,7 @@ def _finish_media_capture(
                 "private_media_use_token", "private_media_use_until",
             ])
         locked.save(update_fields=update_fields)
+        transaction.on_commit(lambda message_id=locked.pk: _enqueue_payment_observation_event(message_id))
         return list(locked.attachment_media or [])
 
 
@@ -12599,6 +12624,19 @@ def _promote_manual_refresh_message(
 # ---------------------------------------------------------------------------
 # Черга: постановка вхідних
 # ---------------------------------------------------------------------------
+def _enqueue_payment_observation_event(message_id: int) -> bool:
+    """Queue source facts only; receipt recognition belongs to the worker."""
+    if not message_id:
+        return False
+    try:
+        with transaction.atomic():
+            from management.services.ig_payment_observation import enqueue_payment_observation
+            return enqueue_payment_observation(message_id).queued
+    except Exception as exc:
+        log("warning", "payment_observation_enqueue_deferred", type(exc).__name__)
+        return False
+
+
 def _enqueue_memory_source_event(message_id: int) -> bool:
     """Record accepted source work only; generation belongs to the daemon lane.
 
@@ -13051,6 +13089,7 @@ def enqueue_inbound(
                     reply_eligible = promoted
             if not observed_only:
                 client.touch_inbound()
+                _enqueue_payment_observation_event(msg.pk)
                 # Э0.6: хід клієнта фіксується на вході, ще до будь-якої обробки.
                 # Записуємо його одразу, щоб `messages-per-turn` стало
                 # вимірюваним; перехід воркера на хід як одиницю виконання — це
@@ -17164,13 +17203,19 @@ def _handle_polled_page_side(
     namespace = ingress_provider_namespace(s)
     if uses_revision_echo_scope(namespace, customer_id, mid=str(message.get("id") or "").strip()):
         try:
-            return observe_and_project_echo(
+            observed = observe_and_project_echo(
                 s, namespace=namespace, recipient=customer_id,
                 mid=str(message.get("id") or "").strip(), text=text,
                 attachments=_echo_media_items(message),
                 received_at=_parse_ig_time(message.get("created_time", "")),
                 historical=historical,
             )
+            if not historical:
+                manager_source = InstagramBotMessage.objects.filter(mid=message.get("id"),
+                    role=InstagramBotMessage.Role.MANAGER, sender_id=customer_id).first()
+                if manager_source is not None:
+                    _enqueue_payment_observation_event(manager_source.pk)
+            return observed
         except Exception as exc:
             log("warning", "poll_revision_echo", type(exc).__name__)
             return False

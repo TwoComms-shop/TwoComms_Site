@@ -277,12 +277,9 @@ def _advance_stage_from_order(client, order) -> None:
 
     if not client or not getattr(client, "pk", None) or order is None:
         return
-    paid = str(getattr(order, "payment_status", "") or "") in {
-        "paid",
-        "prepaid",
-        "partial",
-    }
-    if not paid:
+    from management.services.ig_order_links import order_fulfillment_payment_verified
+
+    if not order_fulfillment_payment_verified(order):
         return
     target = (
         IgClient.Stage.DONE

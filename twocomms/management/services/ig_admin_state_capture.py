@@ -65,7 +65,7 @@ def _namespace():
 def _source_watermark(scope, namespace, sender_id, now):
     from management.models import InstagramBotMessage
     row = InstagramBotMessage.objects.filter(client_id=scope["client_id"], sender_id=sender_id,
-        role="user", source__in=("webhook", "poll"), provider_namespace=namespace,
+        role__in=("user", "manager", "model"), provider_namespace=namespace,
         pk__gte=scope["reset_floor"]).exclude(status="failed").annotate(
             event_time=Coalesce("provider_created_at", "created_at")).filter(event_time__lte=now).aggregate(
                 message_id=Max("pk"), event_at=Max("event_time"))
@@ -124,15 +124,19 @@ def _owner_fence(client_id):
     return {"owner": owner, "episode": episode, "session": session, "reset": reset}
 
 
-def _payment_capture(client_id, episode_id, scope):
+def _payment_capture(client_id, episode_id, scope, *, captured_episode=None):
     from management.models import IgCommercialEpisode
     from management.services.ig_commercial_episodes import payment_truth_snapshot
     if episode_id is None:
         return {}, "payment_episode_unbound"
-    episode = IgCommercialEpisode.objects.filter(pk=episode_id, client_id=client_id).select_related(
-        "deal", "primary_payment_review", "intended_order").first()
+    episode = captured_episode
+    if episode is None:
+        episode = IgCommercialEpisode.objects.filter(pk=episode_id, client_id=client_id).select_related(
+            "deal", "primary_payment_review", "intended_order").first()
     if episode is None:
         return {}, "payment_episode_unbound"
+    if episode.pk != episode_id or episode.client_id != client_id:
+        return {}, "payment_source_scope_mismatch"
     deal, review, order = episode.deal, episode.primary_payment_review, episode.intended_order
     if (deal is not None and deal.client_id != client_id) or (review is not None and review.client_id != client_id):
         return {}, "payment_source_scope_mismatch"
@@ -150,6 +154,71 @@ def _payment_capture(client_id, episode_id, scope):
     if result.get("order_id") != order_id or result.get("episode_id") != episode_id:
         return {}, "payment_order_scope_mismatch"
     return {**result, "scope": deepcopy(scope)}, ""
+
+
+def capture_payment_context(boundary, *, now=None):
+    """Read exact scoped commerce observations; never generate or grant actions.
+
+    Both current admin and the sealed request factory call these same source
+    readers. Their text/media proofs are compared again by the caller; only
+    typed values and source references enter the captured state, never raw OCR.
+    """
+    from management.models import IgClient
+    from management.services.ig_conversation_agreement import read_conversation_agreement
+    from management.services.ig_payment_observation import read_receipt_observation
+    now = now or timezone.now()
+    scope = {key: boundary.get(key) for key in ("client_id", "episode_id", "order_id", "line_id", "recipient_id", "reset_floor")}
+    binding = {**scope, **{key: boundary.get(key) for key in ("source_namespace", "reset_id", "erasure_epoch")}}
+    result = {"slots": {}, "omissions": []}
+    # Each validation pass loads a fresh owner AND exact episode payment links
+    # together. Reuse those joined rows only within this pass, avoiding a second
+    # identical episode query while the next pass still rechecks all bindings.
+    client = IgClient.objects.filter(pk=scope["client_id"]).select_related(
+        "current_commercial_episode__deal", "current_commercial_episode__primary_payment_review",
+        "current_commercial_episode__intended_order").first()
+    if client is None or client.privacy_erasure_started_at or client.current_commercial_episode_id != scope["episode_id"]:
+        return result, "payment_context_scope_changed", ""
+    watermark = boundary.get("source_watermark") or boundary.get("watermark") or {}
+    arguments = {"episode_id": scope["episode_id"], "source_namespace": boundary.get("source_namespace"),
+        "reset_floor": scope["reset_floor"], "watermark": watermark}
+    agreement = read_conversation_agreement(client, **arguments)
+    receipt = read_receipt_observation(client, **arguments, now=now)
+    payment, payment_reason = _payment_capture(client.pk, scope["episode_id"], scope,
+        captured_episode=client.current_commercial_episode)
+    if payment:
+        result["payment_truth"] = payment
+    captures = (("conversation.agreement", agreement, "agreement", "conversation_agreement"),
+        ("receipt.observation", receipt, "observation", "typed_analysis"))
+    for slot_id, captured, value_key, authority in captures:
+        value, reason = captured.get(value_key) or {}, captured.get("reason") or ""
+        refs = captured.get("source_refs") or []
+        if slot_id == "conversation.agreement":
+            evidence = value.get("evidence") or {}
+            refs = [{"kind": "message", "id": source.get("source_message_id"),
+                "digest": source.get("source_digest"), "role": source.get("role"),
+                "event_at": source.get("observed_at")} for source in evidence.values() if isinstance(source, dict)]
+            # The envelope owns provenance. Avoid duplicating the full proof in
+            # the value budget while retaining all item/amount/source links.
+            value = {key: item for key, item in value.items() if key != "evidence"}
+        else:
+            events = {row.get("message_id"): row.get("event_at") for row in captured.get("source_rows") or []}
+            refs = [{"kind": "message", "id": ref.get("message_id"),
+                "digest": ref.get("source_digest"), "event_at": events.get(ref.get("message_id"))}
+                for ref in refs if isinstance(ref, dict)]
+        if not value or reason or not refs:
+            result["omissions"].append({"component": slot_id, "reason": reason or "observation_unavailable"})
+            continue
+        if len(refs) > 32:
+            result["omissions"].append({"component": slot_id, "reason": "observation_source_budget"})
+            continue
+        result["slots"][slot_id] = {"value": value, "status": "confirmed", "authority": authority,
+            "source_refs": refs, "scope": deepcopy(scope), "capture_scope": deepcopy(binding),
+            "observed_at": now.isoformat(), "source_watermark": deepcopy(watermark),
+            "validity": "untrusted_context", "mandatory": False}
+    # Source rows remain local to the read fence. No raw text/provider IDs enter
+    # the slot or request manifest through this digest-only observation.
+    fence = _digest({"agreement": agreement, "receipt": receipt, "payment": payment, "payment_reason": payment_reason})
+    return result, payment_reason, fence
 
 
 def _current_capture(client_id, expected_selection_revision, now):
@@ -224,9 +293,9 @@ def _current_capture(client_id, expected_selection_revision, now):
     readiness = selection_readiness(product_id=choices.get("product_id"), selection={}, size=choices.get("size", ""),
         fit=choices.get("fit_option_code", ""), color=choices.get("color", ""), quantity=choices.get("quantity", 1), strict=True)
     components["readiness"] = {**readiness, "scope": scope, "observed_at": now.isoformat()}
-    payment, payment_reason = _payment_capture(client_id, scope["episode_id"], scope)
-    if payment:
-        components["payment_truth"] = payment
+    payment_context, payment_reason, payment_fence = capture_payment_context(boundary, now=now)
+    components.update({key: value for key, value in payment_context.items() if key != "omissions"})
+    components["observation_omissions"] = payment_context.get("omissions") or []
     components["consent_state"] = {}  # No native purpose-grant producer exists.
     state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
     from management.services.ig_selection_corrections import build_size_correction_context
@@ -247,8 +316,8 @@ def _current_capture(client_id, expected_selection_revision, now):
         raise AdminStateReadError("current_source_changed")
     if _namespace() != namespace or _source_watermark(scope, namespace, owner["igsid"], now) != watermark:
         raise AdminStateReadError("current_source_changed")
-    final_payment, final_payment_reason = _payment_capture(client_id, scope["episode_id"], scope)
-    if _digest(payment) != _digest(final_payment) or payment_reason != final_payment_reason:
+    _, final_payment_reason, final_payment_fence = capture_payment_context(boundary, now=now)
+    if payment_fence != final_payment_fence or payment_reason != final_payment_reason:
         raise AdminStateReadError("current_payment_changed")
     return AdminStateResult(state, "captured", source_reason or payment_reason, now.isoformat(), revision)
 

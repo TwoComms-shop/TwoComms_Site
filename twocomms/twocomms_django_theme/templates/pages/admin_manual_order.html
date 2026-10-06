@@ -838,6 +838,9 @@
         if (initial.uncertainty_reasons && initial.uncertainty_reasons.length) {
           note += ' Необхідно уточнити товарні позиції вручну.';
         }
+        if (initial.delivery_amount) {
+          note += ' Доставка: <b>' + escapeHtml(initial.delivery_amount) + ' грн</b>. До оплати разом: <b>' + escapeHtml(initial.payable_total) + ' грн</b>.';
+        }
         reviewNote.innerHTML = note;
         reviewNote.style.display = 'block';
       }
@@ -1143,14 +1146,26 @@
           fields += field('Колір', '<select class="mo-select" data-edit="color_variant_id">' + colorOpts + '</select>');
         }
       } else {
+        if (it.fit_option_code || it.fit_option_label) {
+          var customFits = [{code: 'oversize', label: 'Оверсайз'}, {code: 'classic', label: 'Класична'}];
+          if (!customFits.some(function (fit) { return fit.code === it.fit_option_code; })) {
+            customFits.unshift({code: it.fit_option_code || it.fit_option_label, label: it.fit_option_label || it.fit_option_code});
+          }
+          fields += field('Посадка', '<select class="mo-select" data-edit="fit_option_code">' + customFits.map(function (fit) {
+            return '<option value="' + escapeHtml(fit.code) + '"' + (fit.code === it.fit_option_code ? ' selected' : '') + '>' + escapeHtml(fit.label) + '</option>';
+          }).join('') + '</select>');
+        }
         fields += field('Розмір', '<input type="text" class="mo-input" value="' + escapeHtml(it.size) + '" data-edit="size">');
         fields += field('Колір', '<input type="text" class="mo-input" value="' + escapeHtml(it.color_name) + '" data-edit="color_name">');
       }
 
+      var agreedOptions = Object.keys(it.option_labels || {}).map(function (label) {
+        return escapeHtml(label) + ': ' + escapeHtml(it.option_labels[label]);
+      }).join(' · ');
       line.innerHTML =
         '<div class="mo-line__top">' +
           imgHtml +
-          '<div><div class="mo-line__name">' + escapeHtml(it.title) + '</div>' + tag + '</div>' +
+          '<div><div class="mo-line__name">' + escapeHtml(it.title) + '</div>' + tag + (agreedOptions ? '<div class="mo-line__sub">' + agreedOptions + '</div>' : '') + '</div>' +
           '<button type="button" class="mo-line__remove" data-remove aria-label="Видалити">' +
             '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>' +
           '</button>' +
@@ -1189,6 +1204,9 @@
     else {
       it[key] = val;
       if (key === 'size') it.historical_size_unavailable = false;
+    }
+    if (it.kind === 'custom' && key === 'fit_option_code') {
+      it.fit_option_label = {oversize: 'Оверсайз', classic: 'Класична'}[val] || val;
     }
     if (it.kind === 'catalog' && (key === 'color_variant_id' || key === 'fit_option_code')) {
       var product = productMap[it.product_id];
@@ -1326,6 +1344,10 @@
           unit_price: it.unit_price,
           qty: it.qty,
           size: it.size,
+          fit_option_code: it.fit_option_code || '',
+          fit_option_label: it.fit_option_label || '',
+          option_values: it.option_values || {},
+          option_labels: it.option_labels || {},
           color_name: it.color_name
         };
       }
@@ -1334,6 +1356,8 @@
         product_id: it.product_id,
         color_variant_id: it.color_variant_id || '',
         fit_option_code: it.fit_option_code,
+        option_values: it.option_values || {},
+        option_labels: it.option_labels || {},
         size: it.size,
         qty: it.qty,
         unit_price: it.unit_price

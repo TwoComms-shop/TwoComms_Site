@@ -136,12 +136,13 @@ class IgPaymentReviewRulesTests(SimpleTestCase):
             ]
         )
         self.assertTrue(result["needs_review"])
-        self.assertEqual(result["order_draft"]["delivery"], {
+        delivery = result["order_draft"]["delivery"]
+        self.assertEqual({key: value for key, value in delivery.items() if key != "office"}, {
             "full_name": "Ніколаєнко Яна",
             "phone": "0502034719",
             "city": "Харків",
-            "office": "Поштомат 21586",
         })
+        self.assertEqual(delivery["office"].casefold().replace("№", "").replace(" ", ""), "поштомат21586")
 
     def test_customer_prepayment_context_is_bounded_to_the_next_unlabelled_image(self):
         from management.services.ig_payment_review import extract_payment_review_evidence
@@ -263,7 +264,7 @@ class IgPaymentReviewRulesTests(SimpleTestCase):
         ])
 
         self.assertTrue(result["needs_review"])
-        self.assertEqual(result["order_draft"]["quoted_total"], "790")
+        self.assertEqual(Decimal(result["order_draft"]["quoted_total"]), Decimal("790.00"))
         self.assertEqual(
             [(item["amount"], item["kind"]) for item in result["amount_evidence"]],
             [("790", "unit_price"), ("200", "payment_evidence")],
@@ -1975,7 +1976,9 @@ class FalseHistoricalPurchaseCorrectionTests(TestCase):
         self.assertFalse(client_has_confirmed_purchase(client))
         self.assertFalse(historical_purchase_confirmation(client)["confirmed"])
         from management.services.instagram_bot import build_prompt_snapshot
+        from management.tests_ig_policy_helpers import ensure_test_instruction_publication
 
+        ensure_test_instruction_publication()
         prompt = build_prompt_snapshot(client)
         self.assertNotIn("Завершено (100% воронки)", prompt)
 

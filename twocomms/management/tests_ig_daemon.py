@@ -670,12 +670,15 @@ class AnalysisWorkerTests(SimpleTestCase):
         memory = patch("management.services.ig_typed_memory.reconcile_typed_memory")
         narrative = patch("management.services.ig_memory_producer.reconcile_memory_sources")
         heartbeat = patch("management.management.commands.run_instagram_bot.task_heartbeat")
+        observations = patch("management.services.ig_payment_observation.drain_payment_observations")
         memory.start()
         narrative.start()
         heartbeat.start()
+        observations.start()
         self.addCleanup(memory.stop)
         self.addCleanup(narrative.stop)
         self.addCleanup(heartbeat.stop)
+        self.addCleanup(observations.stop)
 
     @patch(
         "management.services.ig_analysis_events.process_due_analysis_events",

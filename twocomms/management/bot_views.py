@@ -1551,14 +1551,22 @@ def bot_payment_reviews_api(request):
             "status_label": row.get_status_display(),
             "selected": selected_id.isdigit() and row.pk == int(selected_id),
             "created_at": row.created_at.isoformat(),
-            "evidence": evidence.get("messages", [])[-8:],
-            "media": evidence.get("media", []),
-            "catalog_match": evidence.get("catalog_match", {}),
-            "catalog_matches": evidence.get("catalog_matches", []),
+            "evidence": [
+                {"message_id": _bounded_int(item.get("message_id")), "role": _bounded_text(item.get("role"), 20), "quote": _bounded_text(item.get("quote"), 500)}
+                for item in evidence.get("messages", [])[-8:] if isinstance(item, dict)
+            ],
+            "media": [part for group in _review_media_groups(evidence, client_id=row.client_id).values() for part in group],
+            "catalog_match": _catalog_workspace_candidate(evidence.get("catalog_match", {})),
+            "catalog_matches": _catalog_workspace_candidates(evidence),
             "deal": evidence.get("deal", {}),
-            "order_draft": draft,
-            "uncertainty_reasons": draft.get("uncertainty_reasons", []),
-            "quoted_total": draft.get("quoted_total", ""),
+            "order_draft": {
+                "items": _draft_workspace_items(draft.get("items")),
+                "quoted_total": _bounded_text(draft.get("quoted_total"), 40),
+                "delivery": _draft_workspace_delivery(draft.get("delivery")),
+                "uncertainty_reasons": _draft_workspace_reasons(draft.get("uncertainty_reasons")),
+            },
+            "uncertainty_reasons": _draft_workspace_reasons(draft.get("uncertainty_reasons")),
+            "quoted_total": _workspace_money(draft.get("quoted_total")),
             "manual_payment_truth": latest_decision.get("decision", ""),
             "provider_payment_truth": _payment_review_truth_payload(row)["provider_truth"],
             "latest_decision": latest_decision,
@@ -1705,7 +1713,7 @@ def _orders_workspace_url(*, view="all", review_id=None, client_id=None) -> str:
     return f"{base}/bot/?{'&'.join(params)}"
 
 
-def _payment_review_truth_payload(review, decision=None) -> dict:
+def _payment_review_truth_payload(review, decision=None, *, media_groups=None) -> dict:
     from management.services.ig_payment_review import payment_confirmation_candidate
     from management.services.ig_commercial_episodes import payment_truth_snapshot
 
@@ -1724,7 +1732,92 @@ def _payment_review_truth_payload(review, decision=None) -> dict:
         "verification_scope": payload.get("manager_scope", ""),
         "confirmation_candidate": payment_confirmation_candidate(review),
     })
+    evidence = review.evidence if isinstance(review.evidence, dict) else {}
+    draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
+    media_groups = media_groups if media_groups is not None else _review_media_groups(evidence, client_id=review.client_id)
+    current_receipts = {
+        (row.get("message_id") or row.get("source_message_id"), row.get("source_part_id"))
+        for row in media_groups["receipts"] if row.get("receipt_inspection_state") in {"inspected", "uncertain"}
+    }
+    payload.update({
+        "merchandise_total": _workspace_money(draft.get("merchandise_total") or draft.get("quoted_total")),
+        "delivery_total": _workspace_money(draft.get("delivery_total") or draft.get("delivery_amount")),
+        "payable_total": _workspace_money(draft.get("payable_total")),
+        "reported_payment_amounts": _reported_payment_amounts(evidence, client_id=review.client_id, media_groups=media_groups),
+        "receipt_review_findings": [
+            {"message_id": _bounded_int(row.get("message_id")), "reason_codes": _draft_workspace_reasons(row.get("reason_codes"))}
+            for row in evidence.get("receipt_review_findings", []) or [] if isinstance(row, dict)
+            and (_bounded_int(row.get("message_id")), row.get("source_part_id")) in current_receipts
+        ],
+        "manager_confirmation_observations": [
+            {"message_id": _bounded_int(row.get("message_id")), "amount": _workspace_money(row.get("amount")), "currency": _bounded_text(row.get("currency"), 8) or "UAH", "authoritative_for_fulfillment": False}
+            for row in evidence.get("manager_confirmation_observations", []) or [] if isinstance(row, dict)
+        ],
+    })
     return payload
+
+
+def _workspace_money(value) -> str:
+    try:
+        amount = Decimal(str(value))
+        return f"{amount:.2f}" if amount.is_finite() and Decimal("0") <= amount <= Decimal("9999999999.99") else ""
+    except (ValueError, InvalidOperation, TypeError):
+        return ""
+
+
+def _reported_payment_amounts(evidence, *, client_id=None, media_groups=None) -> list:
+    rows = []
+    media = media_groups if media_groups is not None else _review_media_groups(evidence, client_id=client_id)
+    for part in media["receipts"]:
+        amount = part.get("receipt_reported_amount")
+        if amount:
+            rows.append({"amount": amount, "currency": part.get("receipt_currency") or "", "message_id": part.get("message_id") or part.get("source_message_id"), "source_part_id": part.get("source_part_id"), "source": "receipt_reported"})
+    # Historical text-only claims remain claims. Cached OCR and part-bound
+    # reported amounts must pass the current private-part reader above.
+    for raw in evidence.get("reported_payment_amounts", []) or []:
+        if (isinstance(raw, dict) and not raw.get("source_part_id")
+            and raw.get("verification_source") in {"customer_claim", "customer_text_claim"}):
+            amount = _workspace_money(raw.get("amount"))
+            if amount:
+                rows.append({"amount": amount, "currency": _bounded_text(raw.get("currency"), 8), "message_id": _bounded_int(raw.get("message_id") or raw.get("source_message_id")), "source": "customer_claim"})
+    return rows
+
+
+def _workspace_agreement(evidence, draft, *, client_id=None) -> dict:
+    raw = evidence.get("agreement") or draft.get("agreement") or {}
+    if not isinstance(raw, dict):
+        return {"status": "extracted", "evidence_message_ids": []}
+    ids = _bounded_int_list(raw.get("evidence_message_ids"), limit=160)
+    accepted = []
+    confirmed = False
+    if raw.get("schema") == "conversation-agreement.v1" and client_id and ids:
+        from management.models import InstagramBotMessage
+        from management.services.ig_conversation_agreement import _proof, _row, _seller
+
+        proofs = raw.get("evidence") if isinstance(raw.get("evidence"), dict) else {}
+        sources = {row.pk: row for row in InstagramBotMessage.objects.filter(pk__in=ids, client_id=client_id).select_related("client")}
+        verified = len(sources) == len(ids) and all(
+            source.status != "failed" and source.sender_id == source.client.igsid
+            and source.client.privacy_erasure_started_at is None
+            and (source.role == "user" or _seller(_row(source)))
+            and proofs.get(str(source.pk)) == _proof(_row(source))
+            for source in sources.values()
+        )
+        items = raw.get("items") if isinstance(raw.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            acceptance_id = _bounded_int(item.get("acceptance_message_id"))
+            if (item.get("configuration_authority") == "customer_confirmed_seller_offer"
+                and acceptance_id in sources and sources[acceptance_id].role == "user"):
+                accepted.append(acceptance_id)
+        confirmed = bool(verified and items and len(accepted) == len(items))
+    return {
+        "status": "customer_confirmed" if confirmed else "extracted",
+        "evidence_message_ids": ids,
+        "acceptance_message_ids": sorted(set(accepted)) if confirmed else [],
+        "customer_confirmed": confirmed,
+    }
 
 
 def _bounded_text(value, limit: int) -> str:
@@ -1774,10 +1867,37 @@ def _bounded_scalar_map(value, *, limit=20) -> dict:
     return result
 
 
-def _review_media_groups(evidence: dict) -> dict:
+def _review_media_groups(evidence: dict, *, client_id=None) -> dict:
+    """Project source-owned evidence without exposing customer transport URLs."""
+    from management.models import InstagramBotMessage
+    from management.services.ig_media_manifest import MediaManifestError, normalize_attachment_media
+    from management.services.ig_receipt_inspection import bound_receipt_inspection
+    from management.services.ig_funnel_reset import _query_latest_reset_after_message_id
+    from management.services.instagram_bot import ingress_provider_namespace
+    from management.ig_private_media_views import _retention_current
+
     groups = {"receipts": [], "products": [], "custom_print": [], "unknown": []}
-    rows = evidence.get("media", []) if isinstance(evidence, dict) else []
-    for raw in (rows[:80] if isinstance(rows, list) else []):
+    rows = list(evidence.get("media", []) or []) if isinstance(evidence, dict) else []
+    # Older reviews truncated the top-level mixed-media list. The immutable
+    # source contexts can still identify a later receipt without guessing it.
+    draft = evidence.get("order_draft", {}) if isinstance(evidence, dict) else {}
+    draft = draft if isinstance(draft, dict) else {}
+    for context in [*(evidence.get("messages", []) or []), *(draft.get("context_messages", []) or [])]:
+        if isinstance(context, dict):
+            for part in context.get("media", []) or []:
+                if isinstance(part, dict):
+                    rows.append({"message_id": context.get("message_id"), **part})
+    source_ids = {_bounded_int(row.get("message_id") or row.get("source_message_id")) for row in rows if isinstance(row, dict)}
+    sources = {
+        row.pk: row for row in InstagramBotMessage.objects.filter(
+            pk__in=[value for value in source_ids if value], client_id=client_id,
+        ).select_related("client", "client__current_commercial_episode")
+    } if client_id else {}
+    bot_settings = InstagramBotSettings.objects.filter(pk=1).first() if sources else None
+    namespace = ingress_provider_namespace(bot_settings) if bot_settings else ""
+    reset_floor = _query_latest_reset_after_message_id(client_id) if sources else 0
+    seen = set()
+    for position, raw in enumerate(rows):
         if not isinstance(raw, dict):
             continue
         item = {}
@@ -1794,10 +1914,77 @@ def _review_media_groups(evidence: dict) -> dict:
         confidence = _bounded_text(raw.get("confidence"), 40)
         if confidence:
             item["confidence"] = confidence
-        for key in ("url", "local_url"):
-            safe_url = _safe_media_url(raw.get(key))
-            if safe_url:
-                item[key] = safe_url
+        source_id = item.get("message_id") or item.get("source_message_id")
+        source = sources.get(source_id)
+        part_id = _bounded_text(raw.get("source_part_id"), 40)
+        identity = (source_id, part_id or _media_asset_key(str(raw.get("url") or raw.get("local_url") or "")) or position)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        part = None
+        if source is not None:
+            try:
+                parts = normalize_attachment_media(source.attachment_media or [], message_scope=source.pk)
+                matches = [candidate for candidate in parts if (
+                    candidate.get("source_part_id") == part_id if part_id else
+                    _media_asset_key(str(candidate.get("url") or "")) == _media_asset_key(str(raw.get("url") or "")) and bool(raw.get("url"))
+                )]
+                if len(matches) == 1:
+                    part = matches[0]
+            except MediaManifestError:
+                pass
+        # Catalog pictures are public. Customer receipts/references must never
+        # fall back to a signed provider URL, even after erasure or expiry.
+        product_url = _safe_storefront_url(raw.get("product_url"))
+        if (role in {"product", "purchase_candidate", "interest"} and not source_id and not part_id
+            and not any(raw.get(key) for key in ("private_storage", "private_storage_name", "storage_name")) and product_url):
+            for key in ("url", "local_url"):
+                safe_url = _safe_storefront_url(raw.get(key))
+                if safe_url and not any(path in safe_url for path in ("/ig_message_media/", "/ig_payment_reviews/")):
+                    item[key] = safe_url
+            item["availability"] = "public_catalog"
+        else:
+            item["availability"] = "unavailable"
+            if part:
+                item["source_part_id"] = part["source_part_id"]
+                item["capture_state"] = str(part.get("capture_state") or part.get("status") or "")[:32]
+                item["media_kind"] = _media_render_kind(part)
+                inspection = part.get("inspection") if isinstance(part.get("inspection"), dict) else {}
+                item["inspection_state"] = _bounded_text(inspection.get("state"), 32) or "uninspected"
+                deadline = source.private_media_delete_after
+                now = timezone.now()
+                expired = not _retention_current(deadline, now=now) or not _retention_current(part.get("delete_after"), now=now)
+                expected_hash = _bounded_text(raw.get("content_hash"), 64).lower()
+                current_hash = _bounded_text(part.get("content_hash"), 64).lower()
+                part_changed = bool(expected_hash and expected_hash != current_hash)
+                item["availability"] = "expired" if expired else "unavailable"
+                if (deadline is not None and not expired and not part_changed and source.private_media_state == "active"
+                    and source.client.privacy_erasure_started_at is None
+                    and source.role in {"user", "manager"} and source.sender_id == source.client.igsid
+                    and part.get("status") == "owned" and part.get("private_storage") is True):
+                    item["preview_url"] = reverse("management_bot_private_media_preview", args=[source.pk, part["source_part_id"]], urlconf="management.urls")
+                    item["availability"] = "private_preview"
+            episode = source.client.current_commercial_episode if source else None
+            episode_floor = int(getattr(episode, "opened_watermark_message_id", 0) or 0)
+            inspection = None
+            if (part and item.get("availability") == "private_preview"
+                and source.role == "user" and source.source == "webhook" and source.media_capture_eligible
+                and not source.client.hidden_at and not source.client.is_blocked
+                and namespace and source.provider_namespace == namespace
+                and (not raw.get("provider_namespace") or raw["provider_namespace"] == namespace)
+                and source.pk > reset_floor and source.pk >= episode_floor
+                and expected_hash == current_hash and bool(current_hash)):
+                inspection = bound_receipt_inspection({**part, "message_id": source.pk})
+            if inspection is None and (raw.get("receipt_inspection") or raw.get("receipt_facts")):
+                item.pop("preview_url", None)
+                if item["availability"] != "expired":
+                    item["availability"] = "unavailable"
+            facts = inspection.get("receipt_facts", {}) if inspection else {}
+            item["receipt_reported_amount"] = _workspace_money(facts.get("amount"))
+            item["receipt_currency"] = _bounded_text(facts.get("currency"), 8)
+            item["receipt_payment_status"] = _bounded_text(facts.get("payment_status"), 16)
+            item["receipt_inspection_state"] = inspection.get("state", "uninspected") if inspection else "unavailable" if raw.get("receipt_inspection") or raw.get("receipt_facts") else "uninspected"
+            item["receipt_inspection_role"] = inspection.get("role", "") if inspection else ""
         safe_product_url = _safe_storefront_url(raw.get("product_url"))
         if safe_product_url:
             item["product_url"] = safe_product_url
@@ -1810,7 +1997,78 @@ def _review_media_groups(evidence: dict) -> dict:
             groups["custom_print"].append(item)
         else:
             groups["unknown"].append(item)
-    return {key: values[:20] for key, values in groups.items()}
+    return groups
+
+
+def _review_notification_payload(review) -> dict:
+    row = IgBotNotification.objects.filter(
+        dedupe_key=review.dedupe_key, client_id=review.client_id, event_type="payment_review",
+    ).first()
+    if row is None:
+        return {"status": "missing", "accepted_by_telegram": False, "manager_review_status": review.status}
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    evidence = review.evidence if isinstance(review.evidence, dict) else {}
+    deferred = evidence.get("deferred_payment_notification")
+    deferred = deferred if isinstance(deferred, dict) else {}
+    digest = deferred.get("material_digest")
+    material_update_deferred = (
+        deferred.get("schema") == "payment-notification-deferred.v1"
+        and type(deferred.get("notification_id")) is int
+        and deferred["notification_id"] == row.pk
+        and isinstance(digest, str) and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
+    receipt = str(row.telegram_message_id or payload.get("main_delivery_message_id") or "")
+    receipt = receipt if receipt.isdigit() else ""
+    return {
+        "id": row.pk, "status": row.status, "accepted_by_telegram": bool(receipt),
+        "delivery_uncertain": row.status == row.Status.UNKNOWN,
+        "material_update_deferred": material_update_deferred,
+        "telegram_message_id": receipt, "sent_at": row.sent_at.isoformat() if row.sent_at else "",
+        "last_attempt_at": row.last_attempt_at.isoformat() if row.last_attempt_at else "",
+        "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else "",
+        "attempts": row.attempts, "failure_kind": _bounded_text(row.failure_kind, 32),
+        "manager_review_status": review.status,
+    }
+
+
+def _order_creation_workspace_payload(review) -> dict:
+    from orders.services.ig_review_order_builder import payment_review_order_completion_requirements
+
+    result = getattr(review, "order_creation_result", None)
+    result = result if isinstance(result, dict) else payment_review_order_completion_requirements(review)
+    return {
+        "status": _bounded_text(result.get("status"), 40),
+        "missing_fields": _draft_workspace_reasons(result.get("missing_fields")),
+    }
+
+
+def _client_payment_workspace(client) -> dict:
+    """Use the current owned episode, never another sale's latest decision."""
+    from management.ig_bot_models import IgCommercialEpisode, IgPaymentConfirmationReview
+    from management.services.ig_commercial_episodes import payment_truth_snapshot
+
+    episodes = IgCommercialEpisode.objects.filter(client_id=client.pk).select_related(
+        "deal", "primary_payment_review", "intended_order",
+    )
+    episode = episodes.filter(pk=client.current_commercial_episode_id, open_slot=1).first() if client.current_commercial_episode_id else None
+    episode = episode or episodes.filter(open_slot=1).order_by("-sequence", "-id").first()
+    review = None
+    if episode is None:
+        review = IgPaymentConfirmationReview.objects.filter(
+            client_id=client.pk, status=IgPaymentConfirmationReview.Status.PENDING,
+        ).select_related("deal", "order").order_by("-id").first()
+    payload = payment_truth_snapshot(episode=episode, review=review, allow_deal_review_fallback=False)
+    decision_id = payload.get("manager_decision_id")
+    from management.ig_bot_models import IgPaymentReviewDecision
+    decision = IgPaymentReviewDecision.objects.filter(pk=decision_id, client_id=client.pk).select_related("actor").first() if decision_id else None
+    payload.update({
+        "verification_source": payload.get("manager_source", ""),
+        "verification_scope": payload.get("manager_scope", ""),
+        "manager_decision": _payment_review_decision_payload(decision),
+        "scope": "current_episode" if episode else "pending_review" if review else "none",
+    })
+    return payload
 
 
 def _safe_relative_url(value: str) -> str:
@@ -2178,6 +2436,8 @@ def _draft_workspace_items(raw_items) -> list:
             ("title", 240),
             ("size", 40),
             ("fit", 40),
+            ("color", 40),
+            ("color_name", 80),
             ("fit_option_code", 80),
             ("fit_option_label", 160),
             ("unit_price", 40),
@@ -2475,30 +2735,20 @@ def _post_sale_workspace_payload(client) -> dict:
 def _order_attribution_workspace_payload(attribution) -> dict:
     order = getattr(attribution, "order", None)
     deal = getattr(attribution, "deal", None)
-    projection = None
-    if deal:
-        try:
-            projection = deal.payment_projection
-        except IgPaymentProjection.DoesNotExist:
-            projection = None
-    provider_source = attribution.payment_source if attribution.payment_source.startswith("provider_") else "none"
-    provider_truth = projection.truth if projection else IgDeal.PaymentTruth.UNVERIFIED
-    if (
-        attribution.payment_source == "provider_projection"
-        and provider_truth == IgDeal.PaymentTruth.UNVERIFIED
-    ):
-        provider_truth = IgDeal.PaymentTruth.CONFIRMED
-    manager_truth = (
-        "manager_verified"
-        if attribution.payment_source == "manager_verified"
-        else ""
+    from management.services.ig_commercial_episodes import payment_truth_snapshot
+
+    payment = payment_truth_snapshot(
+        deal=deal, review=getattr(attribution, "payment_review", None), order=order,
+        decision=getattr(attribution, "manager_decision", None),
     )
+    payment["verification_source"] = payment.get("manager_source", "")
+    payment["verification_scope"] = payment.get("manager_scope", "")
     if attribution.creation_mode == "linked_existing":
         approval_state = "linked_existing"
     elif attribution.creation_mode == "manager_review":
         approval_state = "created_new"
     else:
-        approval_state = "confirmed"
+        approval_state = "order_created"
     client = attribution.client
     items = _draft_workspace_items(attribution.item_provenance)
     from management.services.ig_order_amounts import order_amounts
@@ -2542,23 +2792,7 @@ def _order_attribution_workspace_payload(attribution) -> dict:
             "catalog_candidates": [],
         },
         "media": {"receipts": [], "products": [], "custom_print": [], "unknown": []},
-        "payment": {
-            "order_subtotal": f"{order_amounts(order)['subtotal']:.2f}",
-            "order_discount_amount": f"{order_amounts(order)['discount']:.2f}",
-            "order_total": f"{order_payment_total:.2f}",
-            "provider_truth": provider_truth,
-            "provider_source": provider_source,
-            "manager_truth": manager_truth,
-            "verification_source": "manager" if manager_truth else "",
-            "verification_scope": "",
-            "authoritative_for_fulfillment": bool(
-                manager_truth == "manager_verified"
-                or provider_truth in {
-                    IgDeal.PaymentTruth.CONFIRMED,
-                    IgDeal.PaymentTruth.PARTIALLY_REFUNDED,
-                }
-            ),
-        },
+        "payment": payment,
         "order": _order_workspace_order_payload(order),
         "fulfillment": {
             "deal_id": attribution.deal_id,
@@ -2603,7 +2837,8 @@ def _payment_review_workspace_payload(review) -> dict:
     draft = evidence.get("order_draft") if isinstance(evidence.get("order_draft"), dict) else {}
     decisions = _payment_review_decisions(review)
     decision = decisions[0] if decisions else None
-    payment = _payment_review_truth_payload(review, decision)
+    media_groups = _review_media_groups(evidence, client_id=review.client_id)
+    payment = _payment_review_truth_payload(review, decision, media_groups=media_groups)
     order = getattr(review, "order", None) if review.order_id else None
     deal = getattr(review, "deal", None) if review.deal_id else None
     attributions = getattr(review, "_workspace_attributions", None)
@@ -2644,7 +2879,7 @@ def _payment_review_workspace_payload(review) -> dict:
         approval_state = "superseded"
     elif status == review.Status.CONFIRMED and payment["needs_reconciliation"]:
         approval_state = "payment_reconciliation"
-    elif review.order_id:
+    elif review.order_id and status == review.Status.CONFIRMED:
         if attribution and attribution.creation_mode == "linked_existing":
             approval_state = "linked_existing"
         elif attribution and attribution.creation_mode in {"manager_review", "provider_auto"}:
@@ -2674,9 +2909,17 @@ def _payment_review_workspace_payload(review) -> dict:
         and not payment["authoritative_for_fulfillment"]
         and decision
         and decision.decision == "manager_verified"
+        and (decision.confirmed_amount is None or decision.confirmed_amount <= 0)
+    )
+    needs_reverification = bool(
+        status == review.Status.CONFIRMED and not historical_paid_archived
+        and not payment["needs_reconciliation"] and not payment["authoritative_for_fulfillment"]
+        and not needs_amount_clarification
     )
     if needs_amount_clarification:
         approval_state = "amount_clarification"
+    elif needs_reverification:
+        approval_state = "payment_unverified"
     return {
         "id": review.pk,
         "card_key": f"review:{review.pk}",
@@ -2698,6 +2941,7 @@ def _payment_review_workspace_payload(review) -> dict:
                     status == review.Status.PENDING
                     or needs_order_resolution
                     or needs_amount_clarification
+                    or (needs_reverification and not review.order_id)
                     or payment["needs_reconciliation"]
                 )
             ),
@@ -2724,6 +2968,10 @@ def _payment_review_workspace_payload(review) -> dict:
         "draft": {
             "items": _draft_workspace_items(draft.get("items")),
             "quoted_total": _bounded_text(draft.get("quoted_total"), 40),
+            "agreement": _workspace_agreement(evidence, draft, client_id=review.client_id),
+            "merchandise_total": _workspace_money(draft.get("merchandise_total") or draft.get("quoted_total")),
+            "delivery_total": _workspace_money(draft.get("delivery_total") or draft.get("delivery_amount")),
+            "payable_total": _workspace_money(draft.get("payable_total")),
             "packaging_preference": _bounded_text(
                 draft.get("packaging_preference"), 160,
             ),
@@ -2734,7 +2982,9 @@ def _payment_review_workspace_payload(review) -> dict:
             "catalog_candidates": _catalog_workspace_candidates(evidence),
             "amount_evidence": _amount_workspace_evidence(evidence),
         },
-        "media": _review_media_groups(evidence),
+        "media": media_groups,
+        "notification": _review_notification_payload(review),
+        "order_creation": _order_creation_workspace_payload(review),
         "payment": payment,
         "fulfillment": {
             "deal_id": review.deal_id,
@@ -2758,6 +3008,7 @@ def _payment_review_workspace_payload(review) -> dict:
                 if status == review.Status.PENDING
                 or needs_order_resolution
                 or needs_amount_clarification
+                or (needs_reverification and not review.order_id)
                 or payment["needs_reconciliation"]
                 else "confirmed"
             ),
@@ -3970,12 +4221,18 @@ def bot_payment_review_action_api(request, review_id):
         "decision": decision_payload,
         "idempotent_replay": not bool(getattr(review, "_transitioned", False)),
         "next_action": (
-            "resolve_order"
-            if needs_order_resolution
-            else "reconcile_payment"
+            "reconcile_payment"
             if payment_payload["needs_reconciliation"]
+            else "order_linked"
+            if review.order_id
+            else "resolve_order"
+            if needs_order_resolution
             else "review_conversation"
         ),
+        "order_id": review.order_id,
+        "order_number": review.order.order_number if review.order_id else "",
+        "order": _order_workspace_order_payload(review.order) if review.order_id else {},
+        "order_creation": _order_creation_workspace_payload(review),
         "order_url": _existing_order_admin_url(review.order_id) if review.order_id else "",
         "order_resolution": {
             "required": needs_order_resolution,
@@ -5134,6 +5391,7 @@ def bot_clients_api(request):
     view = (request.GET.get("view") or "all").strip().lower()
     from django.db.models import PositiveBigIntegerField, Prefetch
     from .ig_bot_models import (
+        IgCommerceSelectionSession,
         IgCommercialEpisode,
         IgConversationAnalysisSnapshot,
         IgFunnelResetAudit,
@@ -5232,6 +5490,18 @@ def bot_clients_api(request):
         order__status="ship",
         order__tracking_number__isnull=False,
     ).exclude(order__tracking_number="")
+    # Absent selection is established in the list's single current-context
+    # SELECT. Only real, owned sessions need the expensive proof/fence reader.
+    current_selection_sessions = IgCommerceSelectionSession.objects.filter(
+        client_id=OuterRef("pk"), open_slot=1,
+        state=IgCommerceSelectionSession.State.OPEN,
+    ).annotate(
+        bound_episode_id=Coalesce("commercial_episode_id", Value(0), output_field=PositiveBigIntegerField()),
+    ).filter(
+        bound_episode_id=Coalesce(OuterRef("current_commercial_episode_id"), Value(0), output_field=PositiveBigIntegerField()),
+    ).filter(
+        Q(commercial_episode__isnull=True) | Q(commercial_episode__client_id=OuterRef("pk")),
+    )
 
     client_rows = IgClient.objects.select_related(
         "current_product",
@@ -5298,6 +5568,7 @@ def bot_clients_api(request):
             to_attr="_latest_commercial_episode",
         ),
     ).annotate(
+            has_current_source_selection=Exists(current_selection_sessions),
             has_manager_verified_order=Exists(manager_verified_orders),
             has_current_manager_confirmation=Exists(current_manager_reviews),
             has_current_paid_linked_order=(
@@ -5432,7 +5703,8 @@ def bot_clients_api(request):
             requested_client_injected = True
     follow_now = timezone.now()
     rows = [
-        _client_card(c, follow_settings=follow_settings, follow_now=follow_now)
+        _client_card(c, follow_settings=follow_settings, follow_now=follow_now,
+                     source_selection=None if c.has_current_source_selection else {})
         for c in clients
     ]
     return JsonResponse({
@@ -6144,47 +6416,14 @@ def bot_client_detail_api(request, client_id):
         "hidden_reason": c.hidden_reason,
     })
     automation_owner = "manager" if c.manager_takeover or c.bot_paused else "bot"
-    latest_projection = c.payment_projections.select_related("deal").order_by(
-        "-updated_at", "-id",
-    ).first()
-    latest_manager_decision = IgPaymentReviewDecision.objects.filter(
-        client=c,
-    ).select_related("actor").order_by("-id").first()
-    provider_truth = (
-        latest_projection.truth
-        if latest_projection
-        else card.get("payment_truth", IgDeal.PaymentTruth.UNVERIFIED)
-    )
-    manager_truth = latest_manager_decision.decision if latest_manager_decision else ""
-    payment_workspace = {
-        "provider_truth": provider_truth,
-        "provider_source": "provider_projection" if latest_projection else "client_payment_summary",
-        "provider_deal_id": latest_projection.deal_id if latest_projection else None,
-        "manager_truth": manager_truth,
-        "verification_source": (
-            latest_manager_decision.verification_source
-            if latest_manager_decision
-            else ""
-        ),
-        "verification_scope": (
-            latest_manager_decision.verification_scope
-            if latest_manager_decision
-            else ""
-        ),
-        "manager_decision": _payment_review_decision_payload(latest_manager_decision),
-        "authoritative_for_fulfillment": bool(
-            manager_truth == "manager_verified"
-            or provider_truth in {
-                IgDeal.PaymentTruth.CONFIRMED,
-                IgDeal.PaymentTruth.PARTIALLY_REFUNDED,
-            }
-        ),
-    }
-    current_deal = next(
-        (deal for deal in deal_rows if deal.status != IgDeal.Status.CANCELLED),
-        deal_rows[0] if deal_rows else None,
-    )
+    payment_workspace = _client_payment_workspace(c)
+    current_deal = next((deal for deal in deal_rows if deal.pk == payment_workspace.get("deal_id")), None)
+    from orders.models import Order
+    current_order = Order.objects.filter(pk=payment_workspace.get("order_id")).first() if payment_workspace.get("order_id") else None
     fulfillment_workspace = {
+        "order_id": current_order.pk if current_order else None,
+        "order_status_label": current_order.get_status_display() if current_order else "",
+        "tracking_number": current_order.tracking_number if current_order else "",
         "deal_id": current_deal.pk if current_deal else None,
         "delivery_status": current_deal.delivery_status if current_deal else "",
         "delivery_status_label": (
@@ -6199,7 +6438,7 @@ def bot_client_detail_api(request, client_id):
             and current_deal.np_city_ref
             and current_deal.np_warehouse_ref
         ),
-        "current_episode_source": "latest_non_cancelled_deal" if current_deal else "none",
+        "current_episode_source": payment_workspace["scope"],
     }
     episodes = client_episode_payload(c)
     physical_order_count = episodes["physical_order_count"]

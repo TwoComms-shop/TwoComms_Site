@@ -10,6 +10,7 @@ import logging
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import F, Q
@@ -19,6 +20,7 @@ from orders.fulfillment_truth import (
     NOVA_POSHTA_DELIVERY_SUCCESS_CODES,
     nova_poshta_order_fulfillment_confirmed,
 )
+from management.services.ig_order_links import order_fulfillment_payment_verified
 from management.services.ig_delivery_receipts import (
     normalize_provider_message_id,
     normalize_provider_message_ids,
@@ -64,21 +66,21 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
         if locale == "en":
             what = f"Your exchange for size {size}" if size else "Your exchange"
             return (
-                f"{what} is confirmed and already on its way. "
+                f"A tracking number has been created for {what.lower()}. "
                 f"New Nova Poshta tracking number: {tracking}. "
                 f"Estimated delivery: 1-3 business days. Track it here: {tracking_url}."
             )
         if locale == "ru":
             what = f"Замена на размер {size}" if size else "Замена"
             return (
-                f"{what} подтверждена и уже в пути. "
+                f"Создана ТТН для: {what}. "
                 f"Новый номер ТТН Новой Почты: {tracking}. "
                 "Ориентировочный срок доставки: 1-3 рабочих дня. "
                 f"Отследить: {tracking_url}."
             )
         what = f"Заміна на розмір {size}" if size else "Заміна"
         return (
-            f"{what} підтверджена і вже в дорозі. "
+            f"Створено ТТН для: {what}. "
             f"Нова ТТН Нової Пошти: {tracking}. "
             "Орієнтовний термін доставки: 1-3 робочі дні. "
             f"Відстежити: {tracking_url}."
@@ -87,6 +89,22 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
         from management.services.ig_order_amounts import order_amounts
 
         payable = order_amounts(order)["payable"]
+        payload = getattr(order, "payment_payload", None)
+        payload = payload if isinstance(payload, dict) else {}
+        if payload.get("manager_verification_scope") == "prepayment" or getattr(order, "payment_status", "") in {"prepaid", "partial"}:
+            raw_paid = payload.get("manager_confirmed_amount") or payload.get("paid_value")
+            if not raw_paid and callable(getattr(order, "get_prepayment_amount", None)):
+                raw_paid = order.get_prepayment_amount()
+            try:
+                paid = Decimal(str(raw_paid or 0)).quantize(Decimal("0.01"))
+            except (InvalidOperation, TypeError, ValueError):
+                paid = Decimal("0.00")
+            remaining = max(payable - paid, Decimal("0.00"))
+            if locale == "en":
+                return f"Prepayment received, thank you: {paid} UAH. Order #{number}: {payable} UAH, remaining: {remaining} UAH. We will send the tracking number when it is created."
+            if locale == "ru":
+                return f"Предоплата получена, спасибо: {paid} грн. Заказ №{number}: {payable} грн, остаток: {remaining} грн. Пришлём номер ТТН после её создания."
+            return f"Передоплату отримали, дякуємо: {paid} грн. Замовлення №{number}: {payable} грн, залишок: {remaining} грн. Надішлемо номер ТТН після її створення."
         if locale == "en":
             return (
                 f"Payment received, thank you. Order #{number}, {payable} UAH. "
@@ -108,17 +126,17 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
     if kind == "ttn_assigned":
         if locale == "en":
             return (
-                f"Your order #{number} is on its way. Nova Poshta tracking number: {tracking}. "
+                f"Nova Poshta tracking number for order #{number} has been created: {tracking}. "
                 f"Estimated delivery time is 1-3 business days. Track its status here: {tracking_url}"
             )
         if locale == "ru":
             return (
-                f"Ваш заказ №{number} уже в пути. Номер ТТН Новой Почты: {tracking}. "
+                f"Создана ТТН Новой Почты для заказа №{number}: {tracking}. "
                 f"Ориентировочный срок доставки - 1-3 рабочих дня. "
                 f"Следить за статусом: {tracking_url}"
             )
         return (
-            f"Ваше замовлення №{number} вже в дорозі. Номер ТТН Нової Пошти: {tracking}. "
+            f"Створено ТТН Нової Пошти для замовлення №{number}: {tracking}. "
             f"Орієнтовний термін доставки - 1-3 робочі дні. "
             f"Стежити за статусом: {tracking_url}"
         )
@@ -221,7 +239,7 @@ def _event_specs(assignment, *, now):
     # автоматики. Один шаг воронки — одно сообщение.
     if (
         not tracking
-        and str(order.payment_status or "") in {"paid", "prepaid", "partial"}
+        and order_fulfillment_payment_verified(order)
         and order.status not in {"done", "cancelled"}
     ):
         yield {
@@ -450,7 +468,7 @@ def _matches_current_fulfillment(event, order) -> bool:
         return bool(
             not tracking
             and order.status not in {"done", "cancelled"}
-            and str(order.payment_status or "") in {"paid", "prepaid", "partial"}
+            and order_fulfillment_payment_verified(order)
         )
     if event.kind == "delivered_review":
         return nova_poshta_order_fulfillment_confirmed(order)
