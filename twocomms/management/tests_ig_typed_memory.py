@@ -1,11 +1,14 @@
 import datetime
 import hashlib
 import json
+import re
+from copy import copy
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.core.exceptions import ValidationError
-from django.db import DatabaseError, connection
+from django.conf import settings
+from django.db import DatabaseError, connection, transaction
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -32,6 +35,35 @@ SHADOW = {
     "IG_ANALYSIS_V2_EXTENDED_PROMPT": True,
     "IG_TYPED_MEMORY_MODE": "shadow_compare",
 }
+
+
+def _memory_trigger_rows(names):
+    """Inspect the actual installed database, with no cross-vendor SQL."""
+    placeholders = ", ".join(["%s"] * len(names))
+    with connection.cursor() as cursor:
+        if connection.vendor == "mysql":
+            cursor.execute(
+                "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION "
+                "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() "
+                f"AND TRIGGER_NAME IN ({placeholders})", list(names),
+            )
+            return {name: (table, timing.upper(), event.upper()) for name, table, timing, event in cursor.fetchall()}
+        if connection.vendor == "sqlite":
+            cursor.execute(
+                "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' "
+                f"AND name IN ({placeholders})", list(names),
+            )
+            result = {}
+            for name, table, sql in cursor.fetchall():
+                match = re.search(r"\b(BEFORE|AFTER)\s+(INSERT|UPDATE|DELETE)\b", sql or "", re.I)
+                result[name] = (table, match.group(1).upper(), match.group(2).upper()) if match else (table, "", "")
+            return result
+    raise AssertionError(f"Unsupported physical memory guard backend: {connection.vendor}")
+
+
+def _unmigrated_sqlite_profile():
+    modules = getattr(settings, "MIGRATION_MODULES", {})
+    return connection.vendor == "sqlite" and "management" in modules and modules["management"] is None
 
 
 class TypedMemoryRuntimeTests(TestCase):
@@ -335,14 +367,32 @@ class TypedMemoryRuntimeTests(TestCase):
             materiality_digest="a" * 64,
             materiality_event_highwater=7,
         )
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE management_igconversationanalysisresult "
-                "SET language_evidence_message_ids=%s WHERE id=%s",
-                [json.dumps([999999]), self.result.pk],
-            )
-        outcome = memory.publish_analysis_memory(self.result.pk)
-        self.assertIn(outcome.status, {"stale", "invalid_evidence"})
+        installed = _memory_trigger_rows(("ig_anres_no_update",))
+        if installed:
+            self.assertEqual(installed["ig_anres_no_update"], ("management_igconversationanalysisresult", "BEFORE", "UPDATE"))
+            with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE management_igconversationanalysisresult "
+                    "SET language_evidence_message_ids=%s WHERE id=%s",
+                    [json.dumps([999999]), self.result.pk],
+                )
+        else:
+            self.assertTrue(_unmigrated_sqlite_profile(), "Migrated database must reject physical analysis-result mutation")
+        persisted = IgConversationAnalysisResult.objects.get(pk=self.result.pk)
+        self.assertEqual(persisted.language_evidence_message_ids, self.result.language_evidence_message_ids)
+        # Independently exercise the application validator with a malformed
+        # detached read. No trigger, persisted authority or evidence validator
+        # is disabled; even a self-consistent digest cannot prove a foreign ID.
+        forged = copy(persisted)
+        forged.language_evidence_message_ids = [999999]
+        forged.result_digest = analysis_v2.result_digest_for_instance(forged)
+        loaded = Mock()
+        loaded.select_related.return_value = loaded
+        loaded.filter.return_value = loaded
+        loaded.first.return_value = forged
+        with patch.object(IgConversationAnalysisResult.objects, "select_for_update", return_value=loaded):
+            outcome = memory.publish_analysis_memory(self.result.pk)
+        self.assertEqual(outcome.status, "invalid_evidence")
         self.assertFalse(IgMemoryHead.objects.exists())
 
     @override_settings(**SHADOW)
@@ -623,33 +673,43 @@ class TypedMemoryRuntimeTests(TestCase):
 
     @override_settings(**SHADOW)
     def test_physical_guards_reject_raw_tamper_when_migrations_are_enabled(self):
+        expected = {
+            "ig_memfact_insert_guard": ("management_igmemoryfact", "BEFORE", "INSERT"),
+            "ig_memfact_no_update": ("management_igmemoryfact", "BEFORE", "UPDATE"),
+            "ig_memfact_priv_delete": ("management_igmemoryfact", "BEFORE", "DELETE"),
+            "ig_memev_insert_guard": ("management_igmemoryfactevidence", "BEFORE", "INSERT"),
+            "ig_memev_no_update": ("management_igmemoryfactevidence", "BEFORE", "UPDATE"),
+            "ig_memev_priv_delete": ("management_igmemoryfactevidence", "BEFORE", "DELETE"),
+            "ig_memhead_insert_guard": ("management_igmemoryhead", "BEFORE", "INSERT"),
+            "ig_memhead_transition": ("management_igmemoryhead", "BEFORE", "UPDATE"),
+            "ig_memhead_priv_delete": ("management_igmemoryhead", "BEFORE", "DELETE"),
+        }
+        installed = _memory_trigger_rows(tuple(expected))
+        if not installed and _unmigrated_sqlite_profile():
+            self.skipTest("physical triggers are absent in the explicitly nonmigrated SQLite profile")
+        self.assertEqual(installed, expected)
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type='trigger' AND name='ig_memfact_insert_guard'"
-            )
-            installed = bool(cursor.fetchone()[0])
-        if not installed:
-            self.skipTest("requires migration-enabled SQLite profile")
+            constraints = connection.introspection.get_constraints(cursor, "management_igmemoryhead")
+        self.assertTrue(constraints["ig_memhead_revision_bounds"]["check"])
         memory.publish_analysis_memory(self.result.pk)
         head = IgMemoryHead.objects.first()
-        with self.assertRaises(DatabaseError), connection.cursor() as cursor:
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE management_igmemoryhead SET projection_hmac=%s WHERE id=%s",
                 ["", head.pk],
             )
-        with self.assertRaises(DatabaseError), connection.cursor() as cursor:
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE management_igmemoryhead SET revision=%s WHERE id=%s",
                 [memory.MAX_CHAIN_DEPTH + 1, head.pk],
             )
         fact = head.current_fact
-        with self.assertRaises(DatabaseError), connection.cursor() as cursor:
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM management_igmemoryhead WHERE id=%s",
                 [head.pk],
             )
-        with self.assertRaises(DatabaseError), connection.cursor() as cursor:
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM management_igmemoryfact WHERE id=%s",
                 [fact.pk],
@@ -692,12 +752,12 @@ class TypedMemoryRuntimeTests(TestCase):
         )
         for sequence, (field_name, value) in enumerate(forbidden, start=100):
             with self.subTest(field=field_name, value=value):
-                with self.assertRaises(DatabaseError):
+                with self.assertRaises(DatabaseError), transaction.atomic():
                     raw_clone_insert(fact, sequence, **{field_name: value})
 
         deferred = IgMemoryFact.objects.get(fact_key="deferred_intent")
         self.assertEqual(set(deferred.typed_value), {"kind", "condition_code"})
-        with self.assertRaises(DatabaseError):
+        with self.assertRaises(DatabaseError), transaction.atomic():
             raw_clone_insert(
                 deferred,
                 500,
@@ -706,7 +766,7 @@ class TypedMemoryRuntimeTests(TestCase):
                     "deferred_until": "2026-01-01T00:00:00+00:00",
                 },
             )
-        with self.assertRaises(DatabaseError):
+        with self.assertRaises(DatabaseError), transaction.atomic():
             raw_clone_insert(
                 deferred,
                 501,

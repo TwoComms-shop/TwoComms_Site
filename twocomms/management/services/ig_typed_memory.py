@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from django.conf import settings
@@ -1119,6 +1120,7 @@ def read_typed_memory(
     episode_id: int | None = None,
     line_id: str = "",
     watermark_message_id: int | None = None,
+    now: datetime | None = None,
 ) -> dict:
     """Read valid current memory without writing or invoking a provider.
 
@@ -1126,7 +1128,11 @@ def read_typed_memory(
     matching scope arguments, preventing a previous recipient or episode from
     leaking into a current response. Any integrity failure fails closed for the
     whole read; reset/freshness mismatches are omitted as stale.
+    Expiry is checked at one captured read instant even when sweep is disabled.
     """
+    read_at = timezone.now() if now is None else now
+    if not isinstance(read_at, datetime) or timezone.is_naive(read_at):
+        return _memory_read_result(MEMORY_READ_UNKNOWN, reason="invalid_read_time")
     client_id = getattr(client_or_id, "pk", client_or_id)
     try:
         client_id = int(client_id or 0)
@@ -1259,7 +1265,7 @@ def read_typed_memory(
         )
 
     facts: list[dict] = []
-    omitted = {"stale": 0, "invalid": 0}
+    omitted = {"stale": 0, "invalid": 0, "expired": 0}
     for head in heads:
         try:
             chain_valid = memory_chain_valid(head)
@@ -1273,6 +1279,12 @@ def read_typed_memory(
             continue
         try:
             fact = head.current_fact
+            # Only the current head is eligible. An expired superseding fact
+            # never resurrects a formerly valid predecessor. Chain integrity
+            # still fails closed above, including for expired facts.
+            if fact.valid_until is not None and fact.valid_until <= read_at:
+                omitted["expired"] += 1
+                continue
             source_watermark = int(fact.source_watermark_message_id or 0)
             if source_watermark < reset_floor:
                 omitted["stale"] += 1
@@ -1317,7 +1329,7 @@ def read_typed_memory(
             client_id=client_id,
             episode_id=episode_id,
             line_id=line_id,
-            reason="reset_or_freshness_floor",
+            reason="valid_until_elapsed" if omitted["expired"] else "reset_or_freshness_floor",
             omitted=omitted,
         )
     return _memory_read_result(
@@ -1327,6 +1339,7 @@ def read_typed_memory(
         line_id=line_id,
         facts=tuple(facts),
         omitted=omitted,
+        reason="valid_until_elapsed" if omitted["expired"] else "",
     )
 
 

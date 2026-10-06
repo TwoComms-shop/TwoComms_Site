@@ -1,0 +1,7 @@
+# Private media lifecycle release · 06.10.2026
+
+Scoped Media commit50ad509d9 was integrated with parallel main receipt commitac775db11 through clean managed checkout; final main/production `127862a0d857b9326becad16d87d1699607ab89b`. Canonical SSH pull/check/migrate/static/compress/restart/supervisor ensure PASS, PID2809708, process/main/workers healthy, maintenanceOFF, memory generation/admission flagsFALSE. Management0225 already applied; migrate no pending schema changes. Existing model-state drift warning requires separate read-only classification.
+
+Native96/96 lifecycle/actualFS/concurrency/preview, integrated receipt compatibility217/217 PASS. Strict earliest due + optional readonly prelease eligibility + actual read lease both retained. Receipt fixtures now acquire real preexpiry lease, original assertions kept.
+
+Production bounded READ ONLY5 latest messages of client336/352: examined5, media parts0. This proves installed projection and schema; it does not fabricate natural private captures/deletion/retention proof. Authenticated management browser loaded CSSbe21f30c8b20/JSaa5629d0844c private-media-v1, site-specific errors empty; selected view has no media rows. Actual local browser separately verifies active24x24 protected image/preview200 no-store, expired/delete_failed0A/IMG, closedDetails/320390. Root acceptance performs no synthetic production writes, filesystem purge or provider I/O. Full P2-6/natural72h20 remain OPEN.
