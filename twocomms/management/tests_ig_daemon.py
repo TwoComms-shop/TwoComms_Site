@@ -552,6 +552,13 @@ print(json.dumps({
         ), patch(
             "management.management.commands.run_instagram_bot._restart_sentinel_mtime",
             return_value=5.0,
+        ), patch(
+            "management.services.ig_analysis_lane.acquire_owner",
+            return_value={"owner_token": "startup-fixture", "generation": 1},
+        ), patch(
+            "management.services.ig_analysis_lane.bind_owner",
+        ), patch(
+            "management.services.ig_analysis_lane.release_owner",
         ):
             runner._record_starting_child(os.getpid())
 
@@ -661,10 +668,13 @@ class AnalysisWorkerTests(SimpleTestCase):
         # Typed-memory reconciliation now runs inside the same periodic branch;
         # this worker scheduling suite must not accidentally attempt DB writes.
         memory = patch("management.services.ig_typed_memory.reconcile_typed_memory")
+        narrative = patch("management.services.ig_memory_producer.reconcile_memory_sources")
         heartbeat = patch("management.management.commands.run_instagram_bot.task_heartbeat")
         memory.start()
+        narrative.start()
         heartbeat.start()
         self.addCleanup(memory.stop)
+        self.addCleanup(narrative.stop)
         self.addCleanup(heartbeat.stop)
 
     @patch(
@@ -1153,6 +1163,7 @@ except MaintenanceLeaseConflict:
 
 
 class ReplyBoundaryLockTests(SimpleTestCase):
+    @patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "legacy_page"})
     @patch("management.services.instagram_bot._clear_client_delivery_error")
     @patch("management.services.instagram_bot._clear_send_error")
     @patch("management.services.instagram_bot._http", return_value=(200, "{}"))

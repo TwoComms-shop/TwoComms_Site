@@ -229,7 +229,10 @@ def reset_funnel(*, client_id: int, actor, reason: str = "manual_reset") -> dict
                 updated_at=now,
             )
 
+            from management.services.ig_memory_producer import memory_invalidation_updates
+
             update = {
+                **memory_invalidation_updates(client),
                 "stage": resulting_stage,
                 "stage_updated_at": now,
                 "language": "",

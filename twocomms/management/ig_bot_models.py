@@ -544,6 +544,17 @@ class IgClient(models.Model):
     # Пам'ять діалогу (rolling summary — Task 10)
     memory_summary = models.TextField(blank=True, default="")
     memory_updated_at = models.DateTimeField(null=True, blank=True)
+    # Captured narrative head and one coalescing queue slot. Canonical typed
+    # facts retain their existing ledgers; summary never supplies their proof.
+    memory_version = models.PositiveBigIntegerField(default=0)
+    memory_provenance = models.JSONField(default=dict, blank=True)
+    memory_producer_state = models.JSONField(default=dict, blank=True)
+    memory_dirty_at = models.DateTimeField(null=True, blank=True)
+    memory_due_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    memory_claim_token = models.CharField(max_length=40, blank=True, default="")
+    memory_claim_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    memory_claim_snapshot = models.JSONField(default=dict, blank=True)
+    memory_attempts = models.PositiveSmallIntegerField(default=0)
 
     # Лічильники / конверсія
     purchases_count = models.PositiveIntegerField(default=0)

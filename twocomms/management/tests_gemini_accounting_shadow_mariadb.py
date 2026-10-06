@@ -28,6 +28,7 @@ from management.services.ig_turn_lineage import Lane, turn_lineage
 @skipUnless(connection.vendor == "mysql", "Disposable MariaDB-only S3b proof")
 @override_settings(
     GEMINI_ACCOUNTING_V2_MODE="shadow",
+    GEMINI_NONLIVE_ADMISSION_MODE="shadow",
     GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM="2026-08-29T00:00:00-07:00",
     GEMINI_ACCOUNTING_IDENTITY_HMAC_KEY="maria-shadow-test-hmac-key",
     GEMINI_KEY_PROJECT_GROUPS={"GEMINI_API": "gemini-project-race"},

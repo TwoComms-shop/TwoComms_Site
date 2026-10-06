@@ -630,7 +630,12 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
         from management.services.ig_revision_outbox import project_legacy_message
         from management.services.ig_revision_followups import settle_revision_normal_followups
 
-        _project_sent_history(revision_id)
+        projected_reply = _project_sent_history(revision_id)
+        if isinstance(projected_reply, dict):
+            from management.services.instagram_bot import _enqueue_memory_source_event
+
+            for message_id in projected_reply.get("reply_message_ids", ()):
+                _enqueue_memory_source_event(message_id)
         project_legacy_message(revision_id)
         complete, _debt, aggregate_reason = _completion_decision(effects)
         if aggregate_reason == "technical_holding_sent":

@@ -1,10 +1,10 @@
-"""Fail-soft Gemini accounting V2 shadow runtime.
+"""Canonical Gemini accounting with live shadow and enforced nonlive admission.
 
-This module is deliberately observational.  ``off`` is the default and returns
-null objects before any accounting database access.  ``shadow`` records what
-the V2 admission policy would have decided.  The legacy gateway remains the
-authority for provider availability and model/key selection, while an owned
-immutable V2 graph forbids dispatching the same frozen candidate twice.
+``off`` returns null observers before accounting database access. Live shadow
+records the V2 policy decision; active nonlive enforcement requires final ALLOW
+under graph/quota locks before dispatch. The existing gateway still selects
+models and keys, while the owned immutable graph forbids redispatching a frozen
+candidate. Explicit nonlive shadow is the compatibility rollback.
 
 No prompt, customer text, credential, environment alias or provider body is
 stored in ``GeminiRequest.candidate_plan``.  Provider attempts keep the legacy
@@ -257,6 +257,24 @@ NONLIVE_QUOTA_DENIALS = frozenset({
     "provider_block", "rpd_exhausted", "rpm_exhausted",
     "permit_exhausted", "tpm_exhausted",
 })
+NONLIVE_UNCONFIRMED_ADMISSION = frozenset({
+    "unknown_project", "missing_profile", "estimator_uncalibrated",
+})
+
+
+def pre_dispatch_guard_reason(guard) -> str:
+    """Evaluate caller-owned source freshness without retaining private data."""
+    if guard is None:
+        return ""
+    try:
+        result = guard()
+    except Exception:
+        return "source_admission_unavailable"
+    if result is True:
+        return ""
+    if isinstance(result, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,47}", result):
+        return result
+    return "source_admission_denied"
 
 
 def project_ranking_enabled() -> bool:
@@ -1354,6 +1372,8 @@ class AttemptBoundary:
     started_monotonic: float | None = None
     admitted: bool = False
     provider_repair_token: str = ""
+    dispatch_deadline: float | None = None
+    provider_deadline_at: dt.datetime | None = None
 
     def validate_ownership(self) -> bool:
         try:
@@ -1595,7 +1615,7 @@ class RequestObserver:
                     model=boundary.model,
                     outcome="not_attempted",
                     fsm_state=GeminiRequestAttempt.FsmState.CANCELLED_PRE_DISPATCH,
-                    accounting_mode="shadow",
+                    accounting_mode=graph.accounting_mode,
                     shadow_decision=GeminiRequestAttempt.ShadowDecision.UNKNOWN,
                     shadow_deny_reason="not_dispatched",
                     decision="skip_candidate",
@@ -1680,7 +1700,7 @@ class RequestObserver:
                         model=model,
                         outcome="not_attempted",
                         fsm_state=GeminiRequestAttempt.FsmState.CANCELLED_PRE_DISPATCH,
-                        accounting_mode="shadow",
+                        accounting_mode=graph.accounting_mode,
                         shadow_decision=GeminiRequestAttempt.ShadowDecision.UNKNOWN,
                         shadow_deny_reason="not_dispatched",
                         decision="skip_candidate",
@@ -1837,7 +1857,14 @@ class RequestObserver:
             return None, locked_message
         return graph, locked_message
 
-    def _lock_valid_boundary_graph(self, boundary: AttemptBoundary):
+    @staticmethod
+    def _provider_deadline_expired(graph, boundary, *, now=None):
+        now = now or timezone.now()
+        deadline = getattr(boundary, "dispatch_deadline", None)
+        return bool((graph.deadline_at is not None and now >= graph.deadline_at)
+                    or (deadline is not None and time.monotonic() >= deadline))
+
+    def _lock_valid_boundary_graph(self, boundary: AttemptBoundary, *, check_deadline=True):
         """Lock message -> canonical graph and validate one planned candidate."""
         from management.models import GeminiRequestAttempt
 
@@ -1852,6 +1879,9 @@ class RequestObserver:
             return None
         graph, locked_message = self._lock_canonical_graph()
         if graph is None:
+            return None
+        if check_deadline and self._provider_deadline_expired(graph, boundary):
+            boundary.provider_block_reason = "provider_deadline_expired"
             return None
         if self._legacy_root_execution is not None:
             from management.services.ig_legacy_provider_execution import (
@@ -1984,14 +2014,19 @@ class RequestObserver:
         identity = self._identity_for(boundary)
         estimated = max(1, int(math.ceil(serialized_bytes / 4)))
         profile = self._active_profile(boundary.model, now) if identity else None
-        expiry = now + dt.timedelta(seconds=ATTEMPT_PERMIT_SECONDS)
 
         with transaction.atomic():
             # Canonical admission is revalidated in the same transaction that
             # records provider_started.  Lock order is always
             # message -> graph -> quota state.
-            graph = self._lock_valid_boundary_graph(boundary)
+            graph = self._lock_valid_boundary_graph(boundary, check_deadline=False)
             if graph is None:
+                return False
+            now = timezone.now()
+            if self._provider_deadline_expired(graph, boundary, now=now):
+                self._record_final_admission_denial_locked(graph, boundary, profile=profile,
+                    decision=GeminiRequestAttempt.ShadowDecision.UNKNOWN,
+                    reason="provider_deadline_expired", failure_kind="provider_deadline_expired", now=now)
                 return False
             state = None
             shadow_decision = GeminiRequestAttempt.ShadowDecision.UNKNOWN
@@ -2009,6 +2044,14 @@ class RequestObserver:
                     },
                     )
                 )
+                # The pair mutex may have waited behind another provider.
+                # Use the current clock before reconciliation or new spend.
+                now = timezone.now()
+                if self._provider_deadline_expired(graph, boundary, now=now):
+                    self._record_final_admission_denial_locked(graph, boundary, profile=profile,
+                        decision=GeminiRequestAttempt.ShadowDecision.UNKNOWN,
+                        reason="provider_deadline_expired", failure_kind="provider_deadline_expired", now=now)
+                    return False
                 if (
                     state.quota_profile_id != profile.pk
                     and not state.in_flight_count
@@ -2067,11 +2110,48 @@ class RequestObserver:
                 elif not inline_count and prompt_60 + estimated > int(profile.input_tpm_limit):
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.DENY
                     deny_reason = "tpm_exhausted"
-                elif inline_count or profile.estimator_version == "shadow-calibration-required":
+                elif inline_count or (profile.estimator_version != ACTIVE_ESTIMATOR_VERSION
+                        if self.enforce_nonlive else profile.estimator_version == "shadow-calibration-required"):
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.UNKNOWN
                     deny_reason = "estimator_uncalibrated"
                 else:
                     shadow_decision = GeminiRequestAttempt.ShadowDecision.ALLOW
+
+            if self.enforce_nonlive and shadow_decision != GeminiRequestAttempt.ShadowDecision.ALLOW:
+                # The final payload and current pair state are known under the
+                # same lock as dispatch. An advisory plan is not permission.
+                # Persist any old permit reconciliation, without adding spend
+                # or a permit for this never-dispatched candidate.
+                if state is not None:
+                    GeminiQuotaState.objects.filter(pk=state.pk).update(
+                        pacific_day=state.pacific_day,
+                        rpd_reserved=state.rpd_reserved,
+                        rpd_dispatched=state.rpd_dispatched,
+                        rpd_uncertain=state.rpd_uncertain,
+                        in_flight_count=state.in_flight_count,
+                        next_permit_expiry_at=state.next_permit_expiry_at,
+                        revision=F("revision") + 1,
+                        updated_at=now,
+                    )
+                self._record_final_admission_denial_locked(graph, boundary,
+                    profile=profile, decision=shadow_decision,
+                    reason=deny_reason or "admission_unconfirmed", now=now)
+                return False
+
+            source_reason = pre_dispatch_guard_reason(getattr(boundary, "pre_dispatch_guard", None))
+            if source_reason:
+                if state is not None:
+                    GeminiQuotaState.objects.filter(pk=state.pk).update(
+                        pacific_day=state.pacific_day, rpd_reserved=state.rpd_reserved,
+                        rpd_dispatched=state.rpd_dispatched, rpd_uncertain=state.rpd_uncertain,
+                        in_flight_count=state.in_flight_count,
+                        next_permit_expiry_at=state.next_permit_expiry_at,
+                        revision=F("revision") + 1, updated_at=now,
+                    )
+                self._record_final_admission_denial_locked(graph, boundary,
+                    profile=profile, decision=shadow_decision, reason=source_reason, now=now,
+                    failure_kind="source_admission_unavailable" if source_reason == "source_admission_unavailable" else "source_admission_denied")
+                return False
 
             if self._legacy_root_execution is not None:
                 from management.services.ig_legacy_provider_execution import (
@@ -2105,6 +2185,23 @@ class RequestObserver:
                 if reason:
                     boundary.provider_block_reason = reason
                     return False
+            # Source guards and lineage admission can themselves wait/read.
+            # Neither a previously captured clock nor ALLOW extends the job.
+            now = timezone.now()
+            if self._provider_deadline_expired(graph, boundary, now=now):
+                if state is not None:
+                    GeminiQuotaState.objects.filter(pk=state.pk).update(
+                        pacific_day=state.pacific_day, rpd_reserved=state.rpd_reserved,
+                        rpd_dispatched=state.rpd_dispatched, rpd_uncertain=state.rpd_uncertain,
+                        in_flight_count=state.in_flight_count, next_permit_expiry_at=state.next_permit_expiry_at,
+                        revision=F("revision") + 1, updated_at=now,
+                    )
+                self._record_final_admission_denial_locked(graph, boundary, profile=profile,
+                    decision=shadow_decision, reason="provider_deadline_expired",
+                    failure_kind="provider_deadline_expired", now=now)
+                return False
+            expiry = now + dt.timedelta(seconds=ATTEMPT_PERMIT_SECONDS)
+            boundary.provider_deadline_at = graph.deadline_at
             attempt = GeminiRequestAttempt.objects.create(
                 request_id=self.request_id,
                 request_graph=graph,
@@ -2116,7 +2213,7 @@ class RequestObserver:
                 outcome="provider_started",
                 fsm_state=GeminiRequestAttempt.FsmState.PROVIDER_STARTED,
                 quota_profile=profile,
-                accounting_mode="shadow",
+                accounting_mode=graph.accounting_mode,
                 shadow_decision=shadow_decision,
                 shadow_deny_reason=deny_reason[:32],
                 logical_turn_id=graph.logical_turn_id,
@@ -2168,6 +2265,38 @@ class RequestObserver:
                 ).update(provider_phase_started_at=now, updated_at=now)
             return True
 
+    def _record_final_admission_denial_locked(self, graph, boundary, *, profile, decision, reason, now, failure_kind=""):
+        """One canonical no-HTTP denial; callers hold graph/pair locks."""
+        from management.models import GeminiRequestAttempt
+
+        kind = failure_kind or ("provider_admission_denied" if decision == GeminiRequestAttempt.ShadowDecision.DENY else "provider_admission_unknown")
+        boundary.provider_block_reason = reason
+        boundary.provider_block_kind = kind
+        row = GeminiRequestAttempt.objects.create(
+            request_id=self.request_id, request_graph=graph,
+            role=self._role_for_graph(graph), key_name=boundary.key_name,
+            project_group=self._identity_for(boundary), project_identity=self._identity_for(boundary),
+            model=boundary.model, outcome="cancelled_pre_dispatch",
+            fsm_state=GeminiRequestAttempt.FsmState.CANCELLED_PRE_DISPATCH,
+            quota_profile=profile, accounting_mode=graph.accounting_mode,
+            shadow_decision=decision, shadow_deny_reason=reason[:32],
+            failure_kind=kind, decision="policy_stop", not_attempted_reason=reason[:24],
+            logical_turn_id=graph.logical_turn_id, source_message_id=graph.source_message_id,
+            client_id=graph.client_id, lane=graph.lane,
+            attempt_index=boundary.attempt_index, candidate_index=boundary.candidate_index,
+            recovery_job_id=graph.recovery_job_id, finished_at=now, settled_at=now,
+            reservation_released_at=now, permit_released_at=now,
+        )
+        boundary.attempt_id = row.pk
+        outcomes = dict(graph.candidate_outcomes or {})
+        key = str(boundary.candidate_index or boundary.attempt_index)
+        payload = {"attempt_index": boundary.attempt_index, "outcome": row.outcome,
+                   "failure_kind": kind, "reason": reason}
+        existing = outcomes.get(key)
+        outcomes[key] = payload if existing is None else [*existing, payload] if isinstance(existing, list) else [existing, payload]
+        graph.candidate_outcomes = outcomes
+        graph.save(update_fields=["candidate_outcomes", "updated_at"])
+
     def _cancel_pre_dispatch(self, boundary: AttemptBoundary, *, error=None) -> None:
         """Persist a local final-payload failure without any quota state spend."""
         if boundary.attempt_id:
@@ -2178,7 +2307,7 @@ class RequestObserver:
         identity = self._identity_for(boundary)
         classified = classify_failure(error, failure_kind="invalid_payload")
         with transaction.atomic():
-            graph = self._lock_valid_boundary_graph(boundary)
+            graph = self._lock_valid_boundary_graph(boundary, check_deadline=False)
             if graph is None:
                 return
             admission_rejected = (
@@ -2187,7 +2316,9 @@ class RequestObserver:
             if admission_rejected:
                 classified = classify_failure(
                     error,
-                    failure_kind="stale_provider_boundary",
+                    failure_kind=(getattr(error, "reason", "")
+                        if getattr(error, "reason", "") in {"provider_accounting_unavailable", "provider_deadline_expired"}
+                        else "stale_provider_boundary"),
                 )
             attempt = GeminiRequestAttempt.objects.create(
                 request_id=self.request_id,
@@ -2199,7 +2330,7 @@ class RequestObserver:
                 model=boundary.model,
                 outcome="cancelled_pre_dispatch",
                 fsm_state=GeminiRequestAttempt.FsmState.CANCELLED_PRE_DISPATCH,
-                accounting_mode="shadow",
+                accounting_mode=graph.accounting_mode,
                 shadow_decision=GeminiRequestAttempt.ShadowDecision.UNKNOWN,
                 shadow_deny_reason=(
                     "stale_boundary" if admission_rejected else "local_payload"
@@ -2674,7 +2805,7 @@ def reconcile_expired_request_graphs(*, now=None, limit: int = 100) -> int:
         bounded_limit = 100
     graph_ids = list(
         GeminiRequest.objects.filter(
-            accounting_mode="shadow",
+            accounting_mode__in=(GeminiRequest.AccountingMode.SHADOW, GeminiRequest.AccountingMode.ENFORCED),
             terminal_resolution="",
             deadline_at__isnull=False,
             deadline_at__lte=now,

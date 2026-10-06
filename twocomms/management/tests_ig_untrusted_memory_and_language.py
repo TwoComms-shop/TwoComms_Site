@@ -26,9 +26,20 @@ class UntrustedMemoryNoteTests(TestCase):
         self.ig_client = IgClient.get_or_create_for_sender("memory-injection-sender")
 
     def _note(self, summary):
-        self.ig_client.memory_summary = summary
-        self.ig_client.memory_updated_at = timezone.now()
-        self.ig_client.save(update_fields=["memory_summary", "memory_updated_at"])
+        from datetime import timedelta
+        from management.services.ig_analysis_lane import owner_scope
+        from management.services.ig_memory_producer import (
+            enqueue_memory_source, claim_memory_job, publish_memory_result,
+        )
+        now = timezone.now()
+        source = InstagramBotMessage.objects.create(client=self.ig_client,
+            sender_id=self.ig_client.igsid, role="user", source="webhook", status="done",
+            text="captured original customer context", provider_namespace="instagram_login:memory-test",
+            provider_created_at=now)
+        with owner_scope(now=now):
+            enqueue_memory_source(source.pk, now=now)
+            claim = claim_memory_job(client_id=self.ig_client.pk, now=now + timedelta(seconds=4))
+            publish_memory_result(claim, summary, now=now + timedelta(seconds=5))
         return bot_memory.memory_note(self.ig_client) or ""
 
     def test_summary_is_offered_as_quoted_records_not_instructions(self):

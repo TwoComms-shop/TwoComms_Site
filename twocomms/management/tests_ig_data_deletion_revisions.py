@@ -52,7 +52,10 @@ class RevisionErasureTests(TransactionTestCase):
             json.dumps(proposal, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         revision.generation_proposed_at = now
-        revision.action_receipts = {"selection": {"outcome": "private action receipt"}}
+        revision.action_receipts = {
+            **revision.action_receipts,
+            "client_configuration_update": {"outcome": "private action receipt"},
+        }
         revision.save(update_fields=[
             "generation_proposal", "generation_proposal_digest", "generation_proposed_at",
             "action_receipts",

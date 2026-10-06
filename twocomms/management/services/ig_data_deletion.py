@@ -71,10 +71,14 @@ def _frozen_targets(locked):
     # then the same transaction commits the privacy fence before any new
     # ingress can create another owned message for these client IDs.
     cutoff_at = timezone.now()
+    from management.services.ig_memory_producer import memory_invalidation_updates
     for client in clients:
         if client.privacy_erasure_started_at is None:
             client.privacy_erasure_started_at = cutoff_at
-            client.save(update_fields=["privacy_erasure_started_at", "updated_at"])
+            memory_updates = memory_invalidation_updates(client)
+            for key, value in memory_updates.items():
+                setattr(client, key, value)
+            client.save(update_fields=["privacy_erasure_started_at", "updated_at", *memory_updates])
     client_ids = tuple(client.pk for client in clients)
     sender_ids = tuple(sorted({client.igsid for client in clients if client.igsid}))
     scope = Q(client_id__in=client_ids)

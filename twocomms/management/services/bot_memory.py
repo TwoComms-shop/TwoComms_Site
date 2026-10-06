@@ -123,34 +123,10 @@ def memory_note(client: IgClient) -> str | None:
     керуючі послідовності знімаються тим самим нейтралізатором, що й нотатки
     менеджера. Повне рішення (typed memory envelope) — Э5.1.
     """
-    summary = (client.memory_summary or "").strip()
+    from management.services.ig_memory_producer import read_memory_summary
+    captured = read_memory_summary(client)
+    summary = captured.text
     if not summary:
-        return None
-    summary_at = getattr(client, "memory_updated_at", None)
-    if summary_at is None:
-        return None
-    try:
-        episode = getattr(client, "current_commercial_episode", None)
-    except Exception:
-        episode = None
-    episode_opened_at = getattr(episode, "opened_at", None) if episode else None
-    if episode_opened_at and summary_at < episode_opened_at:
-        # A narrative generated for an earlier sales episode has no typed
-        # subject/line boundaries.  Reusing it can turn an old recipient, gift,
-        # size or test persona into a current customer fact.
-        return None
-    try:
-        from management.models import IgFunnelResetAudit
-
-        latest_reset_at = (
-            IgFunnelResetAudit.objects.filter(client_id=client.pk)
-            .order_by("-id")
-            .values_list("created_at", flat=True)
-            .first()
-        )
-    except Exception:
-        latest_reset_at = None
-    if latest_reset_at and summary_at <= latest_reset_at:
         return None
     from management.services.instagram_bot import neutralize_untrusted_text
 
@@ -202,46 +178,16 @@ def build_summary_payload(transcript: str) -> dict:
 
 
 def update_client_memory(client: IgClient) -> bool:
-    """Перегенеровує memory_summary з історії. False, якщо немає що стискати або
-    модель не відповіла."""
-    writable = IgClient.objects.filter(pk=client.pk, privacy_erasure_started_at__isnull=True)
-    if not writable.exists():
-        return False
-    transcript = _transcript(client)
-    if not transcript.strip():
-        return False
-    if not writable.exists():
-        return False
-    try:
-        out = gemini_generate_text(
-            build_summary_payload(transcript),
-            role="management",
-            reasoning_task="memory_summary",
-        )
-    except Exception:
-        return False
-    summary = (out.get("parsed") or "").strip()
-    if not summary:
-        return False
-    updated_at = timezone.now()
-    if not writable.update(
-        memory_summary=summary[:4000], memory_updated_at=updated_at, updated_at=updated_at,
-    ):
-        return False
-    client.memory_summary = summary[:4000]
-    client.memory_updated_at = updated_at
-    return True
+    """Compatibility enqueue only; generation belongs to the gated owner lane."""
+    from management.services.ig_memory_producer import enqueue_memory_source
+    source = InstagramBotMessage.objects.filter(client_id=client.pk,
+        role__in=("user", "manager", "model")).exclude(status="failed").order_by("-pk").first()
+    return bool(source and enqueue_memory_source(source.pk).queued)
 
 
 def maybe_update_memory(client: IgClient, every: int = MEMORY_EVERY) -> bool:
-    """Оновлює пам'ять, коли к-сть повідомлень кратна `every` (дешева евристика)."""
-    count = InstagramBotMessage.objects.filter(
-        client=client,
-        id__gte=current_message_floor(client),
-    ).count()
-    if count and every and count % every == 0:
-        return update_client_memory(client)
-    return False
+    """Mark latest accepted source dirty; count divisibility grants no authority."""
+    return update_client_memory(client)
 
 
 def purge_stale_clients(days: int = RETENTION_DAYS) -> int:

@@ -1,0 +1,54 @@
+test_starting_marker_survives_reconciliation_failure (management.tests_ig_daemon.DaemonPathTests.test_starting_marker_survives_reconciliation_failure) ... FAIL
+test_each_meta_chunk_revalidates_permission (management.tests_ig_daemon.ReplyBoundaryLockTests.test_each_meta_chunk_revalidates_permission) ... FAIL
+
+======================================================================
+FAIL: test_starting_marker_survives_reconciliation_failure (management.tests_ig_daemon.DaemonPathTests.test_starting_marker_survives_reconciliation_failure)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1439, in patched
+    return func(*newargs, **newkeywargs)
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_daemon.py", line 559, in test_starting_marker_survives_reconciliation_failure
+    Command()._forever()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/management/commands/run_instagram_bot.py", line 1793, in _forever
+    return self._forever_locked()
+           ~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/management/commands/run_instagram_bot.py", line 1801, in _forever_locked
+    lane_owner = acquire_owner(owner_kind="daemon")
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/services/ig_analysis_lane.py", line 64, in acquire_owner
+    with transaction.atomic():
+         ~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/transaction.py", line 209, in __enter__
+    if not connection.get_autocommit():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/db/backends/base/base.py", line 454, in get_autocommit
+    self.ensure_connection()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/test/testcases.py", line 302, in patched_ensure_connection
+    return _DatabaseFailure(self.ensure_connection, message)()
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/test/testcases.py", line 193, in __call__
+    raise DatabaseOperationForbidden(self.message)
+django.test.testcases.DatabaseOperationForbidden: Database threaded connections to 'default' are not allowed in SimpleTestCase subclasses. Either subclass TestCase or TransactionTestCase to ensure proper test isolation or add 'default' to management.tests_ig_daemon.DaemonPathTests.databases to silence this failure.
+
+======================================================================
+FAIL: test_each_meta_chunk_revalidates_permission (management.tests_ig_daemon.ReplyBoundaryLockTests.test_each_meta_chunk_revalidates_permission)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1439, in patched
+    return func(*newargs, **newkeywargs)
+  File "/Users/zainllw0w/TwoComms/site/twocomms/management/tests_ig_daemon.py", line 1181, in test_each_meta_chunk_revalidates_permission
+    self.assertEqual(kind, "unknown")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+AssertionError: 'permanent' != 'unknown'
+- permanent
++ unknown
+
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.004s
+
+FAILED (failures=2)
+Found 2 test(s).
+Skipping setup of unused database(s): default.
+System check identified no issues (0 silenced).

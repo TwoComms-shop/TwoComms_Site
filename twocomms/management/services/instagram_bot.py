@@ -2938,6 +2938,8 @@ def _handle_echo(
     epoch_before = int(getattr(client, "reply_permission_epoch", 0) or 0)
     applied = attempt_permission_transition(transition_job.pk)
     if applied:
+        if msg is not None:
+            _enqueue_memory_source_event(msg.pk)
         if msg is not None and not persistence_only:
             from management.services import bot_sales_classifier
 
@@ -12567,6 +12569,24 @@ def _promote_manual_refresh_message(
 # ---------------------------------------------------------------------------
 # Черга: постановка вхідних
 # ---------------------------------------------------------------------------
+def _enqueue_memory_source_event(message_id: int) -> bool:
+    """Record accepted source work only; generation belongs to the daemon lane.
+
+    The savepoint protects the accepted conversation event from optional queue
+    failures. The producer's bounded reconciliation repairs a missed enqueue.
+    """
+    if not message_id:
+        return False
+    try:
+        with transaction.atomic():
+            from management.services.ig_memory_producer import enqueue_memory_source
+
+            return bool(enqueue_memory_source(message_id).queued)
+    except Exception as exc:
+        log("warning", "memory_source_enqueue_deferred", type(exc).__name__)
+        return False
+
+
 def _schedule_inbound_analysis(client: IgClient, message: InstagramBotMessage) -> None:
     """Queue non-critical CRM analysis without sacrificing a live inbound turn."""
     try:
@@ -12656,7 +12676,7 @@ def _observe_not_allowed_inbound(
             )
             try:
                 with transaction.atomic():
-                    InstagramBotMessage.objects.create(
+                    observed_message = InstagramBotMessage.objects.create(
                         sender_id=sender_id,
                         provider_namespace=ingress_provider_namespace(s),
                         client=client,
@@ -12679,6 +12699,7 @@ def _observe_not_allowed_inbound(
             client.touch_inbound()
             inbound_at = timezone.now()
             InstagramBotSettings.objects.filter(pk=s.pk).update(last_inbound_at=inbound_at)
+            _enqueue_memory_source_event(observed_message.pk)
     except IntegrityError:
         return False
 
@@ -12845,6 +12866,7 @@ def enqueue_inbound(
         )
         applied = attempt_permission_transition(transition_job.pk)
         if applied:
+            _enqueue_memory_source_event(msg.pk)
             inbound_at = timezone.now()
             InstagramBotSettings.objects.filter(pk=s.pk).update(
                 last_inbound_at=inbound_at
@@ -13210,6 +13232,8 @@ def enqueue_inbound(
                     raise
                 except Exception:
                     pass
+            if not observed_only:
+                _enqueue_memory_source_event(msg.pk)
     except IntegrityError:
         return False  # вже у черзі/оброблено (mid unique)
     if (

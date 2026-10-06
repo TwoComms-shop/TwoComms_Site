@@ -1,0 +1,16 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+............................................................................................................................................ssssss.....................................................................................................................................................ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+.ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+..............................................................
+----------------------------------------------------------------------
+Ran 358 tests in 23.448s
+
+OK (skipped=6)
+Destroying test database for alias 'default'...
+Found 358 test(s).
+System check identified no issues (0 silenced).
+maintenance active — daemon exit
+maintenance active lease_id=deploy-test expires_at=9999999999

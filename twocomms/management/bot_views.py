@@ -294,10 +294,14 @@ def _delete_direct_bot_records(
                 | Q(phone_normalized__iexact=normalized)
             )
             pre_clients = list(pre_clients_query.order_by("pk"))
+        from management.services.ig_memory_producer import memory_invalidation_updates
         for client in pre_clients:
             if client.privacy_erasure_started_at is None:
                 client.privacy_erasure_started_at = fence_at
-                client.save(update_fields=["privacy_erasure_started_at", "updated_at"])
+                memory_updates = memory_invalidation_updates(client)
+                for key, value in memory_updates.items():
+                    setattr(client, key, value)
+                client.save(update_fields=["privacy_erasure_started_at", "updated_at", *memory_updates])
         pre_sender_ids = set(frozen_sender_ids) if frozen_targets else {
             value for value in (
                 normalized, *(c.igsid for c in pre_clients if c.igsid)

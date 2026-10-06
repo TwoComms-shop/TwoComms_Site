@@ -5,6 +5,8 @@
 свіже вікно. purge_stale_clients чистить картки, неактивні понад 180 днів.
 """
 import datetime
+import hashlib
+import json
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -21,19 +23,34 @@ from management.models import (
 from management.services import bot_memory
 
 
+def _memory_prompt_settings():
+    """Prompt-injection tests require an actual accepted policy publication."""
+    from management.models import BotPolicyPublication, InstagramBotSettings
+    snapshot = {"schema_version": 1, "instructions": []}
+    publication = BotPolicyPublication.objects.create(version=1, kind="publish", schema_version=1,
+        snapshot=snapshot, snapshot_hash=hashlib.sha256(json.dumps(snapshot, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        compiler_version="instruction-set-v1", instruction_count=0)
+    settings = InstagramBotSettings.load()
+    settings.active_instruction_publication = publication
+    settings.save(update_fields=["active_instruction_publication"])
+    return settings
+
+
 class MemoryNoteTests(TestCase):
     def test_none_when_empty(self):
         c = IgClient.get_or_create_for_sender("m1")
         self.assertIsNone(bot_memory.memory_note(c))
 
-    def test_text_when_set(self):
+    def test_timestamp_only_text_is_omitted_without_provenance(self):
         c = IgClient.get_or_create_for_sender("m2")
         c.memory_summary = "хоче худі Kharkiv, розмір M, 950 грн"
         c.memory_updated_at = timezone.now()
         c.save()
         note = bot_memory.memory_note(c)
-        self.assertIsNotNone(note)
-        self.assertIn("Kharkiv", note)
+        self.assertIsNone(note)
+        from management.services.ig_memory_producer import read_memory_summary
+        self.assertEqual(read_memory_summary(c).reason, "narrative_provenance_missing")
 
     def test_summary_older_than_current_episode_is_not_injected(self):
         c = IgClient.get_or_create_for_sender("m2-stale-episode")
@@ -50,7 +67,7 @@ class MemoryNoteTests(TestCase):
 
         self.assertIsNone(bot_memory.memory_note(c))
 
-    def test_fresh_summary_inside_current_episode_is_still_available(self):
+    def test_fresh_timestamp_inside_episode_does_not_grant_provenance(self):
         c = IgClient.get_or_create_for_sender("m2-fresh-episode")
         episode = IgCommercialEpisode.objects.create(
             client=c,
@@ -65,7 +82,7 @@ class MemoryNoteTests(TestCase):
             "memory_updated_at", "updated_at",
         ])
 
-        self.assertIn("current narrative", bot_memory.memory_note(c) or "")
+        self.assertIsNone(bot_memory.memory_note(c))
 
     def test_summary_at_or_before_reset_is_not_injected(self):
         c = IgClient.get_or_create_for_sender("m2-stale-reset")
@@ -88,27 +105,30 @@ class UpdateMemoryTests(TestCase):
             self.assertFalse(bot_memory.update_client_memory(client))
         generate.assert_not_called()
 
-    def test_erasure_during_generation_blocks_summary_write(self):
+    def test_legacy_update_has_no_synchronous_generation_or_late_write(self):
         client = IgClient.objects.create(igsid="erasing-memory-late")
-        InstagramBotMessage.objects.create(client=client, sender_id=client.igsid, role="user", text="Synthetic preference")
+        InstagramBotMessage.objects.create(client=client, sender_id=client.igsid, role="user", text="Synthetic preference", provider_namespace="instagram_login:memory-owner")
 
         def erase_during_generation(*args, **kwargs):
             IgClient.objects.filter(pk=client.pk).update(privacy_erasure_started_at=timezone.now())
             return {"parsed": "A summary that must not be stored"}
 
-        with patch("management.services.bot_memory.gemini_generate_text", side_effect=erase_during_generation):
-            self.assertFalse(bot_memory.update_client_memory(client))
+        with patch("management.services.bot_memory.gemini_generate_text", side_effect=erase_during_generation) as generate:
+            self.assertTrue(bot_memory.update_client_memory(client))
+        generate.assert_not_called()
         client.refresh_from_db()
         self.assertFalse(client.memory_summary)
     @patch("management.services.bot_memory.gemini_generate_text")
-    def test_update_sets_summary_and_timestamp(self, mock_gen):
+    def test_update_marks_dirty_without_provider_or_summary_write(self, mock_gen):
         mock_gen.return_value = {"parsed": "Клієнт хоче худі Kharkiv розмір M за 950 грн."}
         c = IgClient.get_or_create_for_sender("m3")
-        InstagramBotMessage.objects.create(sender_id="m3", client=c, role="user", text="скільки худі Kharkiv?")
+        InstagramBotMessage.objects.create(sender_id="m3", client=c, role="user", text="скільки худі Kharkiv?", provider_namespace="instagram_login:memory-owner")
         self.assertTrue(bot_memory.update_client_memory(c))
         c.refresh_from_db()
-        self.assertIn("Kharkiv", c.memory_summary)
-        self.assertIsNotNone(c.memory_updated_at)
+        self.assertFalse(c.memory_summary)
+        self.assertIsNone(c.memory_updated_at)
+        self.assertIsNotNone(c.memory_dirty_at)
+        mock_gen.assert_not_called()
 
     @patch("management.services.bot_memory.update_client_memory")
     def test_maybe_update_triggers_on_threshold(self, mock_upd):
@@ -119,11 +139,11 @@ class UpdateMemoryTests(TestCase):
         self.assertEqual(mock_upd.call_count, 1)
 
     @patch("management.services.bot_memory.update_client_memory")
-    def test_maybe_update_skips_below_threshold(self, mock_upd):
+    def test_maybe_update_uses_dirty_source_instead_of_count_threshold(self, mock_upd):
         c = IgClient.get_or_create_for_sender("m5")
         InstagramBotMessage.objects.create(sender_id="m5", client=c, role="user", text="hi")
         bot_memory.maybe_update_memory(c, every=8)
-        self.assertEqual(mock_upd.call_count, 0)
+        self.assertEqual(mock_upd.call_count, 1)
 
 
 class RetentionTests(TransactionTestCase):
@@ -179,7 +199,7 @@ class MemoryNoteInjectionTests(TestCase):
             return {"parsed": "ок", "model": "x", "meta": {}}
 
         mock_gen.side_effect = _fake
-        s = InstagramBotSettings.load()
+        s = _memory_prompt_settings()
         bot.gemini_generate(
             s, [{"role": "user", "text": "ще раз?"}], memory_note="ПАМ-ЯТЬ-XYZ"
         )
@@ -346,7 +366,7 @@ class ContextNoteInjectionTests(TestCase):
 
         mock_gen.side_effect = _fake
         bot.gemini_generate(
-            InstagramBotSettings.load(), [{"role": "user", "text": "привіт"}],
+            _memory_prompt_settings(), [{"role": "user", "text": "привіт"}],
             context_note="КОНТЕКСТ-XYZ",
         )
         sysi = captured["p"].get("system_instruction", {}).get("parts", [{}])[0].get("text", "")
@@ -365,7 +385,7 @@ class ContextNoteInjectionTests(TestCase):
 
         mock_gen.side_effect = _fake
         bot.gemini_generate(
-            InstagramBotSettings.load(),
+            _memory_prompt_settings(),
             [{"role": "user", "text": "яка сума?"}],
             memory_note="ІСТОРИЧНА-ПАМЯТЬ-950",
             context_note="ПОТОЧНА-ІСТИНА-2680",

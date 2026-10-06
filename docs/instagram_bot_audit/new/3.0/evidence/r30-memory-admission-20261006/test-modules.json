@@ -1,0 +1,81 @@
+{
+  "combined_sqlite": {
+    "labels": [
+      "management.tests_ig_memory_producer",
+      "management.tests_ig_memory_lifecycle",
+      "management.tests_ig_memory_provider_gate",
+      "management.tests_ig_analysis_lane",
+      "management.tests_ig_analysis_fairness",
+      "management.tests_ig_data_deletion_revisions",
+      "management.tests_ig_data_deletion_safety",
+      "management.tests_ig_human_reply",
+      "management.tests_ig_revision_echo_integration",
+      "management.tests_ig_revision_execution",
+      "management.tests_ig_revision_reply_projection",
+      "management.tests_ig_commerce_source_facts",
+      "management.tests_ig_selection_source_projection",
+      "management.tests_ig_reply_truth",
+      "management.tests_ig_daemon",
+      "management.tests_bot_memory",
+      "management.tests_ig_memory",
+      "management.tests_ig_untrusted_memory_and_language"
+    ],
+    "total": 358,
+    "passed": 352,
+    "skipped": 6,
+    "seconds": 23.448
+  },
+  "provider_sqlite": {
+    "labels": [
+      "management.tests_ig_nonlive_admission",
+      "management.tests_gemini_accounting_shadow",
+      "management.tests_ig_provider_repair_preparation",
+      "management.tests_ig_revision_provider_execution",
+      "management.tests_gemini_response_recovery",
+      "management.tests_ig_provider_dispatch_budget"
+    ],
+    "total": 171,
+    "passed": 166,
+    "skipped": 5,
+    "seconds": 14.863
+  },
+  "native_provider": {
+    "labels": [
+      "management.tests_ig_nonlive_admission.NonliveNativeAdmissionTests",
+      "management.tests_gemini_accounting_shadow_mariadb"
+    ],
+    "total": 9,
+    "seconds": 6.87
+  },
+  "native_memory": {
+    "labels": [
+      "management.tests_ig_memory_producer.NativeMemoryProducerRaceTests",
+      "management.tests_ig_memory_provider_gate",
+      "management.tests_ig_provider_repair_preparation.DurableRepairPreparationTests.test_two_workers_reserve_exactly_one_lineage_repair"
+    ],
+    "total": 9,
+    "seconds": 5.604
+  },
+  "native_regressions": {
+    "labels": [
+      "management.tests_ig_memory_producer.CapturedMemoryProducerTests",
+      "management.tests_ig_memory_lifecycle",
+      "management.tests_bot_memory",
+      "management.tests_ig_memory",
+      "management.tests_ig_untrusted_memory_and_language",
+      "management.tests_ig_analysis_lane",
+      "management.tests_ig_analysis_fairness",
+      "management.tests_ig_data_deletion_revisions",
+      "management.tests_ig_data_deletion_safety"
+    ],
+    "total": 126,
+    "seconds": 34.585
+  },
+  "limits": {
+    "sets_overlap": true,
+    "external_provider_calls": 0,
+    "production_fixture": false,
+    "memory_generation_default": false,
+    "memory_admission_acceptance_default": false
+  }
+}

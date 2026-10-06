@@ -1,0 +1,23 @@
+test_starting_marker_survives_reconciliation_failure (management.tests_ig_daemon.DaemonPathTests.test_starting_marker_survives_reconciliation_failure) ... ok
+test_each_meta_chunk_revalidates_permission (management.tests_ig_daemon.ReplyBoundaryLockTests.test_each_meta_chunk_revalidates_permission) ... ok
+test_analysis_failure_does_not_block_owned_event_drain (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_failure_does_not_block_owned_event_drain) ... ok
+test_analysis_worker_does_not_log_retry_as_terminal (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_does_not_log_retry_as_terminal) ... ok
+test_analysis_worker_does_nothing_during_maintenance (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_does_nothing_during_maintenance) ... ok
+test_analysis_worker_logs_exhausted_event_as_error (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_logs_exhausted_event_as_error) ... ok
+test_analysis_worker_logs_reconciled_graph_count_without_graph_details (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_logs_reconciled_graph_count_without_graph_details) ... ok
+test_analysis_worker_logs_terminal_event_outcomes (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_logs_terminal_event_outcomes) ... ok
+test_analysis_worker_reconciles_immediately_after_start (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_reconciles_immediately_after_start) ... ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+ok
+test_analysis_worker_reconciles_only_at_bounded_interval (management.tests_ig_daemon.AnalysisWorkerTests.test_analysis_worker_reconciles_only_at_bounded_interval) ... ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+ig_bot event=conversation_analysis_events_terminal level=error detail=rejected=1 failed=1
+ok
+test_reconciliation_failure_does_not_block_due_job_drain (management.tests_ig_daemon.AnalysisWorkerTests.test_reconciliation_failure_does_not_block_due_job_drain) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.061s
+
+OK
+Found 11 test(s).
+Skipping setup of unused database(s): default.
+System check identified no issues (0 silenced).

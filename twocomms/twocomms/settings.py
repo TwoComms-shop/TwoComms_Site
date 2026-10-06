@@ -333,6 +333,10 @@ IG_LIFECYCLE_REASON_FUNNEL_ENABLED = _env_bool(
     True,
 )
 
+# Narrative generation is a separate, explicitly accepted background consumer.
+IG_MEMORY_GENERATION_ENABLED = _env_bool('IG_MEMORY_GENERATION_ENABLED', False)
+IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED', False)
+
 # ЭА.14 / ЭА.15 — надзор за демоном: четыре состояния вместо одного,
 # операционный lease вместо абсолютного времени, изоляция клиентской полосы.
 # Откат: при выключении надзор работает как до этапа (один булев признак живости).

@@ -3585,6 +3585,8 @@ class InstagramBotSettings(models.Model):
         CUSTOM = "custom", _("Свій ключ")
 
     is_enabled = models.BooleanField(default=False)
+    # Independent bounded memory-source repair checkpoint; no analysis state.
+    memory_reconcile_cursor = models.PositiveBigIntegerField(default=0)
     # Call auto-analysis is independently switchable from the Instagram bot.
     # The legacy column name is retained so deployment never rewrites data.
     call_auto_analysis_enabled = models.BooleanField(

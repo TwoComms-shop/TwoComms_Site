@@ -231,13 +231,15 @@ def owner_claim_admission(*, now=None):
 @contextmanager
 def mutation_guard(*, owner_token, generation, now=None):
     """Hold the lane row lock while a caller performs its queue CAS update."""
-    now = now or timezone.now()
     with transaction.atomic():
         row = _row()
+        # Runtime lock waits consume the lease; an explicit fixture clock stays
+        # authoritative. Never evaluate ownership using the pre-lock timestamp.
+        checked_at = now if now is not None else timezone.now()
         allowed = bool(
             row.owner_token == str(owner_token)
             and int(row.generation) == int(generation)
-            and row.lease_until and row.lease_until > now
+            and row.lease_until and row.lease_until > checked_at
             and not row.claim_frozen
         )
         yield allowed

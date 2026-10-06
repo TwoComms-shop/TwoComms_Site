@@ -40,6 +40,7 @@ from management.services.ig_turn_lineage import Lane, turn_lineage
 SHADOW_FROM = "2026-08-29T00:00:00-07:00"
 SHADOW = {
     "GEMINI_ACCOUNTING_V2_MODE": "shadow",
+    "GEMINI_NONLIVE_ADMISSION_MODE": "shadow",
     "GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM": SHADOW_FROM,
     "GEMINI_ACCOUNTING_IDENTITY_HMAC_KEY": "shadow-test-hmac-key",
     "GEMINI_KEY_PROJECT_GROUPS": {
@@ -2158,6 +2159,7 @@ class GeminiShadowRuntimeTests(TestCase):
     )
     @patch.dict(os.environ, KEY_ENV, clear=False)
     @patch("management.services.call_ai_analysis.requests.post", return_value=_Response())
+    @override_settings(GEMINI_NONLIVE_ADMISSION_MODE="shadow")
     def test_default_project_labels_are_assumed_not_quota_identities(self, _post):
         ai.gemini_generate_text(
             {"contents": [{"parts": [{"text": "memory"}]}]},
@@ -2388,6 +2390,7 @@ class GeminiShadowRuntimeTests(TestCase):
         GEMINI_ACCOUNTING_V2_EFFECTIVE_FROM=SHADOW_FROM,
         GEMINI_ACCOUNTING_IDENTITY_HMAC_KEY="probe-shadow-test-key",
         GEMINI_KEY_PROJECT_GROUPS={},
+        GEMINI_NONLIVE_ADMISSION_MODE="shadow",
     )
     @patch.dict(os.environ, KEY_ENV, clear=False)
     @patch("management.services.gemini_probe.requests.post", return_value=_Response())

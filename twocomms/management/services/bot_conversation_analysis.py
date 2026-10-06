@@ -1920,12 +1920,19 @@ def _process_claim(
     return "done"
 
 
-def _customer_reply_work_waiting() -> bool:
+_CUSTOMER_PRIORITY_SETTINGS_UNSET = object()
+
+
+def _customer_reply_work_waiting(*, settings_obj=_CUSTOMER_PRIORITY_SETTINGS_UNSET, now=None) -> bool:
     """Priority belongs to executable replies, not unresolved historical rows."""
-    settings_obj = InstagramBotSettings.load()
+    if settings_obj is _CUSTOMER_PRIORITY_SETTINGS_UNSET:
+        settings_obj = InstagramBotSettings.load()
+    elif settings_obj is None:
+        # Final background admission may inspect configuration, never create it.
+        return True
     if not settings_obj.is_enabled:
         return False
-    now = timezone.now()
+    now = now or timezone.now()
     cutoff = now - timedelta(seconds=REPLY_PROCESSING_GRACE_SECONDS)
     active_opt_out = Q(
         client__opted_out_at__isnull=False,

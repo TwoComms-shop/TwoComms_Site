@@ -107,6 +107,10 @@ def _project_manager_event(event_id):
             )
         if not result.accepted:
             raise RevisionEchoDeferred(result.reason)
+        if not historical:
+            from management.services.instagram_bot import _enqueue_memory_source_event
+
+            _enqueue_memory_source_event(message.pk)
         return True
 
 

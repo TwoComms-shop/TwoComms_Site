@@ -93,6 +93,7 @@ CONV_REFRESH_EVERY = 120               # фонове оновлення спи�
 CONV_REFRESH_PROGRESS_EVERY = 5        # швидко завершуємо resumable scan
 ANALYSIS_RECONCILE_EVERY = 600         # bounded repair of missed scheduling, c
 ANALYSIS_RECONCILE_BATCH = 100
+MEMORY_RECONCILE_BATCH = 25
 RELOAD_LOCK_WAIT_SECONDS = 45
 MAX_RELOAD_LOCK_WAIT_SECONDS = 300
 DAEMON_START_WAIT_SECONDS = 15
@@ -609,6 +610,28 @@ def _journey_trace_refresh_worker(stop_event: threading.Event):
         stop_event.wait(SWEEP_SECONDS)
 
 
+def _memory_background_admission(claim):
+    """Read-only analysis priority, composed after the producer's final guard."""
+    from management.services.bot_conversation_analysis import MAX_ATTEMPTS
+    from management.models import IgConversationAnalysisJob
+
+    now = timezone.now()
+    if IgConversationAnalysisJob.objects.filter(
+        status=IgConversationAnalysisJob.Status.PENDING, attempts__lt=MAX_ATTEMPTS,
+        due_at__lte=now, next_attempt_at__lte=now,
+        client__privacy_erasure_started_at__isnull=True,
+    ).exists():
+        return "memory_analysis_priority"
+    return True
+
+
+def _memory_background_tick():
+    """One coalesced job, owned by the existing independent analysis lane."""
+    from management.services.ig_memory_producer import process_due_memory
+
+    return process_due_memory(limit=1, admission=_memory_background_admission)
+
+
 def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generation=None):
     """Drain durable CRM-analysis jobs without coupling them to reply enablement."""
     from management.services.bot_conversation_analysis import (
@@ -682,6 +705,16 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
                                 pass
                         else:
                             last_reconcile_at = monotonic_now
+                            try:
+                                from management.services.ig_memory_producer import reconcile_memory_sources
+
+                                reconcile_memory_sources(limit=MEMORY_RECONCILE_BATCH)
+                            except Exception as exc:
+                                _raise_disconnected_database(exc, lane="analysis_worker")
+                                try:
+                                    bot.log("error", "memory_source_reconcile", type(exc).__name__)
+                                except Exception:
+                                    pass
                     try:
                         process_due_analysis(limit=1)
                     except Exception as exc:
@@ -706,6 +739,29 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
                             bot.log("error", "conversation_analysis_events", repr(exc))
                         except Exception:
                             pass
+                    if stop_event.is_set():
+                        return
+                    if lane_owner is not None and not renew_owner(
+                        owner_token=lane_owner["owner_token"],
+                        generation=lane_owner["generation"],
+                    ):
+                        stop_event.set()
+                        return
+                    if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                        try:
+                            _memory_background_tick()
+                        except Exception as exc:
+                            _raise_disconnected_database(exc, lane="analysis_worker")
+                            try:
+                                bot.log("error", "memory_background_tick", type(exc).__name__)
+                            except Exception:
+                                pass
+                    if lane_owner is not None and not renew_owner(
+                        owner_token=lane_owner["owner_token"],
+                        generation=lane_owner["generation"],
+                    ):
+                        stop_event.set()
+                        return
             except DbCircuitOpen:
                 pass
             except Exception as exc:

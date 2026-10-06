@@ -29,6 +29,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 import requests
@@ -575,7 +576,8 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 timeout: tuple | None = None, log_cb=None, *, role: str,
                 deadline: float | None, accounting_observer=None,
                 candidate_index: int = 0,
-                accounting_admission_required: bool = False) -> tuple[str, dict | None]:
+                accounting_admission_required: bool = False,
+                pre_dispatch_guard=None) -> tuple[str, dict | None]:
     """Один (key, model) кандидат із ретраями на transient.
 
     Повертає ('ok', result) | ('key_429', None) | ('model_skip', None).
@@ -670,6 +672,12 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                 attempt_boundary is not None
                 and attempt_boundary.validate_ownership() is not True
             ):
+                if getattr(attempt_boundary, "provider_block_reason", "") == "provider_deadline_expired":
+                    rejected = _GeminiAdmissionRejected("expired provider boundary", reason="provider_deadline_expired")
+                    attempt_boundary.cancelled_pre_dispatch(rejected)
+                    error = CallAIAnalysisError("Gemini provider dispatch rejected: provider_deadline_expired.")
+                    error.failure_kind = "provider_deadline_expired"
+                    raise error
                 raise CallAIAnalysisError(
                     "Gemini provider dispatch rejected: stale request ownership."
                 )
@@ -692,6 +700,10 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
             if key_name in gemini_keys.ALL_KEYS:
                 legacy_quota_reserved = True
             call_kwargs = {"parse": parse, "timeout": effective_timeout}
+            if deadline is not None:
+                call_kwargs["dispatch_deadline"] = deadline
+            if pre_dispatch_guard is not None:
+                call_kwargs["pre_dispatch_guard"] = pre_dispatch_guard
             if attempt_boundary is not None:
                 call_kwargs["attempt_boundary"] = attempt_boundary
             parsed, usage = _gemini_call_once(
@@ -705,15 +717,25 @@ def _call_combo(key_name: str, key_value: str, model: str, payload: dict,
                     dispatch_at=quota_dispatch_at,
                 )
         except _GeminiAdmissionRejected as exc:
-            if legacy_quota_reserved:
+            if legacy_quota_reserved and not getattr(exc, "provider_admitted", False):
                 gemini_quota.cancel_reservation(
                     key_name,
                     model,
                     dispatch_at=quota_dispatch_at,
                 )
-            raise CallAIAnalysisError(
-                "Gemini provider dispatch rejected: stale request ownership."
-            ) from exc
+            reason = str(getattr(exc, "reason", "") or "stale_provider_boundary")
+            from management.services.gemini_accounting_runtime import NONLIVE_QUOTA_DENIALS, NONLIVE_UNCONFIRMED_ADMISSION
+            if (accounting_admission_required and reason in NONLIVE_QUOTA_DENIALS | NONLIVE_UNCONFIRMED_ADMISSION
+                    and not str(getattr(exc, "failure_kind", "")).startswith("source_admission_")):
+                # A denial belongs to this project/model candidate. Keep the
+                # frozen pool's other independent projects available; no model
+                # outage or credential failure was observed.
+                log.append(f"{key_name}/{model}: final admission {reason}")
+                _emit(f"{key_name}/{model}: final admission {reason}")
+                return ("admission_skip", None)
+            error = CallAIAnalysisError(f"Gemini provider dispatch rejected: {reason}.")
+            error.failure_kind = reason
+            raise error from exc
         except _GeminiTransient as exc:
             dt = time.monotonic() - t0
             log.append(f"{key_name}/{model}: transient {exc} (#{attempt + 1})")
@@ -823,7 +845,8 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
                    grounded: bool = False, parse: bool = True,
                    timeout: tuple | None = None, deadline_seconds: float | None = None,
                    log_cb=None, model_override: str | None = None,
-                   reasoning_task: str | None = None) -> dict:
+                   reasoning_task: str | None = None,
+                   pre_dispatch_guard=None) -> dict:
     """Прогоняє payload через пул ключів ролі та цепочку моделей.
 
     Кругова стратегія: у кожному КРУЗІ — ручний ключ (якщо є) першим, далі весь
@@ -973,11 +996,13 @@ def _run_with_pool(role: str, payload: dict, *, manual_key: str | None = None,
     def _call_graph_owned(*args, **kwargs):
         """Terminalize the owned graph before propagating any gateway exit."""
         try:
+            if pre_dispatch_guard is not None:
+                kwargs["pre_dispatch_guard"] = pre_dispatch_guard
             return _call_combo(*args, **kwargs)
         except Exception as exc:
             if accounting_observer is not None:
                 detail = str(exc).casefold()
-                reason = (
+                reason = getattr(exc, "failure_kind", "") or (
                     "ownership_conflict"
                     if "ownership" in detail or "stale request" in detail
                     else "gateway_exception"
@@ -1988,6 +2013,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
         try:
             used_project_models.add((identity, model))
             call_kwargs = {"parse": parse, "timeout": timeout}
+            call_kwargs["dispatch_deadline"] = deadline
             if attempt_boundary is not None:
                 call_kwargs["attempt_boundary"] = attempt_boundary
             if dispatch_budget is not None:
@@ -2005,7 +2031,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     dispatch_at=quota_dispatch_at,
                 )
         except _GeminiAdmissionRejected as exc:
-            if legacy_quota_reserved:
+            if legacy_quota_reserved and not getattr(exc, "provider_admitted", False):
                 gemini_quota.cancel_reservation(
                     key_name,
                     model,
@@ -2418,7 +2444,8 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                 raise _Gemini429("local quota ledger: pair exhausted")
             try:
                 parsed, usage = _gemini_call_once(
-                    model, request_payload, key_value, parse=parse, timeout=timeout
+                    model, request_payload, key_value, parse=parse, timeout=timeout,
+                    dispatch_deadline=deadline,
                 )
             except _GeminiEmpty as exc:
                 if key_name in gemini_keys.ALL_KEYS:
@@ -2817,11 +2844,14 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
                          repair_payload_factory=None,
                          max_actual_dispatches: int | None = None,
                          request_policy_manifest=None,
-                         legacy_provider_root: bool = False) -> dict:
+                         legacy_provider_root: bool = False,
+                         pre_dispatch_guard=None) -> dict:
     """Текстовий (не-JSON) запит для діалогового бота. Пул ключів ролі + цепочка
     моделей. У result['parsed'] — сирий текст відповіді моделі.
     log_cb (опц.) отримує короткі рядки про кожну спробу (для консолі бота)."""
     if role == "chat":
+        if pre_dispatch_guard is not None:
+            raise ValueError("source pre-dispatch guards are supported only for nonlive generation")
         return _run_chat_with_pool(
             payload,
             manual_key=(manual_key or "").strip() or None,
@@ -2854,13 +2884,15 @@ def gemini_generate_text(payload: dict, *, role: str = "chat",
         parse=parse,
         timeout=MANAGEMENT_TEXT_TIMEOUT if bounded_management else None,
         deadline_seconds=(
-            MANAGEMENT_TEXT_DEADLINE_SECONDS if bounded_management else None
+            deadline_seconds if deadline_seconds is not None
+            else MANAGEMENT_TEXT_DEADLINE_SECONDS if bounded_management else None
         ),
         log_cb=log_cb,
         model_override=model_override,
         reasoning_task=reasoning_task or (
             "customer_chat" if role == "chat" else "reporting_summary"
         ),
+        pre_dispatch_guard=pre_dispatch_guard,
     )
 
 
@@ -3131,7 +3163,9 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
                       timeout: tuple | None = None, attempt_boundary=None,
                       dispatch_budget=None,
                       dispatch_scarce: bool | None = None,
-                      defer_attempt_success: bool = False) -> tuple:
+                      defer_attempt_success: bool = False,
+                      pre_dispatch_guard=None,
+                      dispatch_deadline: float | None = None) -> tuple:
     """Один виклик generateContent. Повертає (parsed_json|text, usage) або кидає
     типізовану помилку (_GeminiTransient / _Gemini429 / _GeminiModelUnavailable / _GeminiFatal).
     parse=False → повертає сирий текст замість JSON (для діалогового бота)."""
@@ -3167,6 +3201,8 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
             attempt_boundary.cancelled_pre_dispatch(error)
         raise
     if attempt_boundary is not None:
+        attempt_boundary.pre_dispatch_guard = pre_dispatch_guard
+        attempt_boundary.dispatch_deadline = dispatch_deadline
         generation = payload.get("generationConfig") or {}
         cap = generation.get("maxOutputTokens")
         level = (generation.get("thinkingConfig") or {}).get("thinkingLevel")
@@ -3186,8 +3222,14 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
                 "provider boundary rejected",
                 reason=block_reason or "stale_provider_boundary",
             )
+            error.failure_kind = getattr(attempt_boundary, "provider_block_kind", "")
             attempt_boundary.cancelled_pre_dispatch(error)
             raise error
+    elif pre_dispatch_guard is not None:
+        from management.services.gemini_accounting_runtime import pre_dispatch_guard_reason
+        reason = pre_dispatch_guard_reason(pre_dispatch_guard)
+        if reason:
+            raise _GeminiAdmissionRejected("source boundary rejected", reason=reason)
     if dispatch_budget is not None and not dispatch_budget.consume_dispatch(
         model, scarce=dispatch_scarce
     ):
@@ -3205,11 +3247,30 @@ def _gemini_call_once(model: str, payload: dict, key: str, *, parse: bool = True
         from management.services.ig_db_circuit import release_idle_connection
 
         release_idle_connection()
+        final_timeout = timeout or GEMINI_TIMEOUT
+        wall_deadline = getattr(attempt_boundary, "provider_deadline_at", None)
+        remaining_deadline = (dispatch_deadline - time.monotonic()) if dispatch_deadline is not None else None
+        if isinstance(wall_deadline, datetime):
+            wall_remaining = (wall_deadline - timezone.now()).total_seconds()
+            remaining_deadline = min(remaining_deadline, wall_remaining) if remaining_deadline is not None else wall_remaining
+        if remaining_deadline is not None:
+            final_timeout = _bounded_pool_timeout(final_timeout,
+                remaining_deadline=remaining_deadline, tracked_key=False)
+            if final_timeout is None:
+                error = _GeminiAdmissionRejected("expired before HTTP", reason="provider_deadline_expired")
+                error.provider_admitted = bool(getattr(attempt_boundary, "admitted", False))
+                if error.provider_admitted:
+                    # Admission is conservative spend. Settle the local stop
+                    # without returning an already recorded dispatch slot.
+                    attempt_boundary.failed(error, failure_kind="provider_deadline_expired")
+                elif attempt_boundary is not None:
+                    attempt_boundary.cancelled_pre_dispatch(error)
+                raise error
         resp = requests.post(
             url,
             data=body,
             headers={"Content-Type": "application/json", "x-goog-api-key": key},
-            timeout=timeout or GEMINI_TIMEOUT,
+            timeout=final_timeout,
         )
     except requests.Timeout as exc:
         error = _GeminiTransient(f"timeout: {exc}")

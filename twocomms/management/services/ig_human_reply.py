@@ -589,6 +589,12 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
             "provider_message_id", "delivery_provider_message_ids", "delivery_failure_boundary",
         ])
         command.save(update_fields=["state", "failure_code", "provider_message_ids", "terminal_at", "updated_at"])
+        if command.state == HumanReplyCommand.State.SENT:
+            # Queue reads after command/message locks are released: the memory
+            # producer locks client first. UNKNOWN/failed drafts are not sources.
+            from management.services.instagram_bot import _enqueue_memory_source_event
+
+            transaction.on_commit(lambda message_id=message.pk: _enqueue_memory_source_event(message_id))
         if command.state == HumanReplyCommand.State.UNKNOWN:
             _ensure_unknown_reconciliation(command, now=terminal)
     return command

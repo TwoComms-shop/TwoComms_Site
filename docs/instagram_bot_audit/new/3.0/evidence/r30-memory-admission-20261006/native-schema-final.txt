@@ -1,0 +1,24 @@
+11.4.12-MariaDB
+0210_ig_presence_capability
+0211_merge_trace_refresh_presence
+0212_human_reply_command
+0213_ig_worker_lane_fence
+0214_ig_technical_debt_case
+0215_gemini_38_quota_profile
+0216_activate_gemini_38_profile
+0217_backfill_reviewed_no_reply_owner
+0218_ig_commerce_source_action_transitions
+0219_ig_memory_producer
+InnoDB
+memory_summary	longtext
+memory_updated_at	datetime(6)
+memory_version	bigint(20) unsigned
+memory_provenance	longtext
+memory_producer_state	longtext
+memory_dirty_at	datetime(6)
+memory_due_at	datetime(6)
+memory_claim_token	varchar(40)
+memory_claim_until	datetime(6)
+memory_claim_snapshot	longtext
+memory_attempts	smallint(5) unsigned
+memory_reconcile_cursor	bigint(20) unsigned
