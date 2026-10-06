@@ -1,0 +1,9 @@
+# Decision evidence production release · 07.10.2026
+
+Functional commit `3066b4d00f346617455fbfafb2b63a934e7fdca1` pushed to main and pulled through canonical SSH. Django check, management state parity, collectstatic/compress and supervised restart passed. PID3331758, main/workers healthy, supervisor/child SHA matched, maintenance OFF; both memory activation flags FALSE. No schema migration or automatic provider check.
+
+Protected production MariaDB READ ONLY: exact revision index6SELECT; client352 revisions167/166 available with12SELECT, physical delivery SENT while model proof/semantic completeness unknown. Client336 revisions107/94 correctly refused unverified historical snapshots with4SELECT each. Current admin cards24/32SELECT, no DML. Quality page5/42 records,23SELECT within79cap;19-row aggregate CSV, no customer/source/revision IDs or text. Its5 sampled outcomes are unknown; zero numerator is not proof of five failed replies. Natural traffic was neither created nor changed.
+
+Authenticated production after reload loaded hashed decision-evidence-v1 CSS/JS (`ff4938d8eb18`, `496cb17ec848`, `e545578184f3`, `12333d01b694`); site JavaScript errors0. Card352 visibly distinguishes a delivered technical holding from a full ordinary reply and leaves missing generation/semantic proof unknown. Manual Stats report visibly shows5/42, unknown5 and sample limits; [redacted aggregate screenshot](production-quality.jpg). No customer names/bodies/private URLs appear in the screenshot.
+
+Native210/210 and local desktop/mobile390/320 accepted; previous failures were fixed before release. Full27-passport acceptance, ledger retention/governance and natural72h/20-turn gate remain open. Work paused by owner after this release; prepared media taxonomy and memory materiality code is not deployed.

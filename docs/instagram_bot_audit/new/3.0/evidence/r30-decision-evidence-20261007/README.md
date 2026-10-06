@@ -1,6 +1,6 @@
 # Decision trace and bounded observations · 07.10.2026
 
-Accepted code/UI; production deployment pending.
+✅ Implemented and deployed in `3066b4d00`. Canonical SSH/runtime and authenticated production UI verified; [production proof](PRODUCTION_RELEASE_2026-10-07.md).
 
 P2-4/P2-8 read existing revision/request/attempt/proposal/effect/receipt identities, without a second decision ledger. Exact original source and reset/erasure guards, OPERATE+VIEW_PII capabilities (reviewer dominant deny), GET-only/no-store/no provider/bootstrap/DML. Generation winner, physical delivery, semantic coverage and manager task/notification remain independent. Static/no-reply included in cursor index; historical manifest/routing gaps are explicitly unknown, never reconstructed from today's prompt. No hidden model reasoning or customer prose/private URLs/key aliases exposed.
 
