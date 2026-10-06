@@ -49,10 +49,15 @@ class ReplyAuthorityContextTests(TestCase):
                 [("merchandise", "850.00"), ("delivery", "120.00"), ("payable", "970.00")])
             self.assertNotIn(Decimal("970"), context.authorized_prices)
             self.assertFalse(context.payment_confirmed)
+            self.assertIn(("size", "L", rows[1].pk), context.agreement_choices)
+            self.assertIn(("color", "біла", rows[1].pk), context.agreement_choices)
+            self.assertTrue(validate_reply_truth("За домовленістю: біла футболка, розмір L, oversize.", context=context).valid)
+            self.assertFalse(validate_reply_truth("За домовленістю: біла футболка L є в наявності.", context=context).valid)
             self.assertTrue(validate_reply_truth("За розрахунком менеджера: футболка 850 грн, доставка 120 грн, разом 970 грн.", context=context).valid)
             rows[-1].text = "Інша ціна"
             rows[-1].save(update_fields=["text"])
             self.assertEqual(build_reply_truth_context(client).conversation_amounts, ())
+            self.assertEqual(build_reply_truth_context(client).agreement_choices, ())
             rows[-1].text = "850 грн + 120 доставка = 970 грн"
             rows[-1].save(update_fields=["text"])
             InstagramBotMessage.objects.create(client=client, sender_id=client.igsid, role="user",
