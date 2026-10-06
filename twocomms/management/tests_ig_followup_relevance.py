@@ -133,6 +133,14 @@ class PriceReplyPipelineTests(TransactionTestCase):
             "bytes": len(body), "content_hash": hashlib.sha256(body).hexdigest(), "private_storage": True,
             "storage_name": "ig-private/price-image"}]
         source.save(update_fields=["private_media_state", "attachment_media"])
+        # The live ingress persists all accepted sources before preparation.
+        # This direct-message fixture must exercise that same DB-only producer.
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        for accepted_source in (case.source, question, source):
+            with transaction.atomic():
+                reduced = reduce_inbound_commerce_source(case.customer, accepted_source,
+                    expected_provider_namespace="instagram_login:owner-1")
+            self.assertTrue(reduced.ready, reduced.reason)
         turn = IgCustomerTurn.objects.create(client=case.customer, primary_source_message=source,
             window_started_at=timezone.now(), window_deadline=timezone.now())
         IgTurnMessage.objects.create(turn=turn, message=source, ordinal=1, role="user")
@@ -184,13 +192,23 @@ class FollowupRelevanceTests(TransactionTestCase):
         self.now = datetime(2026, 9, 14, 10, tzinfo=dt_timezone.utc)
 
     def message(self, text, **kwargs):
-        return InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid, role="user", text=text, **kwargs)
+        return InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid, role="user", text=text,
+            **{"source": "webhook", "provider_namespace": "instagram_login:purpose-fixture", **kwargs})
 
     def revision(self, messages):
+        from management.services.ig_revision_outbox import _digest
         sources = SimpleNamespace(select_related=lambda *args: SimpleNamespace(order_by=lambda *args: [SimpleNamespace(message=row) for row in messages]))
-        return SimpleNamespace(pk=123, sources=sources, snapshot_digest="a"*64)
+        bundle = {"sources": [{"message_id": row.pk} for row in messages]}
+        return SimpleNamespace(pk=123, client_id=self.client_row.pk, sources=sources,
+            bundle_snapshot=bundle, snapshot_digest=_digest(bundle))
 
     def schedule(self, message, *, sent_at=None, revision=None):
+        if self.client_row.current_commercial_episode_id is None:
+            self.episode = IgCommercialEpisode.objects.create(client=self.client_row, sequence=1,
+                materialization_key="followup-relevance-current")
+            IgCommercialEpisode.objects.filter(pk=self.episode.pk).update(opened_at=self.now-timedelta(days=1))
+            self.client_row.current_commercial_episode = self.episode
+            self.client_row.save(update_fields=["current_commercial_episode"])
         row = SimpleNamespace(pk=45, group="substantive_text", terminal_at=sent_at or self.now)
         revision = revision or self.revision([message])
         with transaction.atomic(), patch.object(policy, "_client_allows_followup", return_value=(True, "")), patch.object(policy, "_update_client_next"), patch("management.services.ig_revision_followups.delivered_price_answer", return_value=True):

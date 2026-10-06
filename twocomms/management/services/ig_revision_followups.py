@@ -28,6 +28,8 @@ from management.services.ig_revision_outbox import PublicationBinding, _digest, 
 RECEIPT_KEY = "normal_followups"
 VERSION = "revision-normal-followups-v2"
 CURSOR_VERSION = "revision-followup-evaluation-v1"
+BINDING_VERSION = "revision-followup-commerce-v1"
+_DEAL_UNSET = object()
 AUTOMATIC_SALES_KINDS = ("qualification", "payment", "thinking", "rescue", "final")
 
 
@@ -280,6 +282,128 @@ def delivered_price_answer(client, rows):
     return False
 
 
+def capture_followup_commerce_binding(client, revision, decision, *, lock=False):
+    """Bind a source intent to its canonical current purchase, never latest deal.
+
+    An episode-only inquiry has no line or recipient authority. If a selection
+    exists, its active line must have original-source proof. This is a read
+    adapter over existing records, and grants no payment or send permission.
+    """
+    from hashlib import sha256
+    from management.models import IgCommercialEpisode, IgCommerceSelectionSession, IgCommerceTurnDecision
+    from management.services.ig_commerce_projection import captured_selection_for
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+
+    current = IgClient.objects.filter(pk=client.pk).values("current_commercial_episode_id", "privacy_erasure_started_at").first()
+    if not current or current["privacy_erasure_started_at"]:
+        return {}, None, "followup_episode_unavailable"
+    episodes = IgCommercialEpisode.objects.filter(pk=current["current_commercial_episode_id"], client_id=client.pk)
+    episode = (episodes.select_for_update() if lock else episodes).first()
+    if episode is None:
+        return {}, None, "followup_episode_missing"
+    if episode.open_slot != 1 or episode.state not in {episode.State.ACTIVE, episode.State.ORDER_CREATED}:
+        return {}, None, "followup_episode_not_current"
+    if episode.primary_payment_review_id and episode.primary_payment_review.client_id != client.pk:
+        return {}, None, "followup_payment_scope_changed"
+    if getattr(revision, "client_id", None) != client.pk or not revision.snapshot_digest or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
+        return {}, None, "followup_source_changed"
+    ids = list(decision.get("source_message_ids") or [])
+    refs = sorted(set(ids) | set(decision.get("commerce_evidence_refs") or []))
+    if not ids or ids != sorted(row["message_id"] for row in revision.bundle_snapshot.get("sources", ())) or not refs:
+        return {}, None, "followup_intent_binding_missing"
+    floor = conversation_route_reset_floor(client.pk)
+    opened_floor = int(episode.opened_watermark_message_id or 0)
+    if min(refs) < max(floor, opened_floor):
+        return {}, None, "followup_source_before_episode"
+    sources = list(InstagramBotMessage.objects.filter(pk__in=refs, client_id=client.pk,
+        sender_id=client.igsid, role="user", source__in=("webhook", "poll")).order_by("pk"))
+    if [row.pk for row in sources] != refs:
+        return {}, None, "followup_source_unavailable"
+    if len({row.provider_namespace for row in sources}) != 1 or not sources[0].provider_namespace:
+        return {}, None, "followup_source_scope_unproven"
+    opening = InstagramBotMessage.objects.filter(pk=opened_floor, client_id=client.pk, role="user").first() if opened_floor else None
+    if not opened_floor:
+        # First intake creates the episode *after* receiving its source. The
+        # original immutable intake decision proves that event-time boundary;
+        # episode.created_at is not the start of the customer's request.
+        from management.services.ig_revision_commerce import INGRESS_SOURCE_PRODUCER
+        first_decisions = IgCommerceTurnDecision.objects.filter(session__commercial_episode_id=episode.pk,
+            session__client_id=client.pk, is_stale=False, transition__isnull=False,
+            source_message__client_id=client.pk, source_message__sender_id=client.igsid,
+            source_message__role="user", source_message__source="webhook",
+            request_payload__source_binding__producer=INGRESS_SOURCE_PRODUCER,
+        ).select_related("source_message", "transition").order_by("session__generation", "transition__from_revision", "pk")[:8]
+        for item in first_decisions:
+            facts = (item.result_payload or {}).get("source_facts") or {}
+            candidate = item.source_message
+            if (facts.get("source_message_id") == candidate.pk
+                and facts.get("source_digest") == sha256(candidate.text.encode()).hexdigest()
+                and facts.get("episode_id") == episode.pk and candidate.provider_namespace == sources[0].provider_namespace
+                and item.transition.source_message_id == candidate.pk and item.transition.session_id == item.session_id
+                and item.transition.to_revision == item.transition.from_revision + 1):
+                opening = candidate
+                break
+    opening_at = (opening.provider_created_at or opening.created_at) if opening else episode.opened_at
+    if any((row.provider_created_at or row.created_at) < opening_at for row in sources):
+        return {}, None, "followup_historical_source"
+    sessions = list(IgCommerceSelectionSession.objects.filter(client_id=client.pk,
+        commercial_episode_id=episode.pk, open_slot=1, state=IgCommerceSelectionSession.State.OPEN)[:2])
+    if len(sessions) > 1:
+        return {}, None, "followup_selection_ambiguous"
+    selection = captured_selection_for(client, episode_id=episode.pk) if sessions else {}
+    if sessions and sessions[0].lines and not selection:
+        return {}, None, "followup_selection_unproven"
+    if selection and any(item.get("source_message_id", 0) > max(ids)
+        for item in selection.get("evidence", {}).values()):
+        return {}, None, "followup_selection_after_source"
+    scope = decision.get("source_scope") or {}
+    if (scope.get("commercial_episode_id") not in (None, episode.pk)
+        or (scope.get("line_id") and scope["line_id"] != selection.get("line_id"))):
+        return {}, None, "followup_intent_scope_changed"
+    deals = IgDeal.objects.filter(pk=episode.deal_id, client_id=client.pk)
+    deal = (deals.select_for_update() if lock else deals).select_related("active_checkout_proposal").first() if episode.deal_id else None
+    if episode.deal_id and (deal is None or deal.status == IgDeal.Status.CANCELLED):
+        return {}, None, "followup_deal_unavailable"
+    if deal and deal.active_checkout_proposal and deal.active_checkout_proposal.commercial_episode_id != episode.pk:
+        return {}, None, "followup_checkout_scope_changed"
+    from management.services.ig_commerce_turns import parse_turn
+    parsed_sources = [parse_turn(row.text) for row in sources if row.pk in ids]
+    if (deal and any(item.new_purchase_requested for item in parsed_sources)
+        and not set(episode.repeat_evidence_message_ids or []).intersection(ids)):
+        return {}, None, "followup_new_purchase_episode_unbound"
+    if any(item.recipient_id and item.recipient_id != selection.get("recipient_id") for item in parsed_sources):
+        return {}, None, "followup_recipient_scope_unproven"
+    binding = {"version": BINDING_VERSION, "client_id": client.pk, "episode_id": episode.pk,
+        "deal_id": episode.deal_id, "reset_floor": floor, "opened_watermark": opened_floor,
+        "revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
+        "purpose": decision.get("purpose"), "cycle_key": decision.get("cycle_key"),
+        "source_message_ids": ids, "commerce_evidence_refs": decision.get("commerce_evidence_refs") or [],
+        "episode_opening_source_id": getattr(opening, "pk", None),
+        "source_digests": {str(row.pk): _digest({"text": row.text, "namespace": row.provider_namespace,
+            "event_at": (row.provider_created_at or row.created_at).isoformat()}) for row in sources},
+        "line_id": selection.get("line_id", ""), "recipient_id": selection.get("recipient_id", ""),
+        "selection_digest": _digest({"source_choice": selection, "session": sessions[0].snapshot() if sessions else None}),
+        "selection_session_id": sessions[0].pk if sessions else None}
+    return binding, deal, ""
+
+
+def followup_commerce_binding_reason(client, binding, *, deal_id=_DEAL_UNSET):
+    """Read-only current-basis check used by existing policy and send gates."""
+    from management.services.ig_turn_intent import build_turn_intent
+
+    if not isinstance(binding, Mapping) or binding.get("version") != BINDING_VERSION:
+        return "followup_commerce_binding_missing"
+    revision = IgCustomerTurnRevision.objects.filter(pk=binding.get("revision_id"), client_id=client.pk).first()
+    if revision is None:
+        return "followup_source_unavailable"
+    current, deal, reason = capture_followup_commerce_binding(client, revision, build_turn_intent(client, revision))
+    if reason:
+        return reason
+    if current != binding or (deal_id is not _DEAL_UNSET and deal_id != getattr(deal, "pk", None)):
+        return "followup_commerce_binding_changed"
+    return ""
+
+
 def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
     from management.services import bot_followups as policy
 
@@ -302,7 +426,28 @@ def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
                                "due_at": task.due_at.isoformat() if task else ""}
         return result if include_cursor else result[:2]
 
-    deal = IgDeal.objects.select_for_update().select_related("active_checkout_proposal").filter(client=client).exclude(status=IgDeal.Status.CANCELLED).order_by("-pk").first()
+    from management.services.ig_turn_intent import build_turn_intent, purpose_blockers, ordinary_next_send_at
+
+    decision = build_turn_intent(client, revision)
+    cursor["source_message_ids"] = list(decision.get("source_message_ids") or [])
+    purpose = decision["purpose"]
+    offsets = {"price_inquiry": timedelta(hours=3), "requested_selection": timedelta(minutes=90)}
+    if purpose not in offsets or not decision["commerce_evidence_refs"]:
+        # Unrelated/no-sales replies do not need invented purchase scope. Keep
+        # the existing paid service case only when its current episode owns it.
+        from management.models import IgCommercialEpisode
+        current_episode = IgCommercialEpisode.objects.filter(pk=client.current_commercial_episode_id,
+            client_id=client.pk).select_related("deal").first()
+        current_deal = current_episode.deal if current_episode and current_episode.deal_id else None
+        if current_deal is None or policy.resolve_followup_scenario(client, deal=current_deal) != "paid_missing_delivery":
+            return finish(None, "current_purpose_not_followup_eligible")
+    binding, deal, binding_reason = capture_followup_commerce_binding(client, revision, decision, lock=True)
+    if binding_reason:
+        return finish(None, binding_reason)
+    cursor["commerce_binding"] = binding
+    decision["source_scope"] = {"commercial_episode_id": binding["episode_id"],
+        "line_id": binding["line_id"], "source_message_ids": binding["source_message_ids"],
+        "route_kinds": ["catalog"]}
     scenario = policy.resolve_followup_scenario(client, deal=deal)
     if scenario == "paid_missing_delivery":
         obsolete = IgFollowUpTask.objects.filter(
@@ -323,12 +468,6 @@ def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
         # ready payment URL which might create a second invoice.
         task = _fulfillment_case(client, deal, revision, anchor, now)
         return finish(task, "paid_fulfillment_case")
-    from management.services.ig_turn_intent import build_turn_intent, purpose_blockers, ordinary_next_send_at
-
-    decision = build_turn_intent(client, revision)
-    cursor["source_message_ids"] = list(decision.get("source_message_ids") or [])
-    purpose = decision["purpose"]
-    offsets = {"price_inquiry": timedelta(hours=3), "requested_selection": timedelta(minutes=90)}
     if purpose not in offsets or not decision["commerce_evidence_refs"]:
         return finish(None, "current_purpose_not_followup_eligible")
     if deal and deal.active_checkout_proposal:
@@ -338,7 +477,7 @@ def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
     blocker = purpose_blockers(client, decision, revision=revision)
     if blocker:
         return finish(None, blocker)
-    allowed, reason = policy._client_allows_followup(client, deal=deal, kind=IgFollowUpTask.Kind.THINKING)
+    allowed, reason = policy._client_allows_followup(client, deal=deal, kind=IgFollowUpTask.Kind.THINKING, commerce_binding=binding)
     if not allowed:
         return finish(None, reason)
     sent_parts = [row for row in rows if row.group == "substantive_text"]
@@ -368,6 +507,7 @@ def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
             "event_payload": {"origin": "ordinary_intent_followup", "revision_id": revision.pk,
                               "snapshot_digest": revision.snapshot_digest, "purpose": purpose,
                               "cycle_key": decision["cycle_key"], "source_message_ids": decision["source_message_ids"],
+                              "commerce_binding": binding,
                               "commerce_evidence_refs": decision["commerce_evidence_refs"],
                               "route_decision_id": decision["route_decision_id"],
                               "informational_debt_refs": decision.get("informational_debt_refs", []),
@@ -384,6 +524,8 @@ def _schedule(client, revision, rows, anchor, now, *, include_cursor=False):
     if task.client_id != client.pk:
         raise _Blocked("followup_timer_identity_mismatch")
     if not created:
+        if task.deal_id != getattr(deal, "pk", None) or (task.event_payload or {}).get("commerce_binding") != binding:
+            return finish(None, "followup_timer_binding_changed")
         return finish(task, "ordinary_cycle_already_reserved")
     policy._update_client_next(client)
     return finish(task, "normal_followup_scheduled")

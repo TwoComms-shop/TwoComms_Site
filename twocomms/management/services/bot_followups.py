@@ -601,8 +601,15 @@ def _client_allows_followup(
     *,
     deal: IgDeal | None = None,
     kind: str | None = None,
+    commerce_binding: dict | None = None,
 ) -> tuple[bool, str]:
     is_fulfillment = kind == IgFollowUpTask.Kind.FULFILLMENT
+    if commerce_binding is not None:
+        from management.services.ig_revision_followups import followup_commerce_binding_reason
+
+        binding_reason = followup_commerce_binding_reason(client, commerce_binding, deal_id=getattr(deal, "pk", None))
+        if binding_reason:
+            return False, binding_reason
     from management.services.instagram_bot import allowed_sender_ids
 
     allowed_senders = allowed_sender_ids(InstagramBotSettings.load())
@@ -644,10 +651,31 @@ def _client_allows_followup(
         if truth in TERMINAL_NEGATIVE_PAYMENT_TRUTHS:
             return False, "payment_reversed"
     else:
-        if not is_fulfillment and client_has_confirmed_purchase(client):
-            return False, "already_converted"
-        if client_has_terminal_negative_payment(client):
-            return False, "payment_reversed"
+        if commerce_binding is None:
+            # Legacy consumers retain their original lifetime boundary.
+            if not is_fulfillment and client_has_confirmed_purchase(client):
+                return False, "already_converted"
+            if client_has_terminal_negative_payment(client):
+                return False, "payment_reversed"
+        else:
+            from management.models import IgCommercialEpisode
+            from management.services.bot_payment_truth import current_payment_confirmation
+
+            episode = IgCommercialEpisode.objects.get(pk=commerce_binding["episode_id"], client_id=client.pk)
+            scoped_client = IgClient.objects.get(pk=client.pk)
+            if not is_fulfillment and current_payment_confirmation(scoped_client).get("confirmed"):
+                return False, "already_converted"
+            # A current order/review can own payment truth without a direct
+            # episode.deal pointer. Order creation itself proves no payment.
+            review = episode.primary_payment_review
+            related_deals = Q(pk=review.deal_id) if review is not None and review.client_id == client.pk and review.deal_id else Q(pk__in=[])
+            if episode.intended_order_id:
+                related_deals |= Q(order_id=episode.intended_order_id)
+            if IgDeal.objects.filter(related_deals, client_id=client.pk).filter(
+                Q(payment_projection__truth__in=TERMINAL_NEGATIVE_PAYMENT_TRUTHS)
+                | Q(payment_projection__isnull=True, payment_truth__in=TERMINAL_NEGATIVE_PAYMENT_TRUTHS)
+            ).exists():
+                return False, "payment_reversed"
     if client.primary_objection == IgClient.Objection.NO_BUY or client.lost_reason in {"no_buy", "stop"}:
         return False, "client_no_buy"
     return True, ""

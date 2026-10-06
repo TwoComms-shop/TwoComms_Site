@@ -843,6 +843,12 @@ class RevisionLiveTests(TransactionTestCase):
         from management.services.ig_revision_execution import finalize_sent_revision_effects
 
         self.source = self._message("Допоможіть підібрати розмір", "followup-selection")
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        from django.db import transaction
+        with transaction.atomic():
+            intake = reduce_inbound_commerce_source(self.customer, self.source,
+                expected_provider_namespace=self.source.provider_namespace)
+        self.assertTrue(intake.ready, intake.reason)
         self.turn = IgCustomerTurn.objects.create(client=self.customer, primary_source_message=self.source, window_started_at=timezone.now(), window_deadline=timezone.now())
         IgTurnMessage.objects.create(turn=self.turn, message=self.source, ordinal=1, role="user")
         self.revision = create_collecting_revision(self.turn, [self.source], bypass_quiet=True).revision

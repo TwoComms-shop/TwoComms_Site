@@ -35,6 +35,11 @@ class RevisionNormalFollowupTests(TransactionTestCase):
         product = Product.objects.create(title="Answered model", slug="answered-model", category=category, price=1090, status="published")
         self.client_row.current_product = product
         self.client_row.save(update_fields=["current_product"])
+        from management.models import IgCommercialEpisode
+        self.episode = IgCommercialEpisode.objects.create(client=self.client_row, sequence=1,
+            materialization_key=f"followup-source:{self.source.pk}", opened_watermark_message_id=self.source.pk)
+        self.client_row.current_commercial_episode = self.episode
+        self.client_row.save(update_fields=["current_commercial_episode"])
         self.settings.ai_enabled = False
         self.settings.trigger_text = self.source.text
         self.settings.reply_text = "Вартість цієї моделі — 1090 грн."
@@ -257,6 +262,8 @@ class RevisionNormalFollowupTests(TransactionTestCase):
 
     def test_paid_missing_delivery_creates_only_deferred_human_case(self):
         deal = IgDeal.objects.create(client=self.client_row, status="paid", amount=900)
+        self.episode.deal = deal
+        self.episode.save(update_fields=["deal"])
         obsolete = IgFollowUpTask.objects.create(client=self.client_row, deal=deal, kind="fulfillment", reason="paid_missing_delivery", trigger="time", due_at=timezone.now(), message_text="Надішліть повну адресу в Direct")
         self._sent()
         with patch("management.services.instagram_bot._deliver_manager_notification") as deliver:

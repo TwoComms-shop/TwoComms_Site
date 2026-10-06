@@ -1,0 +1,17 @@
+Creating test database for alias 'default'...
+Destroying old test database for alias 'default'...
+...............................................................................ig_bot event=policy_not_ready level=error detail=knowledge_directory_missing
+..................................................ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.0с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+.................................s...................................................................................
+----------------------------------------------------------------------
+Ran 281 tests in 23.434s
+
+OK (skipped=1)
+Destroying test database for alias 'default'...
+Found 281 test(s).
+System check identified no issues (0 silenced).

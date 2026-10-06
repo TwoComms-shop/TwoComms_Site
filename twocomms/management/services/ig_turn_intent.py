@@ -548,14 +548,24 @@ def revalidate_followup_intent(task, now=None):
         return "permission_transition_pending"
     if IgWebhookInboxEvent.objects.filter(customer_igsid=client.igsid, decision__in=("accepted", "blocked"), processed_at__isnull=True).exists():
         return "pending_inbound"
+    from management.services.ig_revision_followups import followup_commerce_binding_reason
+    commerce_binding = payload.get("commerce_binding")
+    if commerce_binding is not None:
+        binding_reason = followup_commerce_binding_reason(client, commerce_binding, deal_id=task.deal_id)
+        if binding_reason:
+            return binding_reason
     from management.services.bot_followups import _client_allows_followup
-    allowed, reason = _client_allows_followup(client, deal=task.deal, kind=task.kind)
+    allowed, reason = _client_allows_followup(client, deal=task.deal, kind=task.kind, commerce_binding=commerce_binding)
     if not allowed:
         return reason
     latest = InstagramBotMessage.objects.filter(client=client, role="user").order_by("-pk").first()
     if latest and latest.pk > max(payload.get("source_message_ids") or [0]):
         return "new_customer_statement"
     decision = build_turn_intent(client, revision)
+    if commerce_binding is not None:
+        decision["source_scope"] = {"commercial_episode_id": commerce_binding["episode_id"],
+            "line_id": commerce_binding["line_id"], "source_message_ids": commerce_binding["source_message_ids"],
+            "route_kinds": ["catalog"]}
     if decision.get("cycle_key") != payload.get("cycle_key") or decision.get("purpose") != payload.get("purpose"):
         return "followup_purpose_changed"
     if client.reply_permission_epoch != payload.get("client_permission_epoch"):
