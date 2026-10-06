@@ -813,9 +813,18 @@ def process_due_permission_transitions(
     return processed
 
 
-def permission_transition_snapshot() -> dict[str, object]:
+def permission_transition_snapshot(*, compact=False) -> dict[str, object]:
     """Return redacted operational state for the management status surface."""
     rows = IgPermissionTransitionJob.objects.all()
+    if compact:
+        return {
+            "global_pause_pending": rows.filter(
+                kind=IgPermissionTransitionJob.Kind.GLOBAL_PAUSE,
+                status__in=ACTIVE_STATUSES,
+            ).exists(),
+            "pending": None, "processing": None, "failed": None,
+            "error_kinds": None, "detail_coverage_complete": False,
+        }
     counts = {
         status: rows.filter(status=status).count()
         for status in (

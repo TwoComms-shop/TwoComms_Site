@@ -1,0 +1,35 @@
+maintenance active lease_id=r30-legacy-57f54d-release expires_at=1791309455
+From https://github.com/zainllw0w/TwoComms_Site
+   185420ea5..57f54d151  main       -> origin/main
+Updating 185420ea5..57f54d151
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   8 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   4 +-
+ .../evidence/r30-legacy-human-20261006/README.md   |   9 +
+ .../r30-legacy-human-20261006/accepted-native.log  |  13 ++
+ .../PRODUCTION_RELEASE_2026-10-06.md               |  11 +
+ .../correction-production-postpull.log             |  99 +++++++++
+ .../correction-production-readonly-recheck.log     |   3 +
+ .../services/ig_legacy_human_receipts.py           | 195 +++++++++++++++++
+ twocomms/management/services/ig_revision_echo.py   | 131 ++++++++++--
+ .../services/ig_revision_echo_integration.py       |  21 +-
+ twocomms/management/services/ig_webhook_inbox.py   |  19 ++
+ .../tests_ig_legacy_human_echo_integration.py      | 224 +++++++++++++++++++
+ .../tests_ig_legacy_human_inbox_retry.py           | 157 ++++++++++++++
+ .../management/tests_ig_legacy_human_receipts.py   | 237 +++++++++++++++++++++
+ 14 files changed, 1111 insertions(+), 20 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-legacy-human-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-legacy-human-20261006/accepted-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-production-readonly-recheck.log
+ create mode 100644 twocomms/management/services/ig_legacy_human_receipts.py
+ create mode 100644 twocomms/management/tests_ig_legacy_human_echo_integration.py
+ create mode 100644 twocomms/management/tests_ig_legacy_human_inbox_retry.py
+ create mode 100644 twocomms/management/tests_ig_legacy_human_receipts.py
+System check identified no issues (0 silenced).
+maintenance disabled
+daemon ready under supervisor — ok
+377 objects imported automatically (use -v 2 for details).
+
+{"health": {"main_healthy": true, "process_online": true, "process_pid": 2616919, "stalled": false, "supervisor": {"available": true, "child_pid": 2616919, "child_pid_matches_expected": true, "child_release_sha": "57f54d15181ee3f43d236f8a037e840c50089c64", "last_ensure_seen_at": 1791308565.86, "observed_at": 1791308567.247, "restart_count": 0, "status": "current", "supervisor_release_sha": "57f54d15181ee3f43d236f8a037e840c50089c64"}, "workers_healthy": true}, "legacy_readonly_sample": {"accepted": 0, "ambiguous": 0, "blocked": 0, "examined": 0, "unproven": 0}, "maintenance_active": false, "memory_admission_accepted": false, "memory_generation_enabled": false, "release_sha": "57f54d15181ee3f43d236f8a037e840c50089c64"}

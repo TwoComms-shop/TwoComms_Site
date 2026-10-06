@@ -1,0 +1,7 @@
+CONSOLE_STATUS_NODE_FIXTURE
+console behavioural fixtures PASS: ASC drain, cap, safe text, pause cursor, resume, filter reset, persisted preferences, gap, freshness, invalid schema, denied access
+single-owner status/pause and passive overview fixtures PASS
+
+CONSOLE_PAUSED_REFRESH_NODE_FIXTURE
+console behavioural fixtures PASS: ASC drain, cap, safe text, pause cursor, resume, filter reset, persisted preferences, gap, freshness, invalid schema, denied access
+paused explicit refresh fixtures PASS: one owner, bounded drain, pause retained, next status-only, stale abort, privacy/hidden/invalid gates

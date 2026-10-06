@@ -61,15 +61,19 @@
 .bot-metric .v{max-width:100%;font-size:21px;font-weight:700;line-height:1.2;overflow-wrap:anywhere;word-break:break-word;}
 .bot-metric .v.compact{font-size:14px;line-height:1.25;overflow-wrap:anywhere;}
 .bot-metric .k{max-width:100%;font-size:10.5px;color:#8b95a5;text-transform:uppercase;letter-spacing:0;margin-top:6px;overflow-wrap:anywhere;}
-.bot-overview-diagnostics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin-top:12px;background:#1f2938;border:1px solid #1f2938;border-radius:8px;overflow:hidden;}
-.bot-overview-diagnostic{min-width:0;padding:8px 10px;background:#0d121a;color:#9aa7b9;font-size:11px;line-height:1.4;overflow-wrap:anywhere;word-break:break-word;}
+.bot-overview-diagnostics{display:flex;flex-direction:column;gap:6px;margin-top:12px;}
+.bot-overview-diagnostic{min-width:0;padding:8px 10px;border:1px solid #202a39;border-radius:8px;background:#0d121a;color:#9aa7b9;font-size:11px;line-height:1.4;overflow-wrap:anywhere;word-break:break-word;}
 .bot-overview-diagnostic.error{color:#f87171;}
-.bot-overview-diagnostic.warning{color:#fbbf24;}
+.bot-overview-diagnostic.warning{color:#d8bc76;}
 .bot-overview-diagnostic[hidden]{display:none;}
 .bot-overview-diagnostics[hidden]{display:none;}
 @media(max-width:880px){.bot-metrics{grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media(max-width:560px){.bot-overview-diagnostics{grid-template-columns:1fr;}}
 @media(max-width:360px){.bot-metrics{grid-template-columns:minmax(0,1fr);}}
+.bot-overview-history{margin-top:12px;border-top:1px solid #233043;padding-top:12px;}
+.bot-overview-history>summary{cursor:pointer;color:#b7c6d9;font-size:12.5px;font-weight:600;}
+.bot-overview-history .bot-metrics{margin-top:12px;}
+.bot-overview-history .bot-metric{min-height:70px;}
 
 /* ---- Sales statistics ---- */
 @property --attribution-confirmed-angle{syntax:'<angle>';inherits:false;initial-value:0deg;}
@@ -576,6 +580,31 @@ body.bot-stats-detail-drawer-open{overflow:hidden;}
 .bot-line.warning .e{color:#fbbf24;}
 .bot-line.error .e{color:#f87171;}
 .bot-line .d{color:#c2cad6;}
+.bot-console-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
+.bot-console-tools select,.bot-console-tools input{max-width:100%;min-width:0;border:1px solid #273245;background:#0d131d;color:#d3dce9;border-radius:8px;padding:7px 9px;font:inherit;}
+.bot-console-tools label{display:flex;align-items:center;gap:6px;color:#9aa7b9;font-size:12px;}
+.bot-console-meta{color:#8290a3;font-size:12px;line-height:1.5;margin:8px 0;overflow-wrap:anywhere;}
+.bot-console-empty{padding:24px 10px;color:#77879d;text-align:center;font-family:inherit;font-size:12px;}
+.bot-console-advanced{margin-left:auto;min-width:0;font-size:12px;color:#9aa7b9;}
+.bot-console-advanced summary,.bot-console-source summary{cursor:pointer;}
+.bot-console-advanced>div{display:flex;gap:8px;flex-wrap:wrap;padding-top:8px;}
+.bot-console-source{display:inline-block;margin-left:8px;font-size:11px;color:#8395ad;vertical-align:top;max-width:100%;}
+.bot-console-source small{display:block;overflow-wrap:anywhere;}
+.bot-console-box .bot-line{display:grid;grid-template-columns:64px minmax(110px,180px) minmax(0,1fr);gap:8px;padding:8px 0;border-bottom:1px solid #121925;white-space:normal;min-width:0;}
+.bot-console-box .bot-line .t,.bot-console-box .bot-line .e{margin:0;}
+.bot-overview-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0 10px;}
+.bot-overview-observation{border:1px solid #253144;border-radius:10px;background:#0b111a;padding:14px;min-width:0;}
+.bot-overview-observation strong{display:block;font-size:15px;line-height:1.4;margin:6px 0;}
+.bot-overview-observation.needs-attention{border-color:#655023;background:#18150e;}
+.bot-overview-eyebrow{color:#8fa2b9;font-size:11px;font-weight:600;letter-spacing:.04em;}
+.bot-overview-section{border-top:1px solid #233043;padding:12px 0;min-width:0;}
+.bot-overview-section>summary{cursor:pointer;color:#b7c6d9;font-size:12.5px;font-weight:600;}
+.bot-overview-section-body{padding-top:12px;min-width:0;}
+.bot-overview-owner-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:10px 0;border-bottom:1px solid #1a2535;min-width:0;overflow-wrap:anywhere;}
+.bot-overview-owner-row strong,.bot-overview-owner-row span{font-size:12px;}
+.bot-overview-owner-row small{grid-column:1/-1;}
+.bot-overview-route{font-size:12px;line-height:1.6;overflow-wrap:anywhere;}
+@media(max-width:560px){.bot-overview-cards{grid-template-columns:1fr;}.bot-overview-owner-row{grid-template-columns:1fr;}.bot-console-box{padding:10px;font-size:11.5px;}.bot-console-box .bot-line{grid-template-columns:56px minmax(0,1fr);gap:4px 8px;}.bot-console-box .bot-line .d{grid-column:2;}.bot-console-advanced{margin-left:0;width:100%;}.bot-console-tools select{flex:1;}.bot-overview-observation{padding:12px;}}
 .bot-live-chip{font-size:11px;color:#34d399;display:inline-flex;align-items:center;gap:6px;}
 .bot-live-chip i{width:7px;height:7px;border-radius:50%;background:#34d399;display:inline-block;animation:botpulse 1.6s infinite;}
 
@@ -1223,7 +1252,7 @@ body.bot-drawer-open{overflow:hidden;}
 .bot-console-box::-webkit-scrollbar-thumb,.bot-clients-list::-webkit-scrollbar-thumb,.bot-client-detail::-webkit-scrollbar-thumb,.bot-kb-list::-webkit-scrollbar-thumb,.bot-orders-list::-webkit-scrollbar-thumb{background:#222a39;border-radius:8px;}
 </style>
 <link rel="stylesheet" href="{% static 'management/bot_mobile.css' %}?v=bot-mobile-v1">
-<link rel="stylesheet" href="{% static 'management/gemini_v2_panel.css' %}">
+<link rel="stylesheet" href="{% static 'management/gemini_v2_panel.css' %}?v=gemini-public-evidence-v2">
 {% endblock %}
 
 {% block content %}
@@ -1274,17 +1303,21 @@ body.bot-drawer-open{overflow:hidden;}
           <div class="bot-state-sub" id="bot-state-sub">Завантаження…</div>
         </div>
       </div>
+      <div id="bot-passive-overview" aria-live="polite"><p class="bot-hint">Збираємо локальні спостереження…</p></div>
+      <details class="bot-overview-history">
+        <summary>Коротка статистика та зв’язок</summary>
       <div class="bot-metrics">
         <div class="bot-metric"><div class="v" id="bot-replies">{{ status.replies_count }}</div><div class="k">Відповідей</div></div>
         <div class="bot-metric"><div class="v" id="bot-senders">{{ status.unique_senders }}</div><div class="k">Клієнтів</div></div>
         <div class="bot-metric"><div class="v" id="bot-pending">{{ status.pending }}</div><div class="k">У черзі</div></div>
         <div class="bot-metric"><div class="v" id="bot-lastreply">—</div><div class="k">Остання</div></div>
         <div class="bot-metric"><div class="v" id="bot-heartbeat">—</div><div class="k">Стан зв’язку</div></div>
-        <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Модель</div></div>
+        <div class="bot-metric"><div class="v" id="bot-model">—</div><div class="k">Остання фактична модель</div></div>
         <div class="bot-metric"><div class="v" id="bot-reasoning">—</div><div class="k">Рівень міркування</div></div>
         <div class="bot-metric"><div class="v" id="bot-outbox">—</div><div class="k">Сповіщення</div></div>
         <div class="bot-metric"><div class="v compact" id="bot-reply-barrier">0 · 0</div><div class="k">Перевірка перед відповіддю</div></div>
       </div>
+      </details>
       <div class="bot-overview-diagnostics" id="bot-overview-diagnostics" hidden>
         <div class="bot-overview-diagnostic warning" id="bot-configuration-warning" hidden></div>
         <div class="bot-overview-diagnostic error" id="bot-error" hidden></div>
@@ -1296,9 +1329,17 @@ body.bot-drawer-open{overflow:hidden;}
     <div class="bot-card">
       <div class="bot-card-head">
         <h2>Онлайн-консоль</h2>
-        <span class="bot-live-chip"><i></i> live</span>
+        <span class="bot-console-meta">Події та їхні джерела</span>
       </div>
+      <div class="bot-console-tools">
+        <select id="bot-console-category" aria-label="Тип подій"><option value="all">Важливі події</option><option value="client">Повідомлення клієнтів</option><option value="decision">Рішення та відповіді</option><option value="manager">Дії менеджера</option><option value="errors">Помилки та попередження</option><option value="routine">Службові події</option><option value="unknown">Історичні події</option></select>
+        <button type="button" class="bot-mini-btn" id="bot-console-pause" aria-pressed="false">Пауза</button>
+        <button type="button" class="bot-mini-btn" id="bot-console-refresh">Оновити стрічку</button>
+        <details class="bot-console-advanced"><summary>Уточнити пошук</summary><div><label>Клієнт <input id="bot-console-client" type="text" inputmode="numeric" placeholder="ID" aria-label="ID клієнта" size="8"></label><label>Причина <select id="bot-console-reason"><option value="">Усі причини</option><option value="failed">Помилка</option><option value="delivery_unknown">Невідома доставка</option><option value="partial_delivery">Часткова доставка</option><option value="provider_unavailable">Провайдер недоступний</option><option value="provider_timeout">Таймаут провайдера</option><option value="quota_denied">Допуск за квотою</option><option value="source_changed">Зміна джерела</option></select></label><label><input id="bot-console-routine" type="checkbox"> Показувати службові</label></div></details>
+      </div>
+      <div class="bot-console-meta" id="bot-console-freshness" role="status">Дані ще не отримано</div>
       <div class="bot-console-box" id="bot-console"></div>
+      <details class="bot-console-meta"><summary>Актуальність і межі стрічки</summary><p id="bot-console-range">Діапазон ще не отримано.</p><p>Пауза зупиняє стрічку; операційний стан продовжує оновлюватися. Історичний текст повідомлень тут не відображається.</p></details>
     </div>
     {% if bot_is_admin %}
     <div class="bot-card" id="bot-notification-review" style="display:none;margin-top:16px;">
@@ -1838,7 +1879,8 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=selection-corrections-v1"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
-{% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=30b82e345"></script>{% endif %}
+{% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=gemini-public-evidence-v2"></script>{% endif %}
+<script src="{% static 'management/ig_console.js' %}?v=console-overview-v2"></script>
 <script>
 (function(){
   const csrf = (document.querySelector('input[name=csrfmiddlewaretoken]')||{}).value || '';
@@ -1968,27 +2010,27 @@ body.bot-drawer-open{overflow:hidden;}
     if(!overviewDiagnostics)return;
     overviewDiagnostics.hidden=!Array.from(overviewDiagnostics.children).some(row=>!row.hidden);
   }
-  let lastId = 0;
-  function appendLog(items){
-    if(!items||!items.length) return;
-    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-    items.forEach(it=>{
-      if(it.id<=lastId) return; lastId=it.id;
-      const div=document.createElement('div');
-      div.className='bot-line '+(it.level||'info');
-      div.innerHTML='<span class="t">'+esc(it.time)+'</span><span class="e">'+esc(it.event)+'</span><span class="d">'+esc(it.detail)+'</span>';
-      box.appendChild(div);
-    });
-    while(box.children.length>400) box.removeChild(box.firstChild);
-    if(atBottom) box.scrollTop=box.scrollHeight;
-  }
+  const consoleController=window.IgConsole.create({
+    endpoint:'{% url "management_bot_status_api" %}',container:box,
+    enabled:{% if bot_can_operate and bot_can_view_pii %}true{% else %}false{% endif %},
+    autoPoll:false,statusPolling:true,
+    pauseButton:document.getElementById('bot-console-pause'),statusElement:document.getElementById('bot-console-freshness'),rangeElement:document.getElementById('bot-console-range'),
+    onSnapshot:data=>{if(data.status){lastStatusOnline=data.status.daemon_online===true;render(data.status);}window.IgOverview.render(document.getElementById('bot-passive-overview'),data.overview);}
+  });
+  const consoleCategory=document.getElementById('bot-console-category'),consoleClient=document.getElementById('bot-console-client'),consoleReason=document.getElementById('bot-console-reason'),consoleRoutine=document.getElementById('bot-console-routine');
+  const consoleFilters=consoleController.getState().filters;
+  if(consoleFilters.reason&&!Array.from(consoleReason.options).some(option=>option.value===consoleFilters.reason)){const option=document.createElement('option');option.value=consoleFilters.reason;option.textContent=window.IgConsole.reasonLabel(consoleFilters.reason);consoleReason.appendChild(option);}
+  consoleCategory.value=consoleFilters.category;consoleClient.value=consoleFilters.client_id;consoleReason.value=consoleFilters.reason;consoleRoutine.checked=consoleFilters.include_routine;
+  [consoleCategory,consoleClient,consoleReason,consoleRoutine].forEach(input=>input.addEventListener('change',()=>{consoleController.setFilters({category:consoleCategory.value,client_id:consoleClient.value,reason:consoleReason.value,include_routine:consoleRoutine.checked});poll();}));
+  document.getElementById('bot-console-refresh').addEventListener('click',()=>{consoleController.refresh();poll();});
   function setBadge(el, n){ if(!el) return; if(n>0){ el.textContent=n; el.style.display=''; } else { el.style.display='none'; } }
   function render(st){
     const online = !!st.daemon_online;
     const pill=document.getElementById('bot-pill'), pillT=document.getElementById('bot-pill-text');
     const dot=document.getElementById('bot-dot');
     let txt, sub, cls;
-    if(st.state==='maintenance'){ txt='Технічна пауза'; sub='Автоматичний обробник і контроль запуску тимчасово зупинені'; cls='off'; }
+    if(st.state==='unavailable'){ txt='Дані стану недоступні'; sub='Живий процес, черги та результати не підтверджені цим читанням'; cls='idle'; }
+    else if(st.state==='maintenance'){ txt='Технічна пауза'; sub='Автоматичний обробник і контроль запуску тимчасово зупинені'; cls='off'; }
     else if(st.state==='worker_recovering'){ txt='Відновлюємо обробник'; sub='База даних доступна; supervisor запускає новий процес (зазвичай кілька секунд)'; cls='idle'; }
     else if(st.state==='enabled_but_worker_missing'){ txt='Обробник не запущено'; sub='Бот увімкнено, система відновлює автоматичний обробник (до 1 хв)'; cls='off'; }
     else if(st.state==='worker_error'){ txt='Обробник не відновився'; sub='База даних доступна, але supervisor не підтвердив новий процес за 30 секунд'; cls='off'; }
@@ -2001,18 +2043,19 @@ body.bot-drawer-open{overflow:hidden;}
     }
     else if(st.state==='ingress_degraded'){ txt='Прийом повідомлень порушено'; sub='Процес працює, але нові повідомлення не надходять'; cls='off'; }
     else if(!online){ txt='Офлайн'; sub='Автоматичний обробник не запущено'; cls='off'; }
-    else if(st.is_enabled){ txt='Працює'; sub='Агент онлайн і відповідає'; cls='on'; }
+    else if(st.is_enabled===undefined){ txt='Процес онлайн'; sub=st.state==='disabled'?'Відповіді призупинено':'Стан відповідей недоступний за поточними правами'; cls='idle'; }
+    else if(st.is_enabled){ txt='Процес онлайн'; sub='Перевірте поступ черг і підтверджені результати нижче'; cls='on'; }
     else { txt='Зупинено'; sub='Агент онлайн, але не відповідає'; cls='idle'; }
     pill.className='bot-pill '+cls; pillT.textContent=txt;
     if(dot) dot.className='bot-dot '+(cls==='on'?'on':cls==='idle'?'idle':'off');
     document.getElementById('bot-state-text').textContent=txt;
     document.getElementById('bot-state-sub').textContent=sub;
-    document.getElementById('bot-replies').textContent=st.replies_count;
-    var s2=document.getElementById('bot-senders'); if(s2) s2.textContent=st.unique_senders;
-    var p2=document.getElementById('bot-pending'); if(p2) p2.textContent=st.pending;
+    document.getElementById('bot-replies').textContent=st.replies_count??'—';
+    var s2=document.getElementById('bot-senders'); if(s2) s2.textContent=st.unique_senders??'—';
+    var p2=document.getElementById('bot-pending'); if(p2) p2.textContent=st.pending??'—';
     document.getElementById('bot-lastreply').textContent=fmt(st.last_reply_at);
     document.getElementById('bot-heartbeat').textContent=fmt(st.heartbeat_at);
-    const activeModel=st.last_gemini_model||st.gemini_effective_model||'';
+    const activeModel=st.last_gemini_model||'';
     document.getElementById('bot-model').textContent=activeModel||'—';
     const reasoning=document.getElementById('bot-reasoning');
     if(reasoning){
@@ -2088,9 +2131,8 @@ body.bot-drawer-open{overflow:hidden;}
   let polling=false; let lastStatusOnline=null;
   function poll(){
     if(polling) return Promise.resolve(); polling=true;
-    return fetch('{% url "management_bot_status_api" %}?after_id='+lastId, {headers:{'X-Requested-With':'XMLHttpRequest'}})
-      .then(async response=>{const data=await readJsonResponse(response,'Не вдалося оновити стан бота.');if(!response.ok||!data.success)throw new Error(data.error||'Не вдалося оновити стан бота.');return data;})
-      .then(d=>{lastStatusOnline=!!d.status.daemon_online;render(d.status);appendLog(d.log);if(globalFeedback&&globalFeedback.dataset.source==='poll'){setGlobalFeedback('');delete globalFeedback.dataset.source;}})
+    return consoleController.poll()
+      .then(success=>{if(!success)throw new Error('Не вдалося оновити локальний стан. Попередні спостереження збережено.');if(globalFeedback&&globalFeedback.dataset.source==='poll'){setGlobalFeedback('');delete globalFeedback.dataset.source;}})
       .catch(error=>{setGlobalFeedback(error.message||'Не вдалося оновити стан бота.','error');if(globalFeedback)globalFeedback.dataset.source='poll';}).finally(()=>{ polling=false; });
   }
   async function action(url,{confirmMessage='',successMessage=''}={}){

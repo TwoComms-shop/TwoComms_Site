@@ -1,3 +1,50 @@
+/* Pure identity merge used by the live panel and isolated behavioural gates. */
+(function(global){
+  'use strict';
+  function merge(existing,incoming,{cap=100,capturedAt=null,preserveLoaded=true,append=false}={}){
+    const copy=value=>JSON.parse(JSON.stringify(value));
+    const old=existing.map(copy),incomingSeen=new Set();
+    const fresh=incoming.filter(value=>{if(!value.request_ref)return false;if(incomingSeen.has(value.request_ref))return false;incomingSeen.add(value.request_ref);return true;}).map(value=>({...copy(value),_snapshot_at:capturedAt}));
+    const oldByRef=new Map(old.filter(item=>item.request_ref).map(item=>[item.request_ref,item]));
+    const updated=new Set(fresh.filter(item=>oldByRef.has(item.request_ref)).map(item=>item.request_ref));
+    const additions=fresh.filter(item=>item.request_ref&&!oldByRef.has(item.request_ref));
+    const room=Math.max(0,cap-old.length),accepted=preserveLoaded?additions.slice(0,room):additions;
+    const admitted=new Set(accepted.map(item=>item.request_ref));
+    const freshByRef=new Map(fresh.map(item=>[item.request_ref,item]));
+    const ordered=append?[...old.map(item=>freshByRef.get(item.request_ref)||item),...accepted]:[...fresh.filter(item=>updated.has(item.request_ref)||admitted.has(item.request_ref)),...old];
+    const seen=new Set(),items=[];
+    for(const item of ordered){
+      if(item.request_ref&&seen.has(item.request_ref))continue;
+      if(item.request_ref)seen.add(item.request_ref);
+      items.push(item);
+    }
+    return {items:items.slice(0,cap),unshownNew:Math.max(0,additions.length-accepted.length),
+      refreshedRefs:[...updated,...admitted]};
+  }
+  function captureViewport(container){
+    const rows=Array.from(container.querySelectorAll('[data-graph-ref]'));
+    const anchor=rows.find(row=>row.getBoundingClientRect().bottom>0&&row.getBoundingClientRect().top<global.innerHeight);
+    let scroller=container;
+    while(scroller&&!(scroller.scrollHeight>scroller.clientHeight&&/auto|scroll/.test(global.getComputedStyle(scroller).overflowY)))scroller=scroller.parentElement;
+    scroller=scroller||global.document.scrollingElement;
+    const focused=global.document.activeElement;
+    const focusRow=focused&&focused.closest?focused.closest('[data-graph-ref]'):null;
+    const focusCapture=focused&&focused.closest?focused.closest('[data-capture-key]'):null;
+    return {ref:anchor?anchor.dataset.graphRef:null,top:anchor?anchor.getBoundingClientRect().top:null,
+      scroller,scrollTop:scroller?scroller.scrollTop:0,focusRef:focusRow&&container.contains(focusRow)?focusRow.dataset.graphRef:null,focusCapture:focusCapture?focusCapture.dataset.captureKey:null};
+  }
+  function restoreViewport(container,snapshot){
+    const rows=Array.from(container.querySelectorAll('[data-graph-ref]'));
+    const anchor=rows.find(row=>row.dataset.graphRef===snapshot.ref);
+    if(snapshot.scroller){snapshot.scroller.scrollTop=snapshot.scrollTop;
+      if(anchor&&snapshot.top!==null)snapshot.scroller.scrollTop+=anchor.getBoundingClientRect().top-snapshot.top;}
+    if(snapshot.focusRef){const row=rows.find(item=>item.dataset.graphRef===snapshot.focusRef);
+      const nested=row&&snapshot.focusCapture?row.querySelector('[data-capture-key]'):null;
+      const summary=nested?nested.querySelector('summary'):row&&row.querySelector('summary');if(summary)summary.focus({preventScroll:true});}
+  }
+  global.GeminiV2LedgerState={merge,captureViewport,restoreViewport};
+})(typeof window!=='undefined'?window:globalThis);
+
 (function(){
   'use strict';
 
@@ -53,7 +100,7 @@
     in_flight:'Запит виконується',rpm_limited:'RPM тимчасово обмежено',tpm_limited:'TPM тимчасово обмежено',
     rpd_exhausted_until_reset:'RPD вичерпано до скидання',provider_degraded:'Провайдер деградував',
     auth_failed:'Помилка авторизації',model_unavailable_for_project:'Модель недоступна для проєкту',
-    not_configured:'Проєкт не налаштовано',accounting_unknown:'Облік невідомий',
+    not_configured:'Проєкт не налаштовано',accounting_unknown:'Облік невідомий',local_validation_failed:'Локальна перевірка відповіді відхилила чернетку',
   };
   const EXECUTION_LABELS={
     attempted:'Спроба виконана',not_attempted:'Не викликано',pending:'Очікує',not_recorded:'Не зафіксовано',
@@ -66,11 +113,12 @@
   const FAILURE_LABELS={
     blocked:'Заблоковано',empty:'Порожня відповідь',forbidden:'Доступ заборонено',http_408:'HTTP 408',
     http_5xx:'HTTP 5xx',invalid_key:'Ключ відхилено',invalid_payload:'Некоректні вхідні дані',
+    provider_admission_denied:'Локальний admission відхилив виклик',provider_admission_unknown:'Admission не підтверджено',provider_deadline_expired:'Дедлайн до HTTP вичерпано',source_admission_denied:'Джерело втратило допуск до HTTP',source_admission_unavailable:'Допуск джерела недоступний',
     invalid_response:'Некоректна відповідь',lease_busy:'Ресурс зайнятий',malformed_response:'Пошкоджена відповідь',
     model_not_found:'Модель не знайдена',model_overload:'Модель перевантажена',model_unavailable:'Модель недоступна',
     overload:'Перевантаження',permission_denied:'Немає дозволу',provider_error:'Помилка провайдера',
     provider_overload:'Провайдер перевантажений',quarantined:'Проєкт у карантині',quota_429:'Квота 429',
-    read_timeout:'Таймаут читання',request_error:'Помилка запиту',stale_provider_boundary:'Застаріла межа провайдера',
+    read_timeout:'Таймаут читання',request_error:'Помилка запиту',stale_provider_boundary:'Застаріла межа провайдера',local_semantic_rejection:'Локальна перевірка змісту',
     transport:'Транспортна помилка',other:'Інша типізована помилка',
   };
   const SKIP_LABELS={
@@ -140,10 +188,17 @@
     snapshots:{quotas:null,routes:null,attempts:null},
     attemptsItems:[],
     nextCursor:null,
+    paused:false,
+    unshownNew:0,
     controllers:{quotas:null,routes:null,attempts:null,probe:null},
     refreshTimer:0,
     lastRequestAt:{quotas:0,routes:0,attempts:0},
   };
+  const pauseButton=node('button','gemini-v2-more-button','Пауза оновлення');
+  pauseButton.type='button';pauseButton.setAttribute('aria-pressed','false');
+  refreshButton.insertAdjacentElement('afterend',pauseButton);
+  const newestButton=node('button','gemini-v2-more-button','До найновіших');
+  newestButton.type='button';newestButton.hidden=true;pauseButton.insertAdjacentElement('afterend',newestButton);
   const refreshInterval=Math.max(30000,Number(root.dataset.refreshInterval||60000));
 
   function sameOriginUrl(value){
@@ -188,16 +243,37 @@
       &&Array.isArray(route.effective_chain)&&route.base_chain.every(isSafeModel)&&route.effective_chain.every(isSafeModel)
       &&Array.isArray(route.escalation_chain)&&route.escalation_chain.every(isSafeModel));
   }
+  const ADMISSION_REASONS=new Set(['','other','unknown_project','missing_profile','estimator_uncalibrated','provider_block','rpd_exhausted','rpm_exhausted','permit_exhausted','tpm_exhausted','quota_profile_conflict','provider_deadline_expired','policy_manifest_dispatch_missing','source_admission_denied','source_admission_unavailable','claim_replaced','claim_deadline_expired','capture_digest_invalid','scope_changed','source_watermark_advanced','head_changed','source_changed','privacy_erasure','owner_changed','owner_unavailable','generation_disabled','admission_not_enforced','maintenance_active','db_circuit_open','database_circuit_open','client_erasing','customer_reply_priority','analysis_priority','lane_owner_changed','lane_owner_unavailable','not_dispatched','deadline']);
+  const VALIDATOR_CODES=new Set(["actual_media_binding_mismatch", "authority_unavailable", "catalog_selector_missing", "configuration_mismatch", "incomplete_image_coverage", "invalid_response_schema", "invalid_result", "missing_turn_intelligence", "schema_conflicting_control", "schema_control_token_in_reply_text", "schema_invalid_control", "schema_invalid_json", "schema_invalid_reply_text", "schema_invalid_turn_intelligence", "schema_malformed_control", "schema_malformed_payload", "schema_too_many_controls", "source_preference_mismatch", "unauthorized_action", "unauthorized_url", "unknown_inline_coverage", "unknown_inline_hashes", "unnecessary_manager_handoff", "unsupported_currency", "unverified_availability", "unverified_discount", "unverified_order", "unverified_payment", "unverified_price", "unverified_recruitment", "unverified_shipment", "unverified_timing", "unverified_tracking", "validator_error"]);
+  const MANIFEST_CODES=new Set(['other','budget_exceeded','budget_exhausted','ready','budget','scope_mismatch','scope_unknown','source_unknown','source_changed','source_invalid','privacy_erasure','unavailable','not_applicable','missing_source','missing_selector','legacy_context_uncaptured','captured_artifact_unavailable','readiness_unknown','selection_unknown','ambiguous_product','availability_unknown','payment_unknown','consent_unknown','media_unavailable','history_budget','optional_budget','component_scope_mismatch','component_unavailable']);
+  function allowedKeys(value,keys){return isObject(value)&&Object.keys(value).every(key=>keys.includes(key));}
+  function validContextCapture(value){
+    if(value===undefined)return true;
+    if(!allowedKeys(value,['status','reason','reconstruction','counts','budgets','readiness','omissions','digest_presence','publication','versions','payload_stage','effective_mode'])||!['captured','uncaptured','invalid'].includes(value.status)||!Object.hasOwn(CAPTURE_REASONS,value.reason)||value.reconstruction!=='full_payload_not_retained')return false;
+    const counts=['source_messages','history_messages','selected_blocks','omitted_blocks','admitted_part_ids','omitted_part_ids','unavailable_part_ids'];
+    if(!allowedKeys(value.counts,counts)||!Object.values(value.counts).every(number=>Number.isSafeInteger(number)&&number>=0))return false;
+    if(!allowedKeys(value.budgets,['builder_chars','history_entries','source_count','media_parts','request_bytes'])||!Object.values(value.budgets).every(number=>number===null||Number.isSafeInteger(number)&&number>=0))return false;
+    if(![value.readiness,value.omissions].every(values=>isObject(values)&&Object.entries(values).every(([key,number])=>MANIFEST_CODES.has(key)&&Number.isSafeInteger(number)&&number>=0)))return false;
+    if(!allowedKeys(value.digest_presence,['context','logical_input','source_bundle','response_plan','memory_capture'])||!Object.values(value.digest_presence).every(flag=>typeof flag==='boolean'))return false;
+    if(!allowedKeys(value.publication,['version','hash','hash_purpose']))return false;
+    if(Object.keys(value.publication).length&&(!Number.isSafeInteger(value.publication.version)||value.publication.version<=0||!/^[a-f0-9]{64}$/.test(value.publication.hash)||value.publication.hash_purpose!=='published_instruction_collection'))return false;
+    if(!allowedKeys(value.versions,['builder','memory_head_present','canonical_selection','state_view']))return false;
+    return value.status!=='captured'||value.payload_stage==='logical_input'&&['legacy','shadow','unified'].includes(value.effective_mode)&&['ig-turn-intelligence.v1','unrecognized'].includes(value.versions.builder)&&typeof value.versions.memory_head_present==='boolean'&&['source-selection.v1','unknown'].includes(value.versions.canonical_selection)&&['ig-client-state.v1','unknown'].includes(value.versions.state_view);
+  }
+  function validDispatch(value){return value===undefined||allowedKeys(value,['status','reason','payload_stage','provider_phase','http_receipt_recorded','digest_present'])&&['captured','uncaptured','invalid'].includes(value.status)&&Object.hasOwn(CAPTURE_REASONS,value.reason)&&value.payload_stage==='http_dispatch'&&['recorded_started','not_recorded_started'].includes(value.provider_phase)&&typeof value.http_receipt_recorded==='boolean'&&typeof value.digest_present==='boolean';}
+  function validAdmission(value){return value===undefined||allowedKeys(value,['mode','role','decision','reason','authority'])&&['off','shadow','enforced','emergency','unknown'].includes(value.mode)&&['chat','management','checker','call','diagnostic','health_metadata','health_probe','unknown'].includes(value.role)&&['allow','deny','unknown'].includes(value.decision)&&ADMISSION_REASONS.has(value.reason)&&value.authority==='recorded_admission_not_delivery_receipt';}
   function validPublicAttempt(attempt){
     return isObject(attempt)&&isSafeModel(attempt.model)&&isSafeSlot(attempt.slot_id)
       &&typeof attempt.fsm_state==='string'&&typeof attempt.outcome==='string'&&typeof attempt.winner==='boolean'
+      &&validDispatch(attempt.dispatch_capture)&&validAdmission(attempt.admission)
+      &&(attempt.validation===undefined||allowedKeys(attempt.validation,['layer','reason_codes','unknown_reason_count'])&&['none','local_semantic','schema','unknown'].includes(attempt.validation.layer)&&Array.isArray(attempt.validation.reason_codes)&&attempt.validation.reason_codes.length<=12&&attempt.validation.reason_codes.every(code=>VALIDATOR_CODES.has(code))&&Number.isSafeInteger(attempt.validation.unknown_reason_count)&&attempt.validation.unknown_reason_count>=0)
       &&(attempt.quota_block===null||isObject(attempt.quota_block));
   }
   function validateAttempts(data){
     if(!hasExpectedSchema(data)||!Array.isArray(data.items)||data.items.length>50||!(data.next_cursor===null||typeof data.next_cursor==='string'))return false;
     return data.items.every(item=>{
-      if(!isObject(item)||typeof item.request_ref!=='string'||(item.request_ref&&!/^greq_[a-f0-9]{20}$/.test(item.request_ref)))return false;
-      if(!Array.isArray(item.candidate_plan)||!Array.isArray(item.attempts)||!isObject(item.resolution)||!isObject(item.reply))return false;
+      if(!isObject(item)||typeof item.request_ref!=='string'||!/^greq_[a-f0-9]{20}$/.test(item.request_ref))return false;
+      if(!Array.isArray(item.candidate_plan)||!Array.isArray(item.attempts)||!isObject(item.resolution)||!isObject(item.reply)||!validContextCapture(item.context_capture))return false;
       if(item.winner!==null&&!validPublicAttempt(item.winner))return false;
       return item.attempts.every(validPublicAttempt)&&item.candidate_plan.every(candidate=>isObject(candidate)
         &&isSafeModel(candidate.model)&&isSafeSlot(candidate.slot_id)&&Array.isArray(candidate.outcomes)&&candidate.outcomes.every(validPublicAttempt));
@@ -231,7 +307,7 @@
 
   function statusTone(status){
     if(status==='confirmed_recent_success'||status==='in_flight')return 'is-live';
-    if(['rpm_limited','tpm_limited','available_assumed'].includes(status))return 'is-warning';
+    if(['rpm_limited','tpm_limited','available_assumed','local_validation_failed'].includes(status))return 'is-warning';
     if(['rpd_exhausted_until_reset','provider_degraded','auth_failed','model_unavailable_for_project'].includes(status))return 'is-danger';
     return '';
   }
@@ -263,7 +339,7 @@
     const view=views[viewName];
     if(view)view.setAttribute('aria-busy',busy?'true':'false');
     const activeBusy=busy&&state.active===viewName;
-    refreshButton.disabled=activeBusy;
+    refreshButton.disabled=activeBusy||state.paused;
     refreshButton.classList.toggle('is-loading',activeBusy);
   }
   function showSkeleton(viewName){
@@ -288,7 +364,8 @@
     const data=isObject(accounting)?accounting:{};
     const mode=String(data.mode||'unknown');
     const active=Boolean(data.runtime_active);
-    accountingValue.textContent=accountingModeLabel(mode)+(active?' · активний':' · неактивний');
+    const nonlive=data.nonlive_enforcement_active===true?'non-live enforce':data.nonlive_admission_mode==='shadow'?'non-live shadow':data.nonlive_admission_mode==='invalid'?'non-live режим невідомий':'non-live неактивний';
+    accountingValue.textContent=accountingModeLabel(mode)+(active?' · активний':' · неактивний')+' · '+nonlive;
     if(Object.prototype.hasOwnProperty.call(ACCOUNTING_MODE_LABELS,mode))accountingValue.title='Технічний режим: '+mode;
     else accountingValue.removeAttribute('title');
     if(!active||!['shadow','enforced','emergency'].includes(mode)){
@@ -304,7 +381,11 @@
   }
 
   function metricParts(metric){
-    if(!isObject(metric)||metric.complete!==true){return {value:'—',detail:'Облік невідомий',unknown:true};}
+    if(!isObject(metric)||metric.complete!==true){
+      const observed=isObject(metric)&&metric.observed_usage_known===true;
+      return {value:observed?formatNumber(metric.used)+' / '+formatNumber(metric.limit):'—',
+        detail:observed?'Локальне використання; headroom невідомий без калібрування':'Облік невідомий',unknown:true};
+    }
     const used=formatNumber(metric.used);
     const limit=formatNumber(metric.limit);
     const detail='зал. '+formatNumber(metric.remaining)+' · резерв '+formatNumber(metric.reserved)+' · невизн. '+formatNumber(metric.uncertain);
@@ -397,6 +478,10 @@
     blocks.append(node('h5','','Блокування провайдера / скидання'));
     blocksText(project,pacificReset).forEach(copy=>blocks.append(node('p','',copy)));
     if(project.external_usage_suspected)blocks.append(node('p','gemini-v2-warning-copy','Є ознака зовнішнього використання. Це попередження, а не доведена причина.'));
+    if(isObject(project.nonlive_profile)){
+      const calibration=project.nonlive_profile.calibration==='calibrated'?'калібрування підтверджено':project.nonlive_profile.calibration==='uncalibrated'?'оцінювач не калібрований':'калібрування невідоме';
+      usage.append(node('p','',calibration+' · '+(project.nonlive_profile.runtime_profile_binding==='matched'?'активний профіль збігається':'привʼязка активного профілю не підтверджена')+' · умови профілю не є дозволом на HTTP'));
+    }
     details.append(evidence,usage,blocks);
     article.append(details);
     return article;
@@ -554,8 +639,36 @@
     wrapper.append(node('small','',label),node('strong',tone||'',value));
     return wrapper;
   }
+  const CAPTURE_REASONS={legacy_context_uncaptured:'Контекст історично не захоплено',policy_manifest_invalid:'Маніфест має невідому форму',request_context_invalid:'Контекст маніфесту невалідний',request_context_binding_mismatch:'Привʼязка контексту не збігається',immutable_graph_binding_checked:'Захоплений контекст привʼязаний до графа',dispatch_not_captured:'Фінальний HTTP-вхід не захоплено',provider_phase_started_without_capture:'Фазу провайдера записано без захопленого входу',dispatch_manifest_invalid:'Маніфест HTTP-входу невалідний',request_context_unavailable:'Захоплений контекст недоступний',dispatch_binding_mismatch:'Привʼязка HTTP-входу не збігається',immutable_attempt_binding_checked:'Захоплений HTTP-вхід привʼязаний до спроби'};
+  function captureCopy(value){return isObject(value)?(CAPTURE_REASONS[value.reason]||'Доказ захоплення невідомий'):'Доказ захоплення відсутній';}
+  const MANIFEST_LABELS={ready:'Готовність підтверджена',budget:'Обмеження бюджету',budget_exceeded:'Бюджет перевищено',budget_exhausted:'Бюджет вичерпано',scope_mismatch:'Область не збігається',scope_unknown:'Область невідома',source_unknown:'Джерело невідоме',source_changed:'Джерело змінилося',source_invalid:'Джерело невалідне',privacy_erasure:'Дані видаляються',unavailable:'Дані недоступні',not_applicable:'Не застосовується',missing_source:'Бракує джерела',missing_selector:'Бракує вибору',ambiguous_product:'Товар неоднозначний',availability_unknown:'Наявність невідома',payment_unknown:'Оплата не підтверджена',consent_unknown:'Згода не підтверджена',media_unavailable:'Медіа недоступне',readiness_unknown:'Готовність невідома',selection_unknown:'Вибір невідомий',history_budget:'Історію обмежено бюджетом',optional_budget:'Додатковий блок не помістився',component_scope_mismatch:'Область компонента не збігається',component_unavailable:'Компонент недоступний',captured_artifact_unavailable:'Захоплений стан недоступний',legacy_context_uncaptured:'Історичний контекст не захоплено',other:'Інша причина'};
+  const VALIDATION_LABELS={configuration_mismatch:'Конфігурація не збігається',source_preference_mismatch:'Вибір джерела не збігається',unverified_price:'Ціну не підтверджено',unverified_discount:'Знижку не підтверджено',unverified_payment:'Оплату не підтверджено',unverified_order:'Замовлення не підтверджено',unverified_availability:'Наявність не підтверджено',unverified_shipment:'Відправлення не підтверджено',unverified_tracking:'Трекінг не підтверджено',unverified_timing:'Строк не підтверджено',unverified_recruitment:'Умови співпраці не підтверджено',unauthorized_url:'Посилання не дозволено',unauthorized_action:'Дію не дозволено',unsupported_currency:'Валюта не підтримується',catalog_selector_missing:'Бракує вибору каталогу',unnecessary_manager_handoff:'Зайва передача менеджеру',actual_media_binding_mismatch:'Медіа не збігається з джерелом',incomplete_image_coverage:'Не всі зображення враховано',unknown_inline_coverage:'Покриття медіа невідоме',unknown_inline_hashes:'Медіа не привʼязано до доказу',authority_unavailable:'Повноваження не підтверджено',missing_turn_intelligence:'Бракує аналізу повідомлення'};
+  function manifestFacts(item){
+    const section=node('section','gemini-v2-capture');section.append(node('h5','','Джерела та перевірки'));
+    const captured=item.context_capture;section.append(node('p','',captureCopy(captured)));
+    const metadata=node('details','gemini-v2-capture-meta');metadata.dataset.captureKey=item.request_ref||'';metadata.append(node('summary','','Метадані захоплення'));
+    const facts=node('div');
+    if(isObject(captured)&&captured.status==='captured'){
+      const counts=captured.counts||{};
+      facts.append(node('p','','Джерел '+formatNumber(counts.source_messages)+' · повідомлень історії '+formatNumber(counts.history_messages)+' · блоків '+formatNumber(counts.selected_blocks)+' · пропущено '+formatNumber(counts.omitted_blocks)));
+      const budgetLabels={builder_chars:'Символи контексту',history_entries:'Повідомлення історії',source_count:'Джерела',media_parts:'Медіа',request_bytes:'Байти запиту'};
+      facts.append(node('p','','Бюджети: '+Object.entries(captured.budgets||{}).map(([key,value])=>(budgetLabels[key]||'Інший бюджет')+' '+formatNumber(value)).join(' · ')));
+      const codes=[captured.readiness,captured.omissions].map(values=>Object.entries(values||{}).map(([key,value])=>(MANIFEST_LABELS[key]||MANIFEST_LABELS.other)+' ×'+formatNumber(value)).join(' · ')).filter(Boolean).join(' / ');
+      if(codes)facts.append(node('p','',codes));
+      if(captured.publication&&captured.publication.hash)facts.append(node('p','gemini-v2-publication-hash','Публікація інструкцій '+formatNumber(captured.publication.version)+' · '+captured.publication.hash));
+    }
+    facts.append(node('p','gemini-v2-truncated','Повний запит не збережено й не відновлюється з поточного стану клієнта. Захоплений вхід та фізичний HTTP-виклик мають окремі докази.'));metadata.append(facts);section.append(metadata);
+    item.attempts.forEach(attempt=>{
+      const validation=attempt.validation;
+      if(isObject(validation)&&validation.layer!=='none')section.append(node('p','gemini-v2-local-validation','Спроба '+formatNumber(attempt.attempt_index)+' · '+(validation.layer==='local_semantic'?'Перевірка змісту':validation.layer==='schema'?'Перевірка структури':'Шар перевірки невідомий')+': '+(Array.isArray(validation.reason_codes)?validation.reason_codes.map(code=>VALIDATION_LABELS[code]||(code.startsWith('schema_')?'Помилка структури':'Причину перевірки не уточнено')).join('; '):'коди невідомі')+(validation.unknown_reason_count?' · додаткових нерозпізнаних причин '+formatNumber(validation.unknown_reason_count):'')));
+      const admission=attempt.admission||{},decision=admission.decision==='allow'?'дозвіл записано':admission.decision==='deny'?'допуск відхилено':'допуск невідомий';
+      section.append(node('p','gemini-v2-truncated','Спроба '+formatNumber(attempt.attempt_index)+' · '+captureCopy(attempt.dispatch_capture)+' · '+decision));
+    });
+    return section;
+  }
   function attemptRow(item){
     const details=node('details','gemini-v2-attempt');
+    details.dataset.graphRef=item.request_ref||'';
     const summary=node('summary');
     const request=node('span');
     request.append(node('span','gemini-v2-request-ref',item.request_ref||'Непрозоре посилання відсутнє'),node('time','gemini-v2-request-time',formatDate(item.created_at)));
@@ -578,7 +691,8 @@
       node('span','','Дедлайн '+formatDuration(item.deadline_ms)),
       node('span','','Причина '+(item.resolution.reason?mapLabel(RESOLUTION_REASON_LABELS,item.resolution.reason,'типізовану причину не визначено'):'—'))
     );
-    body.append(context);
+    body.append(context,manifestFacts(item));
+    body.append(node('p','gemini-v2-row-freshness','Зріз цього рядка: '+formatDate(item._snapshot_at)+'; рядки поза поточною head-сторінкою зберігають попередній зріз.'));
     const candidates=node('ol','gemini-v2-candidates');
     if(item.candidate_plan.length)item.candidate_plan.forEach(candidate=>candidates.append(candidateRow(candidate)));
     else candidates.append(node('li','gemini-v2-candidate','План кандидатів не зафіксовано.'));
@@ -588,24 +702,30 @@
     return details;
   }
   function renderAttempts(data,append){
-    if(append)state.attemptsItems=state.attemptsItems.concat(data.items).slice(0,MAX_RENDERED_ATTEMPTS);
-    else state.attemptsItems=data.items.slice(0,MAX_RENDERED_ATTEMPTS);
-    state.nextCursor=data.next_cursor||null;
+    const viewport=window.GeminiV2LedgerState.captureViewport(content.attempts);
+    const openRefs=new Set(Array.from(content.attempts.querySelectorAll('details[open][data-graph-ref]')).map(row=>row.dataset.graphRef));
+    const openCaptures=new Set(Array.from(content.attempts.querySelectorAll('details[open][data-capture-key]')).map(row=>row.dataset.captureKey));
+    const hadHistory=state.attemptsItems.length>0;
+    const merged=window.GeminiV2LedgerState.merge(state.attemptsItems,data.items,{cap:MAX_RENDERED_ATTEMPTS,capturedAt:data.generated_at,preserveLoaded:true,append});
+    state.attemptsItems=merged.items;if(!append)state.unshownNew=merged.unshownNew;
+    if(append||!hadHistory)state.nextCursor=data.next_cursor||null;
+    newestButton.hidden=state.unshownNew===0&&state.attemptsItems.length<MAX_RENDERED_ATTEMPTS;
     const ledger=node('div','gemini-v2-attempt-ledger');
     if(!state.attemptsItems.length){
       const empty=node('div','gemini-v2-empty');
       empty.append(node('strong','','Запитів ще немає'),node('span','','Локальний журнал V2 не містить графів спроб.'));
       content.attempts.replaceChildren(empty);
     }else{
-      state.attemptsItems.forEach(item=>ledger.append(attemptRow(item)));
+      state.attemptsItems.forEach(item=>{const row=attemptRow(item);row.open=openRefs.has(item.request_ref);ledger.append(row);});
       content.attempts.replaceChildren(ledger);
     }
     const atCap=state.attemptsItems.length>=MAX_RENDERED_ATTEMPTS;
-    moreWrap.hidden=!state.nextCursor||atCap;
-    if(atCap){
-      const cap=node('p','gemini-v2-truncated','Показано захисний максимум '+String(MAX_RENDERED_ATTEMPTS)+' запитів. Оновіть зріз, щоб повернутися до найновіших.');
-      content.attempts.append(cap);
-    }
+    moreWrap.hidden=!state.nextCursor||atCap;moreButton.disabled=state.paused;
+    if(atCap)content.attempts.append(node('p','gemini-v2-truncated','Показано захисний максимум '+String(MAX_RENDERED_ATTEMPTS)+' запитів. Історію збережено; «До найновіших» явно відкриває новий зріз.'));
+    if(state.unshownNew)content.attempts.append(node('p','gemini-v2-truncated','Нових графів поза лімітом: '+formatNumber(state.unshownNew)+'. Старі відкриті рядки не видалено.'));
+    if(data.retention)content.attempts.append(node('p','gemini-v2-retention','Технічний ledger наразі без строкового purge. TTL курсора '+formatNumber(data.retention.cursor_ttl_seconds/86400)+' днів; це не retention даних. UI до '+formatNumber(data.retention.render_cap)+' рядків.'));
+    content.attempts.querySelectorAll('details[data-capture-key]').forEach(row=>{row.open=openCaptures.has(row.dataset.captureKey);});
+    window.GeminiV2LedgerState.restoreViewport(content.attempts,viewport);
   }
 
   function renderData(viewName,data,append){
@@ -633,8 +753,8 @@
   function abortInactive(){VIEW_ORDER.forEach(name=>{if(name!==state.active)abortView(name);});}
   function invalidSchemaMessage(){return 'Схема локальної адреси не підтримується цією версією панелі. Оновлення зупинено без припущень про дані.';}
 
-  async function loadView(viewName,{passive=false,force=false,append=false}={}){
-    if(!VIEW_ORDER.includes(viewName)||document.hidden||!isOuterActive())return false;
+  async function loadView(viewName,{passive=false,force=false,append=false,resetHistory=false}={}){
+    if(!VIEW_ORDER.includes(viewName)||state.paused||document.hidden||!isOuterActive())return false;
     if(!force&&!append&&state.snapshots[viewName])return true;
     if(append&&(!state.nextCursor||state.attemptsItems.length>=MAX_RENDERED_ATTEMPTS))return false;
     const now=Date.now();
@@ -661,12 +781,19 @@
       if(!valid){const error=new Error('unsupported_schema');error.kind='schema';throw error;}
       if(controller.signal.aborted)return false;
       state.snapshots[viewName]=data;
+      if(viewName==='attempts'&&resetHistory){state.attemptsItems=[];state.nextCursor=null;state.unshownNew=0;}
       renderData(viewName,data,append);
       if(viewName==='attempts')attemptsError.hidden=true;
       setStatus(append?'Додано '+String(data.items.length)+' графів.':'Локальний зріз оновлено · '+formatDate(data.generated_at),'is-success');
       return true;
     }catch(error){
       if(error&&error.name==='AbortError')return false;
+      if(error&&error.kind==='schema'&&viewName==='attempts'&&state.attemptsItems.length){
+        root.classList.add('is-stale');attemptsError.hidden=false;
+        attemptsError.textContent='Нову схему відхилено. Уже завантажену історію та курсор збережено.';
+        setNotice('is-warning','Нову схему відхилено.','Показано попередні валідні графи.');
+        setStatus(attemptsError.textContent,'is-stale');return false;
+      }
       if(error&&error.kind==='schema'){
         state.snapshots[viewName]=null;
         if(viewName==='attempts'){state.attemptsItems=[];state.nextCursor=null;moreWrap.hidden=true;}
@@ -697,7 +824,7 @@
       if(state.controllers[viewName]===controller){
         state.controllers[viewName]=null;
         setBusy(viewName,false);
-        if(moreButton)moreButton.disabled=false;
+        if(moreButton)moreButton.disabled=state.paused;
       }
     }
   }
@@ -730,7 +857,7 @@
   function load(options){return loadView(state.active,{force:true,...(options||{})});}
   function syncTimers(){
     if(state.refreshTimer){window.clearInterval(state.refreshTimer);state.refreshTimer=0;}
-    if(document.hidden||!isOuterActive()){
+    if(state.paused||document.hidden||!isOuterActive()){
       VIEW_ORDER.forEach(abortView);
       return;
     }
@@ -784,6 +911,18 @@
     else if(event.key==='End')index=tabs.length-1;
     else index=(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
     event.preventDefault();selectView(VIEW_ORDER[index],{focus:true});
+  });
+  pauseButton.addEventListener('click',()=>{
+    state.paused=!state.paused;pauseButton.setAttribute('aria-pressed',String(state.paused));
+    pauseButton.textContent=state.paused?'Продовжити оновлення':'Пауза оновлення';
+    refreshButton.disabled=state.paused;moreButton.disabled=state.paused;
+    syncTimers();
+    if(state.paused)setStatus('Локальне оновлення призупинено; cursors та відкриті рядки збережено.','is-stale');
+    else loadView(state.active,{force:true});
+  });
+  newestButton.addEventListener('click',()=>{
+    if(state.paused)return;
+    loadView('attempts',{force:true,resetHistory:true});
   });
   refreshButton.addEventListener('click',()=>loadView(state.active,{force:true}));
   moreButton.addEventListener('click',()=>{moreButton.disabled=true;loadView('attempts',{force:true,append:true});});

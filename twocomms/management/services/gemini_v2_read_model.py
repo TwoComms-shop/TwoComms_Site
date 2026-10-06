@@ -1,7 +1,7 @@
 """Provider-free, strictly redacted read models for Gemini V2 admin APIs.
 
 The module deliberately has no provider or probe dependency.  It projects
-existing immutable request/attempt evidence and local quota state into four
+existing immutable request/attempt evidence and local quota state into the known display
 models by six opaque slots.  Missing or dormant accounting is reported as
 unknown rather than being converted into reassuring zero usage.
 """
@@ -20,7 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
-from django.db.models import Prefetch, Q
+from django.db.models import OuterRef, Prefetch, Q, Subquery
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
@@ -44,6 +44,8 @@ SCHEMA_VERSION = 1
 MODELS = tuple(gemini_health.DISPLAY_MODELS)
 SLOT_IDS = tuple(gemini_health.SLOT_IDS)
 SLOT_BY_ALIAS = dict(gemini_health.SLOT_BY_ALIAS)
+CURSOR_TTL_SECONDS = 30 * 24 * 3600
+PUBLIC_HISTORY_CAP = 100
 ATTEMPT_PAGE_DEFAULT = 25
 ATTEMPT_PAGE_MAX = 50
 ATTEMPTS_PER_REQUEST_CAP = 64
@@ -78,6 +80,28 @@ _PUBLIC_NOT_ATTEMPTED = frozenset({
     "quota_cooldown", "quota_exhausted", "sla_model_budget", "unconfigured",
     "winner_found",
 })
+_PUBLIC_ADMISSION_REASONS = frozenset({
+    "unknown_project", "missing_profile", "estimator_uncalibrated", "provider_block",
+    "rpd_exhausted", "rpm_exhausted", "permit_exhausted", "tpm_exhausted", "quota_profile_conflict",
+    "provider_deadline_expired", "policy_manifest_dispatch_missing", "source_admission_denied",
+    "source_admission_unavailable", "claim_replaced", "claim_deadline_expired", "capture_digest_invalid",
+    "scope_changed", "source_watermark_advanced", "head_changed", "source_changed", "privacy_erasure",
+    "owner_changed", "owner_unavailable", "generation_disabled", "admission_not_enforced",
+    "maintenance_active", "db_circuit_open", "database_circuit_open", "client_erasing", "customer_reply_priority", "analysis_priority",
+    "lane_owner_changed", "lane_owner_unavailable", "not_dispatched", "deadline",
+})
+_PUBLIC_FAILURE_KINDS |= {"provider_admission_denied", "provider_admission_unknown", "provider_deadline_expired",
+    "source_admission_denied", "source_admission_unavailable", "local_semantic_rejection"}
+_PUBLIC_NOT_ATTEMPTED |= _PUBLIC_ADMISSION_REASONS
+_PUBLIC_MANIFEST_CODES = frozenset({
+    "budget_exceeded", "budget_exhausted", "ready", "budget", "scope_mismatch", "scope_unknown", "source_unknown", "source_changed",
+    "source_invalid", "privacy_erasure", "unavailable", "not_applicable", "missing_source", "missing_selector",
+    "legacy_context_uncaptured", "captured_artifact_unavailable", "readiness_unknown", "selection_unknown",
+    "ambiguous_product", "availability_unknown", "payment_unknown", "consent_unknown", "media_unavailable",
+    "history_budget", "optional_budget", "component_scope_mismatch", "component_unavailable",
+})
+
+
 _PUBLIC_FSM = frozenset(value for value, _label in GeminiRequestAttempt.FsmState.choices)
 _PUBLIC_RESOLUTIONS = frozenset({"failed", "succeeded"})
 _PUBLIC_TERMINAL_REASONS = frozenset({
@@ -207,18 +231,13 @@ def _identity_to_slot(slots: list[_SlotIdentity]) -> dict[str, str]:
 
 
 def _active_profiles(now: dt.datetime) -> dict[str, GeminiQuotaProfile]:
-    rows = list(
-        GeminiQuotaProfile.objects.filter(
-            model__in=MODELS,
-            effective_from__lte=now,
-        )
-        .filter(Q(effective_until__isnull=True) | Q(effective_until__gt=now))
-        .order_by("model", "-effective_from", "-id")
-    )
-    result: dict[str, GeminiQuotaProfile] = {}
-    for row in rows:
-        result.setdefault(row.model, row)
-    return result
+    effective = GeminiQuotaProfile.objects.filter(model__in=MODELS, effective_from__lte=now).filter(
+        Q(effective_until__isnull=True) | Q(effective_until__gt=now))
+    latest = effective.filter(model=OuterRef("model")).order_by("-effective_from", "-id").values("pk")[:1]
+    # Bound materialization, not just the returned dictionary: one actual
+    # latest effective row per display model, using the runtime tie-break.
+    rows = effective.filter(pk=Subquery(latest)).order_by("model")
+    return {row.model: row for row in rows}
 
 
 def _pacific_window(now: dt.datetime) -> tuple[dt.date, dt.datetime, dt.datetime]:
@@ -303,6 +322,7 @@ def _pair_status(
     state: GeminiQuotaState | None,
     blocks: list[dict[str, Any]],
     now: dt.datetime,
+    traffic_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     if not slot.configured:
         return "not_configured"
@@ -345,7 +365,47 @@ def _pair_status(
             return "provider_degraded"
     success_at = _as_utc(state.last_success_at) if state.last_success_at else None
     failure_at = _as_utc(state.last_failure_at) if state.last_failure_at else None
-    if success_at and (failure_at is None or success_at >= failure_at):
+    degraded = state.accounting_status == GeminiQuotaState.AccountingStatus.DEGRADED
+    failure_current = False
+    if traffic_rows is not None:
+        # Pair state mixes all admitted roles for economic coordination.
+        # Explicit diagnostics still consume quota, but their success cannot
+        # recover a failed customer/useful-work route or create fresh traffic.
+        evidence_rows = [row for row in traffic_rows if gemini_health.is_generation_traffic_evidence(row)]
+        successes = [row for row in evidence_rows if row.get("fsm_state") in {"succeeded", "succeeded_late"}]
+        failures = [row for row in evidence_rows if row.get("fsm_state") in {"failed", "timeout_ambiguous"}]
+        latest_success = max(successes, key=lambda row: (_as_utc(row["provider_started_at"]), int(row.get("id") or 0)), default=None)
+        latest_failure = max(failures, key=lambda row: (_as_utc(row["provider_started_at"]), int(row.get("id") or 0)), default=None)
+        state_failure_at = failure_at
+        state_failure_kind = failure
+        state_degraded = degraded
+        success_at = _as_utc(latest_success["provider_started_at"]) if latest_success else None
+        failure_at = _as_utc(latest_failure["provider_started_at"]) if latest_failure else None
+        failure = str(latest_failure.get("failure_kind") or "").casefold() if latest_failure else ""
+        failure_current = bool(latest_failure and (latest_success is None or
+            (_as_utc(latest_failure["provider_started_at"]), int(latest_failure.get("id") or 0)) >
+            (_as_utc(latest_success["provider_started_at"]), int(latest_success.get("id") or 0))))
+        degraded = failure_current
+        if failure_current and (failure == "invalid_key" or latest_failure.get("http_code") == 401):
+            return "auth_failed"
+        if failure_current and failure in {"model_not_found", "permission_denied", "model_unavailable"}:
+            return "model_unavailable_for_project"
+        # Negative provider evidence is still an incident even if the purpose
+        # ledger is missing/truncated or the failure was a diagnostic. Only a
+        # useful-work success can recover it. Classified expired quota blocks
+        # have already been handled above and do not become transient failures.
+        if state_failure_kind not in {"", "quota_429"} and (
+            state_failure_at is not None and (failure_at is None or state_failure_at > failure_at)
+        ):
+            failure_at = state_failure_at
+            failure = state_failure_kind
+            failure_current = success_at is None or failure_at >= success_at
+            degraded = failure_current
+        elif not evidence_rows and state_degraded and state_failure_kind not in {"", "quota_429"}:
+            failure = state_failure_kind
+            failure_at = state_failure_at
+            degraded = True
+    if success_at and (failure_at is None or success_at >= failure_at) and not failure_current:
         age = (now - success_at).total_seconds()
         if 0 <= age <= RECENT_SUCCESS_SECONDS:
             return "confirmed_recent_success"
@@ -355,7 +415,14 @@ def _pair_status(
         # forever when no quota block is active.
         if age > RECENT_SUCCESS_SECONDS:
             return "available_assumed"
-    if state.accounting_status == GeminiQuotaState.AccountingStatus.DEGRADED:
+    if failure == "local_semantic_rejection" and state.accounting_status != GeminiQuotaState.AccountingStatus.BLOCKED:
+        # A rejected draft after HTTP success is local response validation,
+        # not evidence that the provider/model is unavailable. Real blocks and
+        # later successful recovery above retain their existing precedence.
+        if failure_at is None or (now - failure_at).total_seconds() <= UNRESOLVED_FAILURE_SECONDS:
+            return "local_validation_failed"
+        return "available_assumed"
+    if degraded:
         # DEGRADED is an observation state written for every non-success,
         # including transient 503s and read timeouts.  It is not a durable
         # quarantine.  Once the unresolved failure is outside the traffic
@@ -398,6 +465,7 @@ def _metric(*, used, limit, reserved=0, uncertain=0, complete: bool) -> dict[str
 
 
 def _last_evidence(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    rows = [row for row in rows if gemini_health.is_generation_traffic_evidence(row)]
     if not rows:
         return None
     latest = max(
@@ -446,8 +514,26 @@ def _first_plan_model(plan: Any) -> str:
     )
 
 
+def _nonlive_accounting_fields(*, accounting_active):
+    mode = gemini_accounting_runtime.nonlive_admission_mode() if getattr(settings, "GEMINI_NONLIVE_ADMISSION_MODE", None) is not None else "enforce" if accounting_active else "shadow"
+    return {"nonlive_admission_mode": mode if mode in {"enforce", "shadow", "invalid"} else "invalid",
+        "nonlive_enforcement_active": bool(accounting_active and mode == "enforce"),
+        "capacity_authority": "local_advisory_not_dispatch_permission"}
+
+
+def _tpm_metric(*, used, limit, complete, calibrated, usage_source, profile_bound=True):
+    result = _metric(used=used, limit=limit, complete=bool(complete and calibrated and profile_bound))
+    # Real ledger usage remains observable even when estimator calibration
+    # prevents computing a trustworthy remaining input-token allowance.
+    result.update(used=_bounded_int(used) if complete else None,
+        usage_source=usage_source if complete else "unknown", observed_usage_known=bool(complete),
+        headroom_known=bool(complete and calibrated and profile_bound),
+        calibration="unknown" if calibrated is None else "calibrated" if calibrated else "uncalibrated")
+    return result
+
+
 def build_quotas_payload(*, now=None) -> dict[str, Any]:
-    """Return a bounded 4x6 local quota projection without writes/provider I/O."""
+    """Return a bounded model-by-slot local quota projection without writes/provider I/O."""
     generated_at = _aware_now(now)
     pacific_day, pacific_start, pacific_reset = _pacific_window(generated_at)
     slots = _slot_identities()
@@ -482,7 +568,7 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
             .order_by("-provider_started_at", "-id")
             .values(
                 "id", "request_id", "request_graph_id", "model",
-                "project_identity", "lane", "request_graph__task_class",
+                "project_identity", "role", "lane", "request_graph__task_class",
                 "fsm_state", "failure_kind", "http_code", "latency_ms",
                 "prompt_tokens", "reserved_prompt_tokens",
                 "provider_started_at", "request_graph__winner_attempt_id",
@@ -530,9 +616,11 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
 
     matrix: list[dict[str, Any]] = []
     for model in MODELS:
-        profile = profiles.get(model)
+        active_profile = profiles.get(model)
         for slot in slots:
             state = states.get((slot.identity, model)) if slot.identity else None
+            profile = state.quota_profile if state is not None else active_profile
+            profile_bound = bool(active_profile and profile and profile.pk == active_profile.pk)
             pair_rows = rows_by_pair.get((slot.identity, model), []) if slot.identity else []
             blocks = _public_blocks(state.provider_blocks if state else {}, generated_at)
             complete = bool(
@@ -551,6 +639,10 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
                 or _bounded_int(row.get("reserved_prompt_tokens"))
                 for row in minute_rows
             )
+            calibrated = profile.estimator_version == gemini_accounting_runtime.ACTIVE_ESTIMATOR_VERSION if profile else None
+            actual = any(_bounded_int(row.get("prompt_tokens")) for row in minute_rows)
+            estimated = any(not _bounded_int(row.get("prompt_tokens")) and _bounded_int(row.get("reserved_prompt_tokens")) for row in minute_rows)
+            usage_source = "mixed" if actual and estimated else "provider_reported" if actual else "estimated" if estimated else "no_observed_usage"
             same_day_state = bool(state and state.pacific_day == pacific_day)
             rpd_dispatched = state.rpd_dispatched if same_day_state else 0
             rpd_reserved = state.rpd_reserved if same_day_state else 0
@@ -559,6 +651,23 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
                 _bounded_int(row.get("latency_ms"), maximum=600_000)
                 for row in pair_rows if _bounded_int(row.get("latency_ms")) > 0
             ]
+            traffic_evidence = _last_evidence(pair_rows)
+            credential_incident = bool(state and (state.last_failure_kind in {
+                "invalid_key", "model_not_found", "permission_denied", "model_unavailable",
+            } or state.last_http_code == 401))
+            latest_traffic_at = max((
+                _as_utc(row["provider_started_at"]) for row in pair_rows
+                if gemini_health.is_generation_traffic_evidence(row)
+            ), default=None)
+            state_negative_evidence = bool(state and state.last_failure_kind and (
+                latest_traffic_at is None or (
+                    state.last_failure_at is not None
+                    and _as_utc(state.last_failure_at) >= latest_traffic_at
+                )
+            ))
+            # Missing purpose-qualified rows weaken positive availability;
+            # they never erase a finite, persisted negative incident.
+            expose_state_failure = credential_incident or state_negative_evidence
             matrix.append({
                 "model": model,
                 "slot_id": slot.slot_id,
@@ -567,10 +676,11 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
                 "status": _pair_status(
                     accounting_active=accounting_active,
                     slot=slot,
-                    profile=profile,
+                    profile=active_profile,
                     state=state,
                     blocks=blocks,
                     now=generated_at,
+                    traffic_rows=pair_rows,
                 ),
                 "profile": ({
                     "version": _public_version(profile.profile_version),
@@ -581,11 +691,16 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
                     limit=profile.rpm_limit if profile else None,
                     complete=complete,
                 ),
-                "input_tpm": _metric(
-                    used=minute_tokens,
-                    limit=profile.input_tpm_limit if profile else None,
-                    complete=complete,
+                "input_tpm": _tpm_metric(
+                    used=minute_tokens, limit=profile.input_tpm_limit if profile else None,
+                    complete=complete, calibrated=calibrated, usage_source=usage_source, profile_bound=profile_bound,
                 ),
+                "nonlive_profile": {
+                    "calibration": "calibrated" if calibrated else "uncalibrated" if profile else "unknown",
+                    "runtime_profile_binding": "matched" if profile_bound else "different" if active_profile and profile else "unknown",
+                    "eligible_prerequisites": bool(complete and calibrated and profile_bound),
+                    "authority": "prerequisites_only_not_dispatch_permission",
+                },
                 "rpd": _metric(
                     used=rpd_dispatched,
                     limit=profile.rpd_limit if profile else None,
@@ -610,17 +725,19 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
                     "p50": _percentile(latencies, 0.50) if complete else None,
                     "p95": _percentile(latencies, 0.95) if complete else None,
                 },
-                "last_success_at": _iso(state.last_success_at) if state else None,
-                "last_failure_at": _iso(state.last_failure_at) if state else None,
+                "last_success_at": max((_iso(row["provider_started_at"]) for row in pair_rows
+                    if gemini_health.is_generation_traffic_evidence(row) and row.get("fsm_state") in {"succeeded", "succeeded_late"}), default=None),
+                "last_failure_at": max((_iso(row["provider_started_at"]) for row in pair_rows
+                    if gemini_health.is_generation_traffic_evidence(row) and row.get("fsm_state") in {"failed", "timeout_ambiguous"}), default=None),
                 "last_failure_kind": (
-                    _public_code(state.last_failure_kind, _PUBLIC_FAILURE_KINDS)
-                    if state and state.last_failure_kind else ""
+                    _public_code(state.last_failure_kind, _PUBLIC_FAILURE_KINDS) if expose_state_failure else
+                    traffic_evidence["failure_kind"] if traffic_evidence and not traffic_evidence["success"] else ""
                 ),
                 "last_http_code": (
-                    _bounded_int(state.last_http_code, maximum=599) or None
-                    if state else None
+                    _bounded_int(state.last_http_code, maximum=599) or None if expose_state_failure else
+                    traffic_evidence["http_code"] if traffic_evidence else None
                 ),
-                "last_real_evidence": _last_evidence(pair_rows),
+                "last_real_evidence": traffic_evidence,
             })
 
     models: list[dict[str, Any]] = []
@@ -634,16 +751,20 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
         ]
 
         def aggregate_metric(name: str) -> dict[str, Any]:
+            if name == "input_tpm":
+                result = _metric(used=0, limit=None, complete=False)
+                result.update(used=sum(row[name]["used"] or 0 for row in complete_rows) if complete_rows else None,
+                    observed_usage_known=bool(complete_rows), headroom_known=False,
+                    usage_source="local_aggregate" if complete_rows else "unknown",
+                    calibration="calibrated" if complete_rows and all(row[name]["headroom_known"] for row in complete_rows) else "uncalibrated" if complete_rows else "unknown")
+                if complete_rows and all(row[name]["headroom_known"] for row in complete_rows):
+                    result.update(_metric(used=result["used"], limit=sum(row[name]["limit"] for row in complete_rows),
+                        complete=len(complete_rows) == len([row for row in model_rows if row["configured"]])))
+                    result["used"] = sum(row[name]["used"] or 0 for row in complete_rows)
+                    result["headroom_known"] = result["complete"]
+                return result
             if not complete_rows:
-                return _metric(
-                    used=0,
-                    # A per-project profile does not prove how many configured
-                    # identities belong to the aggregate pool.  Keep aggregate
-                    # capacity unknown until at least one explicit slot is
-                    # actively accounted.
-                    limit=None,
-                    complete=False,
-                )
+                return _metric(used=0, limit=None, complete=False)
             metrics = [row[name] for row in complete_rows]
             return {
                 "used": sum(item["used"] for item in metrics),
@@ -651,9 +772,7 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
                 "remaining": sum(item["remaining"] for item in metrics if item["remaining"] is not None),
                 "reserved": sum(item["reserved"] for item in metrics),
                 "uncertain": sum(item["uncertain"] for item in metrics),
-                "complete": len(complete_rows) == len([
-                    row for row in model_rows if row["configured"]
-                ]),
+                "complete": len(complete_rows) == len([row for row in model_rows if row["configured"]]),
             }
 
         models.append({
@@ -700,6 +819,7 @@ def build_quotas_payload(*, now=None) -> dict[str, Any]:
         "accounting": {
             "mode": accounting_mode if accounting_mode in {"off", "shadow"} else "invalid",
             "runtime_active": accounting_active,
+            **_nonlive_accounting_fields(accounting_active=accounting_active),
             "traffic_window_seconds": int(QUOTA_TRAFFIC_WINDOW.total_seconds()),
             "traffic_truncated": truncated,
         },
@@ -783,6 +903,7 @@ def build_routes_payload(*, now=None) -> dict[str, Any]:
                 else "invalid"
             ),
             "runtime_active": gemini_accounting_runtime.shadow_runtime_active(now=generated_at),
+            **_nonlive_accounting_fields(accounting_active=gemini_accounting_runtime.shadow_runtime_active(now=generated_at)),
             "effective_from": _iso(effective_from),
         },
         "emergency_pin": {
@@ -818,7 +939,7 @@ def _decode_cursor(value: str) -> tuple[dt.datetime, int] | None:
         from cryptography.fernet import Fernet, InvalidToken
 
         plaintext = Fernet(_cursor_key()).decrypt(
-            raw.encode("ascii"), ttl=30 * 24 * 3600
+            raw.encode("ascii"), ttl=CURSOR_TTL_SECONDS
         )
         payload = json.loads(plaintext.decode("utf-8"))
         created_at = dt.datetime.fromisoformat(str(payload["created_at"]))
@@ -853,11 +974,111 @@ def _attempt_slot(row: GeminiRequestAttempt, identity_to_slot: dict[str, str]) -
     return identity_to_slot.get(str(row.project_identity or "")) or None
 
 
+def _manifest_code_counts(values):
+    counts = Counter(value if value in _PUBLIC_MANIFEST_CODES else "other" for value in values)
+    return dict(sorted(counts.items()))
+
+
+def project_request_context(graph):
+    """Project captured metadata, never reconstruct from current customer state.
+
+    Protected source IDs, digests and arbitrary identifier/version strings are
+    omitted. Binding means the immutable graph agrees; it is not a new source
+    freshness or dispatch authority decision.
+    """
+    result = {"status": "uncaptured", "reason": "legacy_context_uncaptured",
+        "reconstruction": "full_payload_not_retained", "counts": {}, "budgets": {},
+        "readiness": {}, "omissions": {}, "digest_presence": {}, "publication": {}, "versions": {}}
+    policy = graph.policy_manifest
+    if not isinstance(policy, dict):
+        return {**result, "status": "invalid", "reason": "policy_manifest_invalid"}, None
+    if "request_context" not in policy:
+        return result, None
+    from management.services.gemini_accounting_contract import RequestPolicyManifestError, sanitize_request_policy_manifest
+    try:
+        safe_policy = sanitize_request_policy_manifest(policy)
+        context = safe_policy["request_context"]
+    except (RequestPolicyManifestError, KeyError, TypeError, ValueError, RecursionError):
+        return {**result, "status": "invalid", "reason": "request_context_invalid"}, None
+    expected = f"ig-revision:{context['revision_id']}"
+    if (not context["revision_id"] or not context["client_id"] or context["client_id"] != graph.client_id
+            or graph.logical_turn_id != expected or graph.source_execution_key != expected
+            or graph.source_message_id not in context["source_message_ids"]):
+        return {**result, "status": "invalid", "reason": "request_context_binding_mismatch"}, None
+    counts = {"source_messages": len(context["source_message_ids"]), "history_messages": len(context["history_message_ids"]),
+        "selected_blocks": len(context["selected_block_ids"]), "omitted_blocks": len(context["omitted_blocks"]),
+        **{key: len(value) for key, value in context["media"].items()}}
+    publication = safe_policy["instruction_publication"]
+    result.update(status="captured", reason="immutable_graph_binding_checked", payload_stage="logical_input",
+        effective_mode=context["effective_mode"], counts=counts,
+        budgets={key: value if value <= 2**53 - 1 else None for key, value in context["budgets"].items()},
+        readiness=_manifest_code_counts(context["readiness_codes"]),
+        omissions=_manifest_code_counts([value["reason"] for value in context["omitted_blocks"]]),
+        digest_presence={"context": bool(context["context_digest"]), "logical_input": bool(context["request_digest"]),
+            "source_bundle": bool(context["bundle_digest"]), "response_plan": bool(context["view_versions"].get("response_plan_digest")),
+            "memory_capture": bool(context["view_versions"].get("memory_capture_digest"))},
+        publication={"version": publication["version"], "hash": publication["hash"],
+            "hash_purpose": "published_instruction_collection"},
+        versions={"builder": "ig-turn-intelligence.v1" if context["builder_version"] == "ig-turn-intelligence.v1" else "unrecognized",
+            "memory_head_present": bool(context["view_versions"].get("memory_head_version")),
+            "canonical_selection": "source-selection.v1" if context["view_versions"].get("canonical_selection") == "source-selection.v1" else "unknown",
+            "state_view": "ig-client-state.v1" if context["view_versions"].get("state_view_version") == "ig-client-state.v1" else "unknown"})
+    return result, context
+
+
+def project_dispatch_manifest(row, *, graph=None, context=None):
+    result = {"status": "uncaptured", "reason": "dispatch_not_captured", "payload_stage": "http_dispatch",
+        "provider_phase": "recorded_started" if row.provider_started_at else "not_recorded_started",
+        "http_receipt_recorded": isinstance(row.http_code, int) and not isinstance(row.http_code, bool) and 100 <= row.http_code <= 599, "digest_present": False}
+    if not row.dispatch_manifest:
+        if row.provider_started_at:
+            result["reason"] = "provider_phase_started_without_capture"
+        return result
+    from management.services.gemini_accounting_contract import RequestPolicyManifestError
+    from management.services.ig_request_manifest import sanitize_dispatch_context
+    try:
+        dispatch = sanitize_dispatch_context(row.dispatch_manifest)
+    except (RequestPolicyManifestError, TypeError, ValueError, RecursionError):
+        return {**result, "status": "invalid", "reason": "dispatch_manifest_invalid"}
+    if graph is None or context is None:
+        return {**result, "status": "invalid", "reason": "request_context_unavailable"}
+    if (row.request_graph_id != graph.pk or row.request_id != graph.request_id or row.client_id != graph.client_id
+            or row.logical_turn_id != graph.logical_turn_id or row.source_message_id != graph.source_message_id
+            or dispatch["revision_id"] != context["revision_id"] or dispatch["client_id"] != context["client_id"]
+            or dispatch["attempt_index"] != row.attempt_index or dispatch["model"] != row.model
+            or dispatch["logical_request_digest"] != context["request_digest"]):
+        return {**result, "status": "invalid", "reason": "dispatch_binding_mismatch"}
+    return {**result, "status": "captured", "reason": "immutable_attempt_binding_checked", "digest_present": True}
+
+
+def project_validation_reasons(row):
+    from management.services.ig_reply_truth import REASON_CODES
+    known = frozenset(REASON_CODES) | {
+        "invalid_response_schema", "invalid_result", "validator_error", "authority_unavailable",
+        "missing_turn_intelligence", "unknown_inline_coverage", "unknown_inline_hashes",
+        "actual_media_binding_mismatch", "incomplete_image_coverage", "catalog_selector_missing",
+        "unnecessary_manager_handoff", "source_preference_mismatch",
+    } | {"schema_" + name for name in (
+        "invalid_json", "malformed_payload", "invalid_reply_text", "too_many_controls",
+        "control_token_in_reply_text", "malformed_control", "invalid_control", "conflicting_control", "invalid_turn_intelligence",
+    )}
+    kind = row.failure_kind
+    if kind not in {"local_semantic_rejection", "invalid_response"}:
+        return {"layer": "none", "reason_codes": [], "unknown_reason_count": 0}
+    raw = row.error_detail if isinstance(row.error_detail, str) else ""
+    codes = [value for value in raw[:120].split(",") if value]
+    safe = list(dict.fromkeys(value for value in codes if value in known))[:12]
+    layer = "local_semantic" if kind == "local_semantic_rejection" else "schema" if any(value.startswith("schema_") or value == "invalid_response_schema" for value in safe) else "unknown"
+    return {"layer": layer, "reason_codes": safe, "unknown_reason_count": sum(value not in known for value in codes)}
+
+
 def _public_attempt(
     row: GeminiRequestAttempt,
     *,
     identity_to_slot: dict[str, str],
     winner_id: int | None,
+    graph=None,
+    context=None,
 ) -> dict[str, Any]:
     fsm = _public_code(row.fsm_state, _PUBLIC_FSM, default="unknown")
     if row.not_attempted_reason:
@@ -871,6 +1092,15 @@ def _public_attempt(
     else:
         public_outcome = "unknown"
     return {
+        "dispatch_capture": project_dispatch_manifest(row, graph=graph, context=context),
+        "validation": project_validation_reasons(row),
+        "admission": {
+            "mode": row.accounting_mode if row.accounting_mode in {"off", "shadow", "enforced", "emergency"} else "unknown",
+            "role": row.role if row.role in {"chat", "management", "checker", "call", "diagnostic", "health_metadata", "health_probe"} else "unknown",
+            "decision": row.shadow_decision if row.shadow_decision in {"allow", "deny", "unknown"} else "unknown",
+            "reason": _public_code(row.shadow_deny_reason, _PUBLIC_ADMISSION_REASONS, default="other") if row.shadow_deny_reason else "",
+            "authority": "recorded_admission_not_delivery_receipt",
+        },
         "attempt_index": _bounded_int(row.attempt_index, maximum=65535),
         "candidate_index": _bounded_int(row.candidate_index, maximum=65535),
         "slot_id": _attempt_slot(row, identity_to_slot),
@@ -1068,12 +1298,13 @@ def build_attempts_payload(*, cursor="", limit=None, now=None) -> dict[str, Any]
             str(graph.request_id or ""),
             str(graph.logical_turn_id or ""),
         ])
+        capture_public, captured_context = project_request_context(graph)
         raw_attempts = list(graph.public_attempt_rows)
         projected_attempts = [
             _public_attempt(
                 row,
                 identity_to_slot=identity_to_slot,
-                winner_id=graph.winner_attempt_id,
+                winner_id=graph.winner_attempt_id, graph=graph, context=captured_context,
             )
             for row in raw_attempts[:ATTEMPTS_PER_REQUEST_CAP]
         ]
@@ -1090,7 +1321,7 @@ def build_attempts_payload(*, cursor="", limit=None, now=None) -> dict[str, Any]
             winner = _public_attempt(
                 graph.winner_attempt,
                 identity_to_slot=identity_to_slot,
-                winner_id=graph.winner_attempt_id,
+                winner_id=graph.winner_attempt_id, graph=graph, context=captured_context,
             )
         effective_reply_id, reply_link_source = _effective_reply_link(graph)
         resolution = (
@@ -1102,6 +1333,7 @@ def build_attempts_payload(*, cursor="", limit=None, now=None) -> dict[str, Any]
             if graph.terminal_reason else ""
         )
         items.append({
+            "context_capture": capture_public,
             "request_ref": gemini_health.public_request_reference(graph.request_id),
             "turn_ref": _opaque_reference("turn-ref", graph.logical_turn_id, "gturn"),
             "client_ref": _opaque_reference("client-ref", graph.client_id, "gclient"),
@@ -1142,6 +1374,8 @@ def build_attempts_payload(*, cursor="", limit=None, now=None) -> dict[str, Any]
         "limit": page_size,
         "items": items,
         "next_cursor": _encode_cursor(graphs[-1]) if has_more and graphs else None,
+        "retention": {"technical_ledger_retention": "unbounded_currently", "automated_purge": "not_configured",
+            "cursor_ttl_seconds": CURSOR_TTL_SECONDS, "render_cap": PUBLIC_HISTORY_CAP},
     }
     _assert_no_sensitive_values(
         payload,
@@ -1169,7 +1403,8 @@ def _assert_no_sensitive_values(payload: dict[str, Any], values) -> None:
     forbidden_keys = {
         "alias", "client_id", "error_detail", "key_name", "logical_turn_id",
         "project_group", "project_identity", "provider_reason", "request_id",
-        "source_message_id",
+        "source_message_id", "source_message_ids", "history_message_ids", "provider_body", "prompt",
+        "customer_text", "request_digest", "logical_request_digest", "context_digest", "bundle_digest",
     }
 
     def walk(value):

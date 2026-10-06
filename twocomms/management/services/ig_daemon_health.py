@@ -38,7 +38,12 @@ def _cache_observation(key: str, *, now_epoch: float) -> tuple[dict, float | Non
     return payload, max(0.0, now_epoch - observed_at)
 
 
-def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
+def daemon_runtime_health_snapshot(*, now_epoch: float | None = None, include_technical_debt=True) -> dict:
+    """Observe consumer progress; compact callers may omit the debt inventory.
+
+    Omission is explicit incomplete coverage, never an empty debt assertion.
+    The existing default still captures the full independent debt inventory.
+    """
     now_epoch = float(time.time() if now_epoch is None else now_epoch)
     alive_window = _alive_window_seconds()
     process, process_age = _cache_observation(
@@ -75,7 +80,10 @@ def daemon_runtime_health_snapshot(*, now_epoch: float | None = None) -> dict:
         runtime_root(), expected_child_pid=process.get("pid"), now=now_epoch,
     )
     try:
-        technical_debt = technical_debt_snapshot(limit=100)
+        technical_debt = technical_debt_snapshot(limit=100) if include_technical_debt else {
+            "observed_at": "", "cases": [], "case_count": None,
+            "coverage_complete": False, "state": "not_requested", "sample_limit": 0,
+        }
     except Exception as exc:  # health must remain bounded when DB/storage is down
         technical_debt = {
             "observed_at": "",

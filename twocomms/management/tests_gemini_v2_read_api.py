@@ -263,6 +263,16 @@ class GeminiV2ReadApiTests(TestCase):
         payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
         self.assertEqual(
             self._model_row(payload)["projects"][0]["status"],
+            "provider_degraded",
+        )
+        graph = self._graph("73")
+        self._attempt(
+            graph, fsm="succeeded",
+            provider_started_at=self.now - dt.timedelta(minutes=1),
+        )
+        payload = gemini_v2_read_model.build_quotas_payload(now=self.now)
+        self.assertEqual(
+            self._model_row(payload)["projects"][0]["status"],
             "confirmed_recent_success",
         )
 

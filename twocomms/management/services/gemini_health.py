@@ -7,6 +7,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
@@ -28,6 +29,8 @@ MODELS = DISPLAY_MODELS
 OTHER_GENERATION_MODELS = DISPLAY_MODELS
 GENERATION_MODELS = tuple(dict.fromkeys(DISPLAY_MODELS + OTHER_GENERATION_MODELS))
 METADATA_ROLES = frozenset(("health_metadata", "health_probe"))
+DIAGNOSTIC_GENERATION_ROLES = frozenset(("diagnostic",))
+NON_TRAFFIC_LANES = frozenset(("diagnostic", "metadata_probe"))
 KEY_ALIASES = (
     "GEMINI_API",
     "GEMINI_API2",
@@ -53,6 +56,13 @@ _KEY_ALIAS_PATTERN = re.compile(
 _METADATA_BATCH_RE = re.compile(r"^(meta-\d{10}-[0-9a-f]{8})-(?:I|[2-6])$")
 
 _SUCCESS_OUTCOMES = frozenset(("success", "succeeded", "ok"))
+
+
+def is_generation_traffic_evidence(row: dict[str, Any]) -> bool:
+    """A manual diagnostic is quota usage, never useful-traffic recovery."""
+    role = str(row.get("role") or "").strip().casefold()
+    lane = str(row.get("lane") or "").strip().casefold()
+    return role not in METADATA_ROLES | DIAGNOSTIC_GENERATION_ROLES and lane not in NON_TRAFFIC_LANES
 _FAILURE_REASON_LABELS = {
     "read_timeout": "model timeout",
     "timeout": "model timeout",
@@ -747,6 +757,9 @@ def _runtime_live_state(
     request_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str | None] | None:
     """Classify fresh real generation evidence without metadata inference."""
+    rows = [row for row in rows if is_generation_traffic_evidence(row)]
+    if request_rows is not None:
+        request_rows = [row for row in request_rows if is_generation_traffic_evidence(row)]
     local_request_rows = [
         row for row in _latest_request_rows(rows) if not _attempt_not_needed(row)
     ]
@@ -880,6 +893,7 @@ def build_snapshot(*, now: dt.datetime | None = None) -> dict[str, Any]:
         "failure_kind",
         "http_code",
         "role",
+        "lane",
         "latency_ms",
         "not_attempted_reason",
         "candidate_index",
@@ -892,7 +906,7 @@ def build_snapshot(*, now: dt.datetime | None = None) -> dict[str, Any]:
         "created_at",
     )
     runtime_rows = list(
-        query.exclude(role__in=METADATA_ROLES)
+        query.exclude(Q(role__in=METADATA_ROLES | DIAGNOSTIC_GENERATION_ROLES) | Q(lane__in=NON_TRAFFIC_LANES))
         .order_by("-created_at", "-id")
         .values(*fields)[:ATTEMPT_QUERY_CAP]
     )
@@ -908,7 +922,7 @@ def build_snapshot(*, now: dt.datetime | None = None) -> dict[str, Any]:
 
     pool_rows = list(gemini_keys.pool_status(now=generated_at, read_only=True))
     runtime_attempts = [
-        row for row in attempt_rows if row.get("role") not in METADATA_ROLES
+        row for row in attempt_rows if is_generation_traffic_evidence(row)
     ]
     runtime_by_request = _group_global_request(runtime_attempts)
     metadata_attempts = [
@@ -920,7 +934,7 @@ def build_snapshot(*, now: dt.datetime | None = None) -> dict[str, Any]:
         pool_row = pool_by_key.get(key_name, {})
         row_attempts = [row for row in attempt_rows if row.get("key_name") == key_name]
         metadata_rows = [row for row in row_attempts if row.get("role") in METADATA_ROLES]
-        runtime_rows = [row for row in row_attempts if row.get("role") not in METADATA_ROLES]
+        runtime_rows = [row for row in row_attempts if is_generation_traffic_evidence(row)]
         latest_metadata = max(metadata_rows, key=_attempt_sort_key, default=None)
         meaningful_runtime_rows = [
             row for row in runtime_rows if not _attempt_not_needed(row)

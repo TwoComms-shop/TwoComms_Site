@@ -92,9 +92,9 @@ _REVIEWER_STATUS_ALLOWED_KEYS = frozenset({
 })
 
 
-def _reviewer_safe_status(request):
+def _reviewer_safe_status(request, *, bootstrap=True):
     """Return PII-bearing diagnostics only to operators who may view PII."""
-    status = gemini_health.public_projection(bot.status_snapshot())
+    status = gemini_health.public_projection(bot.status_snapshot() if bootstrap else bot.status_snapshot(bootstrap=False))
     if has_all_bot_capabilities(
         request.user,
         OPERATE_IG_BOT_PERMISSION,
@@ -186,19 +186,20 @@ def _log_sender_ids(sender_ids) -> list[str]:
 
 
 def _log_rows_for_sender_ids(sender_ids):
-    """Логи, структурно принадлежащие этим IGSID, и только они."""
-    from .models import InstagramBotLog
-
+    """Exact legacy IGSID and validated structured client ownership only."""
+    from management.services.ig_console_read_model import structured_log_client_id
     ids = _log_sender_ids(sender_ids)
     if not ids:
         return InstagramBotLog.objects.none()
-    scope = Q()
+    legacy = Q()
     for igsid in ids:
-        # Двоеточие после IGSID — якорь: `"100:"` не совпадёт с `"1001: ..."`.
-        # Первый вариант покрывает формат `"{sender_id}: ..."`,
-        # второй — `"[{source}] {sender_id}: ..."`.
-        scope |= Q(detail__startswith=f"{igsid}:") | Q(detail__contains=f" {igsid}:")
-    return InstagramBotLog.objects.filter(scope)
+        legacy |= Q(detail__startswith=f"{igsid}:") | Q(detail__contains=f" {igsid}:")
+    client_ids = set(IgClient.objects.filter(igsid__in=ids).values_list("pk", flat=True))
+    # Parse complete candidate metadata rather than trusting a textual numeric
+    # prefix; valid JSON whitespace does not change owner identity either.
+    structured_ids = [row["pk"] for row in InstagramBotLog.objects.filter(detail__contains='"client_id"')
+        .values("pk", "detail") if structured_log_client_id(row["detail"]) in client_ids] if client_ids else []
+    return InstagramBotLog.objects.filter(legacy | Q(pk__in=structured_ids))
 
 
 def _delete_direct_bot_records(
@@ -982,17 +983,12 @@ _PUBLIC_BOT_LOG_LEVELS = frozenset({
 
 
 def _public_bot_log_item(row, *, include_date: bool = False) -> dict:
-    """Project current and historical log rows through one safe boundary."""
-    payload = {
-        "id": row.id,
-        "level": row.level if row.level in _PUBLIC_BOT_LOG_LEVELS else "info",
-        "event": row.event,
-        "detail": row.detail,
-        "time": row.created_at.strftime("%H:%M:%S"),
-    }
+    from management.services.ig_console_read_model import project_console_row
+    payload = project_console_row(row)
+    payload["time"] = row.created_at.strftime("%H:%M:%S")
     if include_date:
         payload["date"] = row.created_at.strftime("%d.%m.%Y")
-    return gemini_health.public_projection(payload)
+    return payload
 
 
 def _log_items(limit: int = 80):
@@ -1076,38 +1072,29 @@ def bot_stop_api(request):
 
 @login_required(login_url="management_login")
 @require_GET
+@never_cache
 def bot_status_api(request):
-    if not (_can_use_bot(request.user)):
-        return JsonResponse(
-            {"success": False, "error": "Недостатньо прав для цієї дії."},
-            status=403,
-        )
+    if not _can_use_bot(request.user):
+        return JsonResponse({"success": False, "error": "access_denied"}, status=403)
+    from management.services.ig_console_read_model import build_console_payload, console_access_allowed
+    from management.bot_overview_views import read_status_snapshot, read_overview_snapshot
+    full_console = console_access_allowed(request.user)
     try:
-        after_id = int(request.GET.get("after_id") or 0)
-    except (TypeError, ValueError):
-        after_id = 0
-
-    if not has_all_bot_capabilities(
-        request.user,
-        OPERATE_IG_BOT_PERMISSION,
-        VIEW_IG_CONVERSATION_PII_PERMISSION,
-    ):
-        return JsonResponse({
-            "success": True,
-            "status": _reviewer_safe_status(request),
-            "log": [],
-        })
-
-    def load_rows():
-        rows = InstagramBotLog.objects.all()
-        if after_id:
-            rows = rows.filter(id__gt=after_id)
-        return list(rows[:120])
-
-    rows = retry_mysql_read(load_rows, fallback=[])
-    rows.reverse()  # від старіших до новіших для дозапису в консоль
-    items = [_public_bot_log_item(row) for row in rows]
-    return JsonResponse({"success": True, "status": _reviewer_safe_status(request), "log": items})
+        console = build_console_payload(
+            can_view=full_console and request.GET.get("include_console", "1") != "0",
+            after_id=request.GET.get("after_id", "0"),
+            filters={"category": request.GET.get("category", "all"), "reason": request.GET.get("reason", ""),
+                "client_id": request.GET.get("client_id", ""), "include_routine": request.GET.get("include_routine") == "1"},
+            retention_target_rows=bot.LOG_KEEP_ROWS)
+    except ValueError:
+        return JsonResponse({"success": False, "error": "console_cursor_invalid"}, status=400)
+    except Exception:
+        return JsonResponse({"success": False, "error": "console_observation_unavailable"}, status=503)
+    status = read_status_snapshot(lambda: _reviewer_safe_status(request, bootstrap=False))
+    # Operational capacity is content-free but still requires operator access;
+    # external reviewer dominance remains enforced by the existing capability.
+    overview = read_overview_snapshot(can_view=has_all_bot_capabilities(request.user, OPERATE_IG_BOT_PERMISSION))
+    return JsonResponse({"success": True, "status": status, "console": console, "log": [], "overview": overview})
 
 
 @login_required(login_url="management_login")

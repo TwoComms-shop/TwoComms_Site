@@ -191,12 +191,12 @@ class GeminiHealthApiTests(TestCase):
         for env_alias in gemini_keys.ALL_KEYS:
             self.assertIn(env_alias, settings_obj.last_error)
 
-    def test_log_write_boundary_persists_only_opaque_project_references(self):
+    def test_log_write_boundary_persists_finite_metadata_without_raw_body(self):
         for index, env_alias in enumerate(gemini_keys.ALL_KEYS):
             instagram_bot.log(
                 "info",
                 "gemini_try" if index % 2 == 0 else "gemini_ok",
-                f"{env_alias}/gemini-3.5-flash-lite: ok",
+                f"{env_alias}/gemini-3.5-flash-lite: ok customer=private-customer-body",
             )
 
         rows = list(InstagramBotLog.objects.order_by("id"))
@@ -207,14 +207,20 @@ class GeminiHealthApiTests(TestCase):
         )
         for env_alias in gemini_keys.ALL_KEYS:
             self.assertNotIn(env_alias, serialized)
-            self.assertIn(gemini_health.public_key_reference(env_alias), serialized)
+        self.assertNotIn("private-customer-body", serialized)
+        for row in rows:
+            metadata = json.loads(row.detail)
+            self.assertEqual(metadata["schema_version"], 1)
+            self.assertEqual(metadata["kind"], "provider_attempt")
+            self.assertEqual(metadata["scope"], {})
+            self.assertIn(metadata["reason"], {"processing", "completed"})
 
     def test_status_and_dashboard_read_boundaries_redact_legacy_log_rows(self):
         for index, env_alias in enumerate(gemini_keys.ALL_KEYS):
             InstagramBotLog.objects.create(
                 level="info",
                 event="gemini_try" if index % 2 == 0 else "gemini_ok",
-                detail=f"winner={env_alias}/gemini-3.5-flash-lite",
+                detail=f"winner={env_alias}/gemini-3.5-flash-lite customer=private-legacy-body",
             )
 
         status_response = self.client.get(reverse("management_bot_status_api"))
@@ -226,9 +232,15 @@ class GeminiHealthApiTests(TestCase):
         for env_alias in gemini_keys.ALL_KEYS:
             self.assertNotIn(env_alias, status_serialized)
             self.assertNotIn(env_alias, dashboard_serialized)
-            safe_reference = gemini_health.public_key_reference(env_alias)
-            self.assertIn(safe_reference, status_serialized)
-            self.assertIn(safe_reference, dashboard_serialized)
+        self.assertNotIn("private-legacy-body", status_serialized)
+        self.assertNotIn("private-legacy-body", dashboard_serialized)
+        self.assertEqual(status_response.json()["log"], [])
+        self.assertEqual(len(status_response.json()["console"]["items"]), len(gemini_keys.ALL_KEYS))
+        for item in [*status_response.json()["console"]["items"], *dashboard_items]:
+            self.assertEqual(item["kind"], "legacy_event")
+            self.assertEqual(item["reason"], "legacy_unstructured")
+            self.assertEqual(item["detail"], "")
+            self.assertEqual(item["scope"], {})
 
     def test_non_admin_and_meta_reviewer_cannot_read_or_probe(self):
         self._configure()

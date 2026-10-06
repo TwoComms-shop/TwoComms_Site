@@ -2958,6 +2958,7 @@ def _handle_echo(
                 "warning",
                 "takeover_transition",
                 f"{recipient_igsid}: менеджер підключився",
+                scope={"client_id": client.pk, **({"message_id": msg.pk} if msg is not None else {})},
             )
         else:
             log(
@@ -3020,14 +3021,16 @@ MAX_COOLDOWN_DEFERRAL_SECONDS = 600
 logger = logging.getLogger("management.instagram_bot")
 
 
-def log(level: str, event: str, detail: str = "") -> None:
+def log(level: str, event: str, detail: str = "", *, kind=None, scope=None, reason=None) -> None:
     """Write the compact UI log and a durable, PII-redacted incident trail.
 
-    Routine successful messages intentionally omit detail in the file because
-    the console may contain a customer-facing reply excerpt.  Warnings/errors
-    preserve the diagnostic detail and pass through the global PII filter.
+    The DB console stores only finite structured metadata. Warnings/errors
+    retain their diagnostic file trail through the existing global PII filter;
+    successful customer reply excerpts never enter either console storage or
+    the routine file trail.
     """
     from management.services import gemini_health
+    from management.services.ig_console_read_model import DB_EVENT_CODES, console_event_for_log
 
     level = str(level or "info").lower()
     if level not in _LOG_LEVELS:
@@ -3050,7 +3053,8 @@ def log(level: str, event: str, detail: str = "") -> None:
         # Дивись коментар у `_LOG_LEVELS`: спостереження не потрапляє в консоль.
         return
     try:
-        InstagramBotLog.objects.create(level=level, event=event, detail=detail)
+        console_kind, console_detail = console_event_for_log(level=level, event=event, kind=kind, scope=scope, reason=reason)
+        InstagramBotLog.objects.create(level=level, event=event if event in DB_EVENT_CODES else console_kind, detail=console_detail)
         if InstagramBotLog.objects.count() > LOG_KEEP_ROWS + 100:
             ids = list(
                 InstagramBotLog.objects.order_by("-id").values_list("id", flat=True)[:LOG_KEEP_ROWS]
@@ -12730,7 +12734,7 @@ def _observe_not_allowed_inbound(
         return False
 
     s.last_inbound_at = inbound_at
-    log("info", "observed_not_allowed", observation_reason)
+    log("info", "observed_not_allowed", scope={"client_id": client.pk, "message_id": observed_message.pk})
     return True
 
 
@@ -12898,7 +12902,7 @@ def enqueue_inbound(
                 last_inbound_at=inbound_at
             )
             s.last_inbound_at = inbound_at
-            log("info", "observed", _inbound_log_detail(source, sender_id, text, ""))
+            log("info", "observed", scope={"client_id": msg.client_id, "message_id": msg.pk})
         return bool(message_created or not job_existed)
     try:
         with transaction.atomic():
@@ -13300,7 +13304,7 @@ def enqueue_inbound(
     s.last_inbound_at = inbound_at
     extra = f" (+{len(attachments)} фото)" if attachments else ""
     event = "queued" if msg.status == InstagramBotMessage.Status.PENDING else "observed"
-    log("info", event, _inbound_log_detail(source, sender_id, text, extra))
+    log("info", event, scope={"client_id": msg.client_id, "message_id": msg.pk})
     return True
 
 
@@ -16097,7 +16101,7 @@ def _process_one_inside_reply_boundary(
             row.send_state = "failed"
             row.processed_at = timezone.now()
             row.save(update_fields=["status", "send_state", "processed_at"])
-            log("error", "send_blocked", f"{row.sender_id}: {hint}")
+            log("error", "send_blocked", f"{row.sender_id}: {hint}", scope={"client_id": row.client_id, "message_id": row.pk})
             payment_review_queued = False
             if row.client_id and (payment_deal is not None or _PAY_URL_RE.search(reply)):
                 try:
@@ -16134,7 +16138,7 @@ def _process_one_inside_reply_boundary(
             row.send_state = "unknown"
             row.processed_at = timezone.now()
             row.save(update_fields=["status", "send_state", "processed_at"])
-            log("error", "send_unknown", f"{row.sender_id}: {hint}; automatic retry disabled")
+            log("error", "send_unknown", f"{row.sender_id}: {hint}; automatic retry disabled", scope={"client_id": row.client_id, "message_id": row.pk})
             partial_delivery = bool(
                 delivered_chunk_count > 0 and planned_chunk_count > delivered_chunk_count
             )
@@ -16170,7 +16174,7 @@ def _process_one_inside_reply_boundary(
             row.send_state = "failed"
             row.processed_at = timezone.now()
             row.save(update_fields=["status", "send_state", "processed_at"])
-            log("error", "give_up", f"{row.sender_id}: не вдалося відправити після {row.attempts} спроб ({hint})")
+            log("error", "give_up", f"{row.sender_id}: не вдалося відправити після {row.attempts} спроб ({hint})", scope={"client_id": row.client_id, "message_id": row.pk})
             from management.services.ig_alerts import alert_dedupe_key, format_technical_alert
 
             notify_manager(
@@ -16361,7 +16365,7 @@ def _process_one_inside_reply_boundary(
     s.replies_count = (s.replies_count or 0) + 1
     s.last_reply_at = timezone.now()
     s.save(update_fields=["replies_count", "last_reply_at"])
-    log("success", "reply_sent", f"→ {row.sender_id}: {reply[:240]}")
+    log("success", "reply_sent", scope={"client_id": row.client_id, "message_id": reply_message.pk})
     # Періодично оновлюємо стислу пам'ять про клієнта.
     if row.client_id:
         post_send_client = renew_client_automation_lease(row.client_id, lease_token)
@@ -18073,7 +18077,7 @@ def ingress_status(s: InstagramBotSettings, *, now=None) -> dict[str, object]:
 WORKER_RECOVERY_GRACE_SECONDS = 30
 
 
-def status_snapshot() -> dict:
+def status_snapshot(*, settings_obj=None, bootstrap=True) -> dict:
     from management.services.ig_maintenance import maintenance_status
     from management.services.ig_permission_transitions import (
         permission_transition_snapshot,
@@ -18081,7 +18085,11 @@ def status_snapshot() -> dict:
     from management.services.ig_reply_boundary import reply_barrier_telemetry
     from management.services.ig_outgoing_gate import outgoing_policy_telemetry
 
-    s = InstagramBotSettings.load()
+    s = settings_obj if settings_obj is not None else InstagramBotSettings.load() if bootstrap else InstagramBotSettings.objects.first()
+    if s is None:
+        return {"state": "unavailable", "running": False, "daemon_online": None,
+            "pending": None, "settings_revision": None, "status_available": False,
+            "unavailable_reason": "settings_unavailable"}
     maintenance = maintenance_status()
     now = timezone.now()
     hb = s.heartbeat_at
@@ -18089,7 +18097,7 @@ def status_snapshot() -> dict:
     db_heartbeat_fresh = bool(db_heartbeat_age is not None and db_heartbeat_age < 90)
     from management.services.ig_daemon_health import daemon_runtime_health_snapshot
 
-    daemon_health = daemon_runtime_health_snapshot()
+    daemon_health = daemon_runtime_health_snapshot() if bootstrap else daemon_runtime_health_snapshot(include_technical_debt=False)
     daemon_online = daemon_health["process_online"]
     daemon_main_healthy = daemon_health["main_healthy"]
     daemon_workers_healthy = daemon_health.get("workers_healthy", True)

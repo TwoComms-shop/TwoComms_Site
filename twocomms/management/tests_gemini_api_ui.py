@@ -1,6 +1,8 @@
 """Focused static contracts for the Gemini Router V2 operations cockpit."""
 
 from pathlib import Path
+import json
+import subprocess
 
 from django.test import SimpleTestCase
 
@@ -23,7 +25,7 @@ class GeminiV2PanelTemplateContractTests(SimpleTestCase):
         end = cls.template.index("<!-- ===== Інструкції ===== -->", start)
         cls.panel = cls.template[start:end]
 
-    def test_admin_api_tab_keeps_a_scoped_v2_application_panel(self):
+    def test_operator_api_tab_keeps_a_scoped_v2_application_panel(self):
         self.assertIn('data-tab="api">API</button>', self.template)
         self.assertIn('data-panel="api"', self.template)
         self.assertIn('id="gemini-v2-panel"', self.panel)
@@ -31,13 +33,15 @@ class GeminiV2PanelTemplateContractTests(SimpleTestCase):
         self.assertIn("<h2 id=\"gemini-v2-title\">Gemini Router V2</h2>", self.panel)
 
         tab_start = self.template.index('data-tab="api"')
-        tab_guard_start = self.template.rindex("{% if bot_is_admin %}", 0, tab_start)
+        tab_guard_start = self.template.rindex("{% if bot_can_operate %}", 0, tab_start)
         tab_guard_end = self.template.index("{% endif %}", tab_start)
         panel_start = self.template.index('id="gemini-v2-panel"')
-        panel_guard_start = self.template.rindex("{% if bot_is_admin %}", 0, panel_start)
+        panel_guard_start = self.template.rindex("{% if bot_can_operate %}", 0, panel_start)
         panel_guard_end = self.template.index("{% endif %}", panel_start)
-        self.assertLess(tab_guard_start, tab_start, tab_guard_end)
-        self.assertLess(panel_guard_start, panel_start, panel_guard_end)
+        self.assertLess(tab_guard_start, tab_start)
+        self.assertLess(tab_start, tab_guard_end)
+        self.assertLess(panel_guard_start, panel_start)
+        self.assertLess(panel_start, panel_guard_end)
 
     def test_assets_are_external_and_old_hourly_health_ui_is_removed(self):
         self.assertIn(
@@ -168,7 +172,6 @@ class GeminiV2PanelTemplateContractTests(SimpleTestCase):
     def test_unknown_and_incomplete_accounting_never_render_as_zero_capacity(self):
         for contract in (
             "metric.complete!==true",
-            "return {value:'—',detail:'Облік невідомий',unknown:true}",
             "Облік вимкнений або невідомий.",
             "«—» не означає нульове використання.",
             "Доступність лише припускається",
@@ -179,6 +182,24 @@ class GeminiV2PanelTemplateContractTests(SimpleTestCase):
             "Невідоме або неповне значення завжди позначається «—», а не нулем.",
             self.panel,
         )
+        start = self.script.index("function metricParts(metric)")
+        end = self.script.index("function railMetric(", start)
+        program = ("const isObject=v=>v!==null&&typeof v==='object';"
+            "const formatNumber=v=>String(v);" + self.script[start:end]
+            + "process.stdout.write(JSON.stringify([metricParts(null),"
+            "metricParts({complete:false,observed_usage_known:true,used:17,limit:100}),"
+            "metricParts({complete:true,used:0,limit:100,remaining:100,reserved:0,uncertain:0})]));")
+        result = subprocess.run(["node", "-e", program], check=True, capture_output=True,
+            text=True, timeout=10)
+        unknown, uncalibrated, complete = json.loads(result.stdout)
+        self.assertEqual(unknown["value"], "—")
+        self.assertTrue(unknown["unknown"])
+        self.assertEqual(uncalibrated["value"], "17 / 100")
+        self.assertTrue(uncalibrated["unknown"])
+        self.assertIn("headroom невідомий", uncalibrated["detail"])
+        self.assertNotIn("зал.", uncalibrated["detail"])
+        self.assertEqual(complete["value"], "0 / 100")
+        self.assertFalse(complete["unknown"])
 
     def test_routes_are_read_only_and_explain_nonexclusive_pin_semantics(self):
         for route_class in (

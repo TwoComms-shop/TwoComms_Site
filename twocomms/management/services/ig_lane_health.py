@@ -36,11 +36,19 @@ def _age(now, moment):
     return max(0, int((now - moment).total_seconds())) if moment else None
 
 
-def _sample(query, classify, *, now, threshold, progress=None, exact_attention=0, complete_risk_scan=False, progress_kind="durable_completion"):
-    rows = list(query[:SAMPLE_LIMIT + 1])
+def _observation_limit(value):
+    return SAMPLE_LIMIT if value is None else max(1, min(int(value), SAMPLE_LIMIT))
+
+
+def _sample(query, classify, *, now, threshold, progress=None, exact_attention=None, complete_risk_scan=False, progress_kind="durable_completion", observation_limit=None, risk_scan_complete=True, attention_total_exact=None):
+    sample_limit = _observation_limit(observation_limit)
+    if attention_total_exact is None:
+        attention_total_exact = exact_attention is not None
+    exact_attention = exact_attention if exact_attention is not None else 0
+    rows = list(query[:sample_limit + 1])
     counts = dict.fromkeys(BUCKETS, 0)
     oldest_due = None
-    for row in rows[:SAMPLE_LIMIT]:
+    for row in rows[:sample_limit]:
         bucket, due = classify(row)
         counts[bucket] += 1
         if bucket == "runnable" and due is not None:
@@ -48,15 +56,17 @@ def _sample(query, classify, *, now, threshold, progress=None, exact_attention=0
     due_age = _age(now, oldest_due)
     stalled = bool(due_age is not None and due_age > threshold)
     attention = bool(exact_attention or counts["failed"] or counts["unknown"] or counts["attention"])
-    truncated = len(rows) > SAMPLE_LIMIT
-    coverage_complete = not truncated or complete_risk_scan
+    truncated = len(rows) > sample_limit
+    coverage_complete = risk_scan_complete and (not truncated or complete_risk_scan)
     return {
         "available": True, "healthy": coverage_complete and not (attention or stalled),
         "state": "stalled" if stalled else "attention" if attention else "coverage_incomplete" if not coverage_complete else "observed",
-        "counts": counts, "sampled": True, "sample_size": min(len(rows), SAMPLE_LIMIT),
-        "sample_limit": SAMPLE_LIMIT, "has_more": truncated,
+        "counts": counts, "sampled": True, "sample_size": min(len(rows), sample_limit),
+        "sample_limit": sample_limit, "has_more": truncated,
         "risk_coverage_complete": coverage_complete,
         "attention_total": exact_attention,
+        "attention_total_exact": attention_total_exact,
+        "risk_scan_complete": risk_scan_complete,
         "oldest_runnable_age_seconds": due_age, "stall_after_seconds": threshold,
         "progress_age_seconds": _age(now, progress),
         "progress_evidence": progress_kind if progress else "unavailable",
@@ -92,14 +102,15 @@ def _manual_owned(revision):
     ).exists()
 
 
-def _revision_lane(*, now, settings_row, allowed):
+def _revision_lane(*, now, settings_row, allowed, observation_limit=None, include_progress=True):
     from management.services.ig_revision_execution import due_revision_ids, finalization_due_ids
     from management.services.ig_revision_rollout import revision_execution_rollout
     from management.services.ig_turn_revisions import replay_snapshot
 
     rollout = revision_execution_rollout(now=now)
-    due = set(due_revision_ids(now=now, limit=SAMPLE_LIMIT, cutover_at=rollout.cutover_at)) if rollout.enabled else set()
-    finalizing = set(finalization_due_ids(now=now, limit=SAMPLE_LIMIT))
+    sample_limit = _observation_limit(observation_limit)
+    due = set(due_revision_ids(now=now, limit=sample_limit, cutover_at=rollout.cutover_at)) if rollout.enabled else set()
+    finalizing = set(finalization_due_ids(now=now, limit=sample_limit))
     effects = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
     manager_owned_source = IgTurnRevisionSource.objects.filter(
         revision_id=OuterRef("pk"),
@@ -127,6 +138,9 @@ def _revision_lane(*, now, settings_row, allowed):
         manual_owner=Exists(owner),
     ).select_related("client", "turn").order_by("overall_deadline", "id")
 
+    def manual_owned(row):
+        return bool(row.manual_owner) if observation_limit is not None else _manual_owned(row)
+
     def classify(row):
         if row.uncertain:
             return "unknown", None
@@ -136,7 +150,7 @@ def _revision_lane(*, now, settings_row, allowed):
             from management.services.ig_revision_recovery import execution_resume_is_current
             if execution_resume_is_current(row, now=now):
                 return "runnable", row.recovery_due_at or row.updated_at
-            return ("manual", None) if _manual_owned(row) else ("attention", None)
+            return ("manual", None) if manual_owned(row) else ("attention", None)
         # A legacy inbound head can remain collecting after its source was
         # consumed just as the manager explicitly took over the client. That
         # is owned work for the manager, not actionable bot attention. Manual
@@ -153,7 +167,7 @@ def _revision_lane(*, now, settings_row, allowed):
         if row.overall_deadline <= now and row.recovery_state not in {"waiting", "execution"}:
             if row.pk in finalizing:
                 return "runnable", row.updated_at
-            return ("manual", None) if _manual_owned(row) else ("attention", None)
+            return ("manual", None) if manual_owned(row) else ("attention", None)
         if _permission_blocked(row.client, settings_row=settings_row, allowed=allowed, revision=row):
             return "deferred", None
         if row.recovery_state in {"waiting", "execution"}:
@@ -175,7 +189,7 @@ def _revision_lane(*, now, settings_row, allowed):
         if row.overall_deadline <= now:
             if row.pk in finalizing:
                 return "runnable", row.updated_at
-            return ("manual", None) if _manual_owned(row) else ("attention", None)
+            return ("manual", None) if manual_owned(row) else ("attention", None)
         if row.source_count <= 0 or row.erasure_started_at_snapshot:
             return "attention", None
         if row.state in {"sealed", "claimed"} and replay_snapshot(row.pk) is None:
@@ -213,16 +227,26 @@ def _revision_lane(*, now, settings_row, allowed):
     # with that classifier; the old SQL predicate only covered empty recovery
     # state and reported a false zero for an unowned manual recovery.
     from management.services.ig_revision_recovery import execution_resume_is_current
-    for recovery in query.filter(recovery_state="manual"):
+    risk_query = query.filter(recovery_state="manual")
+    risk_complete = True
+    if observation_limit is not None:
+        risk_rows = list(risk_query[:sample_limit + 1])
+        risk_complete = len(risk_rows) <= sample_limit
+        risk_query = risk_rows[:sample_limit]
+    for recovery in risk_query:
         if recovery.uncertain or recovery.failed_effect or recovery.manual_owner:
             continue
         if not execution_resume_is_current(recovery, now=now):
             bad += 1
-    progress = IgCustomerTurnRevision.objects.aggregate(at=Max("processed_at"))["at"]
-    return _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS, progress=progress, exact_attention=bad, progress_kind="terminal_progress")
+    progress = IgCustomerTurnRevision.objects.aggregate(at=Max("processed_at"))["at"] if include_progress else None
+    result = _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS, progress=progress, exact_attention=bad, progress_kind="terminal_progress", observation_limit=observation_limit, risk_scan_complete=risk_complete, attention_total_exact=risk_complete)
+    if observation_limit is not None:
+        result.update(risk_sample_size=len(risk_query), risk_sample_limit=sample_limit,
+                      risk_has_more=not risk_complete)
+    return result
 
 
-def _legacy_lane(*, now, settings_row, allowed):
+def _legacy_lane(*, now, settings_row, allowed, observation_limit=None):
     from management.services.ig_revision_live import legacy_claimable_messages
     query = legacy_claimable_messages(InstagramBotMessage.objects.filter(
         role="user", status__in=("pending", "processing"),
@@ -254,10 +278,10 @@ def _legacy_lane(*, now, settings_row, allowed):
             return "deferred", None
         return "runnable", row.created_at
 
-    return _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS)
+    return _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS, observation_limit=observation_limit)
 
 
-def _outbound_lane(*, now):
+def _outbound_lane(*, now, observation_limit=None):
     query = InstagramBotMessage.objects.filter(role="model").filter(
         Q(status__in=("pending", "processing")) | Q(send_state="unknown"),
     ).order_by("created_at", "id")
@@ -272,10 +296,10 @@ def _outbound_lane(*, now):
         return "attention", None
 
     return _sample(query, classify, now=now, threshold=REPLY_STALL_SECONDS,
-                   exact_attention=query.filter(send_state="unknown").count())
+                   exact_attention=query.filter(send_state="unknown").count(), observation_limit=observation_limit)
 
 
-def _delivery_lane(*, now):
+def _delivery_lane(*, now, observation_limit=None):
     # UNKNOWN survives supersession and cannot be hidden by active_slot=1 or
     # a newer successful reply. A definite failure on an old replaced plan is
     # historical; keep that failure only while its original head remains active.
@@ -283,10 +307,10 @@ def _delivery_lane(*, now):
         Q(state="unknown") | Q(state="definite_failed", revision__active_slot=1),
     ).order_by("created_at", "id")
     return _sample(query, lambda row: ("unknown" if row.state == "unknown" else "failed", None),
-                   now=now, threshold=REPLY_STALL_SECONDS, exact_attention=query.count(), complete_risk_scan=True)
+                   now=now, threshold=REPLY_STALL_SECONDS, exact_attention=query.count(), complete_risk_scan=True, observation_limit=observation_limit)
 
 
-def _binotel_lane(*, now):
+def _binotel_lane(*, now, observation_limit=None):
     from management.services.call_auto_analysis import is_call_auto_analysis_enabled
     from management.services.call_ai_queue import analysis_queue_category, STALE_ANALYSIS_LOCK_MINUTES
     if not is_call_auto_analysis_enabled():
@@ -307,7 +331,7 @@ def _binotel_lane(*, now):
         return "runnable", row.created_at
 
     return _sample(query, classify, now=now, threshold=SERVICE_STALL_SECONDS,
-                   exact_attention=query.filter(ai_status="error").count())
+                   exact_attention=query.filter(ai_status="error").count(), observation_limit=observation_limit)
 
 
 def _consumer_heartbeat_lane(task_key, *, now, threshold):
@@ -360,11 +384,13 @@ def _trace_refresh_lane(*, now):
     return _consumer_heartbeat_lane("ig_trace_refresh", now=now, threshold=90)
 
 
-def _job_lane(model, *, now, statuses, progress_field, due_field="next_attempt_at", threshold=SERVICE_STALL_SECONDS, analysis=False, recovery=False):
+def _job_lane(model, *, now, statuses, progress_field, due_field="next_attempt_at", threshold=SERVICE_STALL_SECONDS, analysis=False, recovery=False, observation_limit=None, include_progress=True):
     query = model.objects.filter(status__in=statuses).order_by("created_at", "id")
     from management.services.bot_conversation_analysis import MAX_ATTEMPTS
     model_fields = {field.name for field in model._meta.get_fields()}
     has_lease = "lease_until" in model_fields
+    if recovery and observation_limit is not None:
+        query = query.select_related("holding_message")
 
     def classify(row):
         if row.status in {"unknown", "ambiguous"}:
@@ -411,14 +437,21 @@ def _job_lane(model, *, now, statuses, progress_field, due_field="next_attempt_a
     elif not recovery:
         bad_q |= Q(status="pending", created_at__lt=now - timedelta(seconds=threshold)) & (Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
     bad = query.filter(bad_q).count()
-    progress = model.objects.aggregate(at=Max(progress_field))["at"]
+    progress = model.objects.aggregate(at=Max(progress_field))["at"] if include_progress else None
     return _sample(query, classify, now=now, threshold=threshold, progress=progress, exact_attention=bad,
                    complete_risk_scan=not recovery,
-                   progress_kind="terminal_progress" if progress_field == "completed_at" else "durable_completion")
+                   progress_kind="terminal_progress" if progress_field == "completed_at" else "durable_completion",
+                   observation_limit=observation_limit)
 
 
-def operational_lane_snapshot(*, now=None):
-    """Sanitized GET observations; errors are unavailable, never empty/healthy."""
+def operational_lane_snapshot(*, now=None, observation_limit=None, include_progress=True, daemon_snapshot=None):
+    """Sanitized GET observations; errors are unavailable, never empty/healthy.
+
+    Defaults preserve the full operational reader. A composite can bound row
+    classification and manual risk inspection, omit MAX progress reads, and
+    reuse one independently captured daemon observation. Overflow is incomplete
+    coverage, even when its inspected attention lower bound happens to be zero.
+    """
     now = now or timezone.now()
     try:
         settings_row = InstagramBotSettings.objects.filter(pk=1).first()
@@ -429,21 +462,22 @@ def operational_lane_snapshot(*, now=None):
         from management.services.ig_maintenance import maintenance_status
         from management.services.ig_permission_transitions import permission_transition_snapshot
         allowed = allowed_sender_ids(settings_row)
-        daemon = daemon_runtime_health_snapshot(now_epoch=now.timestamp())
+        daemon = daemon_runtime_health_snapshot(now_epoch=now.timestamp()) if daemon_snapshot is None else daemon_snapshot
         maintenance = maintenance_status(now=now.timestamp())["active"]
-        pause_pending = permission_transition_snapshot()["global_pause_pending"]
+        pause_pending = (permission_transition_snapshot() if observation_limit is None
+                         else permission_transition_snapshot(compact=True))["global_pause_pending"]
         enabled = bool(settings_row.is_enabled)
         bot_state = "disabled" if not enabled else "maintenance" if maintenance else "pause_pending" if pause_pending else "running" if daemon["process_online"] and daemon["main_healthy"] and ingress_status(settings_row, now=now)["healthy"] else "unavailable"
         lanes = {
-            "customer_revisions": _revision_lane(now=now, settings_row=settings_row, allowed=allowed),
-            "legacy_inbound": _legacy_lane(now=now, settings_row=settings_row, allowed=allowed),
-            "legacy_outbound": _outbound_lane(now=now),
-            "revision_delivery": _delivery_lane(now=now),
-            "manager_notifications": _job_lane(IgBotNotification, now=now, statuses=("pending", "sending", "unknown", "failed", "dead_letter"), progress_field="sent_at"),
-            "conversation_analysis": _job_lane(IgConversationAnalysisJob, now=now, statuses=("pending", "processing", "failed"), progress_field="analyzed_at", analysis=True),
-            "analysis_materialization": _job_lane(IgConversationAnalysisEvent, now=now, statuses=("pending", "failed"), progress_field="applied_at"),
-            "reply_recovery": _job_lane(IgAiReplyRecoveryJob, now=now, statuses=("pending", "processing", "sending", "ambiguous", "failed"), progress_field="completed_at", recovery=True),
-            "binotel_analysis": _binotel_lane(now=now),
+            "customer_revisions": _revision_lane(now=now, settings_row=settings_row, allowed=allowed, observation_limit=observation_limit, include_progress=include_progress),
+            "legacy_inbound": _legacy_lane(now=now, settings_row=settings_row, allowed=allowed, observation_limit=observation_limit),
+            "legacy_outbound": _outbound_lane(now=now, observation_limit=observation_limit),
+            "revision_delivery": _delivery_lane(now=now, observation_limit=observation_limit),
+            "manager_notifications": _job_lane(IgBotNotification, now=now, statuses=("pending", "sending", "unknown", "failed", "dead_letter"), progress_field="sent_at", observation_limit=observation_limit, include_progress=include_progress),
+            "conversation_analysis": _job_lane(IgConversationAnalysisJob, now=now, statuses=("pending", "processing", "failed"), progress_field="analyzed_at", analysis=True, observation_limit=observation_limit, include_progress=include_progress),
+            "analysis_materialization": _job_lane(IgConversationAnalysisEvent, now=now, statuses=("pending", "failed"), progress_field="applied_at", observation_limit=observation_limit, include_progress=include_progress),
+            "reply_recovery": _job_lane(IgAiReplyRecoveryJob, now=now, statuses=("pending", "processing", "sending", "ambiguous", "failed"), progress_field="completed_at", recovery=True, observation_limit=observation_limit, include_progress=include_progress),
+            "binotel_analysis": _binotel_lane(now=now, observation_limit=observation_limit),
             "typed_memory": _typed_memory_lane(now=now),
             "trace_refresh": _trace_refresh_lane(now=now),
         }

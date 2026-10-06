@@ -567,3 +567,13 @@
 @media(prefers-reduced-motion:reduce){
   .gemini-v2 *,.gemini-v2 *::before,.gemini-v2 *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important;}
 }
+
+/* Captured metadata is evidence about one immutable request, never a prompt. */
+.gemini-v2-capture{margin:12px 0;padding:12px;border:1px solid #304455;border-radius:8px;background:#101c28;}
+.gemini-v2-capture p,.gemini-v2-retention,.gemini-v2-row-freshness{overflow-wrap:anywhere;font-size:12px;line-height:1.5;}
+.gemini-v2-publication-hash{font-family:ui-monospace,monospace;color:#99bdcc;}
+.gemini-v2-row-freshness,.gemini-v2-retention{color:#9aabbb;}
+.gemini-v2-capture-meta{margin:10px 0;border-top:1px solid #253247;padding-top:9px;color:#95a8c0;font-size:12px;}
+.gemini-v2-capture-meta>summary{cursor:pointer;font-weight:600;}
+.gemini-v2-capture-meta>div{padding-top:6px;}
+.gemini-v2-local-validation{border-left:2px solid #9c7831;padding-left:9px;color:#d7c59d;line-height:1.55;}
