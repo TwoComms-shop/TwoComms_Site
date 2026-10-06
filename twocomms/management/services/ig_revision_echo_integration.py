@@ -27,6 +27,9 @@ def uses_revision_echo_scope(namespace, recipient=None, *, mid=""):
 
     if not namespace:
         return False
+    from management.services.ig_legacy_human_receipts import uses_legacy_human_receipt_scope
+    if uses_legacy_human_receipt_scope(namespace, recipient, mid=mid):
+        return True
     human = HumanReplyPart.objects.filter(provider_namespace=namespace)
     if mid and human.filter(provider_message_id=mid, state="sent").exists():
         # Also route foreign-recipient exact identities through the finite
@@ -75,9 +78,17 @@ def _project_manager_event(event_id):
         # Receipt completion can precede this projection after observation.
         # A human checkpoint owns the client prefix, so this final recheck
         # prevents an extra manager transcript/takeover from an early echo.
-        from management.services.ig_revision_echo import _own_human_part, _reconcile_event
-        if _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id) is not None:
-            event = _reconcile_event(event, client, timezone.now())
+        from management.services.ig_revision_echo import (
+            _Blocked, _legacy_human_receipt, _legacy_human_wait, _legacy_lookup_retryable, _own_human_part, _reconcile_event,
+        )
+        legacy = _legacy_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+        if (_own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id) is not None
+            or legacy.accepted or legacy.classification in {"ambiguous", "blocked"}
+            or _legacy_human_wait(client, event.provider_namespace, event.recipient_igsid)):
+            try:
+                event = _reconcile_event(event, client, timezone.now())
+            except _Blocked as exc:
+                raise RevisionEchoDeferred(str(exc), retryable=_legacy_lookup_retryable(exc)) from None
             if event.state != event.State.MANAGER_PENDING:
                 return False
         historical = event.payload.get("historical") is True
@@ -185,9 +196,11 @@ def observe_and_project_echo(settings_row, *, namespace, recipient, mid, text=""
     from management.services.ig_revision_echo import observe_revision_echo
     from management.services.ig_outgoing_registry import is_our_outgoing
     from management.ig_human_reply_models import HumanReplyPart
+    from management.services.ig_legacy_human_receipts import uses_legacy_human_receipt_scope
 
     human_scope = HumanReplyPart.objects.filter(provider_namespace=namespace)
-    if (human_scope.filter(recipient_igsid=recipient).exists()
+    if (uses_legacy_human_receipt_scope(namespace, recipient, mid=mid)
+        or human_scope.filter(recipient_igsid=recipient).exists()
         or human_scope.filter(provider_message_id=mid, state="sent").exists()):
         result = observe_revision_echo(
             settings_id=settings_row.pk, namespace=namespace, recipient=recipient,

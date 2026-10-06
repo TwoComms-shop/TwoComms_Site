@@ -1,0 +1,99 @@
+maintenance active lease_id=r30-correction-185420-release expires_at=1791291430
+From https://github.com/zainllw0w/TwoComms_Site
+   2f3361f76..185420ea5  main       -> origin/main
+Updating 2f3361f76..185420ea5
+Fast-forward
+ ...233\320\235\320\225\320\235\320\230\320\257.md" |   8 +
+ ...320\227\320\220\320\246\320\230\320\230_3_0.md" |   6 +-
+ .../PRODUCTION_RELEASE_2026-10-06.md               |   9 +
+ .../production-postpull.log                        | 100 ++++++
+ .../r30-size-correction-20261006/README.md         |  13 +
+ .../correction-human-root-ui-final-js.log          | 136 ++++++++
+ .../correction-newguards-final-native.log          |   7 +
+ .../correction-possessive-final-native.log         |  19 ++
+ .../correction-possessive-native.log               | 124 +++++++
+ .../correction-release-accepted-native.log         |   8 +
+ .../correction-release-final-native.log            |  65 ++++
+ .../size-correction-final-native-contention.log    |  18 +
+ .../size-correction-final-native.log               |  64 ++++
+ .../size-correction-initial-sqlite.log             |  24 ++
+ .../js/management-ig-selection-corrections.test.js | 171 ++++++++++
+ twocomms/management/bot_state_views.py             |  42 ++-
+ .../management/services/ig_admin_state_capture.py  |  10 +
+ .../management/services/ig_client_state_card.py    |  35 +-
+ .../management/services/ig_commerce_projection.py  |  62 +++-
+ twocomms/management/services/ig_commerce_state.py  |  43 +++
+ twocomms/management/services/ig_reply_truth.py     |  19 +-
+ twocomms/management/services/ig_response_guard.py  |   4 +-
+ twocomms/management/services/ig_response_plan.py   |  87 ++++-
+ .../services/ig_selection_corrections.py           | 311 ++++++++++++++++++
+ .../static/management/ig_human_documents.css       |  42 ++-
+ .../static/management/ig_human_documents.js        |   6 +-
+ .../static/management/ig_selection_corrections.css |  29 ++
+ .../static/management/ig_selection_corrections.js  | 229 +++++++++++++
+ twocomms/management/templates/management/bot.html  |  38 ++-
+ .../management/tests_ig_admin_state_capture.py     |  14 +
+ twocomms/management/tests_ig_commerce_state.py     |   2 +-
+ twocomms/management/tests_ig_response_plan.py      |   8 +
+ .../tests_ig_selection_correction_native.py        | 143 ++++++++
+ .../tests_ig_selection_correction_response_plan.py | 305 +++++++++++++++++
+ .../management/tests_ig_selection_corrections.py   | 362 +++++++++++++++++++++
+ twocomms/management/urls.py                        |   1 +
+ 36 files changed, 2506 insertions(+), 58 deletions(-)
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/PRODUCTION_RELEASE_2026-10-06.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-human-delivery-20261006/production-postpull.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/README.md
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-human-root-ui-final-js.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-newguards-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-possessive-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-possessive-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-release-accepted-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/correction-release-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/size-correction-final-native-contention.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/size-correction-final-native.log
+ create mode 100644 docs/instagram_bot_audit/new/3.0/evidence/r30-size-correction-20261006/size-correction-initial-sqlite.log
+ create mode 100644 tests/js/management-ig-selection-corrections.test.js
+ create mode 100644 twocomms/management/services/ig_selection_corrections.py
+ create mode 100644 twocomms/management/static/management/ig_selection_corrections.css
+ create mode 100644 twocomms/management/static/management/ig_selection_corrections.js
+ create mode 100644 twocomms/management/tests_ig_selection_correction_native.py
+ create mode 100644 twocomms/management/tests_ig_selection_correction_response_plan.py
+ create mode 100644 twocomms/management/tests_ig_selection_corrections.py
+System check identified no issues (0 silenced).
+Running DTF asset minification before collectstatic...
+DTF minification complete: 3 files, 0 updated, saved 66648 bytes
+
+4 static files copied to '/home/qlknpodo/TWC/TwoComms_Site/twocomms/staticfiles', 734 unmodified, 1086 post-processed.
+Compressing... done
+Compressed 4 block(s) from 60 template(s) for 1 context(s).
+maintenance disabled
+daemon ready under supervisor — ok
+377 objects imported automatically (use -v 2 for details).
+
+Traceback (most recent call last):
+  File "/home/qlknpodo/TWC/TwoComms_Site/twocomms/manage.py", line 65, in <module>
+    main()
+    ~~~~^^
+  File "/home/qlknpodo/TWC/TwoComms_Site/twocomms/manage.py", line 61, in main
+    execute_from_command_line(sys.argv)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/__init__.py", line 443, in execute_from_command_line
+    utility.execute()
+    ~~~~~~~~~~~~~~~^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/__init__.py", line 437, in execute
+    self.fetch_command(subcommand).run_from_argv(self.argv)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/base.py", line 422, in run_from_argv
+    self.execute(*args, **cmd_options)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/base.py", line 466, in execute
+    output = self.handle(*args, **options)
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/core/management/commands/shell.py", line 271, in handle
+    exec(sys.stdin.read(), {**globals(), **self.get_namespace(**options)})
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 13, in <module>
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/urls/base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+  File "/home/qlknpodo/virtualenv/TWC/TwoComms_Site/twocomms/3.14/lib64/python3.14/site-packages/django/urls/resolvers.py", line 842, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'management_bot_client_size_correction_api' not found. 'management_bot_client_size_correction_api' is not a valid view function or pattern name.

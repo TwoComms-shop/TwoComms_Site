@@ -188,6 +188,65 @@ def _human_projection_matches(part, message):
         and message.delivery_planned_chunk_count == 1 and message.delivery_delivered_chunk_count == 1)
 
 
+LEGACY_HUMAN_RECEIPT_REASON = "exact_legacy_human_provider_receipt"
+
+
+def _legacy_lookup_retryable(reason):
+    """A failed read can heal; invalid ownership and privacy cannot."""
+    return str(reason) == "legacy_human_receipt_unavailable"
+
+
+def _legacy_human_receipt(client, namespace, recipient, mid, *, manager_message_id=None):
+    from management.services.ig_legacy_human_receipts import (
+        LegacyHumanReceipt, find_legacy_human_receipt, uses_legacy_human_receipt_scope,
+    )
+    if not uses_legacy_human_receipt_scope(namespace, recipient, mid=mid):
+        return LegacyHumanReceipt()
+    return find_legacy_human_receipt(client_id=client.pk, namespace=namespace,
+        recipient=recipient, mid=mid, manager_message_id=manager_message_id)
+
+
+def _legacy_human_wait(client, namespace, recipient):
+    from management.services.ig_legacy_human_receipts import legacy_human_wait_reason
+    return legacy_human_wait_reason(client_id=client.pk, namespace=namespace, recipient=recipient)
+
+
+def _legacy_event_receipt_valid(event, client):
+    if (event.reason != LEGACY_HUMAN_RECEIPT_REASON or not event.manager_message_id
+        or event.matched_effect_id or event.matched_human_part_id or event.permission_transition_id):
+        return False
+    return _legacy_human_receipt(client, event.provider_namespace, event.recipient_igsid,
+        event.provider_message_id, manager_message_id=event.manager_message_id).accepted
+
+
+def _set_legacy_human_own(event, receipt, now):
+    if (event.matched_effect_id or event.matched_human_part_id or event.permission_transition_id
+        or event.state == event.State.HUMAN_PENDING):
+        raise _Blocked("echo_legacy_receipt_projection_conflict")
+    if event.manager_message_id and event.manager_message_id != receipt.manager_message_id:
+        raise _Blocked("echo_legacy_receipt_projection_conflict")
+    if event.state == event.State.MANAGER_PENDING:
+        # Both transitions are existing guarded transitions, committed under
+        # the same client/event lock; no intermediate state escapes this txn.
+        _set_state(event, event.State.AMBIGUOUS, "legacy_human_receipt_checkpoint", now)
+    event.manager_message_id = receipt.manager_message_id
+    event.state, event.reason, event.resolved_at = event.State.OWN, LEGACY_HUMAN_RECEIPT_REASON, now
+    event.save(update_fields=["manager_message", "state", "reason", "resolved_at", "updated_at"])
+
+
+def _reject_legacy_manager_projection(event, client):
+    receipt = _legacy_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+    if _legacy_lookup_retryable(receipt.reason):
+        raise _Blocked("legacy_human_receipt_unavailable")
+    if receipt.accepted or receipt.classification in {"ambiguous", "blocked"}:
+        raise _Blocked("echo_legacy_manager_projection_changed")
+    wait = _legacy_human_wait(client, event.provider_namespace, event.recipient_igsid)
+    if _legacy_lookup_retryable(wait):
+        raise _Blocked(wait)
+    if wait:
+        raise _Blocked("echo_legacy_manager_projection_changed")
+
+
 def _manager_proof(client, namespace, recipient, mid, *, message_id=None, job_id=None, settings_id=None, historical=False):
     messages = InstagramBotMessage.objects.filter(
         mid=mid, provider_namespace=namespace, sender_id=recipient,
@@ -270,6 +329,15 @@ def _set_state(event, state, reason, now, *, matched_effect=None, matched_human_
 
 def _reconcile_event(event, client, now):
     terminal = {event.State.OWN, event.State.MANAGER_APPLIED, event.State.HUMAN_APPLIED}
+    legacy = _legacy_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+    if legacy.classification == "blocked":
+        raise _Blocked(legacy.reason)
+    if legacy.classification == "ambiguous":
+        if event.state in terminal:
+            raise _Blocked(legacy.reason)
+        _set_state(event, event.State.AMBIGUOUS, legacy.reason, now)
+        _technical_case(event, client, now)
+        return event
     foreign = (_foreign_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
         or _foreign_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id))
     if foreign:
@@ -293,10 +361,28 @@ def _reconcile_event(event, client, now):
             or not _human_projection_matches(human, message)
             or event.matched_effect_id or event.permission_transition_id):
             raise _Blocked("echo_human_projection_mismatch")
+    if event.state == event.State.OWN and event.reason == LEGACY_HUMAN_RECEIPT_REASON:
+        if not _legacy_event_receipt_valid(event, client):
+            raise _Blocked("echo_legacy_receipt_projection_mismatch")
+    if legacy.accepted and event.state in {event.State.MANAGER_APPLIED, event.State.HUMAN_APPLIED}:
+        raise _Blocked("echo_legacy_receipt_projection_conflict")
     if event.state in terminal:
+        return event
+    if legacy.accepted:
+        _set_legacy_human_own(event, legacy, now)
         return event
     if human is not None:
         _set_state(event, event.State.HUMAN_PENDING, "exact_human_provider_receipt", now, matched_human_part=human)
+        return event
+    legacy_wait = _legacy_human_wait(client, event.provider_namespace, event.recipient_igsid)
+    if _legacy_lookup_retryable(legacy_wait):
+        raise _Blocked(legacy_wait)
+    if legacy_wait and exact is None:
+        waiting = legacy_wait == "legacy_human_waiting_receipt"
+        state = event.State.WAITING_RECEIPT if waiting and event.state == event.State.WAITING_RECEIPT else event.State.AMBIGUOUS
+        _set_state(event, state, legacy_wait, now)
+        if not waiting or event.observed_at + WAIT_REVIEW_AFTER <= now:
+            _technical_case(event, client, now)
         return event
     if event.state in {event.State.MANAGER_PENDING, event.State.HUMAN_PENDING}:
         if event.state == event.State.HUMAN_PENDING:
@@ -341,7 +427,8 @@ def _prune_confirmed(scope, client):
     candidates = list(scope.filter(state__in=("own", "manager_applied", "human_applied")).order_by("observed_at", "pk")[:MAX_UNRESOLVED])
     for event in candidates:
         if event.state == event.State.OWN:
-            proof = _effects(client, event.provider_namespace, event.recipient_igsid).filter(pk=event.matched_effect_id, state="sent", provider_message_id=event.provider_message_id).exists()
+            proof = (_legacy_event_receipt_valid(event, client) if event.reason == LEGACY_HUMAN_RECEIPT_REASON else
+                _effects(client, event.provider_namespace, event.recipient_igsid).filter(pk=event.matched_effect_id, state="sent", provider_message_id=event.provider_message_id).exists())
         elif event.state == event.State.HUMAN_APPLIED:
             part = _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
             message = InstagramBotMessage.objects.filter(pk=event.manager_message_id).first()
@@ -379,7 +466,9 @@ def observe_revision_echo(
         exact_human_identity = HumanReplyPart.objects.filter(provider_namespace=namespace,
             recipient_igsid=recipient, client__igsid=recipient, provider_message_id=mid,
             state="sent", provider_started_at__isnull=False).exists()
-        payload = {**_payload(text, attachments, allow_empty=exact_human_identity), "historical": historical}
+        from management.services.ig_legacy_human_receipts import uses_legacy_human_receipt_scope
+        legacy_scope = uses_legacy_human_receipt_scope(namespace, recipient, mid=mid)
+        payload = {**_payload(text, attachments, allow_empty=exact_human_identity or legacy_scope), "historical": historical}
         material = {"provider_namespace": namespace, "recipient_igsid": recipient, "provider_message_id": mid, "payload": payload, "provider_created_at": received_at.isoformat() if received_at else ""}
         if len(_canonical(material)) > 32 * 1024:
             raise _Blocked("echo_payload_too_large")
@@ -393,21 +482,28 @@ def observe_revision_echo(
                 # First captured metadata is immutable. Poll/CDN URL refreshes
                 # for the same exact MID do not overwrite or reapply that event.
                 return _result(_reconcile_event(event, client, now), replayed=True)
-            if (_foreign_receipt(client, namespace, recipient, mid)
+            legacy = _legacy_human_receipt(client, namespace, recipient, mid)
+            legacy_problem = legacy.classification == "ambiguous"
+            if legacy.classification == "blocked":
+                raise _Blocked(legacy.reason)
+            legacy_wait = _legacy_human_wait(client, namespace, recipient)
+            if not legacy_problem and (_foreign_receipt(client, namespace, recipient, mid)
                 or _foreign_human_receipt(client, namespace, recipient, mid)):
                 raise _Blocked("echo_receipt_identity_mismatch")
             exact = _own_effect(client, namespace, recipient, mid)
             human = _own_human_part(client, namespace, recipient, mid)
-            if exact is not None and human is not None:
+            if exact is not None and human is not None and not legacy_problem:
                 raise _Blocked("echo_receipt_owner_conflict")
-            if human is not None and not _human_receipt_valid(human):
+            if human is not None and not _human_receipt_valid(human) and not legacy_problem:
                 raise _Blocked("echo_human_receipt_invalid")
-            if not payload["text"] and not payload["attachments"] and human is None:
+            if not payload["text"] and not payload["attachments"] and human is None and not (legacy.accepted or legacy_problem or legacy_wait):
                 raise _Blocked("echo_empty")
-            if exact is not None:
+            if legacy.accepted:
+                return EchoAttribution(True, "own", manager_message_id=legacy.manager_message_id, reason=LEGACY_HUMAN_RECEIPT_REASON)
+            if exact is not None and not legacy_problem:
                 return EchoAttribution(True, "own", effect_id=exact.pk, reason="exact_provider_receipt")
-            message, job = (None, None) if human is not None else _manager_proof(client, namespace, recipient, mid, settings_id=settings_id)
-            if message is None and human is None:
+            message, job = (None, None) if human is not None or legacy_problem or legacy_wait else _manager_proof(client, namespace, recipient, mid, settings_id=settings_id)
+            if message is None and human is None and not (legacy_problem or legacy_wait):
                 message, job = _manager_proof(client, namespace, recipient, mid, settings_id=settings_id, historical=True)
             if message is not None:
                 return EchoAttribution(True, "manager_applied", manager_message_id=message.pk, permission_transition_id=job.pk if job else 0, reason="exact_manager_projection" if job else "exact_historical_projection", replayed=True)
@@ -425,7 +521,7 @@ def observe_revision_echo(
             # an empty competing set before declaring this an unmatched manager.
             if not competing:
                 exact = _own_effect(client, namespace, recipient, mid)
-                if exact is not None:
+                if exact is not None and not legacy_problem:
                     if human is not None:
                         raise _Blocked("echo_receipt_owner_conflict")
                     return EchoAttribution(True, "own", effect_id=exact.pk, reason="exact_provider_receipt")
@@ -441,7 +537,7 @@ def observe_revision_echo(
             )
             return _result(_reconcile_event(event, client, now))
     except _Blocked as exc:
-        return EchoAttribution(reason=str(exc), retryable=str(exc) == "echo_notification_unavailable")
+        return EchoAttribution(reason=str(exc), retryable=str(exc) == "echo_notification_unavailable" or _legacy_lookup_retryable(exc))
     except Exception:
         return EchoAttribution(reason="echo_observation_failed", retryable=True)
 
@@ -464,7 +560,7 @@ def reconcile_revision_echoes(*, settings_id, client_id, namespace, limit=MAX_UN
             events = list(IgDeferredEcho.objects.select_for_update().filter(client=client, provider_namespace=namespace, recipient_igsid=client.igsid, state__in=BLOCKING_STATES).order_by("observed_at", "pk")[:max(1, min(int(limit), MAX_UNRESOLVED))])
             return tuple(_result(_reconcile_event(event, client, now)) for event in events)
     except _Blocked as exc:
-        return (EchoAttribution(reason=str(exc)),)
+        return (EchoAttribution(reason=str(exc), retryable=_legacy_lookup_retryable(exc)),)
     except Exception:
         return (EchoAttribution(reason="echo_reconciliation_failed", retryable=True),)
 
@@ -522,6 +618,7 @@ def acknowledge_manager_echo(*, event_id, settings_id, manager_message_id, permi
                 return _result(event, replayed=True)
             if event.state != event.State.MANAGER_PENDING:
                 raise _Blocked("echo_manager_not_ready")
+            _reject_legacy_manager_projection(event, client)
             message, job = _manager_proof(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id, message_id=manager_message_id, job_id=permission_transition_id, settings_id=settings_id)
             if message is None or job is None:
                 raise _Blocked("echo_manager_projection_mismatch")
@@ -532,7 +629,7 @@ def acknowledge_manager_echo(*, event_id, settings_id, manager_message_id, permi
             event.save(update_fields=["manager_message", "permission_transition", "state", "reason", "resolved_at", "updated_at"])
             return _result(event)
     except _Blocked as exc:
-        return EchoAttribution(reason=str(exc))
+        return EchoAttribution(reason=str(exc), retryable=_legacy_lookup_retryable(exc))
     except Exception:
         return EchoAttribution(reason="echo_manager_projection_failed", retryable=True)
 
@@ -549,6 +646,9 @@ def acknowledge_human_echo(*, event_id, settings_id, human_part_id, manager_mess
             event = IgDeferredEcho.objects.select_for_update().get(pk=event_id)
             if event.settings_id_snapshot != settings_id:
                 raise _Blocked("echo_settings_changed")
+            legacy = _legacy_human_receipt(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
+            if legacy.accepted or legacy.classification in {"ambiguous", "blocked"}:
+                raise _Blocked(legacy.reason)
             part = _own_human_part(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id)
             message = InstagramBotMessage.objects.filter(pk=manager_message_id).first()
             if (part is None or part.pk != human_part_id or not _human_receipt_valid(part)
@@ -570,7 +670,7 @@ def acknowledge_human_echo(*, event_id, settings_id, human_part_id, manager_mess
             event.save(update_fields=["manager_message", "state", "reason", "resolved_at", "updated_at"])
             return _result(event)
     except _Blocked as exc:
-        return EchoAttribution(reason=str(exc))
+        return EchoAttribution(reason=str(exc), retryable=_legacy_lookup_retryable(exc))
     except Exception:
         return EchoAttribution(reason="echo_human_projection_failed", retryable=True)
 
@@ -593,6 +693,7 @@ def acknowledge_historical_manager_echo(*, event_id, settings_id, manager_messag
                 return _result(event, replayed=True)
             if event.state != event.State.MANAGER_PENDING:
                 raise _Blocked("echo_manager_not_ready")
+            _reject_legacy_manager_projection(event, client)
             message, _job = _manager_proof(client, event.provider_namespace, event.recipient_igsid, event.provider_message_id, message_id=manager_message_id, historical=True)
             if message is None or not _projection_matches(event, message, historical=True):
                 raise _Blocked("echo_manager_projection_mismatch")
@@ -601,6 +702,6 @@ def acknowledge_historical_manager_echo(*, event_id, settings_id, manager_messag
             event.save(update_fields=["manager_message", "state", "reason", "resolved_at", "updated_at"])
             return _result(event)
     except _Blocked as exc:
-        return EchoAttribution(reason=str(exc))
+        return EchoAttribution(reason=str(exc), retryable=_legacy_lookup_retryable(exc))
     except Exception:
         return EchoAttribution(reason="echo_historical_projection_failed", retryable=True)

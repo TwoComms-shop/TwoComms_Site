@@ -416,6 +416,25 @@ def _mid_namespace_state(row, namespace: str, *, require_materialized: bool = Fa
 
         if uses_revision_echo_scope(namespace, recipient):
             from management.models import IgDeferredEcho, IgRevisionDeliveryEffect
+            from management.services.ig_legacy_human_receipts import (
+                find_legacy_human_receipt, uses_legacy_human_receipt_scope,
+            )
+
+            legacy_scope = uses_legacy_human_receipt_scope(namespace, recipient, mid=mid)
+            if legacy_scope:
+                client_id = IgClient.objects.filter(igsid=recipient).values_list("pk", flat=True).first()
+                receipt = find_legacy_human_receipt(client_id=client_id,
+                    namespace=namespace, recipient=recipient, mid=mid)
+                if receipt.reason == "legacy_human_receipt_unavailable":
+                    from management.services.ig_revision_echo_integration import RevisionEchoDeferred
+
+                    raise RevisionEchoDeferred(receipt.reason, retryable=True)
+                if receipt.accepted:
+                    # The original command/transcript is the materialized
+                    # source for every exact MID, including later chunks.
+                    return "ok"
+                if receipt.classification in {"ambiguous", "blocked"}:
+                    return "blocked"
 
             if is_our_outgoing(mid, recipient_id=recipient, provider_namespace=namespace):
                 return "ignored"
