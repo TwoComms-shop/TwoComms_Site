@@ -1734,7 +1734,9 @@ def admin_custom_print_lead_moderation(request, lead_id: int):
             except (InvalidOperation, TypeError):
                 return JsonResponse({'success': False, 'error': 'Некоректна ціна'}, status=400)
         final_price = Decimal(str(lead.final_price_value or 0))
-        if final_price <= 0:
+        from storefront.custom_print_config import gift_box_quote_required
+        quote_missing = gift_box_quote_required(lead.config_draft_json, lead_id=lead.pk) and lead.approved_price is None
+        if quote_missing or not final_price.is_finite() or final_price <= 0:
             return JsonResponse(
                 {
                     'success': False,

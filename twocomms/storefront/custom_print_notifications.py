@@ -1096,9 +1096,12 @@ def _build_creation_message(leads, *, submission_type="lead", creation=None):
     parts = [f"📦 <b>{title}</b>", f"<b>Призначення:</b> {escape(str(ORDER_PURPOSE_LABELS[purpose]))}",
              f"👤 {_escaped_short(contact.get('name'), 25 if compact_items else 50)} · {_escaped_short(contact.get('channel'), 10 if compact_items else 15)} · {_escaped_short(contact.get('value'), 40 if compact_items else 80)}",
              f"Позицій: {len(snapshots)} · Виробів: {sum((snapshot.get('order') or {}).get('quantity') or 1 for snapshot in snapshots)}",
-             "Фірмовий зіп-пакет: включено без доплати для кожного виробу", "🎁 Подарункові опції:"]
+             "Кожен виріб — в окремому фірмовому зіп-пакеті без доплати", "🎁 Подарункові опції:"]
     if box.get("enabled"):
-        parts.append("Коробка: персоналізований друк усередині · ціну узгодити" if box.get("estimate_required") else f"Коробка: +{box.get('price')} грн · зіп-пакет і захисний папір усередині включено")
+        if box.get("estimate_reason") == "multi_garment_packaging":
+            parts.append("Коробки: менеджер узгодить розмір, кількість і ціну після заявки: зіп-пакети в одній більшій або окремих коробках." if compact_items else "Коробки: розмір, кількість і ціну узгодить менеджер після заявки. Кілька зіп-пакетів — в одній більшій коробці або в окремих коробках; друк усередині.")
+        else:
+            parts.append("Коробка: персоналізований друк усередині · ціну узгодити" if box.get("estimate_required") else f"Коробка: +{box.get('price')} грн · зіп-пакет і захисний папір усередині включено")
         if box.get("content_type") == "image":
             parts.append(f"Зображення коробки: {_escaped_short(box.get('image_name'), 80)}" + (" · потрібно завантажити повторно" if box.get("needs_reupload") else " · оригінал окремим документом"))
         else:

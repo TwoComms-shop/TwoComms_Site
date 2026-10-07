@@ -801,9 +801,13 @@ class CustomPrintLead(models.Model):
 
     @property
     def final_price_value(self):
-        """Returns approved_price if set, else snapshot final_total, else 0."""
+        """Use an approved price; unresolved gift boxes cannot use garment estimates."""
         if self.approved_price is not None:
             return self.approved_price
+        from storefront.custom_print_config import gift_box_quote_required
+        if gift_box_quote_required(self.config_draft_json, lead_id=self.pk):
+            from decimal import Decimal
+            return Decimal("0")
         snapshot = self.pricing_snapshot_json or {}
         value = snapshot.get("final_total") or snapshot.get("unit_total") or 0
         from decimal import Decimal, InvalidOperation

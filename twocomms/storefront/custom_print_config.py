@@ -14,34 +14,39 @@ GIFT_SERVICE = {
     "value": "personalized_box",
     "label": _("Персоналізована коробка"),
     "price": 350,
-    "base_packaging": {"label": _("Фірмовий зіп-пакет"), "price": 0, "included": True},
+    "base_packaging": {"label": _("Фірмовий зіп-пакет"), "price": 0, "included": True, "per_garment": True},
     "box": {"price": 350, "estimate_required": False, "inner_paper_included": True, "inner_paper_price": 0},
     "wrapping": {"price": 200, "papers": ["brand", "ivory", "kraft", "black", "red"],
                  "styles": ["brand", "minimal", "festive", "hearts", "newsprint", "new_year", "custom"],
                  "max_preference_length": 240},
     "delivery": {"branch": {"price": 150}, "courier": {"price": 300}},
     "certificate": {"price": 150, "discount_percent": 15, "scope": "any_order_including_custom", "max_message_length": 240},
-    "note": _("Фірмовий зіп-пакет входить у кожне замовлення без доплати. Персоналізована коробка містить виріб у цьому зіп-пакеті; всередині надрукуємо текст або зображення."),
+    "note": _("Кожен виріб пакуємо в окремий фірмовий зіп-пакет без доплати. Для кількох виробів розмір, кількість і ціну персоналізованих коробок узгодить менеджер після заявки: кілька зіп-пакетів можуть бути в одній більшій коробці або в окремих коробках."),
 }
 
 
-def normalize_gift_extras(raw):
+def normalize_gift_extras(raw, *, garment_count=None):
     raw = raw if isinstance(raw, dict) else {}
+    garment_count = max(1, _coerce_int(raw.get("garment_count") if garment_count is None else garment_count, 1))
     box = raw.get("box") if isinstance(raw.get("box"), dict) else {}
     delivery = raw.get("delivery") if isinstance(raw.get("delivery"), dict) else {}
     certificate = raw.get("certificate") if isinstance(raw.get("certificate"), dict) else {}
     wrapping = raw.get("wrapping") if isinstance(raw.get("wrapping"), dict) else {}
     box_enabled = box.get("enabled") is True
+    estimate_required = box_enabled and (garment_count > 1 or GIFT_SERVICE["box"]["price"] is None)
     content_type = box.get("content_type") if isinstance(box.get("content_type"), str) and box.get("content_type") in {"text", "image"} else "text"
     box_text = str(box.get("text") or raw.get("text") or "").strip()[:1000]
     method = delivery.get("method") if isinstance(delivery.get("method"), str) and delivery.get("method") in {"branch", "courier"} else "branch"
     paper = wrapping.get("paper") if isinstance(wrapping.get("paper"), str) and wrapping.get("paper") in GIFT_SERVICE["wrapping"]["papers"] else "brand"
     style = wrapping.get("style") if isinstance(wrapping.get("style"), str) and wrapping.get("style") in GIFT_SERVICE["wrapping"]["styles"] else "brand"
     message_mode = certificate.get("message_mode") if certificate.get("message_mode") in ("blank", "write") else "blank"
-    return {"enabled": box_enabled, "text": box_text, "base_packaging": {"included": True, "price": 0, "type": "branded_zip"},
+    return {"enabled": box_enabled, "text": box_text, "garment_count": garment_count,
+            "base_packaging": {"included": True, "price": 0, "type": "branded_zip", "per_garment": True, "quantity": garment_count},
             "box": {"enabled": box_enabled, "content_type": content_type, "text": box_text,
                     "image_name": str(box.get("image_name") or "").strip()[:255],
-                    "price": GIFT_SERVICE["box"]["price"], "estimate_required": box_enabled and GIFT_SERVICE["box"]["price"] is None,
+                    "price": None if estimate_required else GIFT_SERVICE["box"]["price"], "estimate_required": estimate_required,
+                    "estimate_reason": "multi_garment_packaging" if box_enabled and garment_count > 1 else "" if not estimate_required else "box_price_unknown",
+                    "quantity": None if estimate_required else 1 if box_enabled else 0,
                     "inner_paper_included": True, "inner_paper_price": 0},
             "delivery": {"enabled": delivery.get("enabled") is True, "method": method,
                          "price": GIFT_SERVICE["delivery"][method]["price"] if delivery.get("enabled") is True else 0,
@@ -56,6 +61,22 @@ def normalize_gift_extras(raw):
                             "scope": GIFT_SERVICE["certificate"]["scope"], "issued": False,
                             "message_mode": message_mode, "message": str(certificate.get("message") or "").strip() if message_mode == "write" else "", "message_price": 0,
                             "placement": "box_top" if box_enabled else "zip_inside"}}
+
+
+def gift_box_quote_required(snapshot, *, lead_id=None):
+    """Only the shared-charge owner needs an explicit manager price."""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    creation = snapshot.get("creation") or {}
+    if creation.get("gift_owner_lead_id") is not None:
+        if lead_id != creation["gift_owner_lead_id"]:
+            return False
+        gift = creation.get("gift") or {}
+    else:
+        gift = (snapshot.get("order") or {}).get("gift") or {}
+    if not isinstance(gift, dict):
+        return False
+    box = gift.get("box") or {}
+    return bool(box.get("enabled") and (box.get("estimate_required") or _coerce_int(gift.get("garment_count"), 1) > 1))
 
 B2B_TIER = {
     "unit_step": 8,
@@ -2019,7 +2040,7 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
             "sizes_note": str(order_payload.get("sizes_note") or "").strip(),
             "size_breakdown": size_breakdown,
             "delivery_method": str(order_payload.get("delivery_method") or "").strip(),
-            "gift": normalize_gift_extras(gift_payload) if isinstance(gift_payload, dict) and any(key in gift_payload for key in ("box", "delivery", "certificate", "wrapping")) else gift_enabled,
+            "gift": normalize_gift_extras(gift_payload, garment_count=max(_coerce_int(order_payload.get("quantity"), 1), _coerce_int(gift_payload.get("garment_count"), 1))) if isinstance(gift_payload, dict) and any(key in gift_payload for key in ("box", "delivery", "certificate", "wrapping")) else gift_enabled,
             "gift_text": gift_text,
         },
         "contact": {

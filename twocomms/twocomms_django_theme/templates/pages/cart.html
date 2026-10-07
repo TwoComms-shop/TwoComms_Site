@@ -207,11 +207,12 @@
                     {% if ci.order_purpose == 'gift' %}
                     <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Призначення:' %}</span><span class="cart-item-value">{% trans 'На подарунок' %}</span></div>
                     {% endif %}
-                    <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Пакування виробу:' %}</span><span class="cart-item-value">{% trans 'Фірмовий зіп-пакет · включено без доплати, також усередині коробки' %}</span></div>
+                    <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Пакування виробу:' %}</span><span class="cart-item-value">{% trans 'Кожна річ в окремому фірмовому зіп-пакеті · без доплати' %}</span></div>
                     {% if ci.gift_charge_owner %}
                       {% if ci.gift_extras.box.enabled %}
+                      {% if ci.gift_extras.box.estimate_required %}<div class="cart-item-detail"><span class="cart-item-label">{% trans 'Коробки:' %}</span><span class="cart-item-value">{% trans 'Розмір, кількість і ціну узгодить менеджер перед оплатою' %}</span></div>{% endif %}
                       <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Коробка:' %}</span><span class="cart-item-value">{% if ci.gift_extras.box.content_type == 'image' %}{{ ci.gift_extras.box.image_name }}{% else %}{{ ci.gift_extras.box.text }}{% endif %}</span></div>
-                      <div class="cart-item-detail"><span class="cart-item-label">{% trans 'У коробці:' %}</span><span class="cart-item-value">{% trans 'Зіп-пакет і захисний папір · включено без доплати' %}</span></div>
+                      <div class="cart-item-detail"><span class="cart-item-label">{% trans 'У коробці:' %}</span><span class="cart-item-value">{% trans 'Окремі зіп-пакети та захисний папір · включено без доплати' %}</span></div>
                       {% endif %}
                       {% if ci.gift_extras.delivery.enabled %}
                       <div class="cart-item-detail"><span class="cart-item-label">{% trans 'Доставка у сумі замовлення:' %}</span><span class="cart-item-value">{% if ci.gift_extras.delivery.method == 'courier' %}{% trans 'Курʼєром · адресу узгодимо' %}{% else %}{% trans 'Відділення / поштомат' %}{% endif %} · {{ ci.gift_extras.delivery.price }} {% trans 'грн' %}</span></div>

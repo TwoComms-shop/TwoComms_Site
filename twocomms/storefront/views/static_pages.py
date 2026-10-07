@@ -2009,8 +2009,8 @@ def custom_print_moderation_action(request, lead_id: int, action: str):
                                          ok=False, status_code=403)
 
     if action == "approve":
-        extras = ((lead.config_draft_json or {}).get("creation") or {}).get("gift") or {}
-        quote_required = (extras.get("box") or {}).get("estimate_required") and lead.approved_price is None
+        from storefront.custom_print_config import gift_box_quote_required
+        quote_required = gift_box_quote_required(lead.config_draft_json, lead_id=lead.pk) and lead.approved_price is None
         if quote_required or Decimal(str(lead.final_price_value or 0)) <= 0:
             return _render_moderation_result(
                 request,

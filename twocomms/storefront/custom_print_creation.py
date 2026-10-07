@@ -15,7 +15,7 @@ from PIL import Image
 
 from dtf.utils import ALLOWED_HELP_EXTS, build_safe_upload_name, get_limits, validate_uploaded_file
 
-from storefront.custom_print_config import GIFT_SERVICE, build_placement_specs, normalize_custom_print_snapshot, normalize_gift_extras
+from storefront.custom_print_config import GIFT_SERVICE, build_placement_specs, gift_box_quote_required, normalize_custom_print_snapshot, normalize_gift_extras
 from storefront.forms import CustomPrintLeadForm
 from storefront.models import CustomPrintLead, CustomPrintLeadAttachment, CustomPrintModerationStatus
 
@@ -99,7 +99,7 @@ def prepare_creation(raw, uploads=None, *, submission_type="lead", verification=
             raise CreationValidationError({"gift_certificate_message": ["Привітання на листівці може містити не більше 240 символів."]})
         if message_mode == "write" and not message.strip() and not partial:
             raise CreationValidationError({"gift_certificate_message": ["Додайте привітання, яке має написати наша команда."]})
-    gift = normalize_gift_extras(gift_raw)
+    gift = normalize_gift_extras(gift_raw, garment_count=1)
     if gift["box"]["enabled"] and gift["box"]["content_type"] == "text" and not gift["box"]["text"] and not partial:
         raise CreationValidationError({"gift_box_text": ["Додайте текст для друку всередині коробки."]})
     items, item_errors, ids = [], {}, set()
@@ -130,6 +130,7 @@ def prepare_creation(raw, uploads=None, *, submission_type="lead", verification=
         items.append({"id": item_id, "snapshot": normalized, "raw": snapshot})
     if item_errors:
         raise CreationValidationError(item_errors=item_errors)
+    gift = normalize_gift_extras(gift_raw, garment_count=sum(item["snapshot"]["order"]["quantity"] for item in items))
     uploads = uploads or MultiValueDict()
     allowed_upload_keys = {f"{kind}:{item_id}" for item_id in ids for kind in ("files", "garment_photo")}
     allowed_upload_keys.add("gift_image")
@@ -168,7 +169,7 @@ def prepare_creation(raw, uploads=None, *, submission_type="lead", verification=
         if owner["pricing"].get("final_total") is not None:
             owner["pricing"]["final_total"] += known_price
         if gift["box"]["estimate_required"]:
-            owner["pricing"].update(final_total=None, estimate_required=True, estimate_reason="Ціну персоналізованої коробки узгодить менеджер.")
+            owner["pricing"].update(final_total=None, estimate_required=True, estimate_reason="Розмір, кількість і ціну персоналізованих коробок узгодить менеджер після заявки." if gift["garment_count"] > 1 else "Ціну персоналізованої коробки узгодить менеджер.")
             if submission_type == "cart" and not partial:
                 raise CreationValidationError({"gift_box_price": ["Персоналізовану коробку спочатку має прорахувати менеджер. Надішліть заявку менеджеру."]})
     if partial:
@@ -290,6 +291,7 @@ def save_creation(creation, *, cart_builder=None, analytics=None):
                 snapshot["creation"] = {
                     "id": creation.id, "item_id": creation.items[index]["id"], "item_index": index,
                     "item_count": len(leads), "lead_ids": lead_ids, "gift_owner_lead_id": lead_ids[0] if has_gift_extras(creation.gift) else None,
+                    "total_quantity": creation.gift["garment_count"],
                     "gift": creation.gift,
                 }
                 if index == 0 and has_gift_extras(creation.gift):
@@ -339,6 +341,10 @@ def custom_print_checkout_payload(leads):
             owner = by_id[owner_id]
             if owner.moderation_status != CustomPrintModerationStatus.APPROVED:
                 raise CreationValidationError({"gift_delivery": ["Подарункові опції спочатку має погодити менеджер."]})
+            if gift_box_quote_required(owner.config_draft_json, lead_id=owner.pk):
+                approved_price = getattr(owner, "approved_price", None)
+                if approved_price is None or not Decimal(str(approved_price)).is_finite() or Decimal(str(approved_price)) <= 0:
+                    raise CreationValidationError({"gift_box_price": ["Фінальну ціну з персоналізованими коробками спочатку має погодити менеджер."]})
             group.update(applied=True, owner_status="approved", owner_price=str(owner.final_price_value), source=owner.source)
             delivery = group["gift"].get("delivery") or {}
             if delivery.get("enabled"):

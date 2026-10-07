@@ -173,7 +173,6 @@ textarea[data-gift-wrap-preference] { min-height: 80px; }
 }
 .cp-gift-preview-base::before { content: ""; position: absolute; z-index: 0; top: 0; left: 6px; right: 6px; height: 10px; border-bottom: 1px solid #343842; background: linear-gradient(#393c45, #161820); }
 .cp-gift-preview-base::after { content: ""; position: absolute; z-index: 8; left: -1px; right: -1px; bottom: -1px; height: 19px; border-top: 1px solid #484c55; border-radius: 0 0 7px 7px; background: linear-gradient(120deg, #2b2e37, #171920 65%, #0d0e12); box-shadow: 0 -2px 5px #0003; }
-.cp-gift-box-preview:not([data-outer-paper="none"]) .cp-gift-preview-base::after { background: linear-gradient(90deg, transparent 44%, #dfc084 44% 49%, transparent 49%), linear-gradient(125deg, var(--gift-outer-light, #9b8461), var(--gift-outer-dark, #5e4930)); }
 .cp-gift-box-preview[data-outer-paper="ivory"] { --gift-outer-light: #dfd7c4; --gift-outer-dark: #b3a98f; }
 .cp-gift-box-preview[data-outer-paper="black"] { --gift-outer-light: #444751; --gift-outer-dark: #171a20; }
 .cp-gift-box-preview[data-outer-paper="red"] { --gift-outer-light: #9f4a51; --gift-outer-dark: #61242b; }

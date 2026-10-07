@@ -11,9 +11,10 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.datastructures import MultiValueDict
 from PIL import Image
 
-from storefront.custom_print_config import GIFT_SERVICE, normalize_custom_print_snapshot
+from storefront.custom_print_config import GIFT_SERVICE, gift_box_quote_required, normalize_custom_print_snapshot
 from storefront.custom_print_creation import CreationValidationError, custom_print_checkout_payload, prepare_creation
 from storefront.custom_print_notifications import _build_creation_message
+from storefront.models import CustomPrintLead
 from orders.services.delivery_payment import build_custom_print_delivery_contract, delivery_payment_snapshot
 from management.services.ig_order_amounts import order_amounts
 from orders.nova_poshta_documents import build_order_payment_snapshot
@@ -24,6 +25,13 @@ class GiftExtrasUnitTests(unittest.TestCase):
         raw = envelope(False)
         raw["gift"] = {"enabled": box, "box": {"enabled": box, "content_type": "text", "text": "Зі святом"},
                        "delivery": {"enabled": delivery, "method": method}, "certificate": {"enabled": certificate}}
+        return raw
+
+    def _single_raw(self, **options):
+        raw = self._raw(**options)
+        raw["items"] = raw["items"][:1]
+        raw["items"][0]["snapshot"]["order"].update(quantity=1, size_breakdown={"M": 1})
+        raw["items"][0]["snapshot"]["pricing"]["unit_total"] = 1000
         return raw
 
     def _leads(self, *, method="branch", wrapping=False):
@@ -71,7 +79,7 @@ class GiftExtrasUnitTests(unittest.TestCase):
         self.assertFalse(creation.gift["delivery"]["funded"])
 
     def test_box_costs_350_and_can_be_added_to_cart_with_text(self):
-        raw = self._raw(box=True)
+        raw = self._single_raw(box=True)
         creation = prepare_creation(raw)
         self.assertEqual(creation.items[0]["snapshot"]["pricing"]["final_total"], 1350)
         self.assertFalse(creation.items[0]["snapshot"]["pricing"]["estimate_required"])
@@ -87,19 +95,88 @@ class GiftExtrasUnitTests(unittest.TestCase):
 
     def test_unknown_box_price_fallback_requires_quote_before_cart(self):
         with patch.dict(GIFT_SERVICE, {"box": {"price": None, "estimate_required": True}}):
-            creation = prepare_creation(self._raw(box=True))
+            creation = prepare_creation(self._single_raw(box=True))
             self.assertIsNone(creation.items[0]["snapshot"]["pricing"]["final_total"])
             self.assertTrue(creation.items[0]["snapshot"]["pricing"]["estimate_required"])
             with self.assertRaises(CreationValidationError) as caught:
-                prepare_creation(self._raw(box=True), submission_type="cart")
+                prepare_creation(self._single_raw(box=True), submission_type="cart")
         self.assertIn("gift_box_price", caught.exception.errors)
 
+    def test_multiple_garments_quote_box_from_quantity_not_variant_count_or_client_price(self):
+        for one_variant in (True, False):
+            raw = self._raw(box=True)
+            if one_variant:
+                raw["items"] = raw["items"][:1]
+            count = 2 if one_variant else 3
+            raw["gift"].update(garment_count=1, base_packaging={"quantity": 1, "price": 999})
+            raw["gift"]["box"].update(price=350, estimate_required=False, quantity=1, dimensions={"length": 30})
+            raw["gift"]["wrapping"] = {"enabled": True}
+            creation = prepare_creation(raw)
+            gift = creation.gift
+            self.assertEqual(gift["garment_count"], count)
+            self.assertEqual(gift["base_packaging"]["quantity"], count)
+            self.assertTrue(gift["base_packaging"]["per_garment"])
+            self.assertEqual(gift["base_packaging"]["price"], 0)
+            self.assertIsNone(gift["box"]["price"])
+            self.assertIsNone(gift["box"]["quantity"])
+            self.assertNotIn("dimensions", gift["box"])
+            self.assertTrue(gift["box"]["estimate_required"])
+            owner = creation.items[0]["snapshot"]
+            self.assertIsNone(owner["pricing"]["gift_box_price"])
+            self.assertIsNone(owner["pricing"]["final_total"])
+            self.assertEqual(owner["pricing"]["gift_price"], 200)
+            self.assertEqual(owner["pricing"]["wrapping_price"], 200)
+            self.assertEqual(normalize_custom_print_snapshot(owner)["order"]["gift"], gift)
+            self.assertEqual(creation.forms[0].cleaned_data["config_draft_json"]["order"]["gift"], gift)
+            if not one_variant:
+                self.assertEqual(creation.items[1]["snapshot"]["pricing"]["final_total"], 1500)
+            with self.assertRaises(CreationValidationError) as caught:
+                prepare_creation(raw, submission_type="cart")
+            self.assertIn("gift_box_price", caught.exception.errors)
+            message = _build_creation_message([], creation=creation)
+            self.assertIn("окремому фірмовому зіп-пакеті", message)
+            self.assertIn("розмір, кількість і ціну", message)
+            self.assertIn("одній більшій коробці", message)
+            self.assertNotIn("+350", message)
+            self.assertNotIn("<b>Разом:", message)
+
+    def test_client_cannot_force_single_garment_to_multiple_box_count(self):
+        raw = self._single_raw(box=True)
+        raw["gift"].update(garment_count=999)
+        raw["gift"]["box"].update(price=None, estimate_required=True, quantity=999)
+        creation = prepare_creation(raw, submission_type="cart")
+        self.assertEqual(creation.gift["base_packaging"]["quantity"], 1)
+        self.assertEqual(creation.gift["box"]["quantity"], 1)
+        self.assertEqual(creation.gift["box"]["price"], 350)
+        self.assertFalse(creation.gift["box"]["estimate_required"])
+
+    def test_quote_owner_does_not_fall_back_to_garment_subtotal_and_checkout_needs_price(self):
+        creation = prepare_creation(self._raw(box=True))
+        leads = []
+        for index, item in enumerate(creation.items):
+            snap = deepcopy(item["snapshot"])
+            snap["creation"] = {"id": creation.id, "gift_owner_lead_id": 1, "gift": creation.gift}
+            leads.append(CustomPrintLead(pk=index + 1, config_draft_json=snap, pricing_snapshot_json=snap["pricing"],
+                                         source="main_custom_print", moderation_status="approved"))
+        owner, sibling = leads
+        self.assertTrue(gift_box_quote_required(owner.config_draft_json, lead_id=owner.pk))
+        self.assertFalse(gift_box_quote_required(sibling.config_draft_json, lead_id=sibling.pk))
+        self.assertEqual(owner.final_price_value, Decimal("0"))
+        self.assertEqual(sibling.final_price_value, Decimal("1500"))
+        with self.assertRaises(CreationValidationError) as caught:
+            custom_print_checkout_payload(leads)
+        self.assertIn("gift_box_price", caught.exception.errors)
+        self.assertFalse(custom_print_checkout_payload([sibling])["groups"][0]["applied"])
+        owner.approved_price = Decimal("1800")
+        self.assertEqual(owner.final_price_value, Decimal("1800"))
+        self.assertEqual(custom_print_checkout_payload(leads)["groups"][0]["owner_price"], "1800")
+
     def test_box_delivery_certificate_wrapping_and_message_are_priced_once(self):
-        raw = self._raw(box=True, delivery=True, certificate=True)
+        raw = self._single_raw(box=True, delivery=True, certificate=True)
         raw["gift"]["wrapping"] = {"enabled": True, "paper": "black", "style": "hearts", "preference": "Без блискіток", "price": 999, "target": "zip", "availability_confirmed": True}
         raw["gift"]["certificate"].update(message_mode="write", message="Нехай усе вдається!", placement="wrong", message_price=999)
         creation = prepare_creation(raw, submission_type="cart")
-        self.assertEqual([item["snapshot"]["pricing"]["final_total"] for item in creation.items], [1850, 1500])
+        self.assertEqual([item["snapshot"]["pricing"]["final_total"] for item in creation.items], [1850])
         self.assertEqual(creation.items[0]["snapshot"]["pricing"]["gift_price"], 850)
         self.assertEqual(creation.items[0]["snapshot"]["pricing"]["wrapping_price"], 200)
         self.assertEqual(creation.gift["wrapping"]["price"], 200)
@@ -194,7 +271,7 @@ class GiftExtrasUnitTests(unittest.TestCase):
         self.assertIn("gift_wrapping", caught.exception.errors)
 
     def test_image_box_requires_real_uploaded_image_but_safe_exit_keeps_filename(self):
-        raw = self._raw(box=True)
+        raw = self._single_raw(box=True)
         raw["gift"]["box"].update(content_type="image", image_name="gift.png")
         with self.assertRaises(CreationValidationError):
             prepare_creation(raw)

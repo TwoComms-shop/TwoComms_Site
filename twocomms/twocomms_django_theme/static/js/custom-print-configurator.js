@@ -451,6 +451,7 @@
     bindWaterfallNav();
     bindStageView();
     bindQuantity();
+    renderSizing();
     bindCollection();
     bindGiftToggle();
     bindFinalActions();
@@ -3353,12 +3354,28 @@
     if (placement) placement.textContent = enabled ? "Покладемо картку зверху на згортку всередині коробки. На звороті — ваші слова." : "Покладемо картку всередину zip-пакета. На звороті — рядки для вашого побажання.";
     const cardText = root.querySelector("[data-gift-card-preview-text]");
     if (cardText) cardText.textContent = options.certificate_mode === "write" ? options.certificate_text : "";
-    giftPreview?.sync({ boxEnabled: enabled, certificateEnabled: options.certificate_enabled, messageMode: options.certificate_mode });
+    giftPreview?.sync({ boxEnabled: enabled, certificateEnabled: options.certificate_enabled, wrappingEnabled: options.wrapping_enabled, messageMode: options.certificate_mode });
+    const zipCount = root.querySelector("[data-gift-zip-count]");
+    if (zipCount) zipCount.textContent = `${giftGarmentCount()} шт. · кожна річ в окремому zip-пакеті, без доплати`;
+    const groupNote = root.querySelector("[data-gift-group-box-note]");
+    if (groupNote) {
+      groupNote.hidden = giftGarmentCount() <= 1;
+      groupNote.textContent = "У добірці кілька речей. Одну більшу коробку або окремі коробки, їхній розмір і ціну узгодимо з менеджером після заявки, перед оплатою.";
+    }
+    root.querySelectorAll(".cp-gift-option-toggle").forEach((button) => {
+      button.setAttribute("aria-expanded", button.getAttribute("aria-pressed") || "false");
+      const hint = button.querySelector("[data-gift-inspect-label]");
+      if (hint) hint.textContent = button.getAttribute("aria-pressed") === "true" ? "Превʼю та налаштування відкрито" : "Увімкнути й переглянути";
+    });
+    const exterior = root.querySelector("[data-gift-exterior-preview]");
+    if (exterior) exterior.dataset.target = enabled ? "box" : "zip";
+    const exteriorCaption = root.querySelector("[data-gift-exterior-caption]");
+    if (exteriorCaption) exteriorCaption.textContent = enabled ? "Святкове пакування повністю огортає закриту коробку. Zip-пакети з одягом залишаються всередині." : "Святкове пакування огортає zip-пакет зовні. Кожна річ залишається у своєму фірмовому пакеті.";
     const cardInBox = root.querySelector("[data-gift-box-card]"); if (cardInBox) cardInBox.hidden = !options.certificate_enabled;
     const tissue = root.querySelector("[data-gift-tissue]"); if (tissue) tissue.dataset.paper = "ivory";
     root.querySelectorAll(".cp-gift-box-preview").forEach((scene) => {
       scene.dataset.wrapping = "ivory";
-      scene.dataset.outerPaper = options.wrapping_enabled ? options.paper : "none";
+      scene.dataset.outerPaper = "none";
       scene.dataset.outerStyle = options.wrapping_style || "brand";
     });
     const wrappingLabel = root.querySelector("[data-gift-wrapping-target-label]");
@@ -3372,7 +3389,7 @@
     const service = CONFIG.gift_service || {};
     const courierPrice = service.delivery?.courier?.price;
     const deliveryPrice = service.delivery?.[options.delivery_method]?.price;
-    const boxPrice = service.box?.price;
+    const boxPrice = giftGarmentCount() > 1 ? null : service.box?.price;
     const priceLabel = (price) => Number.isFinite(price) ? (price ? `+${formatPrice(price)}` : "Без доплати") : "Ціну узгодимо з менеджером";
     const boxLabel = root.querySelector("[data-gift-box-price]"); if (boxLabel) boxLabel.textContent = priceLabel(boxPrice);
     const wrappingPrice = root.querySelector("[data-gift-wrapping-price]"); if (wrappingPrice) wrappingPrice.textContent = priceLabel(service.wrapping?.price ?? 200);
@@ -3396,10 +3413,16 @@
       certificate: { enabled: !!STATE.gift_options.certificate_enabled, message_mode: STATE.gift_options.certificate_mode, message: STATE.gift_options.certificate_mode === "write" ? STATE.gift_options.certificate_text || "" : "" } };
   }
 
+  function giftGarmentCount() {
+    return STATE.mode !== "brand" && collection.list().length
+      ? collectionTools.pricing(collection.list()).quantity
+      : Math.max(1, Number(STATE.order.quantity) || 1);
+  }
+
   function giftPricing() {
     const service = CONFIG.gift_service || {};
     const parts = [];
-    if (STATE.order.gift_enabled) parts.push({ label: "Коробка з вашим посланням", value: service.box?.price ?? null });
+    if (STATE.order.gift_enabled) parts.push({ label: "Коробка з вашим посланням", value: giftGarmentCount() > 1 ? null : service.box?.price ?? null });
     if (STATE.gift_options.delivery_enabled) parts.push({ label: STATE.gift_options.delivery_method === "courier" ? "Доставка курʼєром · у сумі замовлення" : "Доставка у відділення / поштомат · у сумі замовлення", value: service.delivery?.[STATE.gift_options.delivery_method]?.price ?? null });
     if (STATE.gift_options.certificate_enabled) parts.push({ label: "Сертифікат на знижку 15%", value: service.certificate?.price ?? 150 });
     if (STATE.gift_options.wrapping_enabled) parts.push({ label: "Святкове оформлення", value: service.wrapping?.price ?? 200 });
@@ -3528,6 +3551,7 @@
     }
     if (key !== "mode" || !opts.silent) STATE.ui.brand_brief_open = false;
     STATE.ui.current_step = key;
+    if (key === "quantity" && !STATE.ui.collection_review) renderSizing();
     if (key === "mode" || key === "product" || (key === "quantity" && STATE.ui.collection_review)) {
       const viewport = root.querySelector("[data-step-viewport]");
       if (viewport) viewport.scrollTop = 0;
@@ -4007,7 +4031,7 @@
       const missing = collection.list().find(collectionTools.missingFiles);
       const contactReady = canAdvance("contact") && canAdvance("gift");
       const estimate = getCreationPricing().estimate_required;
-      const hint = missing ? "Додайте файли до збережених виробів." : !canAdvance("gift") ? "Перевірте текст або зображення у подарункових деталях." : !contactReady ? "Заповніть імʼя, канал звʼязку і контакт." : "Передамо менеджеру всі вироби однією добіркою.";
+      const hint = missing ? "Додайте файли до збережених виробів." : !canAdvance("gift") ? "Перевірте текст або зображення у подарункових деталях." : !contactReady ? "Заповніть імʼя, канал звʼязку і контакт." : "Надішлемо всі речі з добірки та ваші побажання менеджеру.";
       return { leadReady: !missing && contactReady, cartReady: !missing && contactReady && !estimate,
         leadHint: hint, cartHint: estimate ? (giftPricing().estimate_required ? "Ціну коробки узгодимо з менеджером перед оплатою." : "У добірці є виріб, що потребує прорахунку менеджера.") : hint };
     }
@@ -4030,7 +4054,7 @@
     return {
       leadReady,
       cartReady: baseIssues.length === 0 && artworkIssues.length === 0 && !pricing.estimate_required && STATE.product.type !== "customer_garment",
-      leadHint: baseIssues[0] || (artworkRequiredForLead && artworkIssues[0]) || "Бот відправить заявку в Telegram",
+      leadHint: baseIssues[0] || (artworkRequiredForLead && artworkIssues[0]) || "Надішлемо всю конфігурацію та побажання менеджеру",
       cartHint: artworkIssues[0] || baseIssues[0] || "Передзамовлення зі снимком конфігурації",
     };
   }

@@ -249,7 +249,7 @@ class CustomPrintCreationTests(TestCase):
         Image.new("RGB", (2, 2), "white").save(stream, format="PNG")
         image = SimpleUploadedFile("inside.png", stream.getvalue(), content_type="image/png")
         with patch("storefront.custom_print_creation.validate_uploaded_file"), patch("storefront.views.static_pages.notify_custom_print_creation"):
-            response = self._submit(payload, cart=True, extra={"gift_image": image})
+            response = self._submit(payload, extra={"gift_image": image})
         self.assertEqual(response.status_code, 200, response.content)
         carrier, sibling = list(CustomPrintLead.objects.order_by("pk"))
         attachment = carrier.attachments.get(attachment_role="gift_reference")
@@ -257,9 +257,79 @@ class CustomPrintCreationTests(TestCase):
         self.assertEqual(sibling.attachments.count(), 0)
         for lead in (carrier, sibling):
             self.assertEqual(lead.config_draft_json["creation"]["gift"]["box"]["attachment"]["id"], attachment.pk)
-        self.assertFalse(carrier.estimate_required)
-        self.assertEqual(carrier.pricing_snapshot_json["final_total"], 1350)
-        self.assertEqual(carrier.pricing_snapshot_json["gift_box_price"], 350)
+        self.assertTrue(carrier.estimate_required)
+        self.assertIsNone(carrier.config_draft_json["creation"]["gift"]["box"]["price"])
+
+    def _box_quote_leads(self):
+        payload = creation_payload(False)
+        payload["gift"] = {"box": {"enabled": True, "content_type": "text", "text": "Зі святом",
+                                    "price": 350, "estimate_required": False}, "garment_count": 1}
+        with patch("storefront.views.static_pages.notify_custom_print_creation"):
+            response = self._submit(payload)
+        self.assertEqual(response.status_code, 200, response.content)
+        return list(CustomPrintLead.objects.order_by("pk"))
+
+    def test_multigarment_quote_persists_server_quantity_and_unknown_box_price(self):
+        owner, sibling = self._box_quote_leads()
+        for lead in (owner, sibling):
+            meta = lead.config_draft_json["creation"]
+            self.assertEqual(meta["total_quantity"], 3)
+            self.assertEqual(meta["gift"]["garment_count"], 3)
+            self.assertEqual(meta["gift"]["base_packaging"]["quantity"], 3)
+            self.assertTrue(meta["gift"]["base_packaging"]["per_garment"])
+            self.assertIsNone(meta["gift"]["box"]["price"])
+            self.assertIsNone(meta["gift"]["box"]["quantity"])
+        self.assertIsNone(owner.pricing_snapshot_json["final_total"])
+        self.assertEqual(owner.final_price_value, Decimal("0"))
+        self.assertEqual(sibling.final_price_value, Decimal("1500"))
+
+    def test_one_variant_quantity_two_box_requires_manager_and_cannot_enter_cart(self):
+        payload = creation_payload(False)
+        payload["items"] = payload["items"][:1]
+        payload["gift"] = {"box": {"enabled": True, "content_type": "text", "text": "Зі святом"}}
+        response = self._submit(payload, cart=True)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("gift_box_price", response.json()["errors"])
+        self.assertFalse(CustomPrintLead.objects.exists())
+        with patch("storefront.views.static_pages.notify_custom_print_creation"):
+            response = self._submit(payload)
+        self.assertEqual(response.status_code, 200)
+        lead = CustomPrintLead.objects.get()
+        self.assertEqual(lead.config_draft_json["creation"]["gift"]["garment_count"], 2)
+        self.assertIsNone(lead.pricing_snapshot_json["final_total"])
+
+    def test_quote_staff_approval_requires_owner_price_but_not_sibling_quote(self):
+        from django.contrib.auth import get_user_model
+        owner, sibling = self._box_quote_leads()
+        staff = get_user_model().objects.create_user(username="quote-manager", is_staff=True)
+        self.client.force_login(staff)
+        def approve(lead, **values):
+            with patch("storefront.custom_print_notifications.notify_custom_print_moderation_result"):
+                return self.client.post(reverse("admin_custom_print_lead_moderation", args=[lead.pk]),
+                                        json.dumps({"action": "approve", **values}), content_type="application/json", secure=True)
+        self.assertEqual(approve(owner).status_code, 400)
+        owner.refresh_from_db()
+        self.assertNotEqual(owner.moderation_status, CustomPrintModerationStatus.APPROVED)
+        self.assertEqual(approve(sibling).status_code, 200)
+        self.assertEqual(approve(owner, price="1800", note="Одна більша коробка для трьох зіп-пакетів").status_code, 200)
+        owner.refresh_from_db()
+        self.assertEqual(owner.approved_price, Decimal("1800"))
+
+    def test_signed_quote_approval_blocks_owner_and_allows_sibling(self):
+        from storefront.custom_print_notifications import _build_moderation_action_url
+        from urllib.parse import urlsplit
+        owner, sibling = self._box_quote_leads()
+        for lead in (owner, sibling):
+            lead.ensure_moderation_token()
+        owner_url = urlsplit(_build_moderation_action_url(owner, "approve"))
+        sibling_url = urlsplit(_build_moderation_action_url(sibling, "approve"))
+        self.assertEqual(self.client.get(owner_url.path + "?" + owner_url.query, secure=True).status_code, 409)
+        self.assertEqual(self.client.get(sibling_url.path + "?" + sibling_url.query, secure=True).status_code, 200)
+        sibling.refresh_from_db()
+        self.assertEqual(sibling.moderation_status, CustomPrintModerationStatus.APPROVED)
+        owner.approved_price = Decimal("1800")
+        owner.save(update_fields=["approved_price"])
+        self.assertEqual(self.client.get(owner_url.path + "?" + owner_url.query, secure=True).status_code, 200)
 
     def test_invoice_freezes_extras_and_materialized_order_has_no_double_shipping_charge(self):
         from orders.models import Order, PaymentAttempt
@@ -313,6 +383,9 @@ class CustomPrintCreationTests(TestCase):
 
     def test_box_card_message_and_wrapping_are_preserved_with_one_850_charge(self):
         payload = creation_payload(False)
+        payload["items"] = payload["items"][:1]
+        payload["items"][0]["snapshot"]["order"].update(quantity=1, size_mode="single", size_breakdown={"M": 1})
+        payload["items"][0]["snapshot"]["pricing"].update(unit_total=1000)
         message = "а" * 240
         payload["gift"] = {"box": {"enabled": True, "content_type": "text", "text": "Зі святом!"},
                            "wrapping": {"enabled": True, "paper": "kraft", "style": "custom", "preference": "Без блискіток", "price": 999, "target": "zip"},
@@ -321,10 +394,10 @@ class CustomPrintCreationTests(TestCase):
         with patch("storefront.views.static_pages.notify_custom_print_creation"):
             response = self._submit(payload, cart=True)
         self.assertEqual(response.status_code, 200, response.content)
-        carrier, sibling = list(CustomPrintLead.objects.order_by("pk"))
+        carrier = CustomPrintLead.objects.get()
         self.assertEqual(carrier.pricing_snapshot_json["gift_price"], 850)
-        self.assertEqual([int(lead.final_price_value) for lead in (carrier, sibling)], [1850, 1500])
-        for lead in (carrier, sibling):
+        self.assertEqual(int(carrier.final_price_value), 1850)
+        for lead in (carrier,):
             gift = lead.config_draft_json["creation"]["gift"]
             self.assertEqual(gift["certificate"]["message"], message)
             self.assertEqual(gift["certificate"]["placement"], "box_top")
