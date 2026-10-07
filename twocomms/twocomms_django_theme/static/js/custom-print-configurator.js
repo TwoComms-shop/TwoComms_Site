@@ -4441,7 +4441,7 @@
         : actionPolicy.cartHint;
     }
     if (dom.leadActionHint) {
-      dom.leadActionHint.textContent = actionPolicy.leadHint;
+      dom.leadActionHint.textContent = actionPolicy.leadReady ? "Надішлемо всі речі та побажання." : actionPolicy.leadHint;
     }
   }
 

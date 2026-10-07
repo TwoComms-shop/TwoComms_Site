@@ -30,7 +30,8 @@
 [data-action-add-to-cart] .cp-final-button-icon { color: #c4c3ca; background: #ffffff08; }
 .cp-page [data-action-submit-lead].cp-final-button { background: linear-gradient(135deg, #efce8b, #d7a450); color: #19151b; border-color: #e9c57e; }
 .cp-page [data-action-submit-lead] .cp-final-button-icon { color: #211a1b; background: #19151b12; }
-.cp-page [data-action-submit-lead] .cp-final-button-text small { color: #342918; opacity: 1; }
+.cp-page [data-action-submit-lead] .cp-final-button-text strong { color: #19151b; font-size: .95rem; line-height: 1.3; }
+.cp-page [data-action-submit-lead] .cp-final-button-text small { color: #342918; opacity: 1; font-size: .8125rem; line-height: 1.45; }
 [data-action-submit-lead].cp-final-button:not(.is-disabled):not(.is-busy) { animation: cp-manager-guide 6s ease-in-out infinite; }
 @keyframes cp-manager-guide { 0%, 30%, 100% { box-shadow: 0 10px 28px #d7a45020; } 15% { box-shadow: 0 10px 32px #d7a45040, 0 0 0 2px #e2c2842b; } }
 @media (max-width: 1100px) {
