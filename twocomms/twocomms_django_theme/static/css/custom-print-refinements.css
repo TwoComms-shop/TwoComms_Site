@@ -16,12 +16,11 @@
 .cp-gift-card-hit { position: absolute; z-index: 3; right: 20px; top: 40%; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
 .cp-gift-card-hit:focus-visible { outline: 2px solid #dfc38b; outline-offset: 3px; }
 .cp-gift-certificate-lines { cursor: text; }
-.cp-tap-hint { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; animation: cp-surface-tap 7s ease-in-out infinite; animation-play-state: paused; }
+.cp-tap-hint { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; animation: cp-surface-tap 2s ease-in-out infinite; animation-play-state: paused; }
 .cp-tap-hint svg { width: 26px; height: 34px; filter: drop-shadow(0 2px 3px #0008); }
 .cp-tap-hint::before { content: ""; position: absolute; width: 20px; height: 20px; left: 9px; top: 0; border: 1px solid #f3d79b; border-radius: 50%; }
-.is-hint-visible:not(.is-hint-used) .cp-tap-hint { animation-play-state: running; }
-.is-hint-used .cp-tap-hint { animation: none; opacity: 0; }
-@keyframes cp-surface-tap { 0%, 24%, 100% { opacity: 0; transform: translateY(5px) scale(1); } 5% { opacity: .9; transform: translateY(0) scale(1); } 11% { opacity: 1; transform: translateY(-3px) scale(.92); } 16% { opacity: .9; transform: translateY(0) scale(1); } }
+.is-hint-visible .cp-tap-hint { animation-play-state: running; }
+@keyframes cp-surface-tap { 0%, 48%, 100% { opacity: 0; transform: translateY(5px) scale(1); } 12% { opacity: .9; transform: translateY(0) scale(1); } 23% { opacity: 1; transform: translateY(-3px) scale(.92); } 34% { opacity: .9; transform: translateY(0) scale(1); } }
 .cp-studio-appbar [data-preview-open].is-preview-cued { position: relative; }
 .cp-studio-appbar [data-preview-open].is-preview-cued::after { content: ""; position: absolute; inset: 0; border: 1px solid #e6c48c; border-radius: inherit; box-shadow: 0 0 12px #dcb5703b; pointer-events: none; opacity: 0; animation: cp-eye-guide 7s ease-in-out infinite; }
 @keyframes cp-eye-guide { 0%, 24%, 100% { opacity: 0; } 10% { opacity: .85; } }
@@ -47,7 +46,7 @@
   body.cp-keyboard-open [data-preview-open]::after { animation-play-state: paused; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cp-tap-hint { display: none; }
+  .cp-tap-hint { animation: none !important; opacity: .7; transform: none; }
   .cp-gift-choice-arrow, .cp-studio-appbar [data-preview-open].is-preview-cued::after,
   .cp-page [data-action-submit-lead].cp-final-button { background: linear-gradient(135deg, #efce8b, #d7a450); color: #19151b; border-color: #e9c57e; }
 .cp-page [data-action-submit-lead] .cp-final-button-icon { color: #211a1b; background: #19151b12; }

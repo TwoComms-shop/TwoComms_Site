@@ -12,10 +12,6 @@
     const cardTap = root.querySelector('[data-gift-card-tap]');
     let lastBox = false, lastCertificate = false, lastMessageMode = 'blank';
     const reduced = () => global.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-    function markSeen(surface) {
-      if (!surface) return;
-      surface.classList.add('is-hint-used');
-    }
     if (global.IntersectionObserver) {
       const observer = new global.IntersectionObserver((entries) => entries.forEach(({ target, isIntersecting }) => target.classList.toggle('is-hint-visible', isIntersecting)), { threshold: .35 });
       if (scene) observer.observe(scene);
@@ -65,8 +61,8 @@
 
     // These controls only inspect packaging. They never select an option, add
     // a charge, submit an order or delay navigation. CSS owns cancellable motion.
-    const inspectPackage = () => { markSeen(scene); setUnwrapped(!scene?.classList.contains('is-unwrapped')); };
-    const inspectCard = () => { markSeen(card); showBack(!card?.classList.contains('is-back')); };
+    const inspectPackage = () => setUnwrapped(!scene?.classList.contains('is-unwrapped'));
+    const inspectCard = () => showBack(!card?.classList.contains('is-back'));
     unwrap?.addEventListener('click', inspectPackage);
     seal?.addEventListener('click', inspectPackage);
     flip?.addEventListener('click', inspectCard);
