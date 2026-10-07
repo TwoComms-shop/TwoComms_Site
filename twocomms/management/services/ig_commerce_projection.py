@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import contextmanager
 from contextvars import ContextVar
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -618,13 +619,55 @@ def captured_selection_for(client, *, episode_id=None, line_id=None) -> dict:
     return captured_selection_from_preferences(client.pk, projection)
 
 
-def _source_fence_row(source):
+_MEDIA_INSPECTION_FIELDS = frozenset({
+    "version", "state", "source_part_id", "source_image_index", "outcome",
+    "evidence_code", "type_code", "content_hash", "request_id", "provider_model",
+    "revision_id", "analysis_state", "origin", "content_kind", "sentiment",
+    "confidence", "evidence", "complaint_code", "transcript", "audio_status",
+})
+
+
+def _source_fence_media(media, *, message_scope):
+    """Fence input media, excluding only the typed backend inspection owner.
+
+    Use the revision source's canonical part identity. Keep all transport,
+    capture, storage and privacy fields, including unknown metadata. Malformed
+    media remains hash-sensitive instead of being silently dropped by the
+    normalizer. Interpretation changes are checked by their own accepted proof.
+    """
+    from management.services.ig_media_manifest import MediaManifestError, normalize_attachment_media
+
+    if not isinstance(media, list) or any(not isinstance(part, Mapping) for part in media):
+        return deepcopy(media)
+    try:
+        parts = normalize_attachment_media(deepcopy(media), message_scope=message_scope)
+    except MediaManifestError:
+        return deepcopy(media)
+    for original, part in zip(media, parts, strict=True):
+        # Missing legacy identity may receive deterministic enrichment. An
+        # explicitly supplied identity is source input, even when malformed:
+        # normalization must not erase its subsequent mutation from the fence.
+        for key in ("source_part_id", "original_index", "identity_origin"):
+            if key in original:
+                part[key] = deepcopy(original[key])
+        inspection = part.get("inspection")
+        if (isinstance(inspection, Mapping)
+                and inspection.get("version") == "ig-media-inspection-v1"
+                and inspection.get("state") in {"inspected", "uninspected"}
+                and set(inspection) <= _MEDIA_INSPECTION_FIELDS):
+            del part["inspection"]
+    return parts
+
+
+def _source_fence_row(source, *, legacy_raw_media=False):
     return {"id": source.pk, "client_id": source.client_id, "sender_id": source.sender_id,
         "role": source.role, "source": source.source, "status": source.status, "text": source.text,
         "namespace": source.provider_namespace, "provider_created_at": source.provider_created_at.isoformat() if source.provider_created_at else None,
         "created_at": source.created_at.isoformat(), "mid": source.mid,
         "reply_to": source.reply_to_provider_message_id, "quick_reply": source.quick_reply_payload,
-        "attachments": source.attachments, "attachment_media": source.attachment_media}
+        "attachments": source.attachments,
+        "attachment_media": (source.attachment_media if legacy_raw_media else
+            _source_fence_media(source.attachment_media, message_scope=source.pk))}
 
 
 def _captured_product_ids(rows):

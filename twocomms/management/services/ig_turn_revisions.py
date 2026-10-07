@@ -492,6 +492,7 @@ def _sealed_media_parts(
     from management.services.ig_media_url_policy import (
         SUPPORTED_INLINE_AUDIO_MIMES,
         SUPPORTED_INLINE_IMAGE_MIMES,
+        SUPPORTED_INLINE_VIDEO_MIMES,
     )
 
     current = normalize_attachment_media(
@@ -531,7 +532,7 @@ def _sealed_media_parts(
                 storage_name
                 and byte_length > 0
                 and mime.casefold() in (
-                    SUPPORTED_INLINE_IMAGE_MIMES | SUPPORTED_INLINE_AUDIO_MIMES
+                SUPPORTED_INLINE_IMAGE_MIMES | SUPPORTED_INLINE_AUDIO_MIMES | SUPPORTED_INLINE_VIDEO_MIMES
                 )
                 and re.fullmatch(r"[0-9a-f]{64}", content_hash)
                 and item.get("private_storage") is True

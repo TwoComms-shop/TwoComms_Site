@@ -1137,56 +1137,13 @@ def reconcile_pending_ugc_media(*, limit: int = 20, now=None) -> dict[str, int]:
     return counts
 
 
-def safe_ugc_acknowledgement(client, generated: str, *, assessment=None) -> str:
-    """Keep the same-turn answer social and non-commercial."""
-    decision = str(getattr(assessment, "decision", "pending") or "pending")
-    language = str(getattr(client, "language", "uk") or "uk").casefold()
-    if decision in {"pending", "needs_manager_review"}:
-        if language.startswith("ru"):
-            return "Спасибо за отметку TwoComms! Проверяем публикацию."
-        if language.startswith("en"):
-            return "Thank you for tagging TwoComms! We are checking the post."
-        return "Дякуємо за відмітку TwoComms! Перевіряємо публікацію."
-    if decision != "qualified_auto":
-        if language.startswith("ru"):
-            return "Спасибо, что поделились!"
-        if language.startswith("en"):
-            return "Thank you for sharing!"
-        return "Дякуємо, що поділилися!"
-    text = " ".join(str(generated or "").split())
-    lowered = text.casefold()
-    forbidden = (
-        "http://", "https://", "paylink", "оплат", "куп", "замов", "зниж",
-        "скид", "промокод", "promo", "coupon", "discount",
-        "розповім", "расскажу", "каталог", "розмір", "розмер",
-        "продукт", "товар", "модель", "колекц", "ціна", "цена", "варт",
-        "кошту", "стоит", " грн", "uah", "₴", "підпис", "подпис", "follow",
-        # Soft invitations are still a commercial turn even when they omit
-        # product/price vocabulary. UGC recognition must end the sales turn.
-        "якщо", "захоч", "хочеш", "хочете", "хочеш", "напиш", "покаж",
-        "подбер", "підбер", "дізна", "узна", "давайте", "давай", "можемо",
-        "можем", "оформ", "обер", "выбер", "вибер", "детал", "більше",
-        "больше", "продовж", "продолж", "порад", "совет", "підкаж",
-    )
-    social_anchors = (
-        "дяку", "спасиб", "thank", "відміт", "отмет", "tag", "крут", "клас",
-        "чудов", "неймовір", "неймовир", "вигляда", "выгляд", "look", "great",
-        "awesome", "гарн", "красив", "стильн", "стильно",
-    )
-    sentence_count = len(re.findall(r"[.!?]+", text))
-    unsafe_shape = (
-        not text
-        or len(text) > 320
-        or "?" in text
-        or bool(re.search(r"\d|[%₴]", text))
-        or sentence_count > 2
-        or not any(anchor in lowered for anchor in social_anchors)
-        or any(token in lowered for token in forbidden)
-    )
-    if unsafe_shape:
-        if language.startswith("ru"):
-            return "Большое спасибо, что отметили TwoComms - вы отлично выглядите в нашей одежде!"
-        if language.startswith("en"):
-            return "Thank you for tagging TwoComms - you look great in our clothes!"
-        return "Дуже дякуємо, що відмітили TwoComms - ви круто виглядаєте в нашому одязі!"
-    return text[:700]
+def safe_ugc_acknowledgement(client, generated: str, *, assessment=None, media_analysis=None,
+    social_only=True) -> str:
+    """Compatible UGC adapter; assessment decisions never prove media content.
+
+    Mixed caption/commerce callers explicitly opt out of the social-only lane.
+    Action receipts and reward decisions remain with their existing owners.
+    """
+    from management.services.ig_media_response import normalize_media_reply
+    return normalize_media_reply(client, generated, media_analysis=media_analysis,
+        social_only=social_only)

@@ -549,6 +549,41 @@ class RevisionGenerationBoundary:
         )
         return replace(response, reply_text=clean)
 
+    def normalize_media_response(self, response, *, request_media_binding, usage):
+        """Normalize the admitted candidate before winner/action validation."""
+        from management.services.ig_media_analysis import bound_media_parts, MediaAnalysisError
+        from management.services.ig_revision_proposal import _request_media_projection
+        from management.services.ig_media_response import normalize_media_reply
+        artifact = response.turn_intelligence
+        if artifact is None:
+            return response
+        observed = usage if isinstance(usage, dict) else {}
+        supplied = dict(request_media_binding or {})
+        supplied.update(actual_inline_count=observed.get("_request_inline_count"),
+            actual_content_hashes=observed.get("_request_inline_content_hashes"))
+        media, reason = _request_media_projection(self.revision, supplied)
+        if reason:
+            return response
+        if not media["items"] and not media["outcomes"]:
+            return response
+        try:
+            parts = bound_media_parts(parts=media["items"], observations=artifact.media_observations,
+                legacy_images=artifact.image_observations, actual_inline_count=media["actual_inline_count"],
+                actual_content_hashes=media["actual_content_hashes"])
+        except MediaAnalysisError:
+            return response
+        analysis = _media_reply_analysis({"parts": parts, "capture_outcomes": media["outcomes"]}, self.revision)
+        from management.services.ig_turn_intent import build_turn_intent
+        intent = build_turn_intent(self.revision.client, self.revision)
+        from management.services.instagram_bot import _media_reply_source_context
+        context = _media_reply_source_context(self.revision.client,
+            _revision_media_reply_sources(self.revision, self.revision.client),
+            commerce_evidence_refs=intent["commerce_evidence_refs"])
+        analysis = {**analysis, "source_service": context["source_service"]}
+        return replace(response, reply_text=normalize_media_reply(self.revision.client,
+            response.reply_text, media_analysis=analysis, social_only=context["social_only"]),
+            controls=tuple(item for item in response.controls if item.kind == "manager") if context["suppress_catalog"] else response.controls)
+
     def validate(self, response, *, policy_manifest):
         from management.services.ig_revision_intents import manager_case_reason, manager_handoff_promised
 
@@ -725,12 +760,65 @@ def _restore_response(proposal):
     )
 
 
-def _normalize_response(response, artifact, client):
-    from management.services.instagram_bot import _apply_turn_intelligence_resolution
+def _media_reply_analysis(analysis, revision):
+    """Presentation-only kinds from exact failed source/part receipts."""
+    unavailable = [row.get("mime") for row in analysis.get("parts", ())
+        if row.get("analysis_state") in {"omitted", "unreadable", "uncertain"}]
+    failures = {(row.get("source_message_id"), row.get("source_part_id"))
+        for row in analysis.get("capture_outcomes", ()) if row.get("collection_outcome") != "admitted"}
+    for source in revision.bundle_snapshot.get("sources", ()):
+        for part in source.get("media_parts", ()):
+            if (source.get("message_id"), part.get("source_part_id")) in failures:
+                unavailable.append(part.get("mime") or part.get("type") or "")
+    return {**analysis, "unavailable_kinds": unavailable}
 
-    reply, control = _apply_turn_intelligence_resolution(
-        response.reply_text, response.control, artifact, client,
-    )
+
+def _revision_media_reply_sources(revision, client):
+    """Fresh owned source rows, never a changed or historical caption."""
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_turn_revisions import _source_payload
+
+    floor = conversation_route_reset_floor(client.pk)
+    snapshots = {row["message_id"]: row for row in revision.bundle_snapshot.get("sources", ())}
+    result = []
+    for source in revision.sources.select_related("message").order_by("ordinal", "id"):
+        row, snapshot = source.message, snapshots.get(source.message_id)
+        if (snapshot is None or row.client_id != client.pk or row.pk < floor
+            or row.role != "user" or row.source != "webhook" or row.sender_id != client.igsid
+            or row.provider_namespace != source.source_namespace
+            or snapshot.get("source_digest") != source.source_digest):
+            continue
+        try:
+            if _source_payload(row, previous=source, ordinal=source.ordinal)["source_digest"] != source.source_digest:
+                continue
+        except (TypeError, ValueError):
+            continue
+        result.append(row)
+    return result
+
+
+def _normalize_response(response, artifact, client, *, revision=None):
+    from management.services.instagram_bot import _apply_turn_intelligence_resolution, _media_reply_source_context
+
+    analysis = artifact.get("media_analysis") if isinstance(artifact, dict) else None
+    context = {"social_only": False, "suppress_catalog": False, "source_service": False}
+    if revision is not None and analysis is not None:
+        from management.services.ig_turn_intent import build_turn_intent
+        intent = build_turn_intent(client, revision)
+        context = _media_reply_source_context(client, _revision_media_reply_sources(revision, client),
+            commerce_evidence_refs=intent["commerce_evidence_refs"])
+    if context["suppress_catalog"]:
+        reply, control = response.reply_text, {key: value for key, value in response.control.items() if key == "manager"}
+    else:
+        reply, control = _apply_turn_intelligence_resolution(
+            response.reply_text, response.control, artifact, client,
+        )
+    if analysis is not None:
+        from management.services.ig_media_response import normalize_media_reply
+        analysis = {**analysis, "source_service": context["source_service"]}
+        reply = normalize_media_reply(client, reply,
+            media_analysis=_media_reply_analysis(analysis, revision) if revision is not None else analysis,
+            social_only=context["social_only"])
     controls = []
     for key, value in control.items():
         if key in {"options", "items"}:
@@ -936,7 +1024,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     )
     if artifact:
         artifact["request_permission_epoch"] = revision.permission_epoch
-    response = _normalize_response(response, artifact, revision.client)
+    response = _normalize_response(response, artifact, revision.client, revision=revision)
     authority = boundary.response_authority(response)
     readiness = boundary.check(authority)
     if not readiness.ready:
@@ -1441,8 +1529,8 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     if "client_configuration_update" not in revision.action_receipts:
         from management.services.ig_revision_proposal import project_revision_image_inspections
 
-        image_items = (revision.generation_proposal.get("request_media_manifest") or {}).get("items") or []
-        if any(str(item.get("mime") or "").startswith("image/") for item in image_items):
+        request_media = revision.generation_proposal.get("request_media_manifest") or {}
+        if request_media.get("items") or request_media.get("outcomes"):
             projection = project_revision_image_inspections(revision.pk, token)
             if projection.reasons:
                 return RevisionLiveResult(revision_id, "blocked", projection.reasons)

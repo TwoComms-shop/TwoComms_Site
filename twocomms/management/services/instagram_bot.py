@@ -7315,6 +7315,39 @@ def _has_meaningful_media_caption(row: InstagramBotMessage) -> bool:
     }
 
 
+def _media_reply_source_context(client, source_messages, *, commerce_evidence_refs=()):
+    """Separate native UGC sales suppression from the current caption answer.
+
+    Revision callers pass fresh rows admitted against their sealed sources;
+    the legacy caller passes its current owned USER row. Service tone is only
+    a presentation hint and never a media observation or manager capability.
+    """
+    from management.services.bot_sales_classifier import (
+        SUPPORT_RE, extract_collaboration_brief, is_explicit_custom_print_request,
+    )
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_revision_intents import _MANAGER_REQUEST
+    from management.services.ig_turn_intent import _customer_text
+    from management.services.ig_ugc_assessment import potential_ugc_message
+
+    floor = conversation_route_reset_floor(client.pk)
+    sources = [row for row in source_messages if row.client_id == client.pk and row.pk >= floor
+        and row.role == "user" and row.source == "webhook" and row.sender_id == client.igsid]
+    suppress_catalog = bool(any(potential_ugc_message(row) for row in sources) and not commerce_evidence_refs)
+    meaningful_caption = any(_has_meaningful_media_caption(row) for row in sources)
+    captions = [_customer_text(row.text) for row in sources]
+    return {
+        "suppress_catalog": suppress_catalog,
+        "social_only": suppress_catalog and not meaningful_caption,
+        "source_service": any(SUPPORT_RE.search(text) for text in captions),
+        "source_manager_review": any(
+            SUPPORT_RE.search(text) or _MANAGER_REQUEST.search(text)
+            or is_explicit_custom_print_request(text) or extract_collaboration_brief(text)
+            for text in captions
+        ),
+    }
+
+
 TURN_CANDIDATE_CAP = 200
 
 
@@ -7537,6 +7570,11 @@ def _validated_turn_intelligence(
         # text. It must never enter the durable audio transcript field.
         transcript = ""
         audio_status = "not_applicable"
+    from management.services.ig_media_analysis import bind_turn_media_analysis, MediaAnalysisError
+    try:
+        media_analysis = bind_turn_media_analysis(artifact, media_binding)
+    except MediaAnalysisError:
+        return {}
     return {
         "schema_version": 1,
         "candidate_set_version": str(candidate_set.get("version") or "")[:40],
@@ -7552,10 +7590,13 @@ def _validated_turn_intelligence(
         "source_message_revision": str(
             media_binding.get("source_message_revision") or ""
         )[:64],
+        "source_namespace": str(media_binding.get("source_namespace") or "")[:128],
+        "source_digest": str(media_binding.get("source_digest") or "")[:64],
         "media_content_hashes": list(media_binding.get("content_hashes") or []),
         "media_count": int(media_binding.get("count") or 0),
         "media_digest": str(media_binding.get("digest") or "")[:64],
         "image_observations": observations,
+        "media_analysis": media_analysis,
         "media_request": {
             "request_id": request_id,
             "provider_model": provider_model,
@@ -7563,6 +7604,7 @@ def _validated_turn_intelligence(
             "actual_inline_count": (
                 actual_inline_count if isinstance(actual_inline_count, int) else None
             ),
+            "actual_content_hashes": list(media_binding.get("actual_content_hashes") or []),
             "prepared_inline_count": len(binding_items),
             "submitted_parts": [
                 {
@@ -7678,6 +7720,9 @@ def _persist_turn_intelligence(row: InstagramBotMessage, artifact: dict) -> None
             for item in artifact.get("image_observations") or []
             if isinstance(item, dict)
         }
+        analysis = artifact.get("media_analysis") or {}
+        analyses = {(item.get("source_part_id"), item.get("content_hash")): item
+            for item in analysis.get("parts", ()) if isinstance(item, dict)}
         actual_inline_count = media_request.get("actual_inline_count")
         inline_count_known = (
             media_request.get("inline_count_known") is True
@@ -7691,19 +7736,24 @@ def _persist_turn_intelligence(row: InstagramBotMessage, artifact: dict) -> None
                 str(item.get("content_hash") or ""),
             )
             observation = observations.get(key)
-            if observation and request_id and provider_model and inline_count_known:
+            part_analysis = analyses.get(key)
+            if (observation or part_analysis) and request_id and provider_model and inline_count_known:
+                from management.services.ig_media_analysis import inspection_analysis_fields
                 item["inspection"] = {
                     "version": MEDIA_INSPECTION_VERSION,
-                    "state": "inspected",
+                    "state": "inspected" if observation or part_analysis.get("origin") == "provider_observation" else "uninspected",
                     "source_part_id": key[0],
-                    "outcome": str(observation.get("outcome") or "")[:32],
+                    "outcome": str((observation or part_analysis).get("outcome") or "")[:32],
                     "evidence_code": str(
-                        observation.get("evidence_code") or ""
+                        (observation or part_analysis).get("evidence_code") or ""
                     )[:32],
-                    "type_code": str(observation.get("type_code") or "")[:32],
+                    "type_code": str((observation or {}).get("type_code") or "")[:32],
                     "content_hash": key[1],
                     "request_id": request_id,
                     "provider_model": provider_model,
+                    **(inspection_analysis_fields(part_analysis) if part_analysis else {
+                        "analysis_state": "legacy_unknown", "content_kind": "unknown", "sentiment": "unknown",
+                    }),
                 }
                 continue
             position = submitted_positions.get(key)
@@ -7913,6 +7963,10 @@ def gemini_generate(
     """history: [{'role':'user'|'model','text':str}] хронологічно.
     images: список (mime_type, raw_bytes) для ОСТАННЬОГО (поточного) user-ходу."""
     media_was_requested = bool(images)
+    # Candidate authority validates the immutable collector envelope. Request
+    # trimming changes admission, never this source proof or its digest.
+    collected_media_binding = deepcopy(turn_media_binding)
+    collected_inline_media = tuple(images or ())
     request_permission_epoch = (
         int(getattr(client, "reply_permission_epoch", 0)) if client is not None else None
     )
@@ -8266,9 +8320,27 @@ def gemini_generate(
     )
 
     def validate_attempt(parsed, *, usage=None):
+        revision_scope = getattr(generation_boundary, "revision", None)
+        if revision_scope is not None:
+            revision_scope._candidate_media_complaint = None
         decision = response_guard.validate(parsed, usage=usage)
         if not decision.valid or generation_boundary is None:
             return decision
+        if revision_scope is not None:
+            normalize_media = getattr(generation_boundary, "normalize_media_response", None)
+            if callable(normalize_media):
+                response_guard.response = normalize_media(
+                    response_guard.response, request_media_binding=collected_media_binding, usage=usage,
+                )
+            from management.services.ig_revision_intents import capture_candidate_media_complaint_evidence
+            capability, _reason = capture_candidate_media_complaint_evidence(revision_scope,
+                response_guard.response, request_media_binding=collected_media_binding, usage=usage)
+            revision_scope._candidate_media_complaint = capability
+            if capability is not None and not response_guard.response.control.get("manager"):
+                from dataclasses import replace
+                from management.services.ig_response_control import ResponseControl
+                response_guard.response = replace(response_guard.response,
+                    controls=(*response_guard.response.controls, ResponseControl("manager", True)))
         # Revision freshness participates in the provider's winner election;
         # it is not a second generation after the shared dispatch budget ends.
         return generation_boundary.validate(
@@ -8424,6 +8496,12 @@ def gemini_generate(
             failure_context["kind"] = "invalid_actual_media_binding"
         log("error", "inline_media_binding", "actual request hash evidence missing or mismatched")
         return None
+    if generation_boundary is not None and collected_media_binding is not None:
+        # Retain the collector's entire prepared mapping for its source-bound
+        # artifact. Actual count/hashes below alone describe provider admission.
+        normalized_media_binding = _normalize_turn_media_binding(
+            collected_inline_media, collected_media_binding,
+        )
     actual_media_binding = dict(normalized_media_binding or {})
     actual_media_binding.update({
         "provider_model": provider_model,
@@ -10087,10 +10165,14 @@ def _source_media_binding(row, media_parts) -> dict:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+    from management.services.ig_turn_revisions import _source_payload
+    source_digest = _source_payload(row, ordinal=1)["source_digest"] if isinstance(row, InstagramBotMessage) and row.pk else ""
     return {
         "version": "owned-media-v2",
         "source_message_id": source_material["source_message_id"] or None,
         "source_message_revision": source_revision,
+        "source_namespace": str(getattr(row, "provider_namespace", "") or "")[:128],
+        "source_digest": source_digest,
         "items": items,
         "bundle": bundle,
     }
@@ -10220,6 +10302,9 @@ def _normalize_turn_media_binding(
             or supplied_bytes != actual_item["bytes"]
         ):
             return None
+        source_message_id = supplied_item.get("source_message_id")
+        if source_message_id is not None and (type(source_message_id) is not int or source_message_id <= 0):
+            return None
         normalized_items.append({
             **actual_item,
             "source_part_id": str(supplied_item.get("source_part_id") or ""),
@@ -10231,7 +10316,13 @@ def _normalize_turn_media_binding(
                 supplied_item.get("identity_origin") or "legacy_positional"
             )[:32],
             "capture_state": "owned",
+            **({"source_message_id": source_message_id} if source_message_id is not None else {}),
         })
+    from management.services.ig_media_analysis import normalized_capture_outcomes, MediaAnalysisError
+    try:
+        outcomes = normalized_capture_outcomes(supplied.get("outcomes") or ())
+    except MediaAnalysisError:
+        return None
     canonical = json.dumps(
         normalized_items,
         ensure_ascii=True,
@@ -10244,9 +10335,12 @@ def _normalize_turn_media_binding(
         "source_message_revision": str(
             supplied.get("source_message_revision") or ""
         )[:64],
+        "source_namespace": str(supplied.get("source_namespace") or "")[:128],
+        "source_digest": str(supplied.get("source_digest") or "")[:64],
         "items": normalized_items,
         "content_hashes": [item["content_hash"] for item in normalized_items],
         "count": len(normalized_items),
+        "outcomes": outcomes,
         "digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         "bundle": (
             supplied.get("bundle") if isinstance(supplied.get("bundle"), dict) else {}
@@ -14619,8 +14713,9 @@ def _process_one_inside_reply_boundary(
                 ugc_assessment = ensure_pending_ugc_assessment(row)
         except Exception as exc:
             log("warning", "ugc_ingress_assessment", repr(exc))
-    if ugc_turn and not turn_media_parts:
-        # Provider-native UGC has a deterministic social receipt.  The durable
+    if ugc_turn and not turn_media_parts and not _has_meaningful_media_caption(row):
+        # A native UGC event without a current caption has a social receipt.
+        # A meaningful caption follows the normal answer path below. The durable
         # pending assessment is drained separately on the dedicated 3.6
         # analysis lane; live chat must not spend a second Gemini request or
         # append a generic sales follow-up.
@@ -14970,8 +15065,10 @@ def _process_one_inside_reply_boundary(
             if ugc_turn:
                 turn_notes = (
                     f"{turn_notes}\n[UGC MODE] Це provider-native відмітка/репост. "
-                    "Подякуй природно й коротко відповідай по видимому зображенню та "
-                    "контексту репліки. Не починай продаж без запиту, не формуй paylink, "
+                    "Коротко відповідай по видимому зображенню та поточній репліці. "
+                    "Питання або скарга в репліці мають пріоритет над подякою за відмітку; "
+                    "якщо окремого питання немає, подякуй природно. "
+                    "Не починай продаж без запиту, не формуй paylink, "
                     "не проси підписку й не обіцяй винагороду або знижку до окремої "
                     "перевірки права."
                 ).strip()
@@ -15181,16 +15278,46 @@ def _process_one_inside_reply_boundary(
             log("warning", "invalid_model_controls", f"{row.sender_id}: controls discarded")
     if ugc_turn:
         from management.services.ig_ugc_assessment import safe_ugc_acknowledgement
+        from management.services.ig_media_analysis import media_reaction
+
+        ugc_analysis = (gemini_failure.get("turn_intelligence") or {}).get("media_analysis")
+        from management.services.ig_turn_intent import build_turn_intent
+        ugc_intent = build_turn_intent(row.client, source_messages=[row])
+        ugc_context = _media_reply_source_context(row.client, [row],
+            commerce_evidence_refs=ugc_intent["commerce_evidence_refs"])
+        ugc_suppress_catalog = ugc_context["suppress_catalog"]
+        ugc_social_only = ugc_context["social_only"]
+        ugc_complaint = False
+        if media_reaction(ugc_analysis)["mode"] == "service":
+            from management.services.ig_revision_intents import validated_legacy_media_complaint_evidence
+            complaint_proof, _reason = validated_legacy_media_complaint_evidence(row,
+                gemini_failure.get("turn_intelligence") or {})
+            ugc_complaint = bool(complaint_proof)
+
+        # The current customer's caption can require service even when an
+        # accompanying photo looks positive. Keep this hint outside durable
+        # media evidence and the independent complaint/action admission.
+        if ugc_context["source_service"]:
+            ugc_analysis = {**(ugc_analysis or {}), "source_service": True}
 
         reply = safe_ugc_acknowledgement(
             row.client,
             reply,
             assessment=ugc_assessment,
+            media_analysis=ugc_analysis,
+            social_only=ugc_social_only,
         )
-        control = {}
+        # Complaint tone alone grants no action. Preserve only the already
+        # parsed manager proposal for the existing text/source/permission guard;
+        # other UGC commerce controls remain suppressed.
+        if ugc_suppress_catalog:
+            source_manager = control.get("manager") is True and ugc_context["source_manager_review"]
+            control = {"manager": True} if (ugc_complaint or source_manager) else {}
+        elif ugc_complaint:
+            control["manager"] = True
         controls_valid = True
         follow_candidate = None
-        model_reply_guarded = False
+        model_reply_guarded = model_reply_guarded if ugc_complaint else False
     # Invalid controls are discarded, not interpreted as a manager request.
     # A customer-safe reply may continue without changing CRM authority state;
     # explicit manager escalation remains separately validated below.
@@ -15202,12 +15329,13 @@ def _process_one_inside_reply_boundary(
         # typed manager-offer producer exists, only catalog `price_quoted` or a
         # frozen server proposal may cross this boundary.
         pre_effect_rejection_reasons.append("unverified_price")
-    reply, control = _apply_turn_intelligence_resolution(
-        reply,
-        control,
-        getattr(row, "turn_intelligence_artifact", {}) or {},
-        row.client if row.client_id else None,
-    )
+    if not (ugc_turn and ugc_suppress_catalog):
+        reply, control = _apply_turn_intelligence_resolution(
+            reply,
+            control,
+            getattr(row, "turn_intelligence_artifact", {}) or {},
+            row.client if row.client_id else None,
+        )
     if reply and row.client_id:
         claim_failures = _authoritative_reply_claim_failures(row.client, reply, control)
         if claim_failures:

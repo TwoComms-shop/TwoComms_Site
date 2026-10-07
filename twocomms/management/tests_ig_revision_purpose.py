@@ -30,9 +30,10 @@ class RevisionPurposeTests(TransactionTestCase):
 
     def test_explicit_customer_request_allows_optional_next_step(self):
         self.source_text("Хочу замовити футболку.")
-        self.parsed["reply_text"] = "Яка модель вас цікавить? Можу допомогти підібрати розмір."
+        self.parsed["reply_text"] = "Ви обрали футболку. Яка модель футболки вас цікавить? Можу допомогти підібрати розмір."
         result, _generate, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("waiting_on_customer",))
         self.assertEqual(http.call_count, 1)
 
     def test_acknowledged_inbox_correction_after_start_marker_prevents_http(self):

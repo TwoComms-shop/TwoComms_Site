@@ -74,7 +74,14 @@ def validate_current_source_cart_sources(capture, *, source_rows=None):
     digest = hashlib.sha256(json.dumps(actual, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode()).hexdigest()
     if digest != fence.get("source_digest"):
-        raise TurnContextError("source_cart_sources_changed")
+        # Historical captures hashed the complete raw media JSON. Accept only
+        # their exact original row image; never rebase an old immutable fence
+        # onto a changed source or infer which inspection was present then.
+        legacy = {row.pk: _source_fence_row(row, legacy_raw_media=True) for row in rows}
+        legacy_digest = hashlib.sha256(json.dumps(legacy, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if legacy_digest != fence.get("source_digest"):
+            raise TurnContextError("source_cart_sources_changed")
     return True
 
 

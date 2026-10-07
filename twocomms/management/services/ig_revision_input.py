@@ -173,7 +173,8 @@ def complete_no_reply_input(revision_id, token):
 def record_unavailable_media_reply(revision_id, token, *, settings_id, collection):
     """Store a source-bound clarification when there is nothing available to inspect."""
     from types import SimpleNamespace
-    from management.services.instagram_bot import _has_meaningful_media_caption, _media_unavailable_reply
+    from management.services.instagram_bot import _has_meaningful_media_caption
+    from management.services.ig_media_response import media_limitation_reply
 
     if connection.in_atomic_block or collection.parts or not collection.coverage.get("total_parts"):
         return RevisionInputDecision(reason="media_clarification_not_applicable")
@@ -214,7 +215,9 @@ def record_unavailable_media_reply(revision_id, token, *, settings_id, collectio
             "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
             "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
             "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings), "offer_bindings": [], "authority_digest": authority.authority_digest},
-            "reply_text": _media_unavailable_reply(client, retry_pending=False), "recorded_at": timezone.now().isoformat(),
+            "reply_text": media_limitation_reply(client, media_kinds=[
+                part.get("mime") or part.get("type") or "" for source in sources for part in source.get("media_parts", ())
+            ]), "recorded_at": timezone.now().isoformat(),
         }
         revision.action_receipts = {**(revision.action_receipts or {}), "media_unavailable_reply": receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])

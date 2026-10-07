@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Mapping
@@ -42,6 +43,10 @@ from management.services.ig_revision_outbox import (
     pre_winner_readiness,
 )
 from management.services.ig_revision_media import BINDING_VERSION
+from management.services.ig_media_analysis import (
+    MediaAnalysisError, validate_bound_media_analysis,
+    media_reaction, inspection_analysis_fields, normalized_capture_outcomes,
+)
 
 
 SCHEMA_VERSION = 1
@@ -197,7 +202,13 @@ def validated_route_media_evidence(revision, evidence_ids, media, intelligence, 
                     return [], "route_media_not_understood"
                 understood = "understood"
             elif kind == "audio":
-                if (audio_owners != {pk} or intelligence.get("audio_status") != "transcribed"
+                analysis = intelligence.get("media_analysis") or {}
+                attributed = [row for row in analysis.get("parts", ()) if isinstance(row, Mapping)
+                    and row.get("source_message_id") == pk and row.get("source_part_id") == part_id
+                    and row.get("content_hash") == content_hash and row.get("source_inline_index") == index
+                    and row.get("analysis_state") == "understood" and row.get("origin") == "provider_observation"
+                    and row.get("audio_status") == "transcribed" and str(row.get("transcript") or "").strip()]
+                if not attributed and (audio_owners != {pk} or intelligence.get("audio_status") != "transcribed"
                     or not str(intelligence.get("transcript") or "").strip()):
                     return [], "route_audio_not_attributable"
                 understood = "transcribed"
@@ -480,12 +491,26 @@ def _request_media_projection(revision, value) -> tuple[dict | None, str]:
         )
     except MediaManifestError:
         return None, "request_media_binding_mismatch"
+    try:
+        outcomes = normalized_capture_outcomes(value.get("outcomes") or ())
+    except MediaAnalysisError as exc:
+        return None, exc.code
+    for outcome in outcomes:
+        sealed = sealed_parts.get((outcome["source_message_id"], outcome["source_part_id"]))
+        if sealed is None or sealed.get("original_index") != outcome["original_index"]:
+            return None, "media_capture_outcome_binding_mismatch"
+        if outcome["collection_outcome"] == "admitted" and (
+            (outcome["source_message_id"], outcome["source_part_id"]) not in seen
+            or sealed.get("capture_outcome") != "owned"
+        ):
+            return None, "media_capture_outcome_binding_mismatch"
     return {
         "version": str(value.get("version") or "")[:40],
         "collection_digest": collection_digest,
         "items": normalized,
         "actual_inline_count": actual_count,
         "actual_content_hashes": expected_hashes,
+        "outcomes": outcomes,
     }, ""
 
 
@@ -591,6 +616,13 @@ def _intelligence_projection(artifact, media, request_id, model, revision, prize
         or artifact.get("request_permission_epoch") != revision.permission_epoch
     ):
         return None, "turn_intelligence_invalid"
+    analysis = artifact.get("media_analysis")
+    if analysis is not None:
+        try:
+            analysis = validate_bound_media_analysis(analysis, media=media,
+                request_id=request_id, provider_model=model, legacy_images=observations)
+        except MediaAnalysisError as exc:
+            return None, exc.code
     return {
         "schema_version": 1,
         "candidate_set_version": str(artifact.get("candidate_set_version") or "")[:40],
@@ -621,6 +653,7 @@ def _intelligence_projection(artifact, media, request_id, model, revision, prize
         "catalog_resolution": resolution,
         "auto_product_id": auto_product_id,
         "request_permission_epoch": revision.permission_epoch,
+        **({"media_analysis": analysis} if analysis is not None else {}),
     }, ""
 
 
@@ -631,9 +664,11 @@ def _generation_graph_matches(
     request_id: str,
     model: str,
     policy_manifest: dict,
+    lock: bool = True,
 ) -> bool:
+    queryset = GeminiRequest.objects.select_for_update() if lock else GeminiRequest.objects.all()
     graph = (
-        GeminiRequest.objects.select_for_update()
+        queryset
         .select_related("winner_attempt")
         .filter(request_id=request_id)
         .first()
@@ -882,7 +917,7 @@ def project_revision_image_inspections(
     if identity is None:
         return RevisionInspectionProjectionResult(reasons=("revision_missing",))
     from management.models import InstagramBotMessage
-    from management.services.ig_media_manifest import normalize_attachment_media
+    from management.services.ig_media_manifest import normalize_attachment_media, public_media_manifest
 
     with transaction.atomic():
         client = IgClient.objects.select_for_update().filter(
@@ -931,6 +966,10 @@ def project_revision_image_inspections(
         submitted = request.get("submitted_parts") if isinstance(request, Mapping) else None
         media_items = media.get("items")
         observations = intelligence.get("image_observations")
+        if not intelligence and media_items == []:
+            # A text-only winner may carry unavailable collector outcomes but
+            # no model artifact. Persist those limitations without inspection.
+            submitted, observations = [], []
         if not all(isinstance(value, list) for value in (
             submitted, media_items, observations,
         )) or len(submitted) != len(media_items):
@@ -943,23 +982,49 @@ def project_revision_image_inspections(
             if isinstance(item, Mapping)
             and isinstance(item.get("source_image_index"), int)
         }
+        generation = proposal.get("generation") or {}
+        analysis = intelligence.get("media_analysis")
+        if analysis is not None:
+            try:
+                analysis = validate_bound_media_analysis(analysis, media=media,
+                    request_id=generation.get("request_id"), provider_model=generation.get("actual_model"),
+                    legacy_images=observations)
+            except MediaAnalysisError as exc:
+                return RevisionInspectionProjectionResult(reasons=(exc.code,))
+        analysis_by_index = {row["source_inline_index"]: row for row in (analysis or {}).get("parts", ())}
         message_ids = sorted({
             int(item.get("source_message_id") or 0)
             for item in submitted if isinstance(item, Mapping)
-        })
+        } | {row["source_message_id"] for row in media.get("outcomes", ())})
         messages = {
             row.pk: row
             for row in InstagramBotMessage.objects.select_for_update().filter(
                 pk__in=message_ids,
                 client_id=client.pk,
-                private_media_state=InstagramBotMessage.PrivateMediaState.ACTIVE,
             )
         }
+        from management.services.ig_conversation_routes import conversation_route_reset_floor
+        from management.services.ig_turn_revisions import _source_payload
+
+        floor = conversation_route_reset_floor(client.pk)
+        source_rows = {row.message_id: row for row in revision.sources.all()}
+        snapshots = {row.get("message_id"): row for row in revision.bundle_snapshot.get("sources", ())}
+        submitted_owners = {row.get("source_message_id") for row in submitted}
+        for message_id in message_ids:
+            message, source, snapshot = messages.get(message_id), source_rows.get(message_id), snapshots.get(message_id)
+            if (message_id < floor or message is None or source is None or snapshot is None
+                or message.role != "user" or message.source != "webhook" or message.sender_id != client.igsid
+                or message.provider_namespace != source.source_namespace
+                or message.private_media_state not in {message.PrivateMediaState.NONE, message.PrivateMediaState.ACTIVE}
+                or (message_id in submitted_owners and message.private_media_state != message.PrivateMediaState.ACTIVE)
+                or snapshot.get("source_digest") != source.source_digest
+                or _source_payload(message, previous=source, ordinal=source.ordinal)["source_digest"] != source.source_digest):
+                return RevisionInspectionProjectionResult(reasons=("projection_source_changed",))
         projected = skipped = 0
         changed_messages = set()
         media_by_message = {}
         actual_count = int(media.get("actual_inline_count") or 0)
-        generation = proposal.get("generation") or {}
+        namespaces = {row.message_id: row.source_namespace for row in revision.sources.all()}
         for index, (submitted_item, media_item) in enumerate(
             zip(submitted, media_items, strict=True)
         ):
@@ -968,10 +1033,12 @@ def project_revision_image_inspections(
                 continue
             message_id = int(submitted_item.get("source_message_id") or 0)
             message = messages.get(message_id)
-            # Audio occupies a global inline index but is not an image to project.
-            if not str(media_item.get("mime") or "").startswith("image/"):
+            # Keep audio/video in the same existing per-part inspection owner.
+            mime = str(media_item.get("mime") or "")
+            if mime.split("/", 1)[0] not in {"image", "audio", "video"}:
                 continue
-            if message is None:
+            if (message is None or message.role != "user" or message.sender_id != client.igsid
+                or message.provider_namespace != namespaces.get(message_id)):
                 skipped += 1
                 continue
             if message_id not in media_by_message:
@@ -990,24 +1057,33 @@ def project_revision_image_inspections(
                 if str(item.get("source_part_id") or "") == part_id
                 and str(item.get("content_hash") or "").casefold() == content_hash
                 and (item.get("status") == "owned" or item.get("capture_state") == "owned")
+                and item.get("private_storage") is True
+                and item.get("mime") == media_item.get("mime")
+                and item.get("original_index") == media_item.get("original_index")
+                and item.get("bytes") == media_item.get("bytes")
+                and public_media_manifest([item])[0]["capture_state"] == "owned"
             ]
             if len(matches) != 1:
                 skipped += 1
                 continue
             observation = observation_by_index.get(index)
-            if observation is not None:
+            part_analysis = analysis_by_index.get(index)
+            if observation is not None or part_analysis is not None:
                 matches[0]["inspection"] = {
                     "version": "ig-media-inspection-v1",
-                    "state": "inspected",
+                    "state": "inspected" if observation is not None or part_analysis.get("origin") == "provider_observation" else "uninspected",
                     "source_part_id": part_id,
                     "source_image_index": index,
-                    "outcome": str(observation.get("outcome") or "")[:32],
-                    "evidence_code": str(observation.get("evidence_code") or "")[:32],
-                    "type_code": str(observation.get("type_code") or "")[:32],
+                    "outcome": str((observation or part_analysis).get("outcome") or "")[:32],
+                    "evidence_code": str((observation or part_analysis).get("evidence_code") or "")[:32],
+                    "type_code": str((observation or {}).get("type_code") or "")[:32],
                     "content_hash": content_hash,
                     "request_id": str(generation.get("request_id") or "")[:40],
                     "provider_model": str(generation.get("actual_model") or "")[:80],
                     "revision_id": revision.pk,
+                    **(inspection_analysis_fields(part_analysis) if part_analysis is not None else {
+                        "analysis_state": "legacy_unknown", "content_kind": "unknown", "sentiment": "unknown",
+                    }),
                 }
             else:
                 matches[0]["inspection"] = {
@@ -1024,14 +1100,135 @@ def project_revision_image_inspections(
                 }
             projected += 1
             changed_messages.add(message_id)
+        prepared_keys = {(row.get("source_message_id"), row.get("source_part_id")) for row in submitted}
+        for outcome in media.get("outcomes", ()):
+            message_id, part_id = outcome["source_message_id"], outcome["source_part_id"]
+            if (message_id, part_id) in prepared_keys:
+                continue
+            message = messages.get(message_id)
+            if (message is None or message.role != "user" or message.sender_id != client.igsid
+                or message.provider_namespace != namespaces.get(message_id)):
+                skipped += 1
+                continue
+            if message_id not in media_by_message:
+                try:
+                    media_by_message[message_id] = normalize_attachment_media(message.attachment_media or [], message_scope=message_id)
+                except MediaManifestError:
+                    media_by_message[message_id] = []
+            matches = [part for part in media_by_message[message_id]
+                if part.get("source_part_id") == part_id and part.get("original_index") == outcome["original_index"]]
+            if len(matches) != 1 or outcome["collection_outcome"] == "admitted":
+                skipped += 1
+                continue
+            matches[0]["inspection"] = {"version": "ig-media-inspection-v1", "state": "uninspected",
+                "source_part_id": part_id, "revision_id": revision.pk,
+                "analysis_state": outcome["collection_outcome"], "outcome": outcome["reason"] or outcome["collection_outcome"],
+                "content_kind": "unknown", "sentiment": "unknown", "origin": "not_admitted"}
+            projected += 1
+            changed_messages.add(message_id)
         for message_id in changed_messages:
             message = messages[message_id]
             # Deliberately leave `turn_intelligence_artifact` untouched: it is
             # historical source evidence, while the proposal is revision-owned.
-            message.attachment_media = media_by_message[message_id]
+            # The normalized view is for matching only. Persist the inspection
+            # onto the original input so this writer cannot rewrite provenance,
+            # identity or transport metadata while recording its interpretation.
+            original = deepcopy(message.attachment_media)
+            originals = [part for part in original if isinstance(part, Mapping)]
+            for part, normalized in zip(originals, media_by_message[message_id], strict=True):
+                if "inspection" in normalized:
+                    part["inspection"] = deepcopy(normalized["inspection"])
+            message.attachment_media = original
             message.save(update_fields=["attachment_media"])
         reasons = ("parts_skipped",) if skipped else ()
         return RevisionInspectionProjectionResult(projected, skipped, reasons)
+
+
+def validated_media_complaint_evidence(revision):
+    """Accepted proposal evidence for the existing permitted service intent.
+
+    Caller owns its existing settings/client/revision locks and authority fence.
+    This reader neither creates a case nor upgrades queueing to delivery.
+    """
+    proposal = revision.generation_proposal
+    if not isinstance(proposal, Mapping) or not revision.generation_proposal_digest or _digest(proposal) != revision.generation_proposal_digest:
+        return [], "generation_proposal_changed"
+    sources, _ = _snapshot_sources(revision)
+    if not sources or proposal.get("sources") != sources:
+        return [], "media_complaint_source_changed"
+    intelligence = proposal.get("turn_intelligence") or {}
+    analysis = intelligence.get("media_analysis")
+    if analysis is None:
+        return [], "media_complaint_absent"
+    media, generation = proposal.get("request_media_manifest") or {}, proposal.get("generation") or {}
+    if not _generation_graph_matches(revision=revision, source_ids={row["message_id"] for row in sources},
+        request_id=generation.get("request_id"), model=generation.get("actual_model"),
+        policy_manifest=proposal.get("policy_manifest") or {}, lock=False):
+        return [], "media_complaint_generation_invalid"
+    try:
+        analysis = validate_bound_media_analysis(analysis, media=media,
+            request_id=generation.get("request_id"), provider_model=generation.get("actual_model"),
+            legacy_images=intelligence.get("image_observations") or ())
+    except (MediaAnalysisError, KeyError, TypeError) as exc:
+        return [], getattr(exc, "code", "media_complaint_proof_invalid")
+    claims = media_reaction(analysis)["complaint_parts"]
+    if not claims:
+        return [], "media_complaint_absent"
+    current, reason = current_media_complaint_parts(revision, claims,
+        request_permission_epoch=intelligence.get("request_permission_epoch"))
+    if reason:
+        return [], reason
+    return [{**claim, "request_id": generation["request_id"], "provider_model": generation["actual_model"],
+        "revision_id": revision.pk, "proposal_digest": revision.generation_proposal_digest} for claim in current], ""
+
+
+def current_media_complaint_parts(revision, claims, *, request_permission_epoch):
+    """Fresh readonly ownership fence shared by candidate and accepted proof."""
+    if not isinstance(claims, (list, tuple)) or not 0 < len(claims) <= MAX_INLINE_PARTS:
+        return [], "media_complaint_absent"
+    from management.models import InstagramBotMessage
+    from management.services.ig_media_manifest import normalize_attachment_media, public_media_manifest
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_turn_revisions import _source_payload
+    client = IgClient.objects.filter(pk=revision.client_id).first()
+    if (client is None or client.privacy_erasure_started_at is not None or client.hidden_at is not None or client.is_blocked
+        or client.reply_permission_epoch != revision.permission_epoch
+        or request_permission_epoch != revision.permission_epoch):
+        return [], "media_complaint_scope_changed"
+    floor = conversation_route_reset_floor(client.pk)
+    source_rows = {row.message_id: row for row in revision.sources.all()}
+    snapshots = {row.get("message_id"): row for row in (revision.bundle_snapshot or {}).get("sources", ()) if isinstance(row, Mapping)}
+    ids = {row.get("source_message_id") for row in claims}
+    if any(type(pk) is not int or pk < floor for pk in ids):
+        return [], "media_complaint_source_invalid"
+    messages = {row.pk: row for row in InstagramBotMessage.objects.filter(pk__in=ids, client_id=client.pk, role="user")}
+    result = []
+    for claim in claims:
+        pk = claim["source_message_id"]
+        message, source, snapshot = messages.get(pk), source_rows.get(pk), snapshots.get(pk)
+        if (message is None or source is None or snapshot is None or message.sender_id != client.igsid
+            or message.source != "webhook" or message.provider_namespace != source.source_namespace
+            or message.text != source.text or snapshot.get("source_digest") != source.source_digest
+            or _source_payload(message, previous=source, ordinal=source.ordinal)["source_digest"] != source.source_digest
+            or message.private_media_state != message.PrivateMediaState.ACTIVE):
+            return [], "media_complaint_owner_changed"
+        try:
+            current = normalize_attachment_media(message.attachment_media or [], message_scope=pk)
+        except MediaManifestError:
+            return [], "media_complaint_owner_changed"
+        sealed = [row for row in snapshot.get("media_parts", ()) if row.get("source_part_id") == claim["source_part_id"]]
+        owned = [row for row in current if row.get("source_part_id") == claim["source_part_id"]]
+        if (len(sealed) != 1 or len(owned) != 1 or sealed[0].get("capture_outcome") != "owned"
+            or sealed[0].get("content_hash") != claim["content_hash"]
+            or owned[0].get("content_hash") != claim["content_hash"]
+            or owned[0].get("mime") != sealed[0].get("mime")
+            or owned[0].get("original_index") != sealed[0].get("original_index")
+            or owned[0].get("bytes") != sealed[0].get("bytes")
+            or owned[0].get("private_storage") is not True
+            or public_media_manifest(owned)[0]["capture_state"] != "owned"):
+            return [], "media_complaint_owner_changed"
+        result.append({**claim, "source_digest": source.source_digest})
+    return result, ""
 
 
 __all__ = [

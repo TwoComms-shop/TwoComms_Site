@@ -5,7 +5,7 @@ neither helper calls a provider or changes a customer's commercial stage.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, is_dataclass
 from datetime import timedelta
 import hashlib
 import json
@@ -38,8 +38,170 @@ class RevisionIntentResult:
     replayed: bool = False
 
 
+@dataclass(frozen=True)
+class CandidateMediaComplaintEvidence:
+    """Backend-only capability; never model input, persisted action or receipt."""
+    response: object
+    artifact: object
+    artifact_digest: str
+    revision_id: int
+    client_id: int
+    permission_epoch: int
+    snapshot_digest: str
+    request_id: str
+    claims: tuple[tuple[tuple[str, object], ...], ...]
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _artifact_digest(artifact):
+    try:
+        value = asdict(artifact) if is_dataclass(artifact) else artifact
+        return _digest(value)
+    except (TypeError, ValueError):
+        return ""
+
+
+def capture_candidate_media_complaint_evidence(revision, response, *, request_media_binding, usage):
+    """Capture only this response's actual submitted bytes before winner election."""
+    from management.models import GeminiRequest
+    from management.services.ig_turn_lineage import current_context, current_request_id
+    from management.services.ig_media_analysis import bound_media_parts, media_reaction, MediaAnalysisError
+    from management.services.ig_revision_proposal import _request_media_projection, current_media_complaint_parts
+    artifact = getattr(response, "turn_intelligence", None)
+    if artifact is None or not getattr(artifact, "media_observations", ()):
+        return None, "media_complaint_absent"
+    context, request_id = current_context(), current_request_id()
+    expected_turn = f"ig-revision:{revision.pk}"
+    if (not request_id or context.get("lane") != "live" or context.get("client_id") != revision.client_id
+        or context.get("logical_turn_id") != expected_turn):
+        return None, "media_complaint_lineage_invalid"
+    graph = GeminiRequest.objects.filter(request_id=request_id, client_id=revision.client_id,
+        source_execution_key=expected_turn, logical_turn_id=expected_turn, lane="live").first()
+    sealed_ids = {row.get("message_id") for row in (revision.bundle_snapshot or {}).get("sources", ())}
+    if (graph is None or graph.source_message_id != context.get("source_message_id") or graph.source_message_id not in sealed_ids
+        or graph.accounting_mode not in {GeminiRequest.AccountingMode.SHADOW,
+            GeminiRequest.AccountingMode.ENFORCED, GeminiRequest.AccountingMode.EMERGENCY}):
+        return None, "media_complaint_request_invalid"
+    usage = usage if isinstance(usage, dict) else {}
+    supplied = dict(request_media_binding or {})
+    supplied["actual_inline_count"] = usage.get("_request_inline_count")
+    supplied["actual_content_hashes"] = usage.get("_request_inline_content_hashes")
+    media, reason = _request_media_projection(revision, supplied)
+    if media is None:
+        return None, reason
+    try:
+        parts = bound_media_parts(parts=media["items"], observations=artifact.media_observations,
+            actual_inline_count=media["actual_inline_count"], actual_content_hashes=media["actual_content_hashes"],
+            legacy_images=artifact.image_observations)
+    except MediaAnalysisError as exc:
+        return None, exc.code
+    claims = media_reaction({"parts": parts, "capture_outcomes": media["outcomes"]})["complaint_parts"]
+    claims, reason = current_media_complaint_parts(revision, claims, request_permission_epoch=revision.permission_epoch)
+    if reason:
+        return None, reason
+    digest = _artifact_digest(artifact)
+    if not digest:
+        return None, "media_complaint_artifact_invalid"
+    return CandidateMediaComplaintEvidence(response, artifact, digest, revision.pk, revision.client_id,
+        revision.permission_epoch, revision.snapshot_digest, request_id,
+        tuple(tuple(sorted(claim.items())) for claim in claims)), ""
+
+
+def _candidate_media_complaint_evidence(revision, response):
+    capability = getattr(revision, "_candidate_media_complaint", None)
+    artifact = getattr(response, "turn_intelligence", None)
+    if (not isinstance(capability, CandidateMediaComplaintEvidence) or artifact is not capability.artifact
+        or _artifact_digest(artifact) != capability.artifact_digest
+        or (revision.pk, revision.client_id, revision.permission_epoch, revision.snapshot_digest) !=
+            (capability.revision_id, capability.client_id, capability.permission_epoch, capability.snapshot_digest)):
+        return []
+    # Legitimate dataclasses.replace keeps the parsed artifact object and its
+    # canonical digest. A differently parsed attempt or mutated object cannot.
+    from management.services.ig_revision_proposal import current_media_complaint_parts
+    current, reason = current_media_complaint_parts(revision,
+        [dict(row) for row in capability.claims], request_permission_epoch=capability.permission_epoch)
+    return [] if reason else current
+
+
+def validated_legacy_media_complaint_evidence(message, artifact):
+    """Source-owned legacy interpretation; never a fake revision or action receipt."""
+    from management.models import InstagramBotMessage, GeminiRequest, GeminiRequestAttempt
+    from management.services.ig_turn_revisions import _source_payload
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_media_manifest import normalize_attachment_media
+    from management.services.ig_media_analysis import validate_bound_media_analysis, media_reaction, MediaAnalysisError
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("media_analysis"), dict):
+        return [], "media_complaint_absent"
+    current = InstagramBotMessage.objects.select_related("client").filter(pk=message.pk, role="user", source="webhook").first()
+    if (current is None or current.client_id != message.client_id or not current.client_id
+        or current.sender_id != current.client.igsid or not current.provider_namespace
+        or current.provider_namespace != artifact.get("source_namespace")
+        or artifact.get("source_message_id") != current.pk
+        or current.pk < conversation_route_reset_floor(current.client_id)
+        or current.client.privacy_erasure_started_at is not None or current.client.hidden_at is not None
+        or current.client.is_blocked or current.client.reply_permission_epoch != artifact.get("request_permission_epoch")
+        or current.private_media_state != current.PrivateMediaState.ACTIVE
+        or _source_payload(current, ordinal=1)["source_digest"] != artifact.get("source_digest")):
+        return [], "media_complaint_scope_changed"
+    analysis, request = artifact["media_analysis"], artifact.get("media_request") or {}
+    rows = analysis.get("parts")
+    submitted = request.get("submitted_parts")
+    actual_count = request.get("actual_inline_count")
+    actual_hashes = request.get("actual_content_hashes")
+    if (not isinstance(rows, list) or not isinstance(submitted, list)
+        or len(rows) != len(submitted) or type(request.get("prepared_inline_count")) is not int
+        or request.get("prepared_inline_count") != len(submitted)
+        or request.get("inline_count_known") is not True
+        or type(actual_count) is not int or not 0 <= actual_count <= len(submitted)
+        or not isinstance(actual_hashes, list)
+        or request.get("request_id") != analysis.get("request_id")
+        or request.get("provider_model") != analysis.get("provider_model")):
+        return [], "media_complaint_proof_invalid"
+    for row, captured in zip(rows, submitted, strict=True):
+        if (not isinstance(row, dict) or not isinstance(captured, dict)
+            or type(captured.get("original_index")) is not int
+            or any(captured.get(key) != row.get(key)
+                for key in ("source_part_id", "original_index", "content_hash"))
+            or ("source_message_id" in row and row["source_message_id"] != current.pk)):
+            return [], "media_complaint_proof_invalid"
+    if actual_hashes != [row.get("content_hash") for row in submitted[:actual_count]]:
+        return [], "media_complaint_proof_invalid"
+    graph = GeminiRequest.objects.select_related("winner_attempt").filter(request_id=analysis.get("request_id"),
+        client_id=current.client_id, source_message_id=current.pk, lane="live", terminal_resolution="succeeded").first()
+    winner = graph.winner_attempt if graph else None
+    if (winner is None or winner.request_graph_id != graph.pk or winner.request_id != graph.request_id
+        or winner.model != analysis.get("provider_model") or winner.winner_claimed is not True
+        or winner.fsm_state != GeminiRequestAttempt.FsmState.SUCCEEDED or winner.outcome != "succeeded"
+        or winner.client_id != current.client_id or winner.source_message_id != current.pk
+        or winner.lane != graph.lane or winner.logical_turn_id != graph.logical_turn_id):
+        return [], "media_complaint_generation_invalid"
+    try:
+        current_parts = normalize_attachment_media(current.attachment_media or [], message_scope=current.pk)
+        bound = []
+        for row in analysis.get("parts", ()):
+            matches = [part for part in current_parts if part.get("source_part_id") == row.get("source_part_id")
+                and part.get("content_hash") == row.get("content_hash") and part.get("mime") == row.get("mime")
+                and part.get("original_index") == row.get("original_index") and part.get("private_storage") is True
+                and (part.get("status") == "owned" or part.get("capture_state") == "owned")]
+            if len(matches) != 1:
+                return [], "media_complaint_owner_changed"
+            part = dict(matches[0])
+            # Absence is legacy unknown. Copy only the ID genuinely captured
+            # in the normalized request, never invent it from the turn anchor.
+            if "source_message_id" in row:
+                part["source_message_id"] = row["source_message_id"]
+            bound.append(part)
+        analysis = validate_bound_media_analysis(analysis, media={"items": bound,
+            "actual_inline_count": actual_count,
+            "actual_content_hashes": actual_hashes,
+            "outcomes": analysis.get("capture_outcomes") or ()}, request_id=graph.request_id,
+            provider_model=winner.model, legacy_images=artifact.get("image_observations") or ())
+    except (MediaAnalysisError, ValueError, TypeError, KeyError):
+        return [], "media_complaint_proof_invalid"
+    return media_reaction(analysis)["complaint_parts"], ""
 
 
 def _collaboration_route_present(revision):
@@ -118,6 +280,9 @@ def manager_case_reason(revision, response=None):
         return "customer_manager_request"
     if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)) and any(SUPPORT_RE.search(text) for text in texts):
         return "business_review"
+    if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)):
+        if _candidate_media_complaint_evidence(revision, response):
+            return "media_complaint_review"
     return ""
 
 
@@ -177,13 +342,28 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         response = ValidatedResponse(reply_text=stored.get("reply_text") or "", controls=tuple(ResponseControl(item["kind"], item["value"]) for item in stored.get("controls") or ()))
         revision.client = client
         reason = manager_case_reason(revision, response)
+        complaint_evidence = []
+        if (proposal.get("turn_intelligence") or {}).get("media_analysis") is not None:
+            from management.services.ig_revision_proposal import validated_media_complaint_evidence
+            complaint_evidence, media_reason = validated_media_complaint_evidence(revision)
+            if complaint_evidence and reason not in {"custom_print", "collaboration_review"}:
+                reason = "media_complaint_review"
+            elif not reason and (response.control.get("manager") or manager_handoff_promised(response)):
+                return RevisionIntentResult(reason=media_reason)
         if not reason:
             return RevisionIntentResult(reason="manager_case_not_requested")
         task_reason = {
             "custom_print": "revision_case:custom_print",
             "collaboration_review": "revision_case:collaboration_review",
+            "media_complaint_review": "revision_case:media_complaint",
         }.get(reason, "revision_case:manager_handoff")
-        task = IgFollowUpTask.objects.select_for_update().filter(client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=task_reason).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).order_by("id").first()
+        event_key = f"ig-revision-case:{client.pk}:{revision.pk}:{reason}"[:180]
+        tasks = IgFollowUpTask.objects.select_for_update().filter(client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=task_reason).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED))
+        if complaint_evidence:
+            # Different complaint sources have independent unresolved service
+            # debt. Only this revision's exact case may be reused on replay.
+            tasks = tasks.filter(event_key=event_key)
+        task = tasks.order_by("id").first()
         now = timezone.now()
         source_refs = [{"message_id": row["message_id"], "source_digest": row["source_digest"]} for row in proposal.get("sources", ())]
         if task is None:
@@ -199,7 +379,7 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                     if reason == "collaboration_review" else
                     "Клієнту потрібна допомога команди: відкрийте поточну розмову."
                 ),
-                event_key=f"ig-revision-case:{client.pk}:{revision.pk}:{reason}"[:180],
+                event_key=event_key,
                 trigger=IgFollowUpTask.Trigger.EVENT, event_occurred_at=now,
                 skip_reason="human_business_decision_required", policy_started_at=now,
                 policy_version="revision-case-v1",
@@ -220,6 +400,13 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         })
         if reason == "collaboration_review":
             context["collaboration_brief"] = collaboration_brief_for_revision(revision)
+        if complaint_evidence:
+            context["media_complaint_evidence"] = complaint_evidence
+            if "customer_service_review" not in context["required_decisions"]:
+                context["required_decisions"].append("customer_service_review")
+            from management.services.ig_turn_intent import media_complaint_source_scope
+            context["media_complaint_scope"] = media_complaint_source_scope(client, revision,
+                [row["message_id"] for row in source_refs])
         task.manager_context = context
         task.save(update_fields=["manager_context", "updated_at"])
         notification_key = f"ig-revision-case:{task.pk}"

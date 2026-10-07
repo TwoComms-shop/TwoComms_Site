@@ -331,6 +331,47 @@ def _disjoint_scopes(current, old, *, episodes_only=False):
     return current_kinds == {"catalog"} and bool(old_kinds) and old_kinds.issubset({"support", "community", "employment", "collaboration"})
 
 
+def media_complaint_source_scope(client, revision, source_ids):
+    """Capture only an independently accepted episode for these complaint sources.
+
+    A current client episode or the newest paid order does not identify the
+    purchase a customer is complaining about. An accepted analysis route owns
+    its logical episode binding; live routes without that proof stay unknown.
+    """
+    from management.models import IgCommercialEpisode
+    ids = set(source_ids)
+    if not ids or any(type(pk) is not int or pk <= 0 for pk in ids):
+        return {}
+    journal = IgConversationRouteDecision.objects.filter(client=client,
+        watermark_message_id__in=ids).select_related("analysis_result").order_by("-sequence").first()
+    scope = _accepted_scope(journal, ids)
+    if not scope or "support" not in scope.get("route_kinds", ()):
+        return {}
+    binding = journal.source_binding or {}
+    result = journal.analysis_result if journal.analysis_result_id else None
+    episode_id = scope.get("commercial_episode_id")
+    if (result is None or type(episode_id) is not int or episode_id <= 0
+        or result.client_id != client.pk or result.commercial_episode_id != episode_id
+        or result.watermark_message_id != journal.watermark_message_id
+        or scope.get("line_id") != result.line_id
+        or not result.result_digest or binding.get("source_digest") != result.result_digest
+        or (binding.get("source_refs") or {}).get("analysis_result_id") != result.pk
+        or binding.get("client_permission_epoch") != revision.permission_epoch
+        or binding.get("reset_floor") != journal.reset_floor
+        or min(ids) < journal.reset_floor):
+        return {}
+    episode = IgCommercialEpisode.objects.filter(pk=episode_id, client=client).first()
+    if episode is None:
+        return {}
+    return {**scope, "version": "media-complaint-scope.v1",
+        "route_decision_digest": journal.decision_digest,
+        "analysis_result_id": result.pk, "reset_floor": journal.reset_floor,
+        "permission_epoch": revision.permission_epoch,
+        # This order comes only through the proved episode, never latest-order
+        # chronology or a mutable current-client purchase pointer.
+        "order_id": episode.intended_order_id}
+
+
 def _case_scope(client, task):
     payload, context = task.event_payload or {}, task.manager_context or {}
     if (task.reason == "revision_case:paid_fulfillment" and task.deal_id
@@ -339,6 +380,31 @@ def _case_scope(client, task):
         scope = {"commercial_episode_id": getattr(getattr(task.deal, "commercial_episode", None), "pk", None),
                  "source_message_ids": [], "route_kinds": ["support"]}
         return "fulfillment", scope
+    if task.reason == "revision_case:media_complaint":
+        from management.services.ig_revision_intents import _digest
+        from management.services.ig_revision_proposal import validated_media_complaint_evidence
+        owner = IgCustomerTurnRevision.objects.filter(pk=context.get("latest_revision_id"), client=client).first()
+        refs = context.get("sources") or []
+        if (owner is None or context.get("case_kind") != "media_complaint_review"
+            or not owner.generation_proposal_digest
+            or owner.generation_proposal_digest != context.get("generation_proposal_digest")
+            or _digest(owner.generation_proposal) != owner.generation_proposal_digest
+            or task.event_key != f"ig-revision-case:{client.pk}:{owner.pk}:media_complaint_review"
+            or not isinstance(refs, list) or any(not isinstance(row, dict) for row in refs)
+            or refs != [{"message_id": row["message_id"], "source_digest": row["source_digest"]}
+                for row in owner.generation_proposal.get("sources", ())]):
+            return "unknown", {}
+        evidence, reason = validated_media_complaint_evidence(owner)
+        if reason or not evidence or evidence != context.get("media_complaint_evidence"):
+            return "unknown", {}
+        scope = media_complaint_source_scope(client, owner, [row["message_id"] for row in refs])
+        if scope and scope == context.get("media_complaint_scope"):
+            return "media_complaint", scope
+        return "unknown", {}
+    if context.get("media_complaint_evidence"):
+        # A simultaneous custom/collaboration decision keeps its own case and
+        # complaint evidence. One proved purpose cannot discharge the other.
+        return "unknown", {}
     if task.reason == "revision_case:custom_print":
         ids = [item.get("message_id") for item in context.get("sources", ()) if item.get("message_id")]
         owner = IgCustomerTurnRevision.objects.filter(pk=context.get("latest_revision_id"), client=client).first()
