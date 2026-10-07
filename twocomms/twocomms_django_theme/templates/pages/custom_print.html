@@ -42,10 +42,10 @@
   {{ block.super }}
   <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260729-color-fallback-v1">
   <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261002-mobile-hero-v2">
-  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-gift-mobile-v6">
-  <link rel="stylesheet" href="{% static 'css/custom-print-collection.css' %}?v=20261007-gift-mobile-v6">
-  <link rel="stylesheet" href="{% static 'css/custom-print-gift-options.css' %}?v=20261007-gift-mobile-v6">
-  <link rel="stylesheet" href="{% static 'css/custom-print-refinements.css' %}?v=20261007-gift-mobile-v6">
+  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-layout-v7">
+  <link rel="stylesheet" href="{% static 'css/custom-print-collection.css' %}?v=20261007-layout-v7">
+  <link rel="stylesheet" href="{% static 'css/custom-print-gift-options.css' %}?v=20261007-layout-v7">
+  <link rel="stylesheet" href="{% static 'css/custom-print-refinements.css' %}?v=20261007-layout-v7">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -268,7 +268,7 @@
           <div class="cp-step-viewport" data-step-viewport>
           <div class="cp-collection-strip" data-collection-strip hidden>
             <span data-collection-strip-label></span>
-            <button type="button" data-collection-show>{% trans 'Переглянути' %}</button>
+            <button type="button" data-collection-show aria-label="{% trans 'Повернутися до списку збережених речей' %}"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16 10H4m5-5-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>{% trans 'До добірки' %}</button>
             <button type="button" data-collection-cancel hidden>{% trans 'Скасувати зміни' %}</button>
           </div>
           <div class="cp-studio-step" data-studio-step="format">
@@ -739,13 +739,13 @@
               </div>
               </div>
               <div class="cp-collection-panel" data-collection-review hidden>
-                <div class="cp-collection-heading"><span class="cp-card-eyebrow">{% trans 'Усе разом' %}</span><h2>{% trans 'Ваша добірка' %}</h2><p>{% trans 'Додайте ще одну річ або переходьте до оформлення.' %}</p></div>
+                <div class="cp-collection-heading"><span class="cp-card-eyebrow">{% trans 'Усе разом' %}</span><h2>{% trans 'Ваша добірка' %}</h2><p data-collection-description>{% trans 'Додайте ще одну річ або переходьте до пакування.' %}</p></div>
                 <div class="cp-collection-list" data-collection-list></div>
                 <div class="cp-collection-summary"><span data-collection-count></span><strong data-collection-total></strong></div>
                 <p data-collection-file-note hidden>{% trans 'Після повернення до чернетки файли потрібно додати повторно. Налаштування речей збережено.' %}</p>
                 <div class="cp-collection-footer">
                   <button type="button" class="cp-secondary-button cp-collection-secondary" data-collection-add>{% trans '+ Додати ще річ' %}</button>
-                  <button type="button" class="cp-link cp-link--primary cp-collection-primary" data-collection-continue>{% trans 'Продовжити' %} →</button>
+                  <button type="button" class="cp-link cp-link--primary cp-collection-primary" data-collection-continue>{% trans 'До пакування' %} →</button>
                 </div>
               </div>
             </div>
@@ -1348,12 +1348,12 @@
   <script src="{% static 'js/custom-print-state.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-render-plan.js' %}?v=20260813-render-plan-v1" defer></script>
   <script src="{% static 'js/custom-print-preview.js' %}?v=20260729-color-fallback-v1" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-gift-mobile-v6" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-layout-v7" defer></script>
   <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260726-dialog-focus-v3" defer></script>
   <script src="{% static 'js/custom-print-mobile-hero.js' %}?v=20261002-mobile-hero-v1" defer></script>
-  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-gift-mobile-v6" defer></script>
-  <script src="{% static 'js/custom-print-collection.js' %}?v=20261007-gift-mobile-v6" defer></script>
-  <script src="{% static 'js/custom-print-gift-preview.js' %}?v=20261007-gift-mobile-v6" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-gift-mobile-v6" defer></script>
+  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-layout-v7" defer></script>
+  <script src="{% static 'js/custom-print-collection.js' %}?v=20261007-layout-v7" defer></script>
+  <script src="{% static 'js/custom-print-gift-preview.js' %}?v=20261007-layout-v7" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-layout-v7" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

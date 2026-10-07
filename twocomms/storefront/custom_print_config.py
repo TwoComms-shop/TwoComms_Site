@@ -476,7 +476,7 @@ CUSTOM_REF_PREVIEW_ASSETS = {
         "pink": _custom_ref_pair("hoodie-pink"),
     },
     "longsleeve:regular": {
-        "black": _custom_ref_pair("tshirt-black-standart"),
+        "black": _custom_ref_pair("longsleeve-black"),
     },
 }
 

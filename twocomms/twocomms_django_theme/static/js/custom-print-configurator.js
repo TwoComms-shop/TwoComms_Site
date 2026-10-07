@@ -318,6 +318,7 @@
         product_view: "chooser",
         multi_item_mode: false,
         collection_review: false,
+        collection_return_step: null,
         brand_brief_open: false,
         current_step: "mode",
         done_steps: new Set(),
@@ -526,6 +527,10 @@
       return;
     }
     if (STATE.ui.collection_review && STATE.ui.current_step === "quantity") {
+      if (STATE.ui.collection_return_step) {
+        continueCollection();
+        return;
+      }
       editCollectionItem(activeItemId || collection.list()[0]?.id, "quantity");
       return;
     }
@@ -1244,6 +1249,7 @@
     STATE.ui.done_steps = new Set();
     STATE.ui.current_step = "mode";
     STATE.ui.collection_review = false;
+    STATE.ui.collection_return_step = null;
     STATE.ui.product_view = "chooser";
     STATE.ui.multi_item_mode = false;
     STATE.gift_options = createState().gift_options;
@@ -1495,6 +1501,8 @@
 
   function renderOwnGarmentControls() {
     const visible = STATE.product.type === "customer_garment";
+    if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = !visible;
+    if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = !visible;
     applyOwnGarmentStageColor();
     if (!visible || !dom.ownColorInput) return;
     const hex = /^#[0-9a-f]{6}$/i.test(STATE.notes.garment_color_hex || "") ? STATE.notes.garment_color_hex : "#151515";
@@ -3138,8 +3146,6 @@
       dom.sizeGrid.hidden = false;
       dom.sizeMatrix.hidden = true;
       if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = false;
-      if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = true;
-      if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = true;
       if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = true;
       if (dom.qtyHint) dom.qtyHint.textContent = "Один виріб — один розмір. Натисніть, щоб обрати.";
       // Reset size_breakdown to single
@@ -3168,8 +3174,6 @@
         dom.sizeMatrix.hidden = true;
         if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = false;
         if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = false;
-        if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = true;
-        if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = true;
         if (dom.qtyHint) dom.qtyHint.textContent = "Розміри уточнимо разом з менеджером — заповніть примітку.";
         if (dom.sizeWarning) dom.sizeWarning.hidden = true;
         return;
@@ -3179,8 +3183,6 @@
       dom.sizeMatrix.hidden = false;
       if (dom.sizeManagerBtn) dom.sizeManagerBtn.hidden = false;
       if (dom.sizesNoteWrap) dom.sizesNoteWrap.hidden = false;
-      if (dom.garmentNoteWrap) dom.garmentNoteWrap.hidden = true;
-      if (dom.ownPhotoWrap) dom.ownPhotoWrap.hidden = true;
       if (dom.qtyHint) dom.qtyHint.textContent = `Розподіліть ${qty} шт. по розмірах. Сума має дорівнювати ${qty}.`;
 
       dom.sizeMatrix.innerHTML = "";
@@ -3582,7 +3584,7 @@
       ensureFlowStarted(`step_enter_${key}`);
       trackStepEnter(key, { from_step: opts.fromStep || null });
       const target = document.getElementById(`cp-step-${key}`);
-      scrollToStudioTarget(target);
+      scrollToStudioTarget(dom.collectionStrip && !dom.collectionStrip.hidden ? dom.collectionStrip : target);
     }
     if (analyticsState.flowStarted) schedulePersistDraft();
   }
@@ -3808,6 +3810,7 @@
         product_view: STATE.ui.product_view,
         multi_item_mode: STATE.ui.multi_item_mode,
         collection_review: STATE.ui.collection_review,
+        collection_return_step: STATE.ui.collection_return_step,
         collection: collection.serialize(),
         current_step: STATE.ui.current_step,
         done_steps: Array.from(STATE.ui.done_steps || []).sort(),
@@ -4116,7 +4119,7 @@
     if (collection.list().length && STATE.mode !== "brand" && STATE.ui.collection_review) {
       const pricing = getCreationPricing();
       const missing = collection.list().some(collectionTools.missingFiles);
-      dom.finalChecklist.innerHTML = `<li class="cp-checklist-item ${missing ? "is-missing" : "is-ready"}"><span class="cp-checklist-mark">${missing ? "!" : "✓"}</span><span class="cp-checklist-copy"><strong>Ваша добірка · ${pricing.quantity} шт.</strong><small>Макети, розміри та налаштування кожної речі збережено</small></span><span class="cp-checklist-state"><button type="button" data-final-collection>Переглянути</button></span></li>
+      dom.finalChecklist.innerHTML = `<li class="cp-checklist-item ${missing ? "is-missing" : "is-ready"}"><span class="cp-checklist-mark">${missing ? "!" : "✓"}</span><span class="cp-checklist-copy"><strong>Ваша добірка · ${pricing.quantity} шт.</strong><small>Макети, розміри та налаштування кожної речі збережено</small></span><span class="cp-checklist-state"><button type="button" data-final-collection>Змінити речі</button></span></li>
         <li class="cp-checklist-item is-ready"><span class="cp-checklist-mark">✓</span><span class="cp-checklist-copy"><strong>${STATE.order_purpose === "gift" ? "На подарунок" : "Для себе"}</strong><small>${giftPricing().parts.map((part) => part.label).join(" · ") || "Без додаткових послуг"}</small></span></li>
         <li class="cp-checklist-item ${canAdvance("contact") ? "is-ready" : "is-missing"}"><span class="cp-checklist-mark">${canAdvance("contact") ? "✓" : "!"}</span><span class="cp-checklist-copy"><strong>Контакт</strong><small>${canAdvance("contact") ? "Імʼя і канал звʼязку заповнено" : "Заповніть імʼя і контакт нижче"}</small></span></li>`;
       dom.finalChecklist.querySelector("[data-final-collection]")?.addEventListener("click", showCollection);
@@ -4630,9 +4633,20 @@
 
   function showCollection() {
     if (!collection.list().length) return;
+    if (["gift", "contact"].includes(STATE.ui.current_step)) STATE.ui.collection_return_step = STATE.ui.current_step;
     STATE.ui.collection_review = true;
     setActiveStep("quantity");
     persistDraft();
+  }
+
+  function continueCollection() {
+    if (!collection.list().length) return;
+    const missing = collection.list().find(collectionTools.missingFiles);
+    if (missing) { editCollectionItem(missing.id, "artwork"); showStatus("Додайте файли повторно: браузер не зберігає їх після перезавантаження.", "warning"); return; }
+    const target = STATE.ui.collection_return_step === "contact" ? "contact" : "gift";
+    STATE.ui.collection_return_step = null;
+    markStepDone("quantity");
+    setActiveStep(target);
   }
 
   function editCollectionItem(id, step = "config") {
@@ -4702,6 +4716,13 @@
     }
     root.querySelectorAll("[data-collection-show]").forEach((button) => { button.hidden = editing; });
     if (!dom.collectionList || !reviewing) return;
+    const returningToContact = STATE.ui.collection_return_step === "contact";
+    const continueButton = root.querySelector("[data-collection-continue]");
+    if (continueButton) continueButton.textContent = returningToContact ? "До оформлення →" : "До пакування →";
+    const description = root.querySelector("[data-collection-description]");
+    if (description) description.textContent = returningToContact
+      ? "Змініть речі, додайте ще одну або поверніться до оформлення."
+      : "Додайте ще одну річ або переходьте до пакування.";
     const listSignature = JSON.stringify(items.map((item) => [item.id, item.snapshot, collectionTools.missingFiles(item)]));
     if (dom.collectionList.dataset.signature !== listSignature) {
       dom.collectionList.dataset.signature = listSignature;
@@ -4728,12 +4749,7 @@
 
   function bindCollection() {
     root.querySelector("[data-collection-add]")?.addEventListener("click", addCollectionItem);
-    root.querySelector("[data-collection-continue]")?.addEventListener("click", () => {
-      if (!collection.list().length) return;
-      const missing = collection.list().find(collectionTools.missingFiles);
-      if (missing) { editCollectionItem(missing.id, "artwork"); showStatus("Додайте файли повторно: браузер не зберігає їх після перезавантаження.", "warning"); return; }
-      markStepDone("quantity"); setActiveStep("gift");
-    });
+    root.querySelector("[data-collection-continue]")?.addEventListener("click", continueCollection);
     root.querySelectorAll("[data-collection-show]").forEach((button) => button.addEventListener("click", showCollection));
     dom.collectionCancel?.addEventListener("click", returnToCollection);
     dom.collectionList?.addEventListener("click", (event) => {
@@ -5325,6 +5341,7 @@
         ui: {
           product_view: STATE.ui.product_view,
           multi_item_mode: STATE.ui.multi_item_mode,
+          collection_return_step: STATE.ui.collection_return_step,
           current_step: STATE.ui.current_step,
           brand_brief_open: STATE.ui.brand_brief_open,
           done_steps: Array.from(STATE.ui.done_steps),
@@ -5440,6 +5457,7 @@
       if (draft.ui) {
         STATE.ui.product_view = "chooser";
         STATE.ui.multi_item_mode = !!draft.ui.multi_item_mode;
+        STATE.ui.collection_return_step = ["gift", "contact"].includes(draft.ui.collection_return_step) ? draft.ui.collection_return_step : null;
         STATE.ui.current_step = draft.ui.current_step || "mode";
         STATE.ui.brand_brief_open = draft.ui.brand_brief_open ?? (STATE.mode === "brand" && STATE.ui.current_step === "mode");
         STATE.ui.done_steps = new Set(draft.ui.done_steps || []);

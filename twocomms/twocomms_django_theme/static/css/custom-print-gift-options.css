@@ -217,7 +217,7 @@ textarea[data-gift-wrap-preference] { min-height: 80px; }
 .cp-gift-preview-note { color: #9f95ab; font-size: .6875rem; line-height: 1.4; text-align: center; }
 
 @media (max-width: 991.98px) {
-  #cp-step-gift { border: 0; background: none; box-shadow: none; }
+  #cp-step-gift { border: 0; border-radius: 0; background: none; box-shadow: none; }
   #cp-step-gift .cp-step-body { gap: 14px; padding: 0; }
   #cp-step-gift .cp-step-head { gap: 6px; padding-bottom: 12px; }
   #cp-step-gift .cp-step-head h2 { font-size: 1.5rem; line-height: 1.15; }

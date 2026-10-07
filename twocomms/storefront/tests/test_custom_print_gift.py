@@ -34,8 +34,8 @@ class CustomPrintGiftFlowTests(TestCase):
         html = response.content.decode()
         self.assertLess(html.index('cp-purpose-card--personal'), html.index('cp-purpose-card--gift'))
         self.assertLess(html.index('cp-purpose-card--gift'), html.index('cp-purpose-card--brand'))
-        self.assertIn('custom-print-purpose.js?v=20261007-gift-mobile-v6', html)
-        self.assertIn('custom-print-purpose.css?v=20261007-gift-mobile-v6', html)
+        self.assertIn('custom-print-purpose.js?v=20261007-layout-v7', html)
+        self.assertIn('custom-print-purpose.css?v=20261007-layout-v7', html)
         self.assertNotIn('data-gift-reveal', html)
         self.assertIn('cp-gift-box-heart', html)
         mode = html.split('id="cp-step-mode"', 1)[1].split('</section>', 1)[0]

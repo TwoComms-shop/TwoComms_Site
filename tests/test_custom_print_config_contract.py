@@ -270,6 +270,25 @@ class CustomPrintConfigContractTests(unittest.TestCase):
             },
         )
 
+    def test_longsleeve_has_distinct_front_and_back_renders_matching_its_canvas(self):
+        from pathlib import Path
+        from PIL import Image
+
+        config = build_custom_print_config(submit_url="/lead/", safe_exit_url="/safe-exit/", add_to_cart_url="/cart/")
+        profiles = config["custom_ref_preview_assets"]
+        sources = profiles["longsleeve:regular"]["black"]
+        self.assertNotEqual(sources, profiles["tshirt:regular"]["black"])
+        self.assertNotEqual(sources["front"], sources["back"])
+        canvas = config["preview_calibration"]["longsleeve:regular"]["canvas"]
+        static_root = Path(__file__).resolve().parents[1] / "twocomms" / "twocomms_django_theme" / "static"
+        for side in ("front", "back"):
+            for format in ("avif", "webp"):
+                with self.subTest(side=side, format=format):
+                    path = static_root / sources[side][format].removeprefix("/static/")
+                    with Image.open(path) as image:
+                        self.assertEqual(image.size, (canvas["width"], canvas["height"]))
+                        self.assertEqual(image.convert("RGBA").getextrema()[3][0], 0)
+
     def test_config_exposes_clear_classic_premium_and_thermo_descriptions(self):
         config = build_custom_print_config(submit_url="/lead/", safe_exit_url="/safe-exit/", add_to_cart_url="/cart/")
         tshirt = config["products"]["tshirt"]["fabrics"]

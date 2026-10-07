@@ -1,4 +1,6 @@
 /* Small cues stay on the thing they explain; no competing full-screen motion. */
+.cp-zone-card-check { display: none; }
+.cp-artwork-service-head { padding-inline-end: 24px; }
 #cp-step-gift .cp-step-head .cp-card-eyebrow,
 #cp-step-gift [data-gift-intent-note] { display: none; }
 .cp-gift-choice-arrow { display: block; width: 22px; height: 22px; margin-top: 8px; color: #d9b879; animation: cp-choice-guide 7s ease-in-out infinite; }
@@ -48,7 +50,5 @@
 @media (prefers-reduced-motion: reduce) {
   .cp-tap-hint { animation: none !important; opacity: .7; transform: none; }
   .cp-gift-choice-arrow, .cp-studio-appbar [data-preview-open].is-preview-cued::after,
-  .cp-page [data-action-submit-lead].cp-final-button { background: linear-gradient(135deg, #efce8b, #d7a450); color: #19151b; border-color: #e9c57e; }
-.cp-page [data-action-submit-lead] .cp-final-button-icon { color: #211a1b; background: #19151b12; }
-[data-action-submit-lead].cp-final-button:not(.is-disabled):not(.is-busy) { animation: none !important; }
+  [data-action-submit-lead].cp-final-button:not(.is-disabled):not(.is-busy) { animation: none !important; }
 }
