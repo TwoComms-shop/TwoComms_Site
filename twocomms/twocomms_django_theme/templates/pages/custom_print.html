@@ -42,10 +42,10 @@
   {{ block.super }}
   <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260729-color-fallback-v1">
   <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261002-mobile-hero-v2">
-  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-gift-mobile-v5">
-  <link rel="stylesheet" href="{% static 'css/custom-print-collection.css' %}?v=20261007-gift-mobile-v5">
-  <link rel="stylesheet" href="{% static 'css/custom-print-gift-options.css' %}?v=20261007-gift-mobile-v5">
-  <link rel="stylesheet" href="{% static 'css/custom-print-refinements.css' %}?v=20261007-gift-mobile-v5">
+  <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-gift-mobile-v6">
+  <link rel="stylesheet" href="{% static 'css/custom-print-collection.css' %}?v=20261007-gift-mobile-v6">
+  <link rel="stylesheet" href="{% static 'css/custom-print-gift-options.css' %}?v=20261007-gift-mobile-v6">
+  <link rel="stylesheet" href="{% static 'css/custom-print-refinements.css' %}?v=20261007-gift-mobile-v6">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -852,9 +852,23 @@
                         <ellipse cx="160" cy="89" rx="9" ry="6" fill="#e5c88d" stroke="#947044"/>
                         <path d="m66 96 76 28m29 0 82-30" stroke="#fff" opacity=".09"/>
                       </svg>
-                      <svg class="cp-gift-exterior-zip" viewBox="0 0 320 220" fill="none" aria-hidden="true"><ellipse cx="160" cy="189" rx="101" ry="13" fill="#000" opacity=".35"/><path d="M68 56q93-14 181 0l13 116q-96 23-208 0L68 56Z" fill="#24252c" stroke="#67626c"/><path d="M70 59q48 13 88 5v112q-43 9-101-6L70 59Z" fill="#30313a"/><path d="M159 64q43 8 88-6l12 111q-51 15-100 7V64Z" fill="#1b1c23"/><path d="M155 55h14v126h-14V55Z" fill="#d4b477"/><path d="M65 112q98 16 190 0l2 14q-97 16-194 0l2-14Z" fill="#bc955d"/><path d="M161 107c-28-28-52-23-43-7 6 12 27 12 43 7Zm0 0c27-29 51-24 43-8-6 14-28 12-43 8Z" fill="#e5c88e" stroke="#f2dab0"/><circle cx="162" cy="107" r="7" fill="#b18a52"/><path d="m158 113-20 33 13-3 8 6 5-33 22 30 5-11 11 1-29-23" fill="#d1ad73"/></svg>
+                      <svg class="cp-gift-exterior-zip" viewBox="0 0 320 220" fill="none" aria-hidden="true">
+                        <defs><linearGradient id="cpWrapSurface" x1="58" y1="60" x2="260" y2="175" gradientUnits="userSpaceOnUse"><stop stop-color="#42404a"/><stop offset=".6" stop-color="#25242e"/><stop offset="1" stop-color="#15151d"/></linearGradient><linearGradient id="cpWrapRibbon" x1="100" y1="70" x2="223" y2="171" gradientUnits="userSpaceOnUse"><stop stop-color="#f2daaa"/><stop offset=".6" stop-color="#c6a065"/><stop offset="1" stop-color="#9d753d"/></linearGradient></defs>
+                        <ellipse cx="161" cy="177" rx="110" ry="12" fill="#000" opacity=".32"/>
+                        <path d="M58 91 159 56l105 35-7 48q-1 5-7 7l-90 31-91-31q-6-2-6-7l-5-48Z" fill="#181820" stroke="#595560" stroke-linejoin="round"/>
+                        <path d="m160 125 104-34-7 48q-1 5-7 7l-90 31v-52Z" fill="#101118"/>
+                        <path d="M58 91q-1-6 6-9l89-31q7-3 14 0l90 31q7 3 7 9l-97 35q-7 3-14 0L58 91Z" fill="url(#cpWrapSurface)" stroke="#81747e"/>
+                        <path d="m65 85 90 33m11 0 90-33M64 103l9 34 77 28m105-62-10 33-72 26" stroke="#c2b2c2" opacity=".15" stroke-linecap="round"/>
+                        <path d="m83 75 18 6 103-33 18 6-103 37 41 15-18 6-59-21V75Z" fill="url(#cpWrapRibbon)" opacity=".98"/>
+                        <path d="m147 55 14-5 103 36-16 6-101-37Z" fill="url(#cpWrapRibbon)"/>
+                        <path d="m152 125 16 1v46l-8 5-8-3v-49Zm93-32 14-5-6 56-14 4 6-55Z" fill="url(#cpWrapRibbon)"/>
+                        <path d="M159 89c-27-24-48-22-43-7 4 12 26 13 43 7Zm0 0c29-24 50-20 42-5-7 12-26 12-42 5Z" fill="url(#cpWrapRibbon)" stroke="#f0d7a5"/>
+                        <path d="m154 95-22 23 13 1 7 9 12-29m1-5 21 19-12 4-2 10-12-27" fill="url(#cpWrapRibbon)" stroke="#cfad74"/>
+                        <ellipse cx="160" cy="93" rx="8" ry="6" fill="#c7a268" stroke="#f1d9a6"/>
+                      </svg>
                       <p data-gift-exterior-caption>{% trans 'Святкове пакування огортає zip-пакет зовні.' %}</p>
                       <small>{% trans 'Схематичне превʼю · колір і матеріали узгодимо' %}</small>
+                      <button type="button" class="cp-gift-preview-control" data-gift-show-box>{% trans 'Обрати коробку з посланням' %} →</button>
                     </div>
                     <p>{% trans 'Колір і малюнок — ваші побажання. Менеджер узгодить доступне оформлення перед пакуванням.' %}</p>
                     <div class="cp-gift-paper-choices" role="group" aria-label="{% trans 'Бажана кольорова гама' %}">
@@ -1334,12 +1348,12 @@
   <script src="{% static 'js/custom-print-state.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-render-plan.js' %}?v=20260813-render-plan-v1" defer></script>
   <script src="{% static 'js/custom-print-preview.js' %}?v=20260729-color-fallback-v1" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-gift-mobile-v5" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-gift-mobile-v6" defer></script>
   <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260726-dialog-focus-v3" defer></script>
   <script src="{% static 'js/custom-print-mobile-hero.js' %}?v=20261002-mobile-hero-v1" defer></script>
-  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-gift-mobile-v5" defer></script>
-  <script src="{% static 'js/custom-print-collection.js' %}?v=20261007-gift-mobile-v5" defer></script>
-  <script src="{% static 'js/custom-print-gift-preview.js' %}?v=20261007-gift-mobile-v5" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-gift-mobile-v5" defer></script>
+  <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-gift-mobile-v6" defer></script>
+  <script src="{% static 'js/custom-print-collection.js' %}?v=20261007-gift-mobile-v6" defer></script>
+  <script src="{% static 'js/custom-print-gift-preview.js' %}?v=20261007-gift-mobile-v6" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-gift-mobile-v6" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

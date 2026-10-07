@@ -74,6 +74,11 @@
     card?.addEventListener('click', (event) => {
       if (!event.target.closest('button, [data-gift-card-preview-text]')) inspectCard();
     });
+    root.querySelector('[data-gift-show-box]')?.addEventListener('click', () => {
+      const button = root.querySelector('[data-gift-toggle]');
+      reveal(button, true);
+      button?.focus({ preventScroll: true });
+    });
     root.querySelectorAll('.cp-gift-option-toggle').forEach((button) => button.addEventListener('click', () => {
       global.requestAnimationFrame?.(() => {
         if (button.getAttribute('aria-pressed') !== 'true') { reveal(button); return; }

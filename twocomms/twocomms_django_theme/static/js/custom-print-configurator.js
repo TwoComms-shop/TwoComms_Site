@@ -3369,8 +3369,9 @@
     });
     const exterior = root.querySelector("[data-gift-exterior-preview]");
     if (exterior) exterior.dataset.target = enabled ? "box" : "zip";
+    root.querySelector("[data-gift-show-box]")?.toggleAttribute("hidden", enabled);
     const exteriorCaption = root.querySelector("[data-gift-exterior-caption]");
-    if (exteriorCaption) exteriorCaption.textContent = enabled ? "Святкове пакування повністю огортає закриту коробку. Zip-пакети з одягом залишаються всередині." : "Святкове пакування огортає zip-пакет зовні. Кожна річ залишається у своєму фірмовому пакеті.";
+    if (exteriorCaption) exteriorCaption.textContent = enabled ? "Святкове пакування повністю огортає закриту коробку. Zip-пакети з одягом залишаються всередині." : "Без коробки: охайний святковий згорток навколо zip-пакета. Кожна річ — у своєму фірмовому пакеті.";
     const cardInBox = root.querySelector("[data-gift-box-card]"); if (cardInBox) cardInBox.hidden = !options.certificate_enabled;
     const tissue = root.querySelector("[data-gift-tissue]"); if (tissue) tissue.dataset.paper = "ivory";
     root.querySelectorAll(".cp-gift-box-preview").forEach((scene) => {
@@ -3379,7 +3380,7 @@
       scene.dataset.outerStyle = options.wrapping_style || "brand";
     });
     const wrappingLabel = root.querySelector("[data-gift-wrapping-target-label]");
-    if (wrappingLabel) wrappingLabel.textContent = enabled ? "Подарунковий папір зовні коробки" : "Подарунковий папір навколо zip-пакета";
+    if (wrappingLabel) wrappingLabel.textContent = enabled ? "Подарунковий папір зовні коробки" : "Навколо zip-пакета · без коробки";
     const preferenceCounter = root.querySelector("[data-gift-wrap-counter]");
     const preferenceLength = Array.from(options.wrapping_preference || "").length;
     if (preferenceCounter) { preferenceCounter.textContent = `${preferenceLength} / 240`; preferenceCounter.classList.toggle("is-over-limit", preferenceLength > 240); }
