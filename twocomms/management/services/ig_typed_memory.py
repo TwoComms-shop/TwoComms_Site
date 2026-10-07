@@ -553,6 +553,97 @@ def _result_is_exact_current(result, client, job) -> bool:
     )
 
 
+def _is_memory_reobservation(head, values, candidate, result, client, floor, now):
+    """Keep authority only after both new and retained source checks pass.
+
+    The caller has authenticated the full current chain and accepted result under
+    its existing locks. No classifier outcome replaces those checks or authorizes
+    an append; unsuccessful classification uses the existing publication path.
+    """
+    from management.services.ig_memory_materiality import (
+        SCOPE_FIELDS, classify_memory_candidate,
+    )
+
+    old = head.current_fact
+    current_values = {
+        field: getattr(old, field) for field in _fact_hmac_payload({})
+    }
+    current_values["id"] = old.pk
+    head_values = {field: getattr(head, field) for field in SCOPE_FIELDS}
+    head_values.update(
+        state=head.state, current_fact_id=head.current_fact_id,
+        revision=head.revision,
+    )
+    # MemoryCandidate uses Django TextChoices while hydrated rows use plain
+    # strings. Normalize their equivalent wire coordinates in this adapter;
+    # keep integer scope identities exact and leave signed payloads unchanged.
+    candidate_values = dict(
+        values, scope=str(values["scope"]), fact_key=str(values["fact_key"]),
+    )
+    decision = classify_memory_candidate(
+        candidate_values, head=head_values, current_fact=current_values,
+        boundary={
+            "client_id": client.pk,
+            "erasure_started": bool(client.privacy_erasure_started_at),
+            "hidden": bool(client.hidden_at),
+            "reset_floor": floor,
+            "watermark_message_id": result.watermark_message_id,
+            "episode_id": client.current_commercial_episode_id,
+            "line_id": result.line_id,
+            # Ownership is verified below before returning True. This pure
+            # prefilter avoids extra source queries for real value changes.
+            "source_evidence_valid": True,
+        },
+        now=now,
+    )
+    if decision.action != "reobserve":
+        return False
+    # Re-observation cannot bypass source-shape/evidence-count requirements
+    # which the assertion model would otherwise enforce during an insert.
+    claim = {
+        "observed_language": "language", "objection_observed": "objection",
+        "deferred_intent": "deferred_intent",
+    }[candidate.fact_key]
+    expected_count = (
+        len(result.language_evidence_message_ids or ())
+        if claim == "language" else sum(
+            isinstance(row, dict) and row.get("source_role") == "user"
+            and claim in (row.get("claim_codes") or ())
+            for row in result.evidence_manifest or ()
+        )
+    )
+    if (
+        not 1 <= len(candidate.evidence_ids) <= MAX_EVIDENCE
+        or len(candidate.evidence_ids) != len(set(candidate.evidence_ids))
+        or len(candidate.evidence_ids) != expected_count
+    ):
+        return False
+    try:
+        source = old.source_result
+    except ObjectDoesNotExist:
+        return False
+    from management.services.ig_analysis_v2 import result_digest_for_instance
+
+    if source is None or (
+        source.client_id != old.client_id
+        or source.result_schema_version != RESULT_SCHEMA_VERSION
+        or source.result_digest != old.source_result_digest
+        or source.result_digest != result_digest_for_instance(source)
+        or source.materiality_digest != old.source_materiality_digest
+        or source.state_correlation != old.source_state_correlation
+        or source.watermark_message_id != old.source_watermark_message_id
+        or source.analyzed_at != old.observed_at
+    ):
+        return False
+    retained_ids = {row.message_id for row in old.evidence_rows.all()}
+    retained_owned_ids = set(InstagramBotMessage.objects.filter(
+        pk__in=retained_ids, client_id=client.pk,
+        role=InstagramBotMessage.Role.USER, pk__gte=floor,
+        pk__lte=result.watermark_message_id,
+    ).values_list("pk", flat=True))
+    return bool(retained_ids and retained_ids == retained_owned_ids)
+
+
 def _publish_analysis_memory_once(result_or_id) -> PublishOutcome:
     """Project one current result; never calls Gemini or reads raw transcript."""
     if not shadow_enabled():
@@ -640,22 +731,28 @@ def _publish_analysis_memory_once(result_or_id) -> PublishOutcome:
                     and existing is not None
                     and head.current_fact_id == existing.pk
                 )
+                unchanged = exact_noop or bool(
+                    head is not None and _is_memory_reobservation(
+                        head, values, candidate, result, client, floor,
+                        timezone.now(),
+                    )
+                )
                 if (
                     head is not None
-                    and not exact_noop
+                    and not unchanged
                     and int(head.revision or 0) >= MAX_CHAIN_DEPTH
                 ):
                     return PublishOutcome(
                         status="chain_depth_exhausted",
                         result_id=result.pk,
                     )
-                plans.append((candidate, slot_key, head, values, existing, exact_noop))
+                plans.append((candidate, slot_key, head, values, existing, unchanged))
 
             # Every affected head is now locked and every possible advancement
             # has passed the depth gate. Only this second phase may append rows.
             created_facts = advanced_heads = unchanged_heads = 0
-            for candidate, slot_key, head, values, existing, exact_noop in plans:
-                if exact_noop:
+            for candidate, slot_key, head, values, existing, unchanged in plans:
+                if unchanged:
                     unchanged_heads += 1
                     continue
                 if existing is None:
