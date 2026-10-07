@@ -125,7 +125,7 @@ class FakeNotifier:
     def is_configured(self):
         return True
 
-    def send_admin_message(self, message, parse_mode="HTML", reply_markup=None):
+    def send_admin_message(self, message, parse_mode="HTML", reply_markup=None, **kwargs):
         self.calls.append(("message", message, parse_mode, reply_markup))
         return self.message_result
 
@@ -137,7 +137,7 @@ class FakeNotifier:
         self.calls.append(("photo", file_path, caption, parse_mode, reply_markup))
         return True
 
-    def send_admin_document(self, file_path, caption="", filename=None, parse_mode="HTML", reply_markup=None):
+    def send_admin_document(self, file_path, caption="", filename=None, parse_mode="HTML", reply_markup=None, **kwargs):
         self.calls.append(("document", file_path, caption, filename, parse_mode, reply_markup))
         return True
 

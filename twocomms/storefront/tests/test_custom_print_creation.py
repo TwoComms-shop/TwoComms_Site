@@ -225,6 +225,38 @@ class CustomPrintCreationTests(TestCase):
         CustomPrintLead.objects.update(moderation_status=CustomPrintModerationStatus.APPROVED)
         return list(CustomPrintLead.objects.order_by("pk"))
 
+    def test_customer_garment_signed_approval_requires_an_explicit_manager_total(self):
+        from storefront.custom_print_notifications import _build_moderation_action_url
+        from urllib.parse import urlsplit
+
+        payload = creation_payload(False)
+        snapshot = payload["items"][0]["snapshot"]
+        snapshot["product"]["type"] = "customer_garment"
+        snapshot["notes"]["garment_note"] = "Моя щільна бавовняна сорочка"
+        snapshot["pricing"].update(base_price=150, unit_total=150, final_total=300, estimate_required=False)
+        with patch("storefront.views.static_pages.notify_custom_print_creation"):
+            response = self._submit(payload, cart=True)
+        self.assertEqual(response.status_code, 200, response.content)
+        lead = CustomPrintLead.objects.get(product_type="customer_garment")
+        self.assertTrue(lead.estimate_required)
+        self.assertIsNone(lead.pricing_snapshot_json["final_total"])
+        self.assertEqual(lead.final_price_value, Decimal("0"))
+
+        # Older saved rows may still contain the previously offered starting
+        # total; signed approval must require a manager quote for them too.
+        lead.pricing_snapshot_json.update(unit_total=150, final_total=300, estimate_required=False)
+        lead.save(update_fields=["pricing_snapshot_json"])
+        action_url = urlsplit(_build_moderation_action_url(lead, "approve"))
+        action_path = action_url.path + "?" + action_url.query
+        self.assertEqual(self.client.get(action_path, secure=True).status_code, 409)
+        lead.refresh_from_db()
+        self.assertEqual(lead.moderation_status, CustomPrintModerationStatus.AWAITING_REVIEW)
+        lead.approved_price = Decimal("900")
+        lead.save(update_fields=["approved_price"])
+        self.assertEqual(self.client.get(action_path, secure=True).status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.final_price_value, Decimal("900"))
+
     def test_cart_payload_exposes_common_extras_and_exactly_one_fee_owner(self):
         from storefront.views.cart import _collect_custom_cart_state
         from django.test import RequestFactory

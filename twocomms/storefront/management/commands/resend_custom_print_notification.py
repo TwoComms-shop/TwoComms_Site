@@ -14,8 +14,8 @@
     # Тип сповіщення (за замовчуванням moderation_request — найповніший формат)
     python manage.py resend_custom_print_notification --latest --kind new_lead
 
-Команда обнуляє throttle (last_notification_at), щоб сповіщення гарантовано
-пішло, і шле всім ID із DTF_TG_ADMIN_ID / DTF_TG_CHAT_ID.
+Команда починає нову спробу вибраного типу, зберігаючи історію результатів,
+і надсилає спільну заявку з усіма її виробами всім налаштованим отримувачам.
 """
 
 from django.core.management.base import BaseCommand, CommandError
@@ -60,15 +60,21 @@ class Command(BaseCommand):
         from storefront.custom_print_notifications import (
             notify_custom_print_moderation_request,
             notify_new_custom_print_lead,
+            notify_custom_print_creation,
+            reset_notification_delivery,
         )
 
         lead = self._resolve_lead(options)
         if lead is None:
             raise CommandError("Заявку не знайдено.")
 
-        # Скидаємо throttle, щоб сповіщення точно надіслалось
-        CustomPrintLead.objects.filter(pk=lead.pk).update(last_notification_at=None)
-        lead.last_notification_at = None
+        meta = (lead.config_draft_json or {}).get("creation") or {}
+        group = list(CustomPrintLead.objects.filter(pk__in=meta.get("lead_ids") or [lead.pk]))
+        group.sort(key=lambda item: ((item.config_draft_json or {}).get("creation") or {}).get("item_index", 0))
+        owner = group[0] if group else lead
+        # Explicit operator resend resets this delivery gate, not confirmed timestamps.
+        scope = ("creation_lead" if options["kind"] == "new_lead" else "creation_cart") if meta else options["kind"]
+        reset_notification_delivery(owner, scope=scope)
 
         attachments_count = lead.attachments.count()
         self.stdout.write(
@@ -79,7 +85,9 @@ class Command(BaseCommand):
         )
 
         kind = options["kind"]
-        if kind == "new_lead":
+        if meta:
+            success = notify_custom_print_creation(group, submission_type="lead" if kind == "new_lead" else "cart")
+        elif kind == "new_lead":
             success = notify_new_custom_print_lead(lead)
         else:
             success = notify_custom_print_moderation_request(lead)
@@ -125,6 +133,5 @@ class Command(BaseCommand):
             else []
         )
         return (
-            f"Отримувачі: {len(actual)} chat_id "
-            f"(admin_ids={admins or '—'}, chat_ids={chats or '—'})."
+            f"Отримувачі: {len(actual)}."
         )

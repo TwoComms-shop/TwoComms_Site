@@ -2001,6 +2001,17 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
     pricing_payload = raw_snapshot.get("pricing") or {}
     if product_type == "hoodie":
         pricing_payload = normalize_hoodie_included_pricing(pricing_payload, order_payload.get("quantity"))
+    elif product_type == "customer_garment":
+        # The advertised starting price is a guide, never a payable quote for
+        # an unseen garment. Keep it in base_price but require a manager total.
+        pricing_payload = {
+            **pricing_payload,
+            "unit_total": None,
+            "final_total": None,
+            "creation_base_total": None,
+            "estimate_required": True,
+            "estimate_reason": "Свій одяг — потрібен ручний прорахунок.",
+        }
     notes_payload = raw_snapshot.get("notes") or {}
     raw_ui = raw_snapshot.get("ui") or {}
     current_step = str((raw_ui.get("current_step") or "mode")).strip() or "mode"

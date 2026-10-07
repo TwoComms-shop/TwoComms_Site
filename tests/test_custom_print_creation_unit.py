@@ -16,7 +16,7 @@ from django.utils.datastructures import MultiValueDict
 
 from storefront.custom_print_config import PRODUCT_MATRIX, normalize_custom_print_snapshot
 from storefront.custom_print_creation import CreationValidationError, creation_analytics_lead, prepare_creation, save_creation
-from storefront.custom_print_notifications import _build_creation_message, notify_custom_print_creation
+from storefront.custom_print_notifications import _build_creation_message, _telegram_message_parts, notify_custom_print_creation
 
 
 def item_snapshot(product="tshirt", quantity=2, total=1000):
@@ -35,6 +35,24 @@ def envelope(gift=True):
 
 
 class CreationUnitTests(unittest.TestCase):
+    def test_customer_garment_starting_price_never_becomes_a_payable_creation_total(self):
+        raw = envelope()
+        snapshot = raw["items"][0]["snapshot"]
+        snapshot["product"]["type"] = "customer_garment"
+        snapshot["notes"]["garment_note"] = "Моя щільна бавовняна сорочка"
+        snapshot["pricing"].update(base_price=150, unit_total=150, final_total=300, estimate_required=False)
+
+        creation = prepare_creation(raw, submission_type="cart")
+        pricing = creation.items[0]["snapshot"]["pricing"]
+        self.assertEqual(pricing["base_price"], 150)
+        self.assertEqual(pricing["gift_price"], 150)
+        self.assertIsNone(pricing["unit_total"])
+        self.assertIsNone(pricing["final_total"])
+        self.assertTrue(pricing["estimate_required"])
+        self.assertIsNone(creation.forms[0].cleaned_data["pricing_snapshot_json"]["final_total"])
+        self.assertEqual(creation.items[1]["snapshot"]["pricing"]["final_total"], 1500)
+        self.assertEqual(normalize_custom_print_snapshot(creation.items[0]["snapshot"])["pricing"], pricing)
+
     def test_all_hoodie_modes_fits_and_fabrics_include_fleece_and_lacing_without_hardware_charge(self):
         for mode, purpose in (("personal", "personal"), ("personal", "gift"), ("brand", "organization")):
             for fit, fabrics in PRODUCT_MATRIX["hoodie"]["fabrics"].items():
@@ -199,7 +217,7 @@ class CreationUnitTests(unittest.TestCase):
             item["snapshot"]["notes"]["brief"] = "<&>" * 100
         leads = self._leads(raw)
         message = _build_creation_message(leads)
-        self.assertLessEqual(len(message), 4096)
+        self.assertTrue(_telegram_message_parts(message))
         for lead in leads:
             self.assertIn(lead.lead_number, message)
         self.assertEqual(message.count("×2</b>"), 10)
@@ -210,9 +228,11 @@ class CreationUnitTests(unittest.TestCase):
         notifier = Mock()
         notifier.is_configured.return_value = True
         notifier.send_admin_message.return_value = True
+        for lead in leads:
+            lead.attachments = SimpleNamespace(all=lambda: [])
         with patch("storefront.custom_print_notifications._claim_notification_slot", return_value=True), \
              patch("storefront.custom_print_notifications._build_notifier", return_value=notifier), \
-             patch("storefront.custom_print_notifications._send_attachments") as send_files:
+             patch("storefront.custom_print_notifications._collect_attachment_payloads", return_value=[]) as send_files:
             self.assertTrue(notify_custom_print_creation(leads))
         notifier.send_admin_message.assert_called_once()
         self.assertEqual(send_files.call_count, 2)

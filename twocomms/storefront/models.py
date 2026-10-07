@@ -721,6 +721,7 @@ class CustomPrintLead(models.Model):
         default=0,
         verbose_name="Лічильник Telegram-сповіщень",
     )
+    telegram_delivery_json = models.JSONField(default=dict, blank=True, verbose_name="Результати доставки Telegram")
     # ── Telegram contact verification (поделился номером через бота) ──
     telegram_verified_user_id = models.BigIntegerField(
         null=True,
@@ -805,7 +806,7 @@ class CustomPrintLead(models.Model):
         if self.approved_price is not None:
             return self.approved_price
         from storefront.custom_print_config import gift_box_quote_required
-        if gift_box_quote_required(self.config_draft_json, lead_id=self.pk):
+        if self.product_type == "customer_garment" or gift_box_quote_required(self.config_draft_json, lead_id=self.pk):
             from decimal import Decimal
             return Decimal("0")
         snapshot = self.pricing_snapshot_json or {}
@@ -843,6 +844,7 @@ class CustomPrintLeadAttachment(models.Model):
     class AttachmentRole(models.TextChoices):
         DESIGN = "design", _("Макет / дизайн")
         REFERENCE = "reference", _("Референс")
+        GIFT_REFERENCE = "gift_reference", _("Зображення для коробки")
 
     lead = models.ForeignKey(
         CustomPrintLead,

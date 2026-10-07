@@ -2505,7 +2505,14 @@
                   <div class="custom-print-kv"><small>File triage</small><strong>{{ custom_print_selected_lead.file_triage_status|default:"—" }}</strong></div>
                   <div class="custom-print-kv"><small>Safe exit step</small><strong>{{ custom_print_selected_lead.exit_step|default:"—" }}</strong></div>
                   <div class="custom-print-kv"><small>Source</small><strong>{{ custom_print_selected_lead.source|default:"—" }}</strong></div>
-                  <div class="custom-print-kv"><small>TG-сповіщень</small><strong>{{ custom_print_selected_lead.notification_count|default:0 }}</strong></div>
+                  <div class="custom-print-kv"><small>TG-лічильник (історичний)</small><strong>{{ custom_print_selected_lead.notification_count|default:0 }}</strong></div>
+                  {% with delivery=custom_print_selected_lead.telegram_delivery_json.latest %}
+                  {% if delivery %}
+                  <div class="custom-print-kv"><small>Доставка Telegram</small><strong>{% if delivery.status == 'sent' %}Підтверджено{% elif delivery.status == 'partial' %}Частково{% elif delivery.status == 'ambiguous' %}Результат невизначений{% elif delivery.status == 'failed' %}Не доставлено{% else %}Очікує підтвердження{% endif %}</strong></div>
+                  <div class="custom-print-kv"><small>Частини повідомлення</small><strong>{{ delivery.summary_parts_sent|default:0 }} / {{ delivery.summary_parts|default:0 }}</strong></div>
+                  <div class="custom-print-kv"><small>Файли всім отримувачам</small><strong>{{ delivery.documents_sent|default:0 }} / {{ delivery.documents_expected|default:0 }}</strong></div>
+                  {% endif %}
+                  {% endwith %}
                   {% if custom_print_selected_lead.last_notification_at %}
                     <div class="custom-print-kv"><small>Останнє TG</small><strong>{{ custom_print_selected_lead.last_notification_at|date:"d.m.Y H:i" }}</strong></div>
                   {% endif %}

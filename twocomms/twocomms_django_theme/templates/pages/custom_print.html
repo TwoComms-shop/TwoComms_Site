@@ -676,7 +676,7 @@
 
               <label class="cp-field" for="cp-brief">
                 <span class="cp-field-label-row"><span>{% trans 'Бриф / завдання' %}</span><small>{% trans 'Одним повідомленням — що має вийти' %}</small></span>
-                <textarea id="cp-brief" name="brief" rows="4" data-brief-input placeholder="{% trans 'Опишіть ідею, стиль або референси. Якщо потрібен дизайн — це обовʼязково.' %}"></textarea>
+                <textarea id="cp-brief" name="brief" rows="4" maxlength="2000" data-brief-input placeholder="{% trans 'Опишіть ідею, стиль або референси. Якщо потрібен дизайн — це обовʼязково.' %}"></textarea>
               </label>
 
               <div class="cp-step-actions">
@@ -1354,6 +1354,6 @@
   <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-layout-v7" defer></script>
   <script src="{% static 'js/custom-print-collection.js' %}?v=20261007-layout-v7" defer></script>
   <script src="{% static 'js/custom-print-gift-preview.js' %}?v=20261007-layout-v7" defer></script>
-  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-layout-v7" defer></script>
+  <script src="{% static 'js/custom-print-configurator.js' %}?v=20261007-telegram-v8" defer></script>
   <script src="{% static 'js/custom-print-telegram-verify.js' %}?v=20260517-tg-verify-portal" defer></script>
 {% endblock %}

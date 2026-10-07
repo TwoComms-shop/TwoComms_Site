@@ -3,12 +3,15 @@ import mimetypes
 import os
 from datetime import timedelta
 from html import escape
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
-from orders.telegram_notifications import TelegramNotifier
+from orders.telegram_notifications import TelegramDeliveryReport, TelegramNotifier
 from storefront.custom_print_config import (
     ADDON_LABELS,
     FABRIC_LABELS,
@@ -39,6 +42,7 @@ NOTIFICATION_THROTTLE_SECONDS = 90
 
 # Telegram ограничивает подпись к документу 1024 символами.
 TELEGRAM_CAPTION_LIMIT = 1024
+MAX_TELEGRAM_MESSAGE_PARTS = 20
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,8 @@ def _format_placement_descriptor(spec: dict, *, include_text: bool) -> str:
         parts.append("текст" if spec.get("mode") == "full_text" else "A6")
     if include_text and spec.get("text"):
         parts.append(str(spec["text"]))
+    if spec.get("location"):
+        parts.append(str(spec["location"]))
     return " · ".join(str(part) for part in parts if part)
 
 
@@ -157,7 +163,7 @@ def _image_transparency_warning(file_path: str) -> str:
 
 
 def _build_attachment_caption(
-    lead, placement_key: str, index: int, total: int, *, transparency_note: str = "", file_name: str = ""
+    lead, placement_key: str, index: int, total: int, *, transparency_note: str = "", file_name: str = "", role: str = "design"
 ) -> str:
     """HTML-підпис до файла: одразу видно, на яку зону цей макет."""
     descriptor = _placement_descriptor_by_key(lead).get(placement_key) or ZONE_LABELS.get(
@@ -170,16 +176,18 @@ def _build_attachment_caption(
         f"{emoji} <b>{escape(descriptor.upper())}</b> — файл {index}/{total}",
         f"<code>{escape(lead_number)}</code>",
     ]
+    role_label = {"design": "Макет для друку", "reference": "Референс — зразок для дизайнера", "gift_reference": "Зображення для друку всередині спільної коробки"}.get(role, role)
+    lines.append(f"<b>{escape(role_label)}</b>")
     if file_name:
-        lines.append(f"📎 <code>{escape(file_name)}</code>")
+        lines.append(f"📎 <code>{_escaped_short(file_name, 350)}</code>")
     draft = getattr(lead, "config_draft_json", None) or {}
     creation = draft.get("creation") if isinstance(draft, dict) else None
-    if isinstance(creation, dict):
+    if isinstance(creation, dict) and role != "gift_reference":
         product = str(PRODUCT_LABELS.get(getattr(lead, "product_type", ""), "Виріб"))
         lines.insert(1, f"📦 Позиція {creation.get('item_index', 0) + 1}/{creation.get('item_count', 1)} · {escape(product)}")
     if transparency_note:
         lines.append(f"⚠️ <i>{escape(transparency_note)}</i>")
-    return "\n".join(lines)
+    return _telegram_message_parts("\n".join(lines), limit=TELEGRAM_CAPTION_LIMIT)[0]
 
 
 def _is_image_attachment(attachment) -> bool:
@@ -190,12 +198,12 @@ def _is_image_attachment(attachment) -> bool:
     return Path(file_name).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
-def _collect_attachment_payloads(lead) -> list[dict]:
+def _collect_attachment_payloads(lead, *, attachments=None) -> list[dict]:
     placement_index = {
         (spec.get("placement_key") or spec.get("zone")): idx
         for idx, spec in enumerate(_placement_specs_for_lead(lead))
     }
-    attachments = list(getattr(lead.attachments, "all", lambda: [])())
+    attachments = list(getattr(lead.attachments, "all", lambda: [])()) if attachments is None else attachments
     ordered_attachments = sorted(
         attachments,
         key=lambda attachment: (
@@ -215,6 +223,12 @@ def _collect_attachment_payloads(lead) -> list[dict]:
     for index, attachment in enumerate(existing, start=1):
         file_path = getattr(getattr(attachment, "file", None), "path", "")
         transparency_note = _image_transparency_warning(file_path)
+        draft = getattr(lead, "config_draft_json", None) or {}
+        role = getattr(attachment, "attachment_role", "design")
+        original = next((meta.get("name") for meta in (draft.get("artwork") or {}).get("files", [])
+                         if meta.get("file_index") == getattr(attachment, "sort_order", -1)), "")
+        if role == "gift_reference":
+            original = (((draft.get("creation") or {}).get("gift") or {}).get("box") or {}).get("image_name") or original
         payloads.append(
             {
                 "path": file_path,
@@ -225,7 +239,8 @@ def _collect_attachment_payloads(lead) -> list[dict]:
                     index,
                     total,
                     transparency_note=transparency_note,
-                    file_name=Path(file_path).name,
+                    file_name=original or Path(file_path).name,
+                    role=role,
                 ),
             }
         )
@@ -933,6 +948,8 @@ def _snapshot_placements_text(snapshot: dict) -> str:
                 label = f"{label} · {'текст' if spec.get('mode') == 'full_text' else 'A6'}"
             if spec.get("text"):
                 label = f"{label} ({spec['text']})"
+            if spec.get("location"):
+                label = f"{label} · {spec['location']}"
             items.append(str(label))
         parts.append(", ".join(items))
     else:
@@ -971,99 +988,226 @@ def _snapshot_pricing_text(snapshot: dict) -> str:
 
 
 def _claim_notification_slot(lead, *, scope: str) -> bool:
-    """Атомарно резервирует «слот» уведомления для лида.
-
-    Возвращает True, если можно отправлять (и пишет timestamp), False — если
-    в течение NOTIFICATION_THROTTLE_SECONDS уже было уведомление того же scope.
-
-    Использует .filter().update() с условием, что запись не менялась с момента
-    последнего чтения — это даёт защиту даже от параллельных запросов.
-    """
+    """Reserve one scoped attempt without claiming delivery or holding a network lock."""
     if not lead or not getattr(lead, "pk", None):
         return True
-
-    try:
-        from storefront.models import CustomPrintLead  # local import to avoid cycles
-    except Exception:
-        return True
-
+    from storefront.models import CustomPrintLead
     now = timezone.now()
-    threshold = now - timedelta(seconds=NOTIFICATION_THROTTLE_SECONDS)
-
     try:
-        # Атомарно: разрешаем отправку если last_notification_at NULL или старше threshold.
-        updated = CustomPrintLead.objects.filter(pk=lead.pk).filter(
-            models_q_filter_or_old(threshold)
-        ).update(
-            last_notification_at=now,
-            notification_count=models_F_increment(),
-        )
-        # Если записи нет в БД (тесты с моками или удалённый лид) — не блокируем.
-        if updated == 0:
-            exists = CustomPrintLead.objects.filter(pk=lead.pk).exists()
-            if not exists:
+        with transaction.atomic():
+            current = CustomPrintLead.objects.select_for_update().filter(pk=lead.pk).first()
+            if current is None:
                 return True
+            delivery = dict(current.telegram_delivery_json or {})
+            scopes = dict(delivery.get("scopes") or {})
+            previous = scopes.get(scope) or {}
+            started = parse_datetime(previous.get("started_at") or "")
+            # A potentially accepted message needs explicit operator recovery.
+            if previous.get("status") in {"ambiguous", "partial"}:
+                return False
+            if previous.get("status") == "pending" and started and started <= now - timedelta(seconds=NOTIFICATION_THROTTLE_SECONDS):
+                scopes[scope] = {**previous, "status": "ambiguous", "error": "expired_reservation"}
+                current.telegram_delivery_json = {"version": 1, "scopes": scopes, "latest": scopes[scope]}
+                current.save(update_fields=["telegram_delivery_json"])
+                return False
+            if started and started > now - timedelta(seconds=NOTIFICATION_THROTTLE_SECONDS) and previous.get("status") != "failed":
+                return False
+            attempt = {"scope": scope, "status": "pending", "started_at": now.isoformat(), "history": previous.get("history", [])}
+            scopes[scope] = attempt
+            current.telegram_delivery_json = {"version": 1, "scopes": scopes, "latest": attempt}
+            current.save(update_fields=["telegram_delivery_json"])
+            lead.telegram_delivery_json = current.telegram_delivery_json
+            lead._telegram_attempt = attempt
+        return True
     except Exception:
-        # Не блокируем уведомление, если БД временно недоступна (тесты,
-        # отсутствие миграции и т.п.) — лучше отправить, чем потерять.
-        logger.exception("Custom print notification slot check failed for lead %s", lead.pk)
-        return True
-
-    if updated:
-        # Синхронизируем in-memory объект, чтобы дальше не было путаницы
-        lead.last_notification_at = now
-        lead.notification_count = (lead.notification_count or 0) + 1
-        return True
-
-    logger.info(
-        "Skip duplicate custom-print notification for lead %s scope=%s (throttled)",
-        lead.pk,
-        scope,
-    )
-    return False
-
-
-def models_q_filter_or_old(threshold):
-    """Q(last_notification_at__isnull=True) | Q(last_notification_at__lt=threshold)."""
-    from django.db.models import Q
-
-    return Q(last_notification_at__isnull=True) | Q(last_notification_at__lt=threshold)
-
-
-def models_F_increment():
-    from django.db.models import F
-
-    return F("notification_count") + 1
-
-
-# ---------------------------------------------------------------------------
-# Compact attachment delivery
-# ---------------------------------------------------------------------------
-
-
-def _send_attachments(notifier: TelegramNotifier, lead) -> bool:
-    """Отправляет каждый файл отдельным документом (sendDocument).
-
-    Почему документы, а не фото/альбомы:
-    1. sendPhoto/media group пережимает изображение — для печати это
-       недопустимо, менеджер должен получить оригинал без потери качества.
-    2. В альбомах Telegram подписи к отдельным элементам не видны в ленте —
-       менеджер не понимал, какой макет для какой зоны. У отдельного
-       документа подпись всегда видна прямо под файлом.
-    """
-    payloads = _collect_attachment_payloads(lead)
-    if not payloads:
+        logger.exception("Custom-print delivery reservation failed lead=%s scope=%s", lead.pk, scope)
         return False
 
-    success = False
-    for payload in payloads:
-        success = notifier.send_admin_document(
-            payload["path"],
-            caption=payload["caption"],
-            filename=Path(payload["path"]).name,
-            parse_mode="HTML",
-        ) or success
-    return success
+
+def notification_delivery_confirmed(lead, scope):
+    return ((getattr(lead, "telegram_delivery_json", {}) or {}).get("scopes", {}).get(scope) or {}).get("status") == "sent"
+
+
+def reset_notification_delivery(lead, *, scope):
+    """A new review/operator request gets a fresh gate; preserve recent receipts."""
+    from storefront.models import CustomPrintLead
+    with transaction.atomic():
+        current = CustomPrintLead.objects.select_for_update().get(pk=lead.pk)
+        delivery = dict(current.telegram_delivery_json or {})
+        scopes = dict(delivery.get("scopes") or {})
+        previous = dict(scopes.get(scope) or {})
+        history = previous.pop("history", [])
+        if previous:
+            history = [*history, previous][-3:]
+        scopes[scope] = {"scope": scope, "status": "queued", "history": history}
+        current.telegram_delivery_json = {"version": 1, "scopes": scopes, "latest": scopes[scope]}
+        current.save(update_fields=["telegram_delivery_json"])
+        lead.telegram_delivery_json = current.telegram_delivery_json
+
+
+def _finish_notification(lead, result):
+    attempt = getattr(lead, "_telegram_attempt", None)
+    if not attempt:
+        return
+    from storefront.models import CustomPrintLead
+    record = {**attempt, **result, "finished_at": timezone.now().isoformat()}
+    try:
+        with transaction.atomic():
+            current = CustomPrintLead.objects.select_for_update().get(pk=lead.pk)
+            delivery = dict(current.telegram_delivery_json or {})
+            scopes = dict(delivery.get("scopes") or {})
+            if (scopes.get(attempt["scope"]) or {}).get("started_at") != attempt["started_at"]:
+                return
+            scopes[attempt["scope"]] = record
+            current.telegram_delivery_json = {"version": 1, "scopes": scopes, "latest": record}
+            fields = ["telegram_delivery_json"]
+            if result.get("status") == "sent":
+                current.notification_count += 1
+                current.last_notification_at = timezone.now()
+                fields.extend(["notification_count", "last_notification_at"])
+            current.save(update_fields=fields)
+            lead.telegram_delivery_json = current.telegram_delivery_json
+    except Exception:
+        logger.exception("Custom-print delivery result could not be saved lead=%s", lead.pk)
+
+
+def _report(value):
+    # The real notifier returns a report; lightweight test adapters may return bool.
+    return value if isinstance(value, TelegramDeliveryReport) else TelegramDeliveryReport("sent" if value else "failed")
+
+
+def _receipt_ids(report):
+    return [item["message_id"] for item in report.results if isinstance(item, dict) and item.get("message_id") is not None]
+
+
+def _receipts(report, **context):
+    return [{"chat_id": (item.get("chat") or {}).get("id"), "message_id": item["message_id"], **context}
+            for item in report.results if isinstance(item, dict) and item.get("message_id") is not None]
+
+
+class _TelegramChunkLimitReached(Exception):
+    pass
+
+
+class _TelegramHTMLChunks(HTMLParser):
+    """Split parsed UTF-16 text while closing/reopening Telegram formatting tags."""
+    def __init__(self, limit, max_parts=None):
+        super().__init__(convert_charrefs=True)
+        self.limit, self.units = limit, 0
+        self.parts, self.current, self.stack = [], [], []
+        self.max_parts = max_parts
+
+    def flush(self):
+        self.parts.append("".join(self.current) + "".join(f"</{tag}>" for tag, raw in reversed(self.stack)))
+        if self.max_parts is not None and len(self.parts) >= self.max_parts:
+            raise _TelegramChunkLimitReached
+        self.current = [raw for tag, raw in self.stack]
+        self.units = 0
+
+    def handle_starttag(self, tag, attrs):
+        raw = self.get_starttag_text()
+        self.stack.append((tag, raw))
+        self.current.append(raw)
+
+    def handle_endtag(self, tag):
+        self.current.append(f"</{tag}>")
+        if self.stack and self.stack[-1][0] == tag:
+            self.stack.pop()
+
+    def handle_data(self, data):
+        for line in data.splitlines(keepends=True):
+            units = len(line.encode("utf-16-le")) // 2
+            if self.units and units <= self.limit and self.units + units > self.limit:
+                self.flush()
+            for char in line:
+                units = len(char.encode("utf-16-le")) // 2
+                if self.units + units > self.limit:
+                    self.flush()
+                self.current.append(escape(char))
+                self.units += units
+
+
+def _telegram_message_parts(message, *, limit=3800, max_parts=None):
+    parser = _TelegramHTMLChunks(limit, max_parts)
+    try:
+        parser.feed(message)
+        parser.close()
+        if parser.units:
+            parser.flush()
+    except _TelegramChunkLimitReached:
+        pass
+    return parser.parts
+
+
+def _deliver_notification(lead, notifier, message, *, scope, reply_markup=None, attachment_leads=()):
+    if lead is not None and not _claim_notification_slot(lead, scope=scope):
+        return False
+    result = {"status": "failed", "summary_parts_sent": 0, "message_ids": [], "receipts": [], "documents_expected": 0,
+              "documents_sent": 0, "documents_missing": 0, "documents_failed": 0}
+    try:
+        if not notifier.is_configured():
+            result["error"] = "not_configured"
+            return False
+        attachment_groups = [(item, list(item.attachments.all())) for item in attachment_leads]
+        result["documents_expected"] = sum(len(attachments) for item, attachments in attachment_groups)
+        result["target_count"] = len(notifier._resolve_targets(admin=True)) if isinstance(notifier, TelegramNotifier) else 1
+        parts = _telegram_message_parts(message, max_parts=MAX_TELEGRAM_MESSAGE_PARTS + 1)
+        if len(parts) > MAX_TELEGRAM_MESSAGE_PARTS:
+            parts = parts[:MAX_TELEGRAM_MESSAGE_PARTS]
+            parts[-1] += "\n<i>Дуже довга заявка: повний текст та решта деталей збережені в панелі менеджера.</i>"
+            result["summary_uses_panel_continuation"] = True
+        result["summary_parts"] = len(parts)
+        for index, part in enumerate(parts):
+            if index:
+                part = f"📦 <b>Продовження · {index + 1}/{len(parts)}</b>\n" + part
+            report = _report(notifier.send_admin_message(part, parse_mode="HTML", reply_markup=reply_markup if index == 0 else None,
+                                                        retry_ambiguous=False, return_report=True))
+            result["message_ids"].extend(_receipt_ids(report))
+            result["receipts"].extend(_receipts(report, kind="summary", part=index + 1))
+            if report.outcome != "sent":
+                result["status"] = "ambiguous" if report.outcome == "ambiguous" else "partial" if index else "failed"
+                result["error"] = "summary_incomplete"
+                return False
+            result["summary_parts_sent"] += 1
+        result["status"] = "sent"
+        for item, attachments in attachment_groups:
+            payloads = _collect_attachment_payloads(item, attachments=attachments)
+            missing = len(attachments) - len(payloads)
+            result["documents_missing"] += missing
+            for payload in payloads:
+                report = _report(notifier.send_admin_document(payload["path"], caption=payload["caption"], filename=Path(payload["path"]).name,
+                                                              parse_mode="HTML", retry_ambiguous=False, return_report=True))
+                result["message_ids"].extend(_receipt_ids(report))
+                result["receipts"].extend(_receipts(report, kind="document", lead_id=item.pk, document=result["documents_sent"] + result["documents_failed"] + 1))
+                if report.outcome == "sent":
+                    result["documents_sent"] += 1
+                else:
+                    result["documents_failed"] += 1
+                    if report.outcome == "ambiguous":
+                        result["status"] = "ambiguous"
+                    elif result["status"] == "sent":
+                        result["status"] = "partial"
+            if missing and result["status"] == "sent":
+                result["status"] = "partial"
+        if result["status"] != "sent":
+            warning = (f"⚠️ <b>Передачу всіх оригіналів не підтверджено</b> · <code>{escape(str(getattr(lead, 'lead_number', '')))}</code>\n"
+                       f"Файлів усім отримувачам: {result['documents_sent']} / {result['documents_expected']}. Перевірте файли в панелі заявки.")
+            report = _report(notifier.send_admin_message(warning, parse_mode="HTML", retry_ambiguous=False, return_report=True))
+            result["file_warning_outcome"] = report.outcome
+            result["message_ids"].extend(_receipt_ids(report))
+            result["receipts"].extend(_receipts(report, kind="file_warning"))
+        return result["status"] == "sent"
+    except Exception:
+        result["status"] = "ambiguous"
+        result["error"] = "delivery_exception"
+        logger.exception("Custom-print notification failed lead=%s scope=%s", getattr(lead, "pk", None), scope)
+        return False
+    finally:
+        _finish_notification(lead, result)
+        if result["status"] != "sent":
+            logger.warning("Custom-print delivery incomplete lead=%s scope=%s status=%s parts_sent=%s documents_sent=%s missing=%s failed=%s",
+                           getattr(lead, "pk", None), scope, result["status"], result["summary_parts_sent"], result["documents_sent"],
+                           result["documents_missing"], result["documents_failed"])
 
 
 # ---------------------------------------------------------------------------
@@ -1090,25 +1234,25 @@ def _build_creation_message(leads, *, submission_type="lead", creation=None):
     gift = meta.get("gift") or (creation.gift if creation else {})
     box, delivery, certificate = (gift.get(key) or {} for key in ("box", "delivery", "certificate"))
     wrapping = gift.get("wrapping") or {}
-    compact_items = len(snapshots) > 5 and len(escape(certificate.get("message") or "") + escape(wrapping.get("preference") or "")) > 1500
     purpose = normalize_order_purpose(first.get("order_purpose"), mode=first.get("mode"))
     title = {"lead": "Нова заявка на кастомний принт", "cart": "Кастом-кошик: потрібна модерація", "safe_exit": "Клієнт залишив конфігуратор"}.get(submission_type, "Кастомний принт")
     parts = [f"📦 <b>{title}</b>", f"<b>Призначення:</b> {escape(str(ORDER_PURPOSE_LABELS[purpose]))}",
-             f"👤 {_escaped_short(contact.get('name'), 25 if compact_items else 50)} · {_escaped_short(contact.get('channel'), 10 if compact_items else 15)} · {_escaped_short(contact.get('value'), 40 if compact_items else 80)}",
+             f"👤 {escape(str(contact.get('name') or '—'))} · {escape(str(contact.get('channel') or '—'))} · {escape(str(contact.get('value') or '—'))}",
              f"Позицій: {len(snapshots)} · Виробів: {sum((snapshot.get('order') or {}).get('quantity') or 1 for snapshot in snapshots)}",
-             "Кожен виріб — в окремому фірмовому зіп-пакеті без доплати", "🎁 Подарункові опції:"]
+             "Кожен виріб — в окремому фірмовому зіп-пакеті без доплати", "", "🎁 <b>Подарункові опції</b>"]
     if box.get("enabled"):
         if box.get("estimate_reason") == "multi_garment_packaging":
-            parts.append("Коробки: менеджер узгодить розмір, кількість і ціну після заявки: зіп-пакети в одній більшій або окремих коробках." if compact_items else "Коробки: розмір, кількість і ціну узгодить менеджер після заявки. Кілька зіп-пакетів — в одній більшій коробці або в окремих коробках; друк усередині.")
+            parts.append("Коробки: розмір, кількість і ціну узгодить менеджер після заявки. Кілька зіп-пакетів — в одній більшій коробці або в окремих коробках; друк усередині.")
         else:
             parts.append("Коробка: персоналізований друк усередині · ціну узгодити" if box.get("estimate_required") else f"Коробка: +{box.get('price')} грн · зіп-пакет і захисний папір усередині включено")
         if box.get("content_type") == "image":
             parts.append(f"Зображення коробки: {_escaped_short(box.get('image_name'), 80)}" + (" · потрібно завантажити повторно" if box.get("needs_reupload") else " · оригінал окремим документом"))
         else:
-            parts.append(f"Текст коробки: {_escaped_short(box.get('text'), 40 if compact_items else 100)}")
+            parts.append(f"Текст коробки: {escape(str(box.get('text') or '—'))}")
     else:
         parts.append("Персоналізована коробка: ні")
     if wrapping.get("enabled"):
+        parts.append("")
         paper = {"brand": "фірмовий", "ivory": "айворі", "kraft": "крафт", "black": "чорний", "red": "червоний"}.get(wrapping.get("paper"), "фірмовий")
         style = {"brand": "фірмовий", "minimal": "мінімалістичний", "festive": "святковий", "hearts": "серця", "newsprint": "газетний", "new_year": "новорічний", "custom": "за побажанням"}.get(wrapping.get("style"), "фірмовий")
         target = "навколо коробки" if wrapping.get("target") == "box" else "навколо зіп-пакета"
@@ -1116,18 +1260,18 @@ def _build_creation_message(leads, *, submission_type="lead", creation=None):
         if wrapping.get("preference"):
             parts.append(f"Побажання до пакування:\n<blockquote>{escape(wrapping['preference'])}</blockquote>")
     if delivery.get("enabled"):
+        parts.append("")
         method = "у відділення" if delivery.get("method") == "branch" else "курʼєром (адресу та ТТН узгодити вручну)"
         parts.append(f"Доставка {method}: +{delivery.get('price')} грн · запит на включення в оплату, ще не оплачено")
     if certificate.get("enabled"):
-        parts.append(f"Сертифікат −{certificate.get('discount_percent')}% на будь-яке майбутнє замовлення, включно з кастомним: +{certificate.get('price')} грн · виготовити, не виданий автоматично" if not compact_items else f"Сертифікат −15% (будь-яке майбутнє замовлення, кастом теж): +{certificate.get('price')} грн; виготовити вручну.")
+        parts.append("")
+        parts.append(f"Сертифікат −{certificate.get('discount_percent')}% на будь-яке майбутнє замовлення, включно з кастомним: +{certificate.get('price')} грн · виготовити, не виданий автоматично")
         parts.append("Листівка: покласти зверху у коробці" if certificate.get("placement") == "box_top" else "Листівка: покласти всередину зіп-пакета")
         if certificate.get("message_mode") == "write":
-            parts.append(f"{'Привітання вручну, без доплати:' if compact_items else 'Написати привітання вручну без доплати:'}\n<blockquote>{escape(certificate.get('message') or '')}</blockquote>")
+            parts.append(f"Написати привітання вручну без доплати:\n<blockquote>{escape(certificate.get('message') or '')}</blockquote>")
         else:
             parts.append("Зворот листівки залишити порожнім у лінійку — клієнт напише привітання сам.")
-    full_card_message = len(snapshots) > 5 and ((certificate.get("enabled") and certificate.get("message_mode") == "write") or (wrapping.get("enabled") and wrapping.get("preference")))
-    if full_card_message:
-        parts.append("Повні деталі позицій — за кнопками заявок.")
+    values = []
     for index, snapshot in enumerate(snapshots):
         product = snapshot.get("product") or {}
         order = snapshot.get("order") or {}
@@ -1136,140 +1280,84 @@ def _build_creation_message(leads, *, submission_type="lead", creation=None):
         number = leads[index].lead_number if leads else "чернетка"
         sizes = order.get("sizes_note") or ", ".join(f"{size}×{qty}" for size, qty in (order.get("size_breakdown") or {}).items() if qty) or "уточнити"
         value = pricing.get("final_total")
+        approved = getattr(leads[index], "approved_price", None) if leads else None
+        if approved is not None:
+            value = approved
+        elif product.get("type") == "customer_garment":
+            value = None
+        values.append(value)
         total = f"{value} грн" if value is not None else "потрібен прорахунок"
-        if compact_items:
-            parts.append(f"{index + 1}. {_escaped_short(PRODUCT_LABELS.get(product.get('type'), product.get('type')), 10)} ×{order.get('quantity') or 1} · {_escaped_short(number, 25)} · {_escaped_short(sizes, 6)} · {_escaped_short(SERVICE_LABELS.get(artwork.get('service_kind'), 'уточнити'), 6)} · {_escaped_short(_snapshot_placements_text(snapshot), 6)} · {_escaped_short(total, 15)}")
-            continue
         parts.extend(["", f"<b>{index + 1}. {_escaped_short(PRODUCT_LABELS.get(product.get('type'), product.get('type')), 30)} ×{order.get('quantity') or 1}</b> · <code>{_escaped_short(number, 25)}</code>",
-                      _escaped_short(_snapshot_product_label(snapshot), 20 if full_card_message else 65),
-                      f"Розміри: {_escaped_short(sizes, 40)} · {_escaped_short(SERVICE_LABELS.get(artwork.get('service_kind'), 'уточнити'), 30)}",
-                      f"Друк: {_escaped_short(_snapshot_placements_text(snapshot), 70)}",
-                      f"Сума позиції: {_escaped_short(total, 25)}"])
+                      escape(_snapshot_product_label(snapshot)),
+                      f"Розміри: {escape(str(sizes))} · {_escaped_short(SERVICE_LABELS.get(artwork.get('service_kind'), 'уточнити'), 30)}",
+                      f"Друк: {escape(_snapshot_placements_text(snapshot))}",
+                      f"{'Погоджена' if approved is not None else 'Попередня'} сума позиції: {_escaped_short(total, 25)}"])
         brief = (snapshot.get("notes") or {}).get("brief")
-        if brief and not full_card_message:
-            parts.append(f"Бриф: {_escaped_short(brief, 30 if len(snapshots) > 5 else 100)}")
-    values = [(snapshot.get("pricing") or {}).get("final_total") for snapshot in snapshots]
+        if brief:
+            parts.append(f"Бриф: {escape(str(brief))}")
+        notes = snapshot.get("notes") or {}
+        if notes.get("garment_note"):
+            parts.append(f"Опис власного виробу: {escape(str(notes['garment_note']))}")
+        if product.get("type") == "customer_garment":
+            method = {"nova_poshta": "Нова пошта", "ukrposhta": "Укрпошта"}.get(order.get("delivery_method"), "уточнити")
+            parts.append(f"Передача виробу: {method}; доставку виробу до нас і назад оплачує клієнт.")
+        if product.get("type") == "hoodie":
+            parts.append("Фліс, люверси та шнурки — включено у вартість худі.")
+        triage = artwork.get("triage_status")
+        if triage:
+            parts.append(f"Перевірка макета: {escape(str(TRIAGE_LABELS.get(triage, triage)))}")
+        preview = (snapshot.get("ui") or {}).get("preview_render") or {}
+        if preview.get("fallback_used"):
+            parts.append(f"У превʼю: {escape(_preview_render_color_label(preview.get('preview_color')))}; замовлений колір вище, не змінювати.")
+        if artwork.get("files"):
+            parts.append(f"Файлів позиції: {len(artwork['files'])}; оригінали окремими документами з номером позиції та зоною.")
     if all(value is not None for value in values):
         from decimal import Decimal
         total = sum(Decimal(str(value)) for value in values)
         parts.append(f"\n<b>Разом: {total} грн</b>")
+    else:
+        parts.append("\n<b>Разом: потрібен фінальний прорахунок менеджера.</b>")
+    if leads and getattr(leads[0], "telegram_verified_at", None):
+        parts.append("✅ Telegram підтверджено через бота.")
+        for field in ("telegram_verified_username", "telegram_verified_phone"):
+            if getattr(leads[0], field, ""):
+                parts.append(escape(str(getattr(leads[0], field))))
+    elif contact.get("channel") == "telegram":
+        parts.append("⚠️ Telegram не підтверджено через бота — перевірити контакт.")
     if submission_type == "cart":
-        parts.append("Погоджуйте ціну кожної позиції окремо через кнопки нижче.")
+        parts.append("Погоджуйте фінальну ціну кожної позиції окремо; спільні подарункові доплати включені тільки в позицію 1.")
+    elif any((gift.get(key) or {}).get("enabled") for key in ("box", "wrapping", "delivery", "certificate")):
+        parts.append("Спільні доплати враховано один раз у позиції 1; ціну та деталі підтвердить менеджер.")
     return "\n".join(parts)
 
 
 def notify_custom_print_creation(leads, *, submission_type="lead", creation=None):
-    """One summary per creation; original documents remain item-specific."""
-    try:
-        if leads and not _claim_notification_slot(leads[0], scope=f"creation_{submission_type}"):
-            return False
-        notifier = _build_notifier()
-        if not notifier.is_configured():
-            return False
-        keyboard = []
-        if leads:
-            keyboard.extend(_info_reply_markup_full(leads[0])["inline_keyboard"][:1])
-        for index, lead in enumerate(leads):
-            row = [{"text": f"{index + 1}. {lead.lead_number}", "url": _build_admin_panel_link(lead)}]
-            if submission_type == "cart" and lead.moderation_status != "approved":
-                row.extend([{"text": f"✅ {index + 1}", "url": _build_moderation_action_url(lead, "approve")},
-                            {"text": f"❌ {index + 1}", "url": _build_moderation_action_url(lead, "reject")}])
-            keyboard.append(row)
-        message = _build_creation_message(leads, submission_type=submission_type, creation=creation)
-        if not notifier.send_admin_message(message, parse_mode="HTML", reply_markup={"inline_keyboard": keyboard} if keyboard else None):
-            return False
-        for lead in leads:
-            _send_attachments(notifier, lead)
-        return True
-    except Exception:
-        logger.exception("Custom-print creation notification failed")
-        return False
+    """One complete creation summary, split safely; originals stay item-specific."""
+    keyboard = []
+    if leads:
+        keyboard.extend(_info_reply_markup_full(leads[0])["inline_keyboard"][:1])
+    for index, lead in enumerate(leads):
+        row = [{"text": f"{index + 1}. {lead.lead_number}", "url": _build_admin_panel_link(lead)}]
+        if submission_type == "cart" and lead.moderation_status != "approved":
+            row.extend([{"text": f"✅ {index + 1}", "url": _build_moderation_action_url(lead, "approve")},
+                        {"text": f"❌ {index + 1}", "url": _build_moderation_action_url(lead, "reject")}])
+        keyboard.append(row)
+    return _deliver_notification(leads[0] if leads else None, _build_notifier(),
+                                 _build_creation_message(leads, submission_type=submission_type, creation=creation),
+                                 scope=f"creation_{submission_type}", reply_markup={"inline_keyboard": keyboard} if keyboard else None,
+                                 attachment_leads=leads)
 
 
-def notify_new_custom_print_lead(lead) -> bool:
-    """Заявка прийшла з кнопки «Надіслати менеджеру»."""
-    try:
-        if not _claim_notification_slot(lead, scope="new_lead"):
-            return False
-        notifier = _build_notifier()
-        if not notifier.is_configured():
-            logger.warning("Custom print Telegram notifier is not configured.")
-            return False
-
-        message = _build_lead_message(
-            lead,
-            header_emoji="🆕",
-            header_title="Нова заявка на кастомний принт",
-            intro_lines=[
-                "👉 Зв'яжіться з клієнтом якнайшвидше — нижче кнопки для дзвінка / месенджера.",
-            ],
-        )
-        success = notifier.send_admin_message(
-            message,
-            parse_mode="HTML",
-            reply_markup=_info_reply_markup_full(lead),
-        )
-        if not success:
-            logger.error(
-                "Custom print Telegram summary delivery failed for lead %s; attachments skipped",
-                lead.pk,
-            )
-            return False
-        _send_attachments(notifier, lead)
-        return True
-    except Exception as exc:
-        logger.warning("Custom print Telegram notify failed: %s", exc, exc_info=True)
-        return False
+def notify_new_custom_print_lead(lead):
+    return _deliver_notification(lead, _build_notifier(), _build_lead_message(lead, header_emoji="🆕", header_title="Нова заявка на кастомний принт",
+        intro_lines=["Звʼяжіться з клієнтом і підтвердьте ціну та деталі замовлення."]),
+        scope="new_lead", reply_markup=_info_reply_markup_full(lead), attachment_leads=[lead])
 
 
-def notify_custom_print_moderation_request(lead) -> bool:
-    """Клієнт додав кастом у кошик / просить погодити."""
-    try:
-        if not _claim_notification_slot(lead, scope="moderation_request"):
-            return False
-        notifier = _build_notifier()
-        if not notifier.is_configured():
-            logger.warning("Custom print moderation notifier is not configured.")
-            return False
-
-        lead.ensure_moderation_token()
-
-        try:
-            from decimal import Decimal
-
-            final_price = Decimal(str(getattr(lead, "final_price_value", 0) or 0))
-        except Exception:
-            final_price = 0
-
-        intro = [
-            "<b>🛒 Клієнт чекає погодження кастомного кошика.</b>",
-            "Натисніть «✅ Погодити», щоб клієнт зміг сплатити, або «❌ Відхилити» з коментарем.",
-        ]
-        if final_price and float(final_price) > 0:
-            intro.append(f"💵 <b>Запитувана сума:</b> {escape(str(final_price))} грн")
-
-        message = _build_lead_message(
-            lead,
-            header_emoji="🛒",
-            header_title="Кастом-кошик: потрібна модерація",
-            intro_lines=intro,
-        )
-        success = notifier.send_admin_message(
-            message,
-            parse_mode="HTML",
-            reply_markup=_moderation_reply_markup(lead),
-        )
-        if not success:
-            logger.error(
-                "Custom print Telegram moderation delivery failed for lead %s; attachments skipped",
-                lead.pk,
-            )
-            return False
-        _send_attachments(notifier, lead)
-        return True
-    except Exception as exc:
-        logger.warning("Custom print moderation notify failed: %s", exc, exc_info=True)
-        return False
+def notify_custom_print_moderation_request(lead):
+    return _deliver_notification(lead, _build_notifier(), _build_lead_message(lead, header_emoji="🛒", header_title="Кастом-кошик: потрібна модерація",
+        intro_lines=["<b>Клієнт чекає погодження кастомного кошика.</b>", "Погодьте фінальну ціну через панель або відхиліть заявку з коментарем."]),
+        scope="moderation_request", reply_markup=_moderation_reply_markup(lead), attachment_leads=[lead])
 
 
 def notify_custom_print_moderation_result(lead) -> bool:
@@ -1313,20 +1401,6 @@ def notify_custom_print_moderation_result(lead) -> bool:
         return False
 
 
-def notify_custom_print_safe_exit(*, snapshot: dict, lead=None) -> bool:
-    try:
-        if lead is not None and not _claim_notification_slot(lead, scope="safe_exit"):
-            return False
-        notifier = _build_notifier()
-        if not notifier.is_configured():
-            logger.warning("Custom print safe-exit notifier is not configured.")
-            return False
-
-        return notifier.send_admin_message(
-            _build_safe_exit_message(snapshot, lead=lead),
-            parse_mode="HTML",
-            reply_markup=_info_reply_markup(lead) if lead is not None else None,
-        )
-    except Exception as exc:
-        logger.warning("Custom print safe-exit notify failed: %s", exc, exc_info=True)
-        return False
+def notify_custom_print_safe_exit(*, snapshot: dict, lead=None):
+    return _deliver_notification(lead, _build_notifier(), _build_safe_exit_message(snapshot, lead=lead),
+                                 scope="safe_exit", reply_markup=_info_reply_markup(lead) if lead is not None else None)

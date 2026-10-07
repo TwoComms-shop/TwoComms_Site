@@ -1639,7 +1639,11 @@ def _submit_custom_print_creation(request, *, submission_type):
         request.session.modified = True
         from storefront.views.utils import _reset_monobank_session
         _reset_monobank_session(request, drop_pending=True)
-    transaction.on_commit(lambda: notify_custom_print_creation(leads, submission_type=submission_type), robust=True)
+    delivery = {"status": "pending"}
+    def deliver_creation():
+        sent = notify_custom_print_creation(leads, submission_type=submission_type)
+        delivery["status"] = "sent" if sent else ((leads[0].telegram_delivery_json or {}).get("latest") or {}).get("status", "failed")
+    transaction.on_commit(deliver_creation, robust=True)
     if analytics_event_id:
         event_lead = creation_analytics_lead(leads)
         transaction.on_commit(lambda: _send_custom_print_lead_capi(event_lead, request, analytics_event_id), robust=True)
@@ -1647,7 +1651,8 @@ def _submit_custom_print_creation(request, *, submission_type):
                               lead=leads[0], step_key="contact",
                               metadata={"submission_type": submission_type, "creation_id": creation.id, "item_count": len(leads)})
     payload = creation_response(creation, leads)
-    payload["message"] = "Замовлення передано менеджеру." if submission_type == "lead" else "Усі вироби додано в кошик і передано менеджеру на модерацію."
+    payload["notification_status"] = delivery["status"]
+    payload["message"] = "Заявку збережено. Менеджер звʼяжеться з вами для уточнення деталей." if submission_type == "lead" else "Усі вироби додано в кошик. Для оплати потрібне погодження менеджера."
     if submission_type == "cart":
         payload.update(cart_url=reverse("cart"), custom_cart_count=len(custom_cart))
     if analytics_event_id:
@@ -1907,7 +1912,7 @@ def custom_print_submit_review(request):
     with approve/reject/contact inline buttons.
     """
     from storefront.models import CustomPrintLead, CustomPrintModerationStatus
-    from storefront.custom_print_notifications import notify_custom_print_moderation_request
+    from storefront.custom_print_notifications import notify_custom_print_moderation_request, notification_delivery_confirmed, reset_notification_delivery
 
     custom_cart = request.session.get(SESSION_CUSTOM_CART_KEY) or {}
     if not isinstance(custom_cart, dict) or not custom_cart:
@@ -1918,43 +1923,56 @@ def custom_print_submit_review(request):
     if not lead_ids:
         return JsonResponse({"ok": False, "error": "Немає кастомних позицій для відправки."}, status=400)
 
-    leads = list(CustomPrintLead.objects.filter(pk__in=lead_ids))
-    notified = 0
-    now = timezone.now()
-    changed_lead_ids = set()
-    for lead in leads:
-        # Skip if already awaiting or approved
-        if lead.moderation_status in (CustomPrintModerationStatus.AWAITING_REVIEW,
-                                       CustomPrintModerationStatus.APPROVED):
-            continue
-        lead.ensure_moderation_token()
-        lead.moderation_status = CustomPrintModerationStatus.AWAITING_REVIEW
-        lead.reviewed_at = None
-        lead.save(update_fields=["moderation_status", "moderation_token", "reviewed_at"])
-        # Sync session snapshot
-        key = f"custom:{lead.pk}"
-        if key in custom_cart and isinstance(custom_cart[key], dict):
-            custom_cart[key]["moderation_status"] = CustomPrintModerationStatus.AWAITING_REVIEW
-        changed_lead_ids.add(lead.pk)
-        record_custom_print_event(
-            request,
-            "custom_print_send_to_manager",
-            lead=lead,
-            step_key=(lead.exit_step or "contact"),
-            metadata={"submission_type": "cart_review"},
-        )
+    # Serialize the new review generation, then release DB locks before Telegram.
+    with transaction.atomic():
+        leads = list(CustomPrintLead.objects.select_for_update().filter(pk__in=lead_ids).order_by("pk"))
+        notified = 0
+        now = timezone.now()
+        changed_lead_ids = set()
+        for lead in leads:
+            # Skip if already awaiting or approved
+            if lead.moderation_status in (CustomPrintModerationStatus.AWAITING_REVIEW,
+                                           CustomPrintModerationStatus.APPROVED):
+                continue
+            lead.ensure_moderation_token()
+            lead.moderation_status = CustomPrintModerationStatus.AWAITING_REVIEW
+            lead.reviewed_at = None
+            lead.save(update_fields=["moderation_status", "moderation_token", "reviewed_at"])
+            # Sync session snapshot
+            key = f"custom:{lead.pk}"
+            if key in custom_cart and isinstance(custom_cart[key], dict):
+                custom_cart[key]["moderation_status"] = CustomPrintModerationStatus.AWAITING_REVIEW
+            changed_lead_ids.add(lead.pk)
+            record_custom_print_event(
+                request,
+                "custom_print_send_to_manager",
+                lead=lead,
+                step_key=(lead.exit_step or "contact"),
+                metadata={"submission_type": "cart_review"},
+            )
 
-    grouped = {}
-    for lead in leads:
-        meta = (lead.config_draft_json or {}).get("creation") or {}
-        group_key = meta.get("id") or f"legacy:{lead.pk}"
-        grouped.setdefault(group_key, []).append(lead)
+        grouped = {}
+        for lead in leads:
+            meta = (lead.config_draft_json or {}).get("creation") or {}
+            group_key = meta.get("id") or f"legacy:{lead.pk}"
+            grouped.setdefault(group_key, []).append(lead)
+        for group in grouped.values():
+            group.sort(key=lambda lead: ((lead.config_draft_json or {}).get("creation") or {}).get("item_index", 0))
+            if changed_lead_ids.intersection(lead.pk for lead in group):
+                scope = "creation_cart" if (group[0].config_draft_json or {}).get("creation") else "moderation_request"
+                reset_notification_delivery(group[0], scope=scope)
+    review_groups = 0
     for group in grouped.values():
-        if not changed_lead_ids.intersection(lead.pk for lead in group):
-            continue
         group.sort(key=lambda lead: ((lead.config_draft_json or {}).get("creation") or {}).get("item_index", 0))
+        if all(lead.moderation_status == CustomPrintModerationStatus.APPROVED for lead in group):
+            continue
+        review_groups += 1
         try:
             is_grouped = bool((group[0].config_draft_json or {}).get("creation"))
+            scope = "creation_cart" if is_grouped else "moderation_request"
+            if notification_delivery_confirmed(group[0], scope) and not changed_lead_ids.intersection(lead.pk for lead in group):
+                notified += 1
+                continue
             if (notify_custom_print_creation(group, submission_type="cart") if is_grouped else notify_custom_print_moderation_request(group[0])):
                 notified += 1
         except Exception:
@@ -1966,7 +1984,8 @@ def custom_print_submit_review(request):
     return JsonResponse({
         "ok": True,
         "notified": notified,
-        "message": "Замовлення надіслано менеджеру на перевірку.",
+        "notification_status": "sent" if notified == review_groups else "pending",
+        "message": "Замовлення надіслано менеджеру на перевірку." if notified == review_groups else "Заявку збережено в панелі менеджера. Повну доставку сповіщення ще не підтверджено.",
     })
 
 
@@ -2010,7 +2029,10 @@ def custom_print_moderation_action(request, lead_id: int, action: str):
 
     if action == "approve":
         from storefront.custom_print_config import gift_box_quote_required
-        quote_required = gift_box_quote_required(lead.config_draft_json, lead_id=lead.pk) and lead.approved_price is None
+        quote_required = (
+            lead.product_type == "customer_garment"
+            or gift_box_quote_required(lead.config_draft_json, lead_id=lead.pk)
+        ) and lead.approved_price is None
         if quote_required or Decimal(str(lead.final_price_value or 0)) <= 0:
             return _render_moderation_result(
                 request,

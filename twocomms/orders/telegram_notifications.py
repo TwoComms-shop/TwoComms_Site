@@ -474,11 +474,13 @@ class TelegramNotifier:
         )
         time.sleep(delay)
 
-    def _post_send_document(self, *, file_path, filename, data, parse_mode, target_index, target_count):
+    def _post_send_document(self, *, file_path, filename, data, parse_mode, target_index, target_count, retry_ambiguous=True, return_outcome=False):
         """Send one document with bounded retries for transient Telegram failures."""
         url = f"https://api.telegram.org/bot{self.bot_token}/sendDocument"
         request_data = dict(data)
         request_data["parse_mode"] = parse_mode
+        def result(outcome, payload=None):
+            return (outcome, payload) if return_outcome else payload
         for attempt in range(1, _SEND_DOCUMENT_MAX_ATTEMPTS + 1):
             status_code = None
             try:
@@ -486,7 +488,10 @@ class TelegramNotifier:
                     files = {"document": (filename or Path(file_path).name, file_obj)}
                     response = requests.post(url, data=request_data, files=files, timeout=30)
                 status_code = response.status_code
-            except (requests.ConnectionError, requests.Timeout) as exc:
+            except requests.RequestException as exc:
+                if not retry_ambiguous:
+                    logger.warning("telegram_send_document ambiguous_delivery target_index=%s exception_class=%s", target_index, type(exc).__name__)
+                    return result("ambiguous")
                 if attempt == _SEND_DOCUMENT_MAX_ATTEMPTS:
                     logger.warning(
                         "telegram_send_document retry_exhausted attempt=%s target_index=%s "
@@ -496,7 +501,7 @@ class TelegramNotifier:
                         target_count,
                         type(exc).__name__,
                     )
-                    return None
+                    return result("failed")
                 logger.warning(
                     "telegram_send_document retry_scheduled attempt=%s target_index=%s "
                     "target_count=%s reason=exception exception_class=%s",
@@ -517,9 +522,11 @@ class TelegramNotifier:
                     target_count,
                     type(exc).__name__,
                 )
-                return None
+                return result("failed")
 
             if status_code == 429 or status_code >= 500:
+                if status_code >= 500 and not retry_ambiguous:
+                    return result("ambiguous")
                 if attempt == _SEND_DOCUMENT_MAX_ATTEMPTS:
                     logger.warning(
                         "telegram_send_document retry_exhausted attempt=%s target_index=%s "
@@ -529,7 +536,7 @@ class TelegramNotifier:
                         target_count,
                         status_code,
                     )
-                    return None
+                    return result("failed")
                 logger.warning(
                     "telegram_send_document retry_scheduled attempt=%s target_index=%s "
                     "target_count=%s reason=http_status status=%s",
@@ -553,7 +560,7 @@ class TelegramNotifier:
                     target_count,
                     status_code,
                 )
-                return None
+                return result("ambiguous" if status_code < 300 else "failed")
 
             if payload and payload.get("ok"):
                 if attempt > 1:
@@ -564,7 +571,7 @@ class TelegramNotifier:
                         target_index,
                         target_count,
                     )
-                return payload
+                return result("sent", payload)
 
             logger.warning(
                 "telegram_send_document api_rejected attempt=%s target_index=%s "
@@ -574,8 +581,8 @@ class TelegramNotifier:
                 target_count,
                 status_code,
             )
-            return None
-        return None
+            return result("failed")
+        return result("failed")
 
     def send_message(
         self,
@@ -655,7 +662,7 @@ class TelegramNotifier:
             return TelegramDeliveryReport(overall_outcome, tuple(sent_results))
         return sent_results if return_results else delivered_count > 0
 
-    def send_admin_message(self, message, parse_mode='HTML', reply_markup=None):
+    def send_admin_message(self, message, parse_mode='HTML', reply_markup=None, *, retry_ambiguous=True, return_report=False):
         """
         Псевдоним для send_message для единообразия API.
         Отправляет сообщение администратору.
@@ -667,37 +674,46 @@ class TelegramNotifier:
         Returns:
             bool: True если сообщение отправлено успешно
         """
-        return self.send_message(message, parse_mode, reply_markup=reply_markup)
+        return self.send_message(message, parse_mode, reply_markup=reply_markup, retry_ambiguous=retry_ambiguous, return_report=return_report)
 
-    def send_admin_document(self, file_path, caption, filename=None, parse_mode='HTML'):
+    def send_admin_document(self, file_path, caption, filename=None, parse_mode='HTML', *, retry_ambiguous=True, return_report=False):
         """Отправляет документ админу в Telegram."""
         if not self.is_configured():
             logger.warning("telegram_send_document not_configured")
-            return False
+            return TelegramDeliveryReport("failed") if return_report else False
 
         target_ids = self._resolve_targets(admin=True)
         if not target_ids:
             logger.warning("telegram_send_document no_targets")
-            return False
+            return TelegramDeliveryReport("failed") if return_report else False
         delivered_count = 0
         target_count = len(target_ids)
+        outcomes = []
+        sent_results = []
         for target_index, target_id in enumerate(target_ids, start=1):
-            payload = self._post_send_document(
+            outcome, payload = self._post_send_document(
                 file_path=file_path,
                 filename=filename,
                 data={"chat_id": target_id, "caption": caption},
                 parse_mode=parse_mode,
                 target_index=target_index,
                 target_count=target_count,
+                retry_ambiguous=retry_ambiguous,
+                return_outcome=True,
             )
+            outcomes.append(outcome)
             if payload and payload.get("ok"):
                 delivered_count += 1
+                sent_results.append(payload.get("result") or {})
         if 0 < delivered_count < target_count:
             logger.warning(
                 "telegram_send_document partial_delivery delivered_count=%s target_count=%s",
                 delivered_count,
                 target_count,
             )
+        if return_report:
+            outcome = "sent" if delivered_count == target_count else "ambiguous" if "ambiguous" in outcomes or delivered_count else "failed"
+            return TelegramDeliveryReport(outcome, tuple(sent_results))
         return delivered_count > 0
 
     def send_admin_photo(self, file_path, caption="", parse_mode='HTML'):

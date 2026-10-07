@@ -4320,6 +4320,7 @@
     const unitAfterDiscount = Math.max(0, unitTotal - b2bDiscountPerUnit);
     const subTotal = unitAfterDiscount * Math.max(1, qty || 1);
     const finalTotal = subTotal + giftPrice;
+    const estimateRequired = STATE.product.type === "customer_garment" || pricing.estimate_from_base === true;
     if (b2bDiscountPerUnit > 0) {
       breakdown.push({ label: `B2B знижка (-${b2bDiscountPerUnit} грн/шт × ${qty})`, value: -b2bDiscountPerUnit * qty });
     }
@@ -4331,12 +4332,12 @@
       gift_price: giftPrice,
       zones_price: zonesPrice,
       print_price: printPrice,
-      unit_total: unitAfterDiscount,
+      unit_total: estimateRequired ? null : unitAfterDiscount,
       b2b_discount_per_unit: b2bDiscountPerUnit,
-      final_total: finalTotal,
+      final_total: estimateRequired ? null : finalTotal,
       quantity: qty,
-      estimate_required: false,
-      estimate_reason: "",
+      estimate_required: estimateRequired,
+      estimate_reason: estimateRequired ? "Свій одяг — потрібен ручний прорахунок." : "",
       breakdown,
     };
   }

@@ -3,6 +3,7 @@ from copy import deepcopy
 from decimal import Decimal
 from types import SimpleNamespace
 import unittest
+from html.parser import HTMLParser
 from unittest.mock import Mock, patch
 from html import escape
 
@@ -13,7 +14,7 @@ from PIL import Image
 
 from storefront.custom_print_config import GIFT_SERVICE, gift_box_quote_required, normalize_custom_print_snapshot
 from storefront.custom_print_creation import CreationValidationError, custom_print_checkout_payload, prepare_creation
-from storefront.custom_print_notifications import _build_creation_message
+from storefront.custom_print_notifications import _build_creation_message, _telegram_message_parts
 from storefront.models import CustomPrintLead
 from orders.services.delivery_payment import build_custom_print_delivery_contract, delivery_payment_snapshot
 from management.services.ig_order_amounts import order_amounts
@@ -138,7 +139,7 @@ class GiftExtrasUnitTests(unittest.TestCase):
             self.assertIn("розмір, кількість і ціну", message)
             self.assertIn("одній більшій коробці", message)
             self.assertNotIn("+350", message)
-            self.assertNotIn("<b>Разом:", message)
+            self.assertIn("Разом: потрібен фінальний прорахунок менеджера", message)
 
     def test_client_cannot_force_single_garment_to_multiple_box_count(self):
         raw = self._single_raw(box=True)
@@ -385,8 +386,13 @@ class GiftExtrasUnitTests(unittest.TestCase):
             leads.append(SimpleNamespace(pk=index + 1, lead_number=f"CP07102026L{index + 1:013d}", config_draft_json=snap, pricing_snapshot_json=snap["pricing"]))
         message = _build_creation_message(leads)
         self.assertIn(escape(text), message)
-        self.assertEqual(message.count(escape(text)), 2)
-        self.assertLessEqual(len(message), 4096)
+        self.assertIn(f"Текст коробки: {escape(raw['gift']['box']['text'])}", message)
+        for part in _telegram_message_parts(message):
+            parser = HTMLParser()
+            visible = []
+            parser.handle_data = visible.append
+            parser.feed(part)
+            self.assertLessEqual(len("".join(visible).encode("utf-16-le")) // 2, 3800)
         for lead in leads:
             self.assertIn(lead.lead_number, message)
 

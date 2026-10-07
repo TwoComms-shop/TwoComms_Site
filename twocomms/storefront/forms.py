@@ -112,7 +112,7 @@ class CustomPrintLeadForm(forms.Form):
     name = forms.CharField(max_length=200)
     contact_channel = forms.ChoiceField(choices=CustomPrintContactChannel.choices)
     contact_value = forms.CharField(max_length=255)
-    brief = forms.CharField(required=False, widget=forms.Textarea)
+    brief = forms.CharField(required=False, max_length=2000, widget=forms.Textarea, error_messages={"max_length": "Опишіть завдання до 2000 символів. Додаткові деталі можна узгодити з менеджером."})
     # Поля з верифікації Telegram (заповнюються при підтвердженні через бота)
     telegram_verification_token = forms.CharField(required=False, max_length=64)
     telegram_verified_user_id = forms.CharField(required=False, max_length=32)
