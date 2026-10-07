@@ -152,7 +152,7 @@ canonical entry point for the brand's URL graph.
 {% endblock %}
 
 {% block content %}
-{% cache 1800 hero_block_v3_i18n LANGUAGE_CODE using="fragments" %}
+{% cache 1800 hero_block_v4_i18n LANGUAGE_CODE using="fragments" %}
 <section class="hero-section mb-4 mb-md-5 reveal">
   <!-- Фоновый логотип -->
   <div class="hero-logo-bg">
@@ -622,7 +622,7 @@ canonical entry point for the brand's URL graph.
   {% endif %}
 </section>
 
-{% cache 1800 trust_block_v3_i18n LANGUAGE_CODE using="fragments" %}
+{% cache 1800 trust_block_v4_i18n LANGUAGE_CODE using="fragments" %}
 {% comment %}
 Trust / E-E-A-T блок (ТЗ v3, файл 04). Розміщено ПІСЛЯ першого
 товарного контакту (новинки), щоб не відсувати товар на mobile.
