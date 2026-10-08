@@ -18,6 +18,12 @@ Native Direct to exact `the_mark_vol` explicitly authorized by owner: sent once0
 
 API event16/assignment9v1/order334 remains manager_review, standard response windowclosed, provider IDsnone/attempt1. It was not revived or rewritten; native communication is not a synthetic SENT receipt for this event. Factual native-echo→order-scoped invitation adapter remains OPEN because native text does not explicitly bind an order; transcript proof is retained. Consent unconfirmed, grant not issued, no messages to other clients forced.
 
+## C · P7 UI/API gates + manager eligibility · ✅
+
+Functional SHA `1873974440d08a86cd0359659993fa456a2c5260`. Main/supervisor/child/PID3423860 sameSHAhealthy/notstalled/maintenanceOFF. CanonicalSSHpull/check/managementstate0diff/static0new/compress4/restart/single supervisorensurePASS. BoundedREADONLY37queries/0providerprobes: actualclient351/order334/assignment9v1receiptconfirmed, managereligibilityTrue/delivered_order_eligible, invitationreasonempty, memorytimeline1, botpaused/takeoverFALSE/reward0, nativeecho3330MID/namespace/dateverified; event16manager_review/windowclosed/attempt1/receipts0.
+
+Final **405/405 nativePASS/22.894s +11/11NodePASS**, no skips; independent reviews. Four memory producer→detailAPI regressions with both actualGemini entrypoints+Meta zeroI/O assertions. Old73failures genuinely repaired with explicitpermissions+truthfulproof fixtures; deny/real IDs+amounts/source+authority/exactmediawhitelist remain. Emptylegacyhold stillblocks and receives unverifiedidentity copy, never fakeissued; no rebind/consumption/grant/expiry90changes. Other broadsuites not claimedgreen.
+
 ## Limits
 
-P5 fullcheckpoint513/archivedprefix/source+keyretirement, typed activation and natural72h+20cohort remain OPEN. Existing broad UI/privacy184tests:111PASS/73baseline failures, current has identical failure set; repair is a separateP7block, no green fullsuite claim. Source chat, customer contact/payment data, MID, private screenshots and rawSSH logs are outsideGit.
+P5 fullcheckpoint513/archivedprefix/source+keyretirement, typed activation and natural72h+20cohort remain OPEN. Historical baseline UI/privacy184tests:111PASS/73failures; this specific series is now190/190PASS within final405PASS. Other historical P7 suites and attribution-only review/deal-anchor contract remain OPEN. Source chat, customer contact/payment data, MID, private screenshots and rawSSH logs are outsideGit.
