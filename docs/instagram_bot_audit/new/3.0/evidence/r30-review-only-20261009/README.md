@@ -16,7 +16,7 @@
 
 ## Приёмка
 
-Implementation и independent code/test review приняты. Focused native MariaDB47/47PASS/1.947s; **общий452/452nativePASS/21.467s без пропусков**, production PENDING. Оба набора пересекаются. Shared CPython3.14.6/Django6.1, disposable MariaDB11.4 с настоящими моделями/миграциями/guards; production не использовалась как test fixture.
+Implementation и independent code/test review приняты. Focused native MariaDB47/47PASS/1.947s; **общий452/452nativePASS/21.467s без пропусков**, ✅ production deployed **`cdb5e13201969f0320855af909bd86ab8819e4e6`**, PID3695379, main/supervisor/child sameSHA healthy/maintenanceOFF;26READONLYqueries/providerprobes0. [PROD](PRODUCTION_RELEASE_2026-10-09.md). Оба набора пересекаются. Shared CPython3.14.6/Django6.1, disposable MariaDB11.4 с настоящими моделями/миграциями/guards; production не использовалась как test fixture.
 
 47 новых проверок охватывают оба outbox owners: positive consumption/retained key, отсутствие повторной награды/slot writes, полную квитанцию/once-only delivery, separate repeat order, старый snapshot без mode, неизвестную eligibility и её восстановление до dispatch, поддельный mode/metadata/final_text, service/debt до и после claim, partial receipt→AMBIGUOUS/no replay, окно/пауза/erasure/unassigned/carrier guards, captured номер и UK/RU/EN copy.
 

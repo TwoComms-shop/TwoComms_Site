@@ -1,0 +1,50 @@
+{
+  "aftercare": {
+    "bot_paused": false,
+    "client_id": 351,
+    "legacy_event16_receipts": 0,
+    "legacy_event16_state": "manager_review",
+    "manager_eligible": true,
+    "manager_reason": "delivered_order_eligible",
+    "manager_takeover": false,
+    "memory_flags": {
+      "IG_ANALYSIS_MATERIALITY_MODE": "off",
+      "IG_ANALYSIS_V2_MODE": "off",
+      "IG_MEMORY_GENERATION_ENABLED": true,
+      "IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED": true,
+      "IG_MEMORY_TIMELINE_ENABLED": true,
+      "IG_TYPED_MEMORY_MODE": "off"
+    },
+    "order_id": 334,
+    "received": true,
+    "reward_count": 0,
+    "typed_heads": 0
+  },
+  "health": {
+    "main_healthy": true,
+    "process_online": true,
+    "process_pid": 3695379,
+    "stalled": false,
+    "supervisor": {
+      "available": true,
+      "child_pid": 3695379,
+      "child_pid_matches_expected": true,
+      "child_release_sha": "cdb5e13201969f0320855af909bd86ab8819e4e6",
+      "last_ensure_seen_at": 1791501632.287,
+      "observed_at": 1791501633.009,
+      "restart_count": 0,
+      "status": "current",
+      "supervisor_release_sha": "cdb5e13201969f0320855af909bd86ab8819e4e6"
+    },
+    "workers_healthy": true
+  },
+  "observed_at": "2026-10-08T23:20:37.436524+00:00",
+  "provider_probes": 0,
+  "pure_copy_locales": [
+    "uk",
+    "ru",
+    "en"
+  ],
+  "read_only_queries": 26,
+  "sha": "cdb5e13201969f0320855af909bd86ab8819e4e6"
+}
