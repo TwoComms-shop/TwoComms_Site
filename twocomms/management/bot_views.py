@@ -6070,6 +6070,62 @@ def bot_client_followup_continue_api(request, client_id, task_id):
     return JsonResponse({"success": True, **result})
 
 
+def _client_memory_view(client, message_rows, *, current_floor):
+    """One canonical frozen read; presentation cannot rediscover a newer head."""
+    from management.services.ig_memory_presentation import memory_presentation
+    from management.services.ig_memory_producer import (
+        VERSION, TIMELINE_VERSION, _scope, _source_allowed, _namespaces,
+        read_memory_summary, read_memory_timeline,
+    )
+
+    arguments = {"hidden": bool(client.hidden_at),
+        "erasing": bool(client.privacy_erasure_started_at),
+        "updated_at": client.memory_updated_at}
+    if arguments["hidden"] or arguments["erasing"]:
+        return memory_presentation(**arguments)
+    proof = client.memory_provenance if isinstance(client.memory_provenance, dict) else {}
+    version = proof.get("version")
+    if version == VERSION:
+        read = read_memory_summary(client)
+        memory = {"text": read.text, "reason": read.reason, "provenance": read.provenance or {}}
+        if read.text != client.memory_summary or (read.provenance and read.provenance != proof):
+            memory = {"reason": "narrative_head_changed"}
+        return memory_presentation(memory, **arguments)
+    if version != TIMELINE_VERSION:
+        reason = "narrative_provenance_missing" if client.memory_summary else "narrative_empty"
+        return memory_presentation({"reason": reason}, **arguments)
+
+    from management.services.ig_admin_state_capture import _namespace
+    namespace = _namespace()
+    # Reuse producer admission for every role. Human replies need exact SENT
+    # command receipts, resolved once for this bounded visible page; their raw
+    # message namespace alone never grants ownership.
+    candidates = [row for row in message_rows if row.client_id == client.pk
+        and row.sender_id == client.igsid
+        and row.pk >= current_floor
+        and _source_allowed(row)]
+    namespaces = _namespaces(candidates)
+    owned = [row for row in candidates if namespace and namespaces.get(row.pk) == namespace]
+    if not namespace or not owned:
+        return memory_presentation({"reason": "timeline_boundary_invalid"}, **arguments)
+    target = max(owned, key=lambda row: (row.provider_created_at or row.created_at, row.pk))
+    scope = _scope(client, namespace, timeline=True)
+    if scope["reset_floor"] != current_floor:
+        return memory_presentation({"reason": "timeline_scope_changed"}, **arguments)
+    boundary = {"client_id": client.pk, "source_namespace": namespace,
+        "reset_id": scope["reset_id"], "reset_floor": current_floor,
+        "erasure_epoch": scope["erasure_at"], "watermark": {
+            "message_id": target.pk,
+            "event_at": (target.provider_created_at or target.created_at).isoformat()}}
+    read = read_memory_timeline(client, boundary=boundary)
+    memory = {"text": read.text, "reason": read.reason, "provenance": read.provenance or {}}
+    return memory_presentation(memory, boundary=boundary,
+        visible_source_ids=[row.pk for row in owned if row.role == "user"
+            and row.pk <= target.pk
+            and (row.provider_created_at or row.created_at, row.pk)
+                <= (target.provider_created_at or target.created_at, target.pk)], **arguments)
+
+
 @login_required(login_url="management_login")
 @require_GET
 @never_cache
@@ -6531,7 +6587,7 @@ def bot_client_detail_api(request, client_id):
     manual_order_url = _manual_order_url_for_client(c.pk)
     card = _client_card(c, follow_now=observation_now, source_selection=source_selection)
     card.update({
-        "memory": c.memory_summary,
+        "memory_view": _client_memory_view(c, msg_rows, current_floor=current_floor),
         "phone": c.phone,
         "ad_source": c.ad_source,
         "ad_id": c.ad_id,
