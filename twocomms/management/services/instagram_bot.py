@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
@@ -1748,8 +1749,35 @@ _ASSISTED_CHECKOUT_COPY = {
 }
 
 
+_REPLY_LANGUAGE_SCOPE = ContextVar("ig_reply_language_scope", default=None)
+
+
+def _authored_reply_locale(decision) -> str:
+    return next((code for code in (decision.template_family, "en", "ru", "uk")
+        if code in {"uk", "ru", "en"} and code not in decision.excluded_languages), "")
+
+
+def _reply_render_language(client) -> str:
+    scope = _REPLY_LANGUAGE_SCOPE.get()
+    if scope is not None and scope[0] == getattr(client, "pk", None):
+        return _authored_reply_locale(scope[1])
+    return str(getattr(client, "language", "") or "uk").casefold()
+
+
+def _reply_template_client(client):
+    from types import SimpleNamespace
+    return SimpleNamespace(language=_reply_render_language(client))
+
+
+def _reply_language_mismatch_for_client(client, text):
+    from management.services.ig_reply_language import reply_language_mismatch
+    scope = _REPLY_LANGUAGE_SCOPE.get()
+    return bool(scope is not None and scope[0] == getattr(client, "pk", None)
+        and reply_language_mismatch(text, scope[1]))
+
+
 def _assisted_checkout_locale(client) -> str:
-    language = str(getattr(client, "language", "") or "").lower()
+    language = _reply_render_language(client)
     if language.startswith("ru"):
         return "ru"
     if language.startswith("en"):
@@ -7291,7 +7319,7 @@ def _turn_requires_owned_media(row: InstagramBotMessage) -> bool:
 
 
 def _media_unavailable_reply(client, *, retry_pending: bool = False) -> str:
-    language = str(getattr(client, "language", "uk") or "uk").casefold()
+    language = _reply_render_language(client)
     if retry_pending and language.startswith("ru"):
         text = "Вложение пока не открылось. Попробую загрузить его повторно."
     elif retry_pending and language.startswith("en"):
@@ -7782,7 +7810,7 @@ def _persist_turn_intelligence(row: InstagramBotMessage, artifact: dict) -> None
         row.turn_intelligence_artifact = artifact
 
 
-def _apply_turn_intelligence_resolution(reply: str, control: dict, artifact: dict, client):
+def _apply_turn_intelligence_resolution(reply: str, control: dict, artifact: dict, client, *, reply_language=None):
     if not isinstance(artifact, dict) or not artifact:
         return reply, control
     control = dict(control or {})
@@ -7801,7 +7829,7 @@ def _apply_turn_intelligence_resolution(reply: str, control: dict, artifact: dic
             for item in candidates[:3]
             if isinstance(item, dict) and item.get("title")
         ]
-        language = str(getattr(client, "language", "uk") or "uk").casefold()
+        language = _authored_reply_locale(reply_language) if reply_language is not None else _reply_render_language(client)
         options = ", ".join(titles)
         if language.startswith("ru"):
             question = f"Уточните, пожалуйста, какой вариант вы имеете в виду: {options}?"
@@ -7812,7 +7840,7 @@ def _apply_turn_intelligence_resolution(reply: str, control: dict, artifact: dic
         if options and question.casefold() not in str(reply or "").casefold():
             reply = f"{str(reply or '').strip()}\n{question}".strip()
     if artifact.get("audio_status") == "unintelligible":
-        language = str(getattr(client, "language", "uk") or "uk").casefold()
+        language = _authored_reply_locale(reply_language) if reply_language is not None else _reply_render_language(client)
         if language.startswith("ru"):
             question = "Не удалось разобрать голосовое. Напишите, пожалуйста, главное текстом."
         elif language.startswith("en"):
@@ -7867,6 +7895,17 @@ def _gemini_failure_kind(exc: Exception) -> str:
 
 def _response_validation_fallback(client=None, *, reasons=(), has_images=False) -> str:
     """Describe a bounded validation failure without blaming the customer input."""
+    scope = _REPLY_LANGUAGE_SCOPE.get()
+    if scope is not None and scope[0] == getattr(client, "pk", None):
+        if scope[1].reply_language == "hi":
+            return "मैं आपके संदेश का भरोसेमंद जवाब तैयार नहीं कर सकी। कृपया अपना मुख्य सवाल स्पष्ट करें।"
+        family = _authored_reply_locale(scope[1])
+        if not family:
+            return ""
+        if scope[1].reply_language and scope[1].reply_language not in {"uk", "ru", "en"}:
+            return {"en": "I could not prepare a reliable answer in your requested language. Please clarify your main question.",
+                "ru": "Не удалось подготовить надёжный ответ на выбранном вами языке. Уточните, пожалуйста, основной вопрос.",
+                "uk": "Не вдалося підготувати надійну відповідь обраною вами мовою. Уточніть, будь ласка, головне питання."}[family]
     locale = _assisted_checkout_locale(client) if client is not None else "uk"
     codes = {str(reason or "") for reason in reasons}
     if "unverified_recruitment" in codes:
@@ -7959,6 +7998,7 @@ def gemini_generate(
     request_context_metadata: dict | None = None,
     captured_policy_tags=None,
     captured_knowledge_language: str | None = None,
+    captured_reply_language=None,
 ) -> str | None:
     """history: [{'role':'user'|'model','text':str}] хронологічно.
     images: список (mime_type, raw_bytes) для ОСТАННЬОГО (поточного) user-ходу."""
@@ -8022,6 +8062,31 @@ def gemini_generate(
             break
     if captured_turn_text is not None:
         latest_user_text = captured_turn_text
+    from management.services.ig_reply_language import (
+        resolve_own_source_reply_language, reply_language_instruction, reply_language_mismatch,
+    )
+    language_scope = _REPLY_LANGUAGE_SCOPE.get()
+    if captured_reply_language is None and language_scope is not None and language_scope[0] == getattr(client, "pk", None):
+        captured_reply_language = language_scope[1]
+    if captured_reply_language is None:
+        # Compatibility callers may only promote the exact owned lineage source.
+        # Unbound history text cannot override an admitted customer source.
+        from management.services.ig_turn_lineage import current_context
+        lineage = current_context()
+        own_sources = []
+        if client is not None and lineage.get("client_id") == client.pk and lineage.get("source_message_id"):
+            from management.services.ig_funnel_reset import current_message_floor
+            row = InstagramBotMessage.objects.filter(
+                pk=lineage["source_message_id"], client_id=client.pk, sender_id=client.igsid,
+                role="user", source__in=("webhook", "poll"),
+                pk__gte=current_message_floor(client),
+            ).exclude(status="failed").first()
+            if row is not None and getattr(client, "privacy_erasure_started_at", None) is None:
+                own_sources = [{"message_id": row.pk, "role": "user", "text": row.text,
+                    "event_at": (row.provider_created_at or row.created_at).isoformat()}]
+        captured_reply_language = resolve_own_source_reply_language(
+            sources=own_sources, profile_language=str(getattr(client, "language", "") or ""),
+        )
     from management.services.gemini_routing import (
         TaskClass,
         TurnFacts,
@@ -8106,6 +8171,7 @@ def gemini_generate(
             captured_dynamic_notes=captured_dynamic_notes,
             captured_policy_tags=captured_policy_tags,
             captured_knowledge_language=captured_knowledge_language,
+            captured_reply_language=captured_reply_language,
         )
     except (PolicyReadinessError, KnowledgeReadinessError, PolicyPublicationError) as exc:
         if failure_context is not None:
@@ -8266,6 +8332,13 @@ def gemini_generate(
         metadata = deepcopy(request_context_metadata)
         metadata["budgets"] = {**metadata.get("budgets", {}), "request_bytes": serialized_request_bytes}
         metadata["selected_block_ids"] = list(policy_metadata.get("selected_ids") or [])
+        metadata.setdefault("view_versions", {})["reply_language"] = (
+            "source-reply-language.v1:" + (captured_reply_language.reply_language or "unknown")
+        )
+        snapshot = metadata.get("memory_snapshot")
+        if snapshot and snapshot.get("selected") and "context:memory" not in metadata["selected_block_ids"]:
+            snapshot["selected"] = False
+            snapshot["omission_reason"] = "policy_budget"
         omissions = {item["block_id"]: item for item in metadata.get("omitted_blocks") or []}
         omissions.update({item["id"]: {"block_id": item["id"], "reason": item["reason"]}
                           for item in policy_metadata.get("omitted") or []})
@@ -8324,7 +8397,14 @@ def gemini_generate(
         if revision_scope is not None:
             revision_scope._candidate_media_complaint = None
         decision = response_guard.validate(parsed, usage=usage)
-        if not decision.valid or generation_boundary is None:
+        if not decision.valid:
+            return decision
+        if reply_language_mismatch(response_guard.response.reply_text, captured_reply_language):
+            from management.services.ig_provider_dispatch_budget import ValidationDecision
+            response_guard.source, response_guard.response = None, None
+            response_guard.last_reasons = ("reply_language_mismatch",)
+            return ValidationDecision(False, ("reply_language_mismatch",))
+        if generation_boundary is None:
             return decision
         if revision_scope is not None:
             normalize_media = getattr(generation_boundary, "normalize_media_response", None)
@@ -8341,6 +8421,11 @@ def gemini_generate(
                 from management.services.ig_response_control import ResponseControl
                 response_guard.response = replace(response_guard.response,
                     controls=(*response_guard.response.controls, ResponseControl("manager", True)))
+        if reply_language_mismatch(response_guard.response.reply_text, captured_reply_language):
+            from management.services.ig_provider_dispatch_budget import ValidationDecision
+            response_guard.source, response_guard.response = None, None
+            response_guard.last_reasons = ("reply_language_mismatch",)
+            return ValidationDecision(False, ("reply_language_mismatch",))
         # Revision freshness participates in the provider's winner election;
         # it is not a second generation after the shared dispatch budget ends.
         return generation_boundary.validate(
@@ -8349,10 +8434,19 @@ def gemini_generate(
         )
 
     def repair_attempt(payload, parsed, reasons):
+        def base_repair(payload, parsed, reasons):
+            repaired = response_guard.repair(payload, parsed, reasons)
+            if repaired is not None and "reply_language_mismatch" in reasons:
+                repaired.setdefault("contents", []).append({"role": "user", "parts": [{"text":
+                    reply_language_instruction(captured_reply_language)
+                    + "\nThe previous candidate used the wrong reply language. Return corrected JSON for "
+                    "the same customer turn; retain every source, truth, control and media requirement."
+                }]})
+            return repaired
         if generation_boundary is None:
-            return response_guard.repair(payload, parsed, reasons)
+            return base_repair(payload, parsed, reasons)
         return generation_boundary.repair(
-            payload, parsed, reasons, base_repair=response_guard.repair,
+            payload, parsed, reasons, base_repair=base_repair,
         )
 
     # Діалог із клієнтом — найвищий пріоритет (роль 'chat'): пул ключів
@@ -8411,14 +8505,8 @@ def gemini_generate(
             parse=True,
             deadline_seconds=generation_deadline_seconds,
             routing_decision=routing_decision,
-            result_validator=(
-                validate_attempt if generation_boundary is not None
-                else response_guard.validate
-            ),
-            repair_payload_factory=(
-                repair_attempt if generation_boundary is not None
-                else response_guard.repair
-            ),
+            result_validator=validate_attempt,
+            repair_payload_factory=repair_attempt,
             max_actual_dispatches=8 if durable_reply_scope else 2,
             legacy_provider_root=client is not None and generation_boundary is None and provider_lane == "live",
             request_policy_manifest=policy_metadata,
@@ -8579,6 +8667,11 @@ def gemini_generate(
             failure_context["kind"] = "empty_response"
         log("warning", "gemini_empty", f"порожня відповідь ({_time.monotonic() - _t0:.1f}с)")
         return None
+    if reply_language_mismatch(text.reply_text, captured_reply_language):
+        if failure_context is not None:
+            failure_context["kind"] = "invalid_response"
+            failure_context["validation_reasons"] = ["reply_language_mismatch"]
+        return None
     if (
         images
         and str(getattr(routing_decision, "task_class", "") or "") == "complex_live"
@@ -8715,6 +8808,7 @@ def assemble_system_instruction(
     captured_dynamic_notes: dict | None = None,
     captured_policy_tags=None,
     captured_knowledge_language: str | None = None,
+    captured_reply_language=None,
 ) -> str:
     """Собрать system_instruction; на время сборки — один снимок фактов (Э8.5).
 
@@ -8751,6 +8845,7 @@ def assemble_system_instruction(
             captured_dynamic_notes=captured_dynamic_notes,
             captured_policy_tags=captured_policy_tags,
             captured_knowledge_language=captured_knowledge_language,
+            captured_reply_language=captured_reply_language,
         )
 
 
@@ -8798,6 +8893,7 @@ def _assemble_system_instruction(
     captured_dynamic_notes: dict | None = None,
     captured_policy_tags=None,
     captured_knowledge_language: str | None = None,
+    captured_reply_language=None,
 ) -> str:
     """Compile one ordered policy; mandatory sources are never truncated."""
     from management.services.ig_policy_compiler import PolicyModule, compile_policy
@@ -8815,6 +8911,8 @@ def _assemble_system_instruction(
         knowledge_language = str(language_slot.get("value") or "uk").casefold()
     if captured_knowledge_language is not None:
         knowledge_language = captured_knowledge_language
+    elif captured_reply_language is not None:
+        knowledge_language = captured_reply_language.knowledge_locale
     if knowledge_language not in {"uk", "ru", "en"}:
         knowledge_language = "uk"
     knowledge = read_knowledge_manifest(knowledge_language)
@@ -8824,6 +8922,10 @@ def _assemble_system_instruction(
         captured_tags=captured_policy_tags,
     )
     dynamic = []
+    if captured_reply_language is not None:
+        from management.services.ig_reply_language import reply_language_instruction
+        dynamic.append(PolicyModule("facts:reply_language",
+            reply_language_instruction(captured_reply_language), customer_bound=True))
     omissions = list(selection.omitted)
     state_render = None
     if captured_client_state is not None:
@@ -14511,9 +14613,23 @@ def _process_one_unlocked(s: InstagramBotSettings, row: InstagramBotMessage, lea
                 row,
                 reason=getattr(permission, "reason", "") or "reply_paused",
             )
+        from management.services.ig_reply_language import resolve_own_source_reply_language
+        from management.services.ig_funnel_reset import current_message_floor
+        client = row.client if row.client_id else None
+        sources = [{"message_id": row.pk, "role": "user", "text": row.text,
+            "event_at": (row.provider_created_at or row.created_at).isoformat()}] if (
+            client is not None and row.role == "user" and row.source in {"webhook", "poll"}
+            and row.sender_id == client.igsid and not client.privacy_erasure_started_at
+        ) else []
+        language = resolve_own_source_reply_language(sources=sources,
+            profile_language=str(getattr(client, "language", "") or ""),
+            reset_floor=(current_message_floor(client) or 1) if client is not None else 1,
+            watermark_message_id=row.pk)
+        language_token = _REPLY_LANGUAGE_SCOPE.set((row.client_id, language))
         try:
             return _process_one_inside_reply_boundary(s, row, lease_token, permission)
         finally:
+            _REPLY_LANGUAGE_SCOPE.reset(language_token)
             _stop_typing_indicator()
 
 
@@ -14728,7 +14844,7 @@ def _process_one_inside_reply_boundary(
         )
         persist_decision(row, routing_decision)
         reply = safe_ugc_acknowledgement(
-            row.client,
+            _reply_template_client(row.client),
             "",
             assessment=ugc_assessment,
         )
@@ -15301,7 +15417,7 @@ def _process_one_inside_reply_boundary(
             ugc_analysis = {**(ugc_analysis or {}), "source_service": True}
 
         reply = safe_ugc_acknowledgement(
-            row.client,
+            _reply_template_client(row.client),
             reply,
             assessment=ugc_assessment,
             media_analysis=ugc_analysis,
@@ -15416,6 +15532,15 @@ def _process_one_inside_reply_boundary(
             follow_candidate = None
             needs_manager = False
             model_actions_blocked = True
+
+    if reply and row.client_id and _reply_language_mismatch_for_client(row.client, reply):
+        reply = _response_validation_fallback(row.client, reasons=("reply_language_mismatch",))
+        control = {}
+        controls_valid = False
+        follow_candidate = None
+        needs_manager = False
+        model_actions_blocked = True
+        log("warning", "reply_language_pre_effect", "reply_language_mismatch")
 
     # Закріплюємо товар, якщо модель явно вказала [PRODUCT:id] — щоб подальша
     # оплата формувалась детерміновано саме на нього.
@@ -15562,7 +15687,7 @@ def _process_one_inside_reply_boundary(
                 )
 
                 reply = safe_ugc_acknowledgement(
-                    row.client, "", assessment=ugc_assessment
+                    _reply_template_client(row.client), "", assessment=ugc_assessment
                 )
                 if reply:
                     used_ai_failure_fallback = True
@@ -16017,6 +16142,29 @@ def _process_one_inside_reply_boundary(
             needs_manager = False
             payment_deal = None
             model_actions_blocked = True
+
+    if reply and row.client_id and _reply_language_mismatch_for_client(row.client, reply):
+        reply = _response_validation_fallback(row.client, reasons=("reply_language_mismatch",))
+        control = {}
+        needs_manager = False
+        payment_deal = None
+        model_actions_blocked = True
+        if follow_authorized is not None:
+            try:
+                from management.services.ig_follow_cta import finalize_follow_delivery
+                finalize_follow_delivery(follow_authorized.decision_id, outcome="cancelled_before_io",
+                    lease_token=follow_authorized.lease_token, now=timezone.now())
+                follow_cancelled_before_io = True
+            except Exception as exc:
+                log("warning", "follow_decision_cancel", type(exc).__name__)
+            finally:
+                follow_authorized = None
+        else:
+            cancel_prepared_follow_before_io()
+        log("warning", "reply_language_final", "reply_language_mismatch")
+        if not reply:
+            clear_typing_indicator()
+            return _skip_observed_row(row, reason="reply_language_template_unavailable")
 
     if has_pending_ingress(s, row.sender_id):
         # No text send intent exists yet. Preserve any completed/partial catalog

@@ -58,6 +58,27 @@ class RequestContextManifestTests(SimpleTestCase):
         self.assertNotIn("synthetic-test-secret", serialized)
         self.assertEqual(self.context["payload_stage"], "logical_input")
 
+    def test_optional_dated_memory_metadata_preserves_old_manifest_and_rejects_text(self):
+        snapshot = {"version": "captured-memory.timeline.v2", "head_version": 1,
+            "capture_digest": "a" * 64, "proof_digest": "b" * 64,
+            "summary_digest": "c" * 64, "rendered_digest": "d" * 64,
+            "read_digest": "e" * 64, "delta_rendered_digest": "f" * 64,
+            "source_message_ids": [21], "delta_message_ids": [31],
+            "as_of": {"client_id": 3, "source_namespace": "instagram", "reset_id": None,
+                "reset_floor": 20, "erasure_epoch": "", "watermark": {
+                    "event_at": "2026-10-08T12:00:00+00:00", "message_id": 31}},
+            "reason": "historical_as_of", "selected": True, "omission_reason": ""}
+        metadata = {**self.metadata, "memory_snapshot": snapshot}
+        captured = capture_request_context(payload=self.payload, metadata=metadata)
+        self.assertEqual(captured["memory_snapshot"], snapshot)
+        self.assertEqual(sanitize_request_context(self.context), self.context)
+        for bad in ({**snapshot, "quote": "private text"}, {**snapshot, "selected": "yes"},
+            {**snapshot, "source_message_ids": list(range(1, 34))},
+            {**snapshot, "as_of": {**snapshot["as_of"], "client_id": 4}},
+            {**snapshot, "read_digest": "private text"}):
+            with self.subTest(snapshot=bad), self.assertRaises(RequestPolicyManifestError):
+                capture_request_context(payload=self.payload, metadata={**self.metadata, "memory_snapshot": bad})
+
     def test_strict_unknown_fields_and_injected_metadata_fail_closed(self):
         cases = [
             {**self.metadata, "recipient_phone": "synthetic"},

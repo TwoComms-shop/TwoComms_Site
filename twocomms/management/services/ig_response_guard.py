@@ -262,6 +262,16 @@ def _current_fit_withdrawal(client, revision):
     return {}
 
 
+def _fallback_language(client, revision):
+    from management.services.ig_reply_language import resolve_own_source_reply_language
+    decision = resolve_own_source_reply_language(
+        sources=(revision.bundle_snapshot.get("sources") or []) if revision is not None else (),
+        profile_language=client.language,
+    )
+    language = decision.reply_language or decision.knowledge_locale
+    return language if language in {"uk", "ru", "en"} and language not in decision.excluded_languages else ""
+
+
 def build_source_preference_fallback(client, *, revision=None, response_plan=None):
     """Build fresh local prose, with a recomputable source-backed proof.
 
@@ -293,7 +303,9 @@ def build_source_preference_fallback(client, *, revision=None, response_plan=Non
         # A model/print query already exists; this narrow template cannot decide
         # which remaining selector needs clarification.
         return None, {}
-    language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+    language = _fallback_language(client, revision)
+    if not language:
+        return None, {"reason": "fallback_language_template_unavailable"}
     labels = {"uk": {"oversize": "оверсайз", "classic": "класична посадка"},
               "ru": {"oversize": "оверсайз", "classic": "классическая посадка"},
               "en": {"oversize": "oversize", "classic": "classic fit"}}
@@ -353,7 +365,9 @@ def _planned_source_fallback(client, revision, *, response_plan=None):
         current = withdrawal
     if current is None or not plan.next_selector or not plan.choices:
         return None, {"reason": "fallback_no_source_choice_or_missing_selector"}
-    language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+    language = _fallback_language(client, revision)
+    if not language:
+        return None, {"reason": "fallback_language_template_unavailable"}
     size = plan.choices.get("size")
     fit = plan.choices.get("fit_option_code")
     if size:
@@ -469,7 +483,9 @@ def _cart_source_fallback(client, revision, plan):
                     current = current or deepcopy(proof)
     if current is None:
         return denied("fallback_no_current_source_reduction")
-    language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+    language = _fallback_language(client, revision)
+    if not language:
+        return None, {"reason": "fallback_language_template_unavailable"}
     labels = {"uk": {"black": "чорний", "white": "білий", "blue": "синій", "pink": "рожевий", "grey": "сірий", "green": "зелений", "classic": "класична", "oversize": "оверсайз", "tshirt": "футболку", "hoodie": "худі"},
         "ru": {"black": "чёрный", "white": "белый", "blue": "синий", "pink": "розовый", "grey": "серый", "green": "зелёный", "classic": "классическая", "oversize": "оверсайз", "tshirt": "футболку", "hoodie": "худи"},
         "en": {"tshirt": "t-shirt", "hoodie": "hoodie", "classic": "classic fit", "oversize": "oversize"}}

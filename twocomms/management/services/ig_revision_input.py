@@ -207,6 +207,29 @@ def record_unavailable_media_reply(revision_id, token, *, settings_id, collectio
             if existing.get("snapshot_digest") != revision.snapshot_digest:
                 return RevisionInputDecision(reason="media_clarification_receipt_invalid")
             return RevisionInputDecision(True, "media_unavailable", "owned_media_unavailable", dict(existing), True)
+        from management.services.ig_reply_language import resolve_own_source_reply_language
+        from management.services.ig_conversation_routes import conversation_route_reset_floor
+
+        reply_language = resolve_own_source_reply_language(sources=sources,
+            profile_language=client.language, reset_floor=conversation_route_reset_floor(client.pk),
+            watermark_message_id=max((row["message_id"] for row in sources), default=0))
+        # This renderer has three authored template families. An unsupported
+        # target must never silently enter its Ukrainian default branch.
+        language = reply_language.template_family
+        if language not in {"uk", "ru", "en"}:
+            language = next((code for code in ("en", "uk", "ru")
+                if code not in reply_language.excluded_languages), "")
+        if not language:
+            return RevisionInputDecision(reason="media_clarification_language_unavailable")
+        reply = media_limitation_reply(SimpleNamespace(language=language), media_kinds=[
+            part.get("mime") or part.get("type") or "" for source in sources for part in source.get("media_parts", ())
+        ])
+        if reply_language.reply_language and reply_language.reply_language not in {"uk", "ru", "en"}:
+            reply = {
+                "uk": "Не вдалося надійно підготувати відповідь запитаною мовою. ",
+                "ru": "Не удалось надёжно подготовить ответ на запрошенном языке. ",
+                "en": "I could not prepare a reliable reply in your requested language. ",
+            }[language] + reply
         receipt = {
             "version": "revision-media-clarification-v1", "origin": "media_unavailable", "reason": "owned_media_unavailable",
             "snapshot_digest": revision.snapshot_digest, "source_message_ids": [row["message_id"] for row in sources],
@@ -215,9 +238,8 @@ def record_unavailable_media_reply(revision_id, token, *, settings_id, collectio
             "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
             "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
             "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings), "offer_bindings": [], "authority_digest": authority.authority_digest},
-            "reply_text": media_limitation_reply(client, media_kinds=[
-                part.get("mime") or part.get("type") or "" for source in sources for part in source.get("media_parts", ())
-            ]), "recorded_at": timezone.now().isoformat(),
+            "reply_text": reply, "language": language, "reply_language": reply_language.as_dict(),
+            "recorded_at": timezone.now().isoformat(),
         }
         revision.action_receipts = {**(revision.action_receipts or {}), "media_unavailable_reply": receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])

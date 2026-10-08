@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import re
+from datetime import datetime
 
 from django.conf import settings
 
@@ -30,6 +31,7 @@ _VIEW_KEYS = {
     "canonical_selection", "response_plan_digest", "memory_head_version",
     "memory_capture_digest", "publication_hash", "routing_policy", "facts_version",
     "state_view_version", "core_version",
+    "reply_language",
     "conversation_agreement", "receipt_observation",
 }
 _DIGEST_VIEW_KEYS = {"response_plan_digest", "memory_capture_digest", "publication_hash"}
@@ -39,9 +41,56 @@ _METADATA_KEYS = {
     "selected_block_ids", "omitted_blocks", "readiness_codes", "budgets",
     "view_versions", "media",
 }
+_OPTIONAL_METADATA_KEYS = {"memory_snapshot"}
+_MEMORY_KEYS = {"version", "head_version", "capture_digest", "proof_digest", "summary_digest",
+    "rendered_digest", "read_digest", "delta_rendered_digest", "source_message_ids",
+    "delta_message_ids", "as_of", "reason", "selected", "omission_reason"}
 _CONTEXT_KEYS = _METADATA_KEYS | {
     "schema_version", "payload_stage", "digest_scheme", "context_digest", "request_digest",
 }
+
+
+def _memory_snapshot(value):
+    raw = _object(value, _MEMORY_KEYS)
+    if not raw:
+        return {}
+    if set(raw) != _MEMORY_KEYS or type(raw["selected"]) is not bool:
+        _invalid()
+    version = raw["version"]
+    if version not in {None, "captured-memory.v1", "captured-memory.timeline.v2"}:
+        _invalid()
+    result = {"version": version, "head_version": None if raw["head_version"] is None else _count(raw["head_version"], positive=True)}
+    for key in ("capture_digest", "proof_digest", "summary_digest", "rendered_digest", "read_digest", "delta_rendered_digest"):
+        result[key] = _digest(raw[key]) if raw[key] else ""
+        if not isinstance(raw[key], str):
+            _invalid()
+    for key, limit in (("source_message_ids", 32 if version == "captured-memory.timeline.v2" else 60), ("delta_message_ids", 24)):
+        result[key] = _ids(raw[key])
+        if len(result[key]) > limit:
+            _invalid()
+    for key in ("reason", "omission_reason"):
+        result[key] = _token(raw[key]) if raw[key] else ""
+        if not isinstance(raw[key], str) or (raw[key] and not _CODE.fullmatch(raw[key])):
+            _invalid()
+    result["selected"] = raw["selected"]
+    result["as_of"] = None
+    if raw["as_of"] is not None:
+        at = _object(raw["as_of"], {"client_id", "source_namespace", "reset_id", "reset_floor", "erasure_epoch", "watermark"}, exact=True)
+        wm = _object(at["watermark"], {"event_at", "message_id"}, exact=True)
+        try:
+            stamp = datetime.fromisoformat(wm["event_at"].replace("Z", "+00:00"))
+            if stamp.tzinfo is None or at["erasure_epoch"] != "":
+                _invalid()
+        except (AttributeError, TypeError, ValueError):
+            _invalid()
+        result["as_of"] = {"client_id": _count(at["client_id"], positive=True),
+            "source_namespace": _token(at["source_namespace"]),
+            "reset_id": None if at["reset_id"] is None else _count(at["reset_id"], positive=True),
+            "reset_floor": _count(at["reset_floor"], positive=True), "erasure_epoch": "",
+            "watermark": {"event_at": wm["event_at"], "message_id": _count(wm["message_id"], positive=True)}}
+    if result["selected"] and (not version or result["omission_reason"] or not result["rendered_digest"]):
+        _invalid()
+    return result
 _DISPATCH_KEYS = {
     "schema_version", "payload_stage", "digest_scheme", "revision_id", "client_id",
     "request_digest", "logical_request_digest", "attempt_index", "model",
@@ -97,7 +146,7 @@ def _tokens(values, *, codes=False):
 
 
 def _metadata(value):
-    raw = _object(value, _METADATA_KEYS)
+    raw = _object(value, _METADATA_KEYS | _OPTIONAL_METADATA_KEYS)
     omitted = raw.get("omitted_blocks", [])
     if not isinstance(omitted, list) or len(omitted) > MAX_ITEMS:
         _invalid()
@@ -135,6 +184,10 @@ def _metadata(value):
         },
         "media": {key: _tokens(media.get(key, [])) for key in ("admitted_part_ids", "omitted_part_ids", "unavailable_part_ids")},
     }
+    if "memory_snapshot" in raw:
+        result["memory_snapshot"] = _memory_snapshot(raw["memory_snapshot"])
+        if result["memory_snapshot"].get("as_of") and result["memory_snapshot"]["as_of"]["client_id"] != result["client_id"]:
+            _invalid()
     if set(result["selected_block_ids"]) & {item["block_id"] for item in safe_omitted}:
         _invalid()
     media_ids = [value for values in result["media"].values() for value in values]
@@ -177,11 +230,13 @@ def capture_request_context(*, payload, metadata):
 
 def sanitize_request_context(value):
     """Strict extension boundary; reject unknown keys and noncanonical IDs."""
-    raw = _object(value, _CONTEXT_KEYS, exact=True)
+    raw = _object(value, _CONTEXT_KEYS | _OPTIONAL_METADATA_KEYS)
+    if not _CONTEXT_KEYS.issubset(raw):
+        _invalid()
     if raw["schema_version"] != SCHEMA_VERSION or raw["payload_stage"] != "logical_input" or raw["digest_scheme"] != "hmac-sha256-django-secret-v1":
         _invalid()
     return {
-        **_metadata({key: raw[key] for key in _METADATA_KEYS}),
+        **_metadata({key: raw[key] for key in _METADATA_KEYS | _OPTIONAL_METADATA_KEYS if key in raw}),
         "schema_version": SCHEMA_VERSION, "payload_stage": "logical_input",
         "digest_scheme": "hmac-sha256-django-secret-v1",
         "context_digest": _digest(raw["context_digest"]), "request_digest": _digest(raw["request_digest"]),

@@ -176,6 +176,11 @@ def _collaboration_holding_reply(
             "brief results from previous projects" if not results_present else "",
             "a convenient contact such as phone or Telegram" if not contact_present else "",
         ],
+        "hi": [
+            "पोर्टफ़ोलियो या फ़ोटो और वीडियो के नमूने" if not evidence_present else "",
+            "पिछले प्रोजेक्टों के संक्षिप्त परिणाम" if not results_present else "",
+            "संपर्क करने का कोई सुविधाजनक तरीका, जैसे फ़ोन या Telegram" if not contact_present else "",
+        ],
     }.get(language, [])
     missing = [item for item in missing if item]
     if language == "ru":
@@ -186,6 +191,10 @@ def _collaboration_holding_reply(
         prefix = "Thank you for your collaboration proposal. I have passed it to our management for review."
         request = " Please send " + ", ".join(missing) + "." if missing else ""
         suffix = " If the team is interested, they will contact you."
+    elif language == "hi":
+        prefix = "आपके सहयोग प्रस्ताव के लिए धन्यवाद। मैंने इसे समीक्षा के लिए हमारी टीम को भेज दिया है।"
+        request = " कृपया भेजें: " + ", ".join(missing) + "।" if missing else ""
+        suffix = " अगर टीम को प्रस्ताव में रुचि होगी, तो वह आपसे संपर्क करेगी।"
     else:
         prefix = "Дякую за пропозицію співпраці. Я передала її керівництву на розгляд."
         request = " Будь ласка, надішліть " + ", ".join(missing) + "." if missing else ""
@@ -434,15 +443,29 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                     existing,
                     True,
                 )
-            language = client.language if client.language in {"uk", "ru", "en"} else "uk"
+            from management.services.ig_reply_language import resolve_own_source_reply_language
+            from management.services.ig_conversation_routes import conversation_route_reset_floor
+
+            # Existing receipts were checked/replayed above. New replies use
+            # this exact frozen current source set, never a newer DB message or
+            # stale cached profile language. Business handoff proof is unchanged.
+            reply_language = resolve_own_source_reply_language(
+                sources=revision.bundle_snapshot.get("sources") or [], profile_language=client.language,
+                reset_floor=conversation_route_reset_floor(client.pk),
+                watermark_message_id=max((row["message_id"] for row in revision.bundle_snapshot.get("sources", ())), default=0))
+            language = reply_language.template_family
+            if not language:
+                return RevisionInputDecision(reason="holding_language_template_unavailable")
             texts = ({
                 "uk": "Не вдалося надійно підготувати відповідь на ваш запит. Передав питання команді для уточнення.",
                 "ru": "Не удалось надёжно подготовить ответ на ваш запрос. Передал вопрос команде для уточнения.",
                 "en": "I could not prepare a reliable answer to your request. I have referred your question to the team for clarification.",
+                "hi": "मैं आपके अनुरोध का भरोसेमंद जवाब तैयार नहीं कर सकी। मैंने इसे स्पष्टीकरण के लिए हमारी टीम को भेज दिया है।",
             } if positive_request else {
                 "uk": "Дякую за повідомлення.",
                 "ru": "Спасибо за сообщение.",
                 "en": "Thanks for your message.",
+                "hi": "आपके संदेश के लिए धन्यवाद।",
             })
             from management.services.ig_revision_intents import _collaboration_route_present
             collaboration_request = _collaboration_route_present(revision) or any(
@@ -460,6 +483,13 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             else:
                 text = texts[language]
                 collaboration_task = collaboration_notification = None
+            if reply_language.reply_language and reply_language.reply_language not in {"uk", "ru", "en", "hi"}:
+                text = {
+                    "uk": "Не вдалося надійно підготувати відповідь запитаною мовою. ",
+                    "ru": "Не удалось надёжно подготовить ответ на запрошенном языке. ",
+                    "en": "I could not prepare a reliable reply in your requested language. ",
+                    "hi": "मैं आपकी अनुरोधित भाषा में भरोसेमंद जवाब तैयार नहीं कर सकी। ",
+                }[language] + text
             guard = ProviderResponseGuard(context_factory=lambda _control, _reply: ReplyTruthContext())
             if not guard.validate({"reply_text": text, "controls": []}).valid:
                 return RevisionInputDecision(reason="holding_local_guard_failed")
@@ -474,6 +504,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                     "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),
                                   "offer_bindings": [], "authority_digest": authority.authority_digest},
                     "reply_text": text, "reply_digest": _digest(text), "language": language,
+                    "reply_language": reply_language.as_dict(),
                     "recorded_at": timezone.now().isoformat(), "substantive_obligation": "none",
                     "reply_mode": "neutral_ack",
                 }
@@ -506,6 +537,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),
                               "offer_bindings": [], "authority_digest": authority.authority_digest},
                 "reply_text": text, "reply_digest": _digest(text), "language": language,
+                "reply_language": reply_language.as_dict(),
                 "recorded_at": timezone.now().isoformat(), "substantive_obligation": "open_manager_reply",
                 "reply_mode": "manager_handoff" if positive_request else "neutral_ack",
             }

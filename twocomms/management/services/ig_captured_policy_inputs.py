@@ -15,7 +15,7 @@ from management.services.ig_turn_intelligence import (
     capture_digest, current_objections,
 )
 
-VERSION = "captured-policy-inputs.v1"
+VERSION = "captured-policy-inputs.v2"
 LANGUAGES = frozenset({"uk", "ru", "en"})
 
 
@@ -97,18 +97,12 @@ def _validated_inputs(client_id, boundary, sources, history, captured_at):
 
 
 def _language(sources, history):
-    from management.services.bot_sales_classifier import detect_language, detect_language_request
+    from management.services.ig_reply_language import resolve_own_source_reply_language
 
-    # An explicit current request wins even when another current message is
-    # written in the old language. Otherwise use the last meaningful source.
-    for rows, label in ((sources, "current_source"), (history, "captured_history")):
-        users = [row for row in rows if row.get("role") == "user"]
-        for detector, kind in ((detect_language_request, "requested"), (detect_language, "observed")):
-            for row in reversed(users):
-                code = detector(str(row.get("text") or ""))
-                if code in LANGUAGES:
-                    return code, row, label + "_" + kind
-    return "", None, "language_source_unknown"
+    decision = resolve_own_source_reply_language(sources=sources, history=history)
+    evidence = next((row for row in (*sources, *history)
+        if row.get("message_id") == decision.source_message_id), None)
+    return decision.reply_language, evidence, decision.basis
 
 
 def capture_policy_inputs(client_id, *, boundary, sources, history, response_plan, captured_at):
@@ -136,17 +130,26 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
         or client.current_commercial_episode_id != boundary["episode_id"]):
         raise TurnContextError("policy_capture_owner_changed")
     scope = {key: boundary.get(key) for key in (*SCOPE_KEYS, "order_id")}
-    language, evidence, language_basis = _language(sources, history)
+    from management.services.ig_reply_language import resolve_own_source_reply_language
+
+    decision = resolve_own_source_reply_language(sources=sources, history=history,
+        profile_language=client.language, reset_floor=boundary["reset_floor"],
+        watermark_message_id=boundary["watermark"]["message_id"],
+        watermark_event_at=boundary["watermark"]["event_at"])
+    language = decision.reply_language
+    evidence = next((row for row in (*sources, *history)
+        if row.get("message_id") == decision.source_message_id), None)
+    language_basis = decision.basis if evidence else "language_source_unknown"
     hint = client.language if client.language in LANGUAGES else ""
-    knowledge_language = language or hint or "uk"
-    language_slot = {"value": language or None, "status": "confirmed" if evidence else "unknown",
+    knowledge_language = decision.knowledge_locale
+    language_slot = {"value": language or None, "status": "confirmed" if language and evidence else "unknown",
         "authority": "customer_source" if evidence else "none", "scope": scope,
         "source_refs": ([{"kind": "message", "id": evidence["message_id"],
                           "event_at": evidence.get("provider_created_at") or evidence.get("observed_created_at") or evidence.get("event_at")}]
                         if evidence else []),
         "observed_at": (evidence.get("provider_created_at") or evidence.get("observed_created_at") or evidence.get("event_at")) if evidence else None,
-        "validity": "valid" if evidence else "unknown", "mandatory": bool(evidence),
-        "omission_reason": "" if evidence else "language_source_unknown"}
+        "validity": "valid" if language and evidence else "unknown", "mandatory": bool(language and evidence),
+        "omission_reason": "" if language and evidence else "language_source_unknown"}
     tags = {"global", "core", "sales", knowledge_language}
     objections = current_objections(sources)
     for item in objections:
@@ -207,8 +210,9 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
     payload = {"tags": sorted(tags), "automation_note": automation_note,
         "knowledge_language": knowledge_language, "state_slots": {"language": language_slot},
         "metadata": {"version": VERSION, "language_basis": language_basis,
-            "knowledge_language_basis": language_basis if language else "stored_profile_hint" if hint else "compatibility_default",
+            "knowledge_language_basis": language_basis if language else "stored_profile_hint" if hint and hint not in decision.excluded_languages else "compatibility_default",
             "language_source_id": evidence["message_id"] if evidence else None,
+            "reply_language": decision.as_dict(),
             "service": service, "omissions": omissions, "read_only": True,
             "routing_stage_basis": "current_episode_order_created" if "order_created" in tags else "stage_source_unknown"}}
     return CapturedPolicyInputs(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False))

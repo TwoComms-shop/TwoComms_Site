@@ -575,12 +575,17 @@ class RevisionGenerationBoundary:
         analysis = _media_reply_analysis({"parts": parts, "capture_outcomes": media["outcomes"]}, self.revision)
         from management.services.ig_turn_intent import build_turn_intent
         intent = build_turn_intent(self.revision.client, self.revision)
-        from management.services.instagram_bot import _media_reply_source_context
+        from management.services.instagram_bot import _media_reply_source_context, _authored_reply_locale
         context = _media_reply_source_context(self.revision.client,
             _revision_media_reply_sources(self.revision, self.revision.client),
             commerce_evidence_refs=intent["commerce_evidence_refs"])
         analysis = {**analysis, "source_service": context["source_service"]}
-        return replace(response, reply_text=normalize_media_reply(self.revision.client,
+        from types import SimpleNamespace
+        from management.services.ig_reply_language import resolve_own_source_reply_language
+        locale = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+            profile_language=self.revision.client.language)
+        template_client = SimpleNamespace(language=_authored_reply_locale(locale))
+        return replace(response, reply_text=normalize_media_reply(template_client,
             response.reply_text, media_analysis=analysis, social_only=context["social_only"]),
             controls=tuple(item for item in response.controls if item.kind == "manager") if context["suppress_catalog"] else response.controls)
 
@@ -797,8 +802,8 @@ def _revision_media_reply_sources(revision, client):
     return result
 
 
-def _normalize_response(response, artifact, client, *, revision=None):
-    from management.services.instagram_bot import _apply_turn_intelligence_resolution, _media_reply_source_context
+def _normalize_response(response, artifact, client, *, revision=None, reply_language=None):
+    from management.services.instagram_bot import _apply_turn_intelligence_resolution, _media_reply_source_context, _authored_reply_locale
 
     analysis = artifact.get("media_analysis") if isinstance(artifact, dict) else None
     context = {"social_only": False, "suppress_catalog": False, "source_service": False}
@@ -812,11 +817,15 @@ def _normalize_response(response, artifact, client, *, revision=None):
     else:
         reply, control = _apply_turn_intelligence_resolution(
             response.reply_text, response.control, artifact, client,
+            reply_language=reply_language,
         )
     if analysis is not None:
         from management.services.ig_media_response import normalize_media_reply
+        from types import SimpleNamespace
+        template_client = (SimpleNamespace(language=_authored_reply_locale(reply_language))
+            if reply_language is not None else client)
         analysis = {**analysis, "source_service": context["source_service"]}
-        reply = normalize_media_reply(client, reply,
+        reply = normalize_media_reply(template_client, reply,
             media_analysis=_media_reply_analysis(analysis, revision) if revision is not None else analysis,
             social_only=context["social_only"])
     controls = []
@@ -957,6 +966,17 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         coverage_note += "\n" + conversation_timing_guidance(revision)
         coverage_note += "\n" + boundary.response_plan.prompt_guidance()
     from management.services.gemini_accounting_runtime import revision_request_execution
+    from management.services.ig_reply_language import resolve_own_source_reply_language
+    from management.services.ig_turn_capture import detached_payload
+    language_boundary = detached_payload(prepared_context.context.boundary) if prepared_context is not None else {}
+    reply_language = resolve_own_source_reply_language(
+        sources=sources,
+        history=detached_payload(prepared_context.context.captured_history) if prepared_context is not None else (),
+        profile_language=revision.client.language,
+        reset_floor=language_boundary.get("reset_floor", 1),
+        watermark_message_id=language_boundary.get("watermark", {}).get("message_id", source_id),
+        watermark_event_at=language_boundary.get("watermark", {}).get("event_at"),
+    )
 
     with revision_request_execution(
         revision.pk, token, settings_id=settings_row.pk,
@@ -983,6 +1003,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
             request_context_metadata=request_context_metadata,
             captured_policy_tags=prepared_context.policy_inputs.tags if prepared_context is not None else None,
             captured_knowledge_language=prepared_context.policy_inputs.knowledge_language if prepared_context is not None else None,
+            captured_reply_language=reply_language,
         )
     if not isinstance(response, ValidatedResponse) or not response.valid:
         return None, boundary, boundary.last_reasons or (str(failure.get("kind") or "generation_failed"),)
@@ -1024,7 +1045,11 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     )
     if artifact:
         artifact["request_permission_epoch"] = revision.permission_epoch
-    response = _normalize_response(response, artifact, revision.client, revision=revision)
+    response = _normalize_response(response, artifact, revision.client, revision=revision,
+        reply_language=reply_language)
+    from management.services.ig_reply_language import reply_language_mismatch
+    if reply_language_mismatch(response.reply_text, reply_language):
+        return None, boundary, ("reply_language_mismatch",)
     authority = boundary.response_authority(response)
     readiness = boundary.check(authority)
     if not readiness.ready:
