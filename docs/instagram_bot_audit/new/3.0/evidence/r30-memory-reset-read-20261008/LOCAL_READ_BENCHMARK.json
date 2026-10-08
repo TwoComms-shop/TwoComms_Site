@@ -1,0 +1,146 @@
+[
+  {
+    "depth": 1,
+    "evidence_rows": 3,
+    "facts": 3,
+    "heads": 3,
+    "measurements": {
+      "baseline_5dce77dbd": {
+        "cpu": {
+          "p50_ms": 4.735,
+          "p95_ms": 5.258
+        },
+        "reads": 10,
+        "select_counts": [
+          11
+        ],
+        "wall": {
+          "p50_ms": 6.149,
+          "p95_ms": 6.787
+        }
+      },
+      "batched": {
+        "cpu": {
+          "p50_ms": 3.629,
+          "p95_ms": 4.082
+        },
+        "reads": 10,
+        "select_counts": [
+          7
+        ],
+        "wall": {
+          "p50_ms": 5.579,
+          "p95_ms": 6.455
+        }
+      }
+    }
+  },
+  {
+    "depth": 32,
+    "evidence_rows": 34,
+    "facts": 34,
+    "heads": 3,
+    "measurements": {
+      "baseline_5dce77dbd": {
+        "cpu": {
+          "p50_ms": 7.741,
+          "p95_ms": 122.316
+        },
+        "reads": 10,
+        "select_counts": [
+          11
+        ],
+        "wall": {
+          "p50_ms": 9.454,
+          "p95_ms": 123.976
+        }
+      },
+      "batched": {
+        "cpu": {
+          "p50_ms": 6.095,
+          "p95_ms": 7.583
+        },
+        "reads": 10,
+        "select_counts": [
+          7
+        ],
+        "wall": {
+          "p50_ms": 8.582,
+          "p95_ms": 10.163
+        }
+      }
+    }
+  },
+  {
+    "depth": 128,
+    "evidence_rows": 130,
+    "facts": 130,
+    "heads": 3,
+    "measurements": {
+      "baseline_5dce77dbd": {
+        "cpu": {
+          "p50_ms": 15.405,
+          "p95_ms": 18.617
+        },
+        "reads": 10,
+        "select_counts": [
+          11
+        ],
+        "wall": {
+          "p50_ms": 17.576,
+          "p95_ms": 20.908
+        }
+      },
+      "batched": {
+        "cpu": {
+          "p50_ms": 13.754,
+          "p95_ms": 16.924
+        },
+        "reads": 10,
+        "select_counts": [
+          7
+        ],
+        "wall": {
+          "p50_ms": 18.079,
+          "p95_ms": 21.27
+        }
+      }
+    }
+  },
+  {
+    "depth": 512,
+    "evidence_rows": 514,
+    "facts": 514,
+    "heads": 3,
+    "measurements": {
+      "baseline_5dce77dbd": {
+        "cpu": {
+          "p50_ms": 48.446,
+          "p95_ms": 108.233
+        },
+        "reads": 10,
+        "select_counts": [
+          11
+        ],
+        "wall": {
+          "p50_ms": 52.1,
+          "p95_ms": 112.078
+        }
+      },
+      "batched": {
+        "cpu": {
+          "p50_ms": 46.119,
+          "p95_ms": 119.133
+        },
+        "reads": 10,
+        "select_counts": [
+          7
+        ],
+        "wall": {
+          "p50_ms": 55.793,
+          "p95_ms": 128.62
+        }
+      }
+    }
+  }
+]

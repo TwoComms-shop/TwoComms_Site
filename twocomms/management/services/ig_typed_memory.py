@@ -12,7 +12,8 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import DatabaseError, IntegrityError, OperationalError, connection, transaction
-from django.db.models import F, OuterRef, Q, Subquery
+from django.db.models import F, OuterRef, Q, Subquery, Window
+from django.db.models.functions import RowNumber
 from django.utils import timezone
 
 from management.models import (
@@ -67,6 +68,17 @@ class PublishOutcome:
     created_facts: int = 0
     advanced_heads: int = 0
     unchanged_heads: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoryChainReadBundle:
+    """One read's bounded immutable-row materialization, never a shared cache."""
+
+    slot_key: str
+    head_fingerprint: str
+    keyring_fingerprint: str
+    chain_limit: int
+    facts: tuple[IgMemoryFact, ...]
 
 
 def configured_mode() -> str:
@@ -427,6 +439,55 @@ def head_integrity_valid(head: IgMemoryHead) -> bool:
     return hmac.compare_digest(str(head.projection_hmac or ""), expected)
 
 
+def _memory_head_read_fingerprint(head: IgMemoryHead) -> str:
+    values = {field: getattr(head, field) for field in _head_hmac_payload({})}
+    values["projection_hmac"] = head.projection_hmac
+    values["head_id"] = head.pk
+    return _sha(values)
+
+
+def _memory_keyring_read_fingerprint() -> str:
+    active, ring, errors = _keyring_configuration()
+    return _sha({
+        "active": active,
+        "keys": {key: hashlib.sha256(secret).hexdigest() for key, secret in ring.items()},
+        "errors": errors,
+    })
+
+
+def _materialize_memory_read_chains(heads) -> None:
+    """Batch selected slots with the same per-slot overflow sentinel as reads.
+
+    The window bound applies independently to each slot. A global LIMIT could
+    let one overflowing slot hide records from another slot. The bundles live
+    only on this read's freshly hydrated heads; every validator still checks the
+    complete append chain and all signatures, source manifests and ordinals.
+    """
+    by_slot = {head.slot_key: [] for head in heads}
+    facts = (
+        IgMemoryFact.objects.filter(slot_key__in=by_slot)
+        .annotate(_memory_chain_row=Window(
+            expression=RowNumber(), partition_by=[F("slot_key")],
+            order_by=F("id").desc(),
+        ))
+        .filter(_memory_chain_row__lte=MAX_CHAIN_DEPTH + 1)
+        .select_related("source_result")
+        .prefetch_related("evidence_rows")
+        .order_by("slot_key", "-id")
+    )
+    for fact in facts:
+        by_slot[fact.slot_key].append(fact)
+    ring_fingerprint = _memory_keyring_read_fingerprint()
+    for head in heads:
+        head._typed_memory_read_chain = _MemoryChainReadBundle(
+            slot_key=head.slot_key,
+            head_fingerprint=_memory_head_read_fingerprint(head),
+            keyring_fingerprint=ring_fingerprint,
+            chain_limit=MAX_CHAIN_DEPTH,
+            facts=tuple(by_slot[head.slot_key]),
+        )
+
+
 def memory_chain_valid(head: IgMemoryHead) -> bool:
     """Validate the exact current slot and its complete bounded append chain."""
     if not head_integrity_valid(head):
@@ -448,12 +509,24 @@ def memory_chain_valid(head: IgMemoryHead) -> bool:
         head.fact_key,
         head.schema_version,
     )
-    facts = list(
-        IgMemoryFact.objects.filter(slot_key=head.slot_key)
-        .select_related("source_result")
-        .prefetch_related("evidence_rows")
-        .order_by("-id")[:MAX_CHAIN_DEPTH + 1]
-    )
+    bundle = getattr(head, "_typed_memory_read_chain", None)
+    if bundle is not None:
+        if (
+            not isinstance(bundle, _MemoryChainReadBundle)
+            or bundle.slot_key != head.slot_key
+            or bundle.chain_limit != MAX_CHAIN_DEPTH
+            or bundle.head_fingerprint != _memory_head_read_fingerprint(head)
+            or bundle.keyring_fingerprint != _memory_keyring_read_fingerprint()
+        ):
+            return False
+        facts = bundle.facts
+    else:
+        facts = list(
+            IgMemoryFact.objects.filter(slot_key=head.slot_key)
+            .select_related("source_result")
+            .prefetch_related("evidence_rows")
+            .order_by("-id")[:MAX_CHAIN_DEPTH + 1]
+        )
     if len(facts) > MAX_CHAIN_DEPTH:
         return False
     by_id = {fact.pk: fact for fact in facts}
@@ -873,6 +946,11 @@ def _append_memory_tombstone_once(
     reason_code: str,
     source_role: str = "system",
     now=None,
+    expected_current_fact_id: int | None = None,
+    expected_revision: int | None = None,
+    expected_client_id: int | None = None,
+    reset_after_message_id: int | None = None,
+    expected_reset_id: int | None = None,
 ) -> PublishOutcome:
     """Append one deterministic invalidation/expiry and advance its exact head."""
     if not shadow_enabled():
@@ -908,6 +986,32 @@ def _append_memory_tombstone_once(
                 .select_related("current_fact")
                 .get(pk=head_id)
             )
+            if (
+                head.client_id != client.pk
+                or (expected_client_id is not None and head.client_id != expected_client_id)
+                or (expected_current_fact_id is not None and head.current_fact_id != expected_current_fact_id)
+                or (expected_revision is not None and head.revision != expected_revision)
+            ):
+                return PublishOutcome(status="stale")
+            if reset_after_message_id is not None:
+                from management.models import IgFunnelResetAudit
+
+                latest_reset = (
+                    IgFunnelResetAudit.objects.filter(client_id=client.pk)
+                    .order_by("-id")
+                    .values("id", "reset_after_message_id")
+                    .first()
+                )
+                if (
+                    operation != IgMemoryFact.Operation.INVALIDATE
+                    or reason_code != "reset_boundary"
+                    or latest_reset is None
+                    or latest_reset["reset_after_message_id"] != reset_after_message_id
+                    or (expected_reset_id is not None and latest_reset["id"] != expected_reset_id)
+                    or head.scope not in (IgMemoryFact.Scope.EPISODE, IgMemoryFact.Scope.LINE)
+                    or head.current_fact.source_watermark_message_id > reset_after_message_id
+                ):
+                    return PublishOutcome(status="stale")
             if not memory_chain_valid(head):
                 return PublishOutcome(status="not_active")
             if int(head.revision or 0) >= MAX_CHAIN_DEPTH:
@@ -1052,18 +1156,26 @@ def expire_due_memory(*, limit=100, now=None) -> dict:
 def invalidate_memory_for_reset(*, client_id: int, reset_after_message_id: int) -> dict:
     if not shadow_enabled():
         return {"mode": MODE_OFF, "considered": 0, "invalidated": 0}
-    ids = list(
+    from management.models import IgFunnelResetAudit
+
+    boundary = max(0, int(reset_after_message_id or 0))
+    latest_reset = (
+        IgFunnelResetAudit.objects.filter(client_id=client_id)
+        .order_by("-id").values("id", "reset_after_message_id").first()
+    )
+    if latest_reset is None or latest_reset["reset_after_message_id"] != boundary:
+        return {"mode": MODE_SHADOW, "considered": 0, "invalidated": 0, "stale": 1}
+    rows = list(
         IgMemoryHead.objects.filter(
             client_id=client_id,
             state=IgMemoryHead.State.ACTIVE,
             scope__in=(IgMemoryFact.Scope.EPISODE, IgMemoryFact.Scope.LINE),
-            current_fact__source_watermark_message_id__lte=max(
-                0, int(reset_after_message_id or 0)
-            ),
-        ).order_by("slot_key").values_list("pk", flat=True)
+            current_fact__source_watermark_message_id__lte=boundary,
+        ).order_by("slot_key").values("pk", "current_fact_id", "revision")
     )
-    invalidated = 0
-    for head_id in ids:
+    invalidated = stale = 0
+    for row in rows:
+        head_id = row["pk"]
         digest = _sha({
             "client_id": int(client_id),
             "reset_after_message_id": int(reset_after_message_id or 0),
@@ -1074,12 +1186,19 @@ def invalidate_memory_for_reset(*, client_id: int, reset_after_message_id: int) 
             operation=IgMemoryFact.Operation.INVALIDATE,
             source_event_digest=digest,
             reason_code="reset_boundary",
+            expected_current_fact_id=row["current_fact_id"],
+            expected_revision=row["revision"],
+            expected_client_id=client_id,
+            reset_after_message_id=boundary,
+            expected_reset_id=latest_reset["id"],
         )
         invalidated += int(outcome.status == "published")
+        stale += int(outcome.status == "stale")
     return {
         "mode": MODE_SHADOW,
-        "considered": len(ids),
+        "considered": len(rows),
         "invalidated": invalidated,
+        "stale": stale,
     }
 
 
@@ -1106,11 +1225,11 @@ def reconcile_reset_tombstones(*, limit=100) -> dict:
             current_fact__source_watermark_message_id__lte=F("reset_boundary"),
         )
         .order_by("slot_key")
-        .values("id", "client_id", "reset_boundary", "reset_id")[:
+        .values("id", "client_id", "current_fact_id", "revision", "reset_boundary", "reset_id")[:
             max(1, min(int(limit or 1), MAX_RECONCILE))
         ]
     )
-    invalidated = 0
+    invalidated = stale = 0
     for row in rows:
         digest = _sha({
             "client_id": row["client_id"],
@@ -1123,12 +1242,19 @@ def reconcile_reset_tombstones(*, limit=100) -> dict:
             operation=IgMemoryFact.Operation.INVALIDATE,
             source_event_digest=digest,
             reason_code="reset_boundary",
+            expected_current_fact_id=row["current_fact_id"],
+            expected_revision=row["revision"],
+            expected_client_id=row["client_id"],
+            reset_after_message_id=row["reset_boundary"],
+            expected_reset_id=row["reset_id"],
         )
         invalidated += int(outcome.status == "published")
+        stale += int(outcome.status == "stale")
     return {
         "mode": MODE_SHADOW,
         "considered": len(rows),
         "invalidated": invalidated,
+        "stale": stale,
     }
 
 
@@ -1359,6 +1485,17 @@ def read_typed_memory(
             episode_id=episode_id,
             line_id=line_id,
             reason="no_matching_heads",
+        )
+
+    try:
+        _materialize_memory_read_chains(heads)
+    except DatabaseError:
+        return _memory_read_result(
+            MEMORY_READ_INVALID,
+            client_id=client_id,
+            episode_id=episode_id,
+            line_id=line_id,
+            reason="storage_error",
         )
 
     facts: list[dict] = []
