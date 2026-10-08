@@ -26,7 +26,9 @@ from management.services.ig_delivery_receipts import (
     normalize_provider_message_ids,
 )
 from management.services.ig_post_purchase_invitation import (
+    INVITATION_PAYLOAD_KEY,
     post_purchase_invitation_block_reason,
+    post_purchase_invitation_snapshot,
     post_purchase_invitation_text,
 )
 
@@ -270,11 +272,13 @@ def _event_specs(assignment, *, now):
                 "payload": {"tracking_number": tracking, "tracking_url": f"https://novaposhta.ua/tracking/?cargo_number={tracking}"},
             }
     if nova_poshta_order_fulfillment_confirmed(order):
+        invitation, message = post_purchase_invitation_snapshot(client, order, locale)
         yield {
             "kind": "delivered_review",
             "event_key": f"ig-assignment:{assignment.pk}:v{assignment.version}:delivered-review",
-            "message": _message("delivered_review", locale, order, tracking),
+            "message": message,
             "payload": {
+                INVITATION_PAYLOAD_KEY: invitation,
                 "order_number": order.order_number or str(order.pk),
                 "tracking_number": tracking,
                 "tracking_status_code": int(order.tracking_status_code),
@@ -517,7 +521,10 @@ def _event_send_boundary(
                 boundary_state["canonical_handoff"] = True
             invitation_reason = ""
             if current_event and order and client and current_event.kind == "delivered_review":
-                invitation_reason = post_purchase_invitation_block_reason(client, order)
+                invitation_reason = post_purchase_invitation_block_reason(
+                    client, order, current_event.payload,
+                    current_event.message_snapshot, current_event.locale,
+                )
                 boundary_state["invitation_reason"] = invitation_reason
             eligible_without_window = bool(
                 current_event
@@ -609,7 +616,9 @@ def deliver_event(event_id, *, send=True, now=None):
         _finish(event, token=token, state=IgOrderCustomerEvent.State.CANCELLED, now=now, error="client hidden or opted out")
         return "cancelled"
     if event.kind == "delivered_review":
-        invitation_reason = post_purchase_invitation_block_reason(client, event.order)
+        invitation_reason = post_purchase_invitation_block_reason(
+            client, event.order, event.payload, event.message_snapshot, event.locale,
+        )
         if invitation_reason:
             _finish(event, token=token, state=IgOrderCustomerEvent.State.CANCELLED,
                     now=now, error=invitation_reason)

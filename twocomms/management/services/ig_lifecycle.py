@@ -35,7 +35,9 @@ from management.services.ig_delivery_receipts import (
 )
 from management.services.ig_post_purchase_invitation import (
     INVITATION_BLOCK_REASONS,
+    INVITATION_PAYLOAD_KEY,
     post_purchase_invitation_block_reason,
+    post_purchase_invitation_snapshot,
     post_purchase_invitation_text,
 )
 from orders.fulfillment_truth import nova_poshta_order_fulfillment_confirmed
@@ -717,7 +719,12 @@ def ensure_lifecycle_event(order, kind, *, payload=None, due_at=None):
         return None, False
     key = _event_key(order, kind, payload)
     locale = _locale(getattr(context["client"], "language", "uk"))
-    payload[MESSAGE_SNAPSHOT_KEY] = _message_for(kind, locale, order, payload)
+    if kind == IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
+        invitation, message = post_purchase_invitation_snapshot(context["client"], order, locale)
+        payload[INVITATION_PAYLOAD_KEY] = invitation
+        payload[MESSAGE_SNAPSHOT_KEY] = message
+    else:
+        payload[MESSAGE_SNAPSHOT_KEY] = _message_for(kind, locale, order, payload)
     defaults = {
         "kind": kind,
         "client": context["client"],
@@ -1347,7 +1354,10 @@ def _lifecycle_quick_replies(event: IgLifecycleEvent) -> tuple:
 def _post_purchase_cancellation_reason(event, order) -> str:
     if event.kind != IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
         return ""
-    return post_purchase_invitation_block_reason(event.client, order)
+    return post_purchase_invitation_block_reason(
+        event.client, order, event.payload, _base_message(event), event.locale,
+        event.final_text,
+    )
 
 
 def _preflight_cancellation_reason(event: IgLifecycleEvent) -> str:
