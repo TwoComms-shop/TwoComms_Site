@@ -612,7 +612,7 @@ class ConversationAnalysisJobTests(TestCase):
 
     @patch("management.services.bot_conversation_analysis.gemini_generate_json")
     @patch("management.services.instagram_bot.download_image")
-    def test_historical_media_is_metadata_only_before_provider_analysis(
+    def test_historical_only_imported_media_stops_without_provider_or_current_snapshot(
         self,
         download,
         generate,
@@ -628,31 +628,19 @@ class ConversationAnalysisJobTests(TestCase):
             message,
             now=timezone.now() - timedelta(minutes=1),
         )
-
-        def provider_result(*_args, **_kwargs):
-            job = IgConversationAnalysisJob.objects.get(client=self.client)
-            self.assertEqual(job.media_phase, "metadata_only")
-            self.assertEqual(job.media_error_kind, "")
-            self.assertIsNotNone(job.media_started_at)
-            self.assertIsNotNone(job.media_completed_at)
-            return {
-                "parsed": {
-                    "interaction_type": "product_interest",
-                    "score_band": "exploring",
-                    "purchase_probability": 0.4,
-                    "confidence": 0.7,
-                },
-                "model": "gemini-test",
-                "meta": {},
-            }
-
-        generate.side_effect = provider_result
-
         self.assertEqual(
             analysis.process_due_analysis(limit=1),
-            {"done": 1, "failed": 0, "skipped": 0, "superseded": 0},
+            {"done": 0, "failed": 0, "skipped": 1, "superseded": 0},
         )
         download.assert_not_called()
+        generate.assert_not_called()
+        self.assertFalse(IgConversationAnalysisSnapshot.objects.filter(client=self.client).exists())
+        job = IgConversationAnalysisJob.objects.get(client=self.client)
+        self.assertEqual(job.status, IgConversationAnalysisJob.Status.SKIPPED)
+        self.assertEqual(job.skip_reason, "historical_event_boundary")
+        self.assertEqual(job.media_phase, IgConversationAnalysisJob.MediaPhase.NOT_STARTED)
+        self.assertIsNone(job.media_started_at)
+        self.assertIsNone(job.media_completed_at)
 
     @patch("management.services.bot_conversation_analysis.gemini_generate_json")
     @patch(

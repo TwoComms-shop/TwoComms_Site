@@ -35,6 +35,13 @@ for _telegram_env_name in (
 
 from twocomms.settings import *  # noqa: F401,F403
 
+# Test runs never activate a background provider from production defaults.
+# V2 publication/admission suites explicitly enable the exact gates they test;
+# legacy compatibility fixtures deliberately retain their v1 contract.
+IG_MEMORY_TIMELINE_ENABLED = False
+IG_MEMORY_GENERATION_ENABLED = False
+IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = False
+
 # Test-only Fernet key: custom bot credentials must exercise encrypted storage
 # instead of silently falling back to plaintext in SQLite tests.
 FIELD_ENCRYPTION_KEY = 'Tj-k7EnSDEgaPpRWR9lEGgp2DmQ4LgU6L6-3P5qiv5U='

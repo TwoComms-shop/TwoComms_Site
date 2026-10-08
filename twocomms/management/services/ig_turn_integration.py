@@ -113,6 +113,7 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
                     "source_count": int(budget.get("source_count") or 0),
                     "media_parts": int(budget.get("media_parts") or 0)},
         "view_versions": safe_versions,
+        "memory_snapshot": metadata.get("memory_snapshot") or {},
         "media": {"admitted_part_ids": admitted, "omitted_part_ids": [],
                   "unavailable_part_ids": unavailable},
     }

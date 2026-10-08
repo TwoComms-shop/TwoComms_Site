@@ -8933,6 +8933,7 @@ def _assemble_system_instruction(
         from management.services.ig_policy_compiler import PolicyReadinessError
         state_render = render_client_state_prompt(
             captured_client_state, budget=int(getattr(settings, "IG_CLIENT_STATE_PROMPT_TOKENS", 2400)),
+            excluded_slots=("context.narrative",) if memory_note else (),
         )
         if state_render.oversized:
             raise PolicyReadinessError("captured_state_exceeds_budget", "captured state requirements do not fit")

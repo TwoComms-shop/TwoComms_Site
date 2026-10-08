@@ -272,13 +272,20 @@ def _signals(client, boundary, captured_at):
            (_stamp(watermark["event_at"]), watermark["message_id"])])
 
 
-def _memory(client, boundary):
-    """Validate this current narrative head; never search for an older head."""
+def _memory(client, boundary, *, sealed_sources=(), history=()):
+    """Capture one current head at this watermark, preserving its reader contract."""
     from management.services.ig_memory_producer import read_memory_summary
 
     scope = _scope(boundary)
     result = dict(scope=scope, reason="narrative_empty")
     text, proof = client.memory_summary or "", client.memory_provenance or {}
+    if not isinstance(proof, dict):
+        return dict(scope=scope, reason="narrative_integrity_invalid")
+    if isinstance(proof, dict) and proof.get("version") == "captured-memory.timeline.v2":
+        from management.services.ig_memory_producer import read_memory_timeline
+        read = read_memory_timeline(client, boundary=boundary, sealed_sources=sealed_sources, history=history)
+        return dict(scope=scope, text=read.text, reason=read.reason,
+                    provenance=deepcopy(read.provenance or {}))
     if not text.strip():
         return result
     result["reason"] = "narrative_integrity_invalid"
@@ -470,7 +477,6 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
             return dict(scope=scope, omission_reason=reason)
     commerce = _commerce(sources, plan, scope, purchases_count=client.purchases_count)
     referral = optional("referral", lambda: _referral(sources, scope))
-    memory = optional("memory", lambda: _memory(client, boundary))
     def timing_capture():
         from management.services.ig_revision_conversation_context import conversation_timing_guidance
         return dict(scope=scope, guidance=conversation_timing_guidance(revision))
@@ -517,6 +523,8 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         captured_history, history_reason = [], "history_capture_unavailable"
     if history_reason:
         omissions.append(dict(block_id="context:history", reason=history_reason))
+    memory = optional("memory", lambda: _memory(client, boundary,
+        sealed_sources=sources, history=captured_history))
     if omissions:
         components["capture_omissions"] = dict(scope=scope, items=omissions)
     boundary["history_digests"] = {str(row["message_id"]): capture_digest(row) for row in captured_history}

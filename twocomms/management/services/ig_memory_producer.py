@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 import hashlib
 import json
 import secrets
@@ -19,6 +19,11 @@ from django.utils.dateparse import parse_datetime
 from management.models import IgClient, InstagramBotMessage
 
 VERSION = "captured-memory.v1"
+TIMELINE_VERSION = "captured-memory.timeline.v2"
+TIMELINE_DELTA_LIMIT = 24
+TIMELINE_DELTA_CHARS = 12_000
+TIMELINE_SOURCE_CHARS = 2000
+TIMELINE_SCAN_LIMIT = 3 * TIMELINE_DELTA_LIMIT
 WINDOW = 60
 MAX_TRANSCRIPT_CHARS = 24_000
 DEBOUNCE_SECONDS = 3
@@ -114,10 +119,19 @@ def _source_payload(source, namespace):
         "reply_to": source.reply_to_provider_message_id or "", "quick_reply": source.quick_reply_payload or ""}
 
 
-def _scope(client, namespace):
+def _timeline_enabled():
+    return bool(getattr(settings, "IG_MEMORY_TIMELINE_ENABLED", False))
+
+
+def _scope(client, namespace, *, timeline=None):
     from management.models import IgCommerceSelectionSession, IgFunnelResetAudit
     reset = IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values(
         "pk", "reset_after_message_id").first() or {}
+    era = {"client_id": client.pk, "namespace": namespace,
+        "reset_id": reset.get("pk"), "reset_floor": int(reset.get("reset_after_message_id") or 0) + 1,
+        "erasure_at": _date(client.privacy_erasure_started_at)}
+    if (_timeline_enabled() if timeline is None else timeline):
+        return era
     session = IgCommerceSelectionSession.objects.filter(client_id=client.pk, open_slot=1,
         commercial_episode_id=client.current_commercial_episode_id).order_by("-generation").first()
     line = {}
@@ -125,9 +139,7 @@ def _scope(client, namespace):
         lines = session.lines or []
         index = int(session.active_index or 0)
         line = lines[index] if 0 <= index < len(lines) and isinstance(lines[index], dict) else {}
-    return {"client_id": client.pk, "namespace": namespace,
-        "reset_id": reset.get("pk"), "reset_floor": int(reset.get("reset_after_message_id") or 0) + 1,
-        "erasure_at": _date(client.privacy_erasure_started_at),
+    return {**era,
         "episode_id": client.current_commercial_episode_id,
         "line_id": str(line.get("line_id") or ""), "recipient_id": str(line.get("recipient_id") or "self")}
 
@@ -173,6 +185,8 @@ def enqueue_memory_source(message_id, *, now=None):
             return MemoryEnqueue(reason="source_not_current")
         if client.privacy_erasure_started_at:
             return MemoryEnqueue(reason="client_erasing")
+        if client.hidden_at:
+            return MemoryEnqueue(reason="client_hidden")
         namespace = _namespace(source)
         if not namespace:
             return MemoryEnqueue(reason="source_namespace_unproven")
@@ -180,7 +194,7 @@ def enqueue_memory_source(message_id, *, now=None):
         if source.pk < scope["reset_floor"]:
             return MemoryEnqueue(reason="source_before_reset")
         episode = client.current_commercial_episode
-        if episode and source.pk < int(episode.opened_watermark_message_id or 0):
+        if not _timeline_enabled() and episode and source.pk < int(episode.opened_watermark_message_id or 0):
             return MemoryEnqueue(reason="source_before_episode")
         state = deepcopy(client.memory_producer_state or {})
         same_scope = state.get("scope") == scope
@@ -195,7 +209,8 @@ def enqueue_memory_source(message_id, *, now=None):
         if newer.exists():
             return MemoryEnqueue(reason="historical_event_rewind")
         if not same_scope:
-            state = {"version": VERSION, "scope": scope, "consumed": {}, "last_reason": "scope_changed"}
+            state = {"version": TIMELINE_VERSION if _timeline_enabled() else VERSION,
+                "scope": scope, "consumed": {}, "last_reason": "scope_changed"}
             client.memory_claim_token = ""
             client.memory_claim_until = None
             client.memory_claim_snapshot = {}
@@ -213,6 +228,8 @@ def enqueue_memory_source(message_id, *, now=None):
 
 
 def _capture(client, state, owner, now):
+    if _timeline_enabled():
+        return _capture_timeline(client, state, owner, now)
     scope = state["scope"]
     target = state["dirty"]
     rows = InstagramBotMessage.objects.filter(client=client, sender_id=client.igsid, pk__gte=scope["reset_floor"]).exclude(
@@ -263,6 +280,7 @@ def claim_memory_job(*, client_id=None, now=None):
             return None
         rows = IgClient.objects.select_for_update(skip_locked=True).filter(
             memory_due_at__lte=now, memory_dirty_at__isnull=False, privacy_erasure_started_at__isnull=True,
+            hidden_at__isnull=True,
         ).filter(Q(memory_claim_until__isnull=True) | Q(memory_claim_until__lte=now))
         if client_id is not None:
             rows = rows.filter(pk=client_id)
@@ -278,7 +296,11 @@ def claim_memory_job(*, client_id=None, now=None):
             client.memory_producer_state = {**state, "last_reason": "scope_changed"}
             client.save(update_fields=["memory_due_at", "memory_claim_token", "memory_claim_until", "memory_claim_snapshot", "memory_producer_state"])
             return None
-        capture = _capture(client, state, owner, now)
+        try:
+            capture = _capture(client, state, owner, now)
+        except TimelineCaptureError as exc:
+            _finish(client, exc.code, now)
+            return None
         if not capture["sources"]:
             return None
         token = secrets.token_hex(16)
@@ -296,7 +318,9 @@ def _source_reason(client, capture):
     namespaces = _namespaces(rows.values())
     for item in capture["sources"]:
         row = rows.get(item["message_id"])
-        if row is None or not _source_allowed(row) or namespaces[row.pk] != namespace or _digest(_source_payload(row, namespace)) != item["source_digest"]:
+        digest = (timeline_source_digest(row, namespace) if row is not None and capture.get("version") == TIMELINE_VERSION
+            else _digest(_source_payload(row, namespace)) if row is not None else "")
+        if row is None or not _source_allowed(row) or namespaces[row.pk] != namespace or digest != item["source_digest"]:
             return "source_changed"
     return ""
 
@@ -316,6 +340,8 @@ def _claim_reason(client, claim, now):
     capture = claim.capture
     if client.privacy_erasure_started_at:
         return "client_erasing"
+    if client.hidden_at:
+        return "client_hidden"
     if client.memory_claim_token != claim.token or client.memory_claim_snapshot != capture:
         return "claim_replaced"
     captured_deadline = parse_datetime(str(capture.get("deadline_at") or ""))
@@ -391,7 +417,7 @@ def _finish(client, reason, now, *, success=False):
         client.memory_dirty_at = None
         client.memory_due_at = None
         client.memory_attempts = 0
-    elif reason in {"scope_changed", "client_erasing"}:
+    elif reason in {"scope_changed", "client_erasing", "client_hidden"}:
         client.memory_due_at = None
     elif reason == "source_watermark_advanced":
         client.memory_attempts = 0
@@ -437,10 +463,22 @@ def publish_memory_result(claim, summary, *, now=None):
             if client.memory_claim_token == claim.token and reason not in {"claim_replaced", "lane_owner_changed"}:
                 _finish(client, reason, checked_at)
             return MemoryResult(reason=reason)
-        summary = summary.strip()[:4000] if isinstance(summary, str) else ""
-        if not summary:
-            _finish(client, "empty_summary", checked_at)
-            return MemoryResult(reason="empty_summary")
+        timeline = None
+        if claim.capture.get("version") == TIMELINE_VERSION:
+            from management.services.ig_memory_timeline import TimelineError, build_timeline, render_timeline
+            try:
+                timeline = build_timeline(summary, sources=claim.capture["timeline_inputs"],
+                    retained_events=claim.capture["previous_events"])
+                summary = render_timeline(timeline)
+            except (TimelineError, KeyError, TypeError) as exc:
+                reason = getattr(exc, "code", "timeline_output_invalid")
+                _finish(client, reason, checked_at)
+                return MemoryResult(reason=reason)
+        else:
+            summary = summary.strip()[:4000] if isinstance(summary, str) else ""
+            if not summary:
+                _finish(client, "empty_summary", checked_at)
+                return MemoryResult(reason="empty_summary")
         checked_at = now if now is not None else timezone.now()
         reason = temporal_reason(client, checked_at)
         if reason:
@@ -450,10 +488,12 @@ def publish_memory_result(claim, summary, *, now=None):
         version = int(client.memory_version or 0) + 1
         # Persist source proofs, not another transcript or canonical-fact store.
         captured_proof = {key: value for key, value in claim.capture.items()
-            if key not in {"transcript", "canonical_selection", "digest"}}
+            if key not in {"transcript", "canonical_selection", "digest", "timeline_inputs", "previous_events"}}
         captured_proof["generation_input_digest"] = claim.capture["digest"]
-        proof = {"version": VERSION, "head_version": version, "capture": captured_proof,
+        proof = {"version": claim.capture.get("version", VERSION), "head_version": version, "capture": captured_proof,
             "summary_digest": hashlib.sha256(summary.encode()).hexdigest(), "generated_at": _date(checked_at)}
+        if timeline is not None:
+            proof["timeline"] = timeline
         proof["digest"] = _digest(proof)
         client.memory_summary = summary
         client.memory_updated_at = checked_at
@@ -483,6 +523,8 @@ def read_memory_summary(client):
         return MemoryRead(reason="narrative_empty")
     if current.privacy_erasure_started_at:
         return MemoryRead(reason="client_erasing")
+    if current.hidden_at:
+        return MemoryRead(reason="client_hidden")
     proof = current.memory_provenance or {}
     if not proof or proof.get("version") != VERSION:
         return MemoryRead(reason="narrative_provenance_missing")
@@ -492,7 +534,7 @@ def read_memory_summary(client):
         or proof.get("summary_digest") != hashlib.sha256(current.memory_summary.encode()).hexdigest()):
         return MemoryRead(reason="narrative_integrity_invalid")
     capture = proof.get("capture") or {}
-    if not capture.get("scope") or capture["scope"] != _scope(current, capture["scope"].get("namespace", "")):
+    if not capture.get("scope") or capture["scope"] != _scope(current, capture["scope"].get("namespace", ""), timeline=False):
         return MemoryRead(reason="narrative_scope_changed")
     reason = _source_reason(current, capture)
     if reason:
@@ -504,7 +546,7 @@ def read_memory_summary(client):
 
 
 def process_due_memory(*, limit=1, generate=None, admission=None, now=None):
-    """Bounded background drain. Both automatic activation gates default OFF."""
+    """Bounded background drain; reversible flags and enforced dispatch gates."""
     automatic_reason = _automatic_admission_reason(now or timezone.now())
     if automatic_reason:
         return {"claimed": 0, "published": 0, "discarded": 0, "failed": 0, "reason": automatic_reason}
@@ -531,9 +573,11 @@ def process_due_memory(*, limit=1, generate=None, admission=None, now=None):
                 result["discarded"] += 1
                 continue
             if generate is None:
-                from management.services.bot_memory import build_summary_payload
+                from management.services.bot_memory import build_summary_payload, build_timeline_payload
                 from management.services.call_ai_analysis import gemini_generate_text
-                output = gemini_generate_text(build_summary_payload(claim.capture["transcript"]), role="management",
+                payload = (build_timeline_payload(claim.capture)
+                    if claim.capture.get("version") == TIMELINE_VERSION else build_summary_payload(claim.capture["transcript"]))
+                output = gemini_generate_text(payload, role="management",
                     reasoning_task="memory_summary", deadline_seconds=max(0.01, (claim.deadline_at - timezone.now()).total_seconds()),
                     pre_dispatch_guard=final_admission)
             else:
@@ -567,7 +611,7 @@ def reconcile_memory_sources(*, limit=25, now=None):
     previous_cursor = configuration["memory_reconcile_cursor"]
     rows = InstagramBotMessage.objects.filter(client_id__isnull=False,
         role__in=("user", "manager"), created_at__gte=(now or timezone.now()) - timedelta(days=1),
-        client__privacy_erasure_started_at__isnull=True).exclude(status="failed").exclude(
+        client__privacy_erasure_started_at__isnull=True, client__hidden_at__isnull=True).exclude(status="failed").exclude(
             source__in=("poll_history", "history", "import", "backfill"))
     ids = list(rows.filter(pk__gt=previous_cursor).order_by("pk").values_list("pk", flat=True)[:bounded])
     if not ids:
@@ -580,3 +624,337 @@ def reconcile_memory_sources(*, limit=25, now=None):
     InstagramBotSettings.objects.filter(pk=configuration["pk"],
         memory_reconcile_cursor=previous_cursor).update(memory_reconcile_cursor=ids[-1] if ids else 0)
     return {"scanned": len(ids), "queued": queued}
+
+
+class TimelineCaptureError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def timeline_source_digest(row, namespace):
+    """V2 binds both backend clocks; the v1 source hash stays byte-compatible."""
+    return _digest({**_source_payload(row, namespace),
+        "provider_created_at": _date(row.provider_created_at),
+        "observed_created_at": _date(row.created_at)})
+
+
+def _timeline_dto(row, namespace):
+    stamp = row.provider_created_at or row.created_at
+    return {"source_message_id": row.pk, "text": row.text or "",
+        "event_at": stamp.astimezone(datetime_timezone.utc).isoformat(),
+        "time_basis": "provider" if row.provider_created_at else "local_ingest",
+        "source_digest": timeline_source_digest(row, namespace),
+        "provider_created_at": row.provider_created_at.astimezone(datetime_timezone.utc).isoformat() if row.provider_created_at else None,
+        "observed_created_at": row.created_at.astimezone(datetime_timezone.utc).isoformat(),
+        "role": row.role, "scope": None}
+
+
+def _timeline_proof_row(row, namespace, *, sent=True):
+    dto = _timeline_dto(row, namespace)
+    return {"message_id": row.pk, "source_digest": dto["source_digest"],
+        "event_at": dto["event_at"], "time_basis": dto["time_basis"],
+        "provider_created_at": dto["provider_created_at"], "observed_created_at": dto["observed_created_at"],
+        "role": row.role, "scope": None,
+        "chars_sent": len(dto["text"]) if sent else 0,
+        "chars_omitted": 0 if sent else len(dto["text"])}
+
+
+def _timeline_rows(client, scope, *, target, after=None, bootstrap=False):
+    """Bounded event-order scan; incremental capture never silently drops rows."""
+    bound = _key(target)
+    rows = InstagramBotMessage.objects.filter(client_id=client.pk, sender_id=client.igsid,
+        pk__gte=scope["reset_floor"], pk__lte=bound[1]).exclude(status="failed").annotate(
+            event_time=Coalesce("provider_created_at", "created_at")).filter(
+            Q(event_time__lt=bound[0]) | Q(event_time=bound[0], pk__lte=bound[1]))
+    if after is not None:
+        start = _key(after)
+        rows = rows.filter(Q(event_time__gt=start[0]) | Q(event_time=start[0], pk__gt=start[1]))
+    rows = list(rows.order_by("-event_time", "-pk")[:TIMELINE_SCAN_LIMIT + 1])
+    namespaces = _namespaces(rows)
+    eligible = [row for row in rows if _source_allowed(row) and namespaces[row.pk] == scope["namespace"]]
+    exhausted = len(rows) > TIMELINE_SCAN_LIMIT
+    if not bootstrap and (exhausted or len(eligible) > TIMELINE_DELTA_LIMIT):
+        raise TimelineCaptureError("timeline_delta_count_budget")
+    selected = list(reversed(eligible[:TIMELINE_DELTA_LIMIT]))
+    return selected, {"complete": not bootstrap or not exhausted and len(eligible) <= TIMELINE_DELTA_LIMIT,
+        "scan_limit": TIMELINE_SCAN_LIMIT, "delta_limit": TIMELINE_DELTA_LIMIT,
+        "eligible_scanned": len(eligible), "older_omitted_minimum": max(0, len(eligible) - len(selected)),
+        "older_scan_bounded": exhausted, "bootstrap": bootstrap}
+
+
+def _validated_timeline_head(client):
+    """Authenticate the current v2 publication without requiring its target fresh."""
+    from management.services.ig_memory_timeline import (
+        VERSION as EVENT_VERSION, TimelineError, build_timeline, render_timeline, validate_timeline,
+    )
+    proof = client.memory_provenance or {}
+    if not isinstance(proof, dict) or proof.get("version") != TIMELINE_VERSION:
+        return None, [], "timeline_provenance_missing"
+    try:
+        capture = proof["capture"]
+        sources = capture["sources"]
+        if (proof["head_version"] != client.memory_version
+            or parse_datetime(proof["generated_at"]) != client.memory_updated_at
+            or proof["digest"] != _digest({key: value for key, value in proof.items() if key != "digest"})
+            or proof["summary_digest"] != hashlib.sha256(client.memory_summary.encode()).hexdigest()
+            or capture["version"] != TIMELINE_VERSION
+            or not re.fullmatch(r"[0-9a-f]{64}", capture["generation_input_digest"])
+            or not isinstance(sources, list) or not 1 <= len(sources) <= TIMELINE_DELTA_LIMIT + 8
+            or len({row["message_id"] for row in sources}) != len(sources)
+            or any(type(row["message_id"]) is not int or not capture["scope"]["reset_floor"] <= row["message_id"] <= capture["target"]["message_id"]
+                or _key(row) > _key(capture["target"]) for row in sources)
+            or capture["scope"] != _scope(client, capture["scope"]["namespace"], timeline=True)):
+            return None, [], "timeline_integrity_invalid"
+        if _source_reason(client, capture):
+            return None, [], "timeline_source_changed"
+        actual_rows = {row.pk: row for row in InstagramBotMessage.objects.filter(
+            client_id=client.pk, sender_id=client.igsid, pk__in=[item["message_id"] for item in sources])}
+        inputs = []
+        for source in sources:
+            row = actual_rows[source["message_id"]]
+            dto = _timeline_dto(row, capture["scope"]["namespace"])
+            if (source.get("event_at") != dto["event_at"]
+                or source.get("time_basis") != dto["time_basis"]
+                or source.get("provider_created_at") != dto["provider_created_at"]
+                or source.get("observed_created_at") != dto["observed_created_at"]
+                or source.get("scope") is not None or source.get("role") != dto["role"]
+                or source.get("chars_omitted") != 0 or source.get("chars_sent") != len(dto["text"])):
+                return None, [], "timeline_source_changed"
+            if row.role == "user" and source.get("chars_omitted") == 0:
+                inputs.append(dto)
+        stored = validate_timeline(proof["timeline"])
+        rebuilt = build_timeline({"version": EVENT_VERSION, "events": []},
+            sources=inputs, retained_events=stored["events"])
+        if rebuilt["events"] != stored["events"] or render_timeline(stored) != client.memory_summary:
+            return None, [], "timeline_source_changed"
+        return deepcopy(proof), inputs, ""
+    except (KeyError, TypeError, ValueError, TimelineError):
+        return None, [], "timeline_integrity_invalid"
+
+
+def _capture_timeline(client, state, owner, now):
+    scope, target = state["scope"], state["dirty"]
+    proof, retained_inputs, reason = _validated_timeline_head(client)
+    if proof is None and (client.memory_provenance or {}).get("version") == TIMELINE_VERSION:
+        raise TimelineCaptureError(reason)
+    retained = proof["timeline"]["events"] if proof else []
+    after = proof["capture"]["target"] if proof else None
+    if after is not None and _key(after) > _key(target):
+        raise TimelineCaptureError("timeline_head_after_target")
+    rows, coverage = _timeline_rows(client, scope, target=target, after=after, bootstrap=proof is None)
+    if not rows:
+        raise TimelineCaptureError("timeline_delta_empty")
+    retained_ids = {event["source_message_id"] for event in retained}
+    inputs = [row for row in retained_inputs if row["source_message_id"] in retained_ids]
+    previous_proofs = {row["message_id"]: row for row in proof["capture"]["sources"]} if proof else {}
+    sources = [deepcopy(previous_proofs[identity]) for identity in sorted(retained_ids)]
+    omissions, budget = [], TIMELINE_DELTA_CHARS
+    # Admit complete source bodies only; no quote can be selected from a cut.
+    for row in reversed(rows):
+        text = row.text or ""
+        sent = bool(text) and len(text) <= TIMELINE_SOURCE_CHARS and len(text) <= budget
+        if text and not sent:
+            # Advancing past an omitted correction would strand retained events
+            # beyond the next read delta. Keep the old head and require a full
+            # admitted input rather than silently consuming a clipped source.
+            raise TimelineCaptureError("timeline_delta_char_budget")
+        if sent:
+            budget -= len(text)
+        else:
+            omissions.append({"source_message_id": row.pk, "reason": "source_text_budget" if text else "source_text_empty"})
+        sources.append(_timeline_proof_row(row, scope["namespace"], sent=sent))
+        if sent and row.role == "user":
+            inputs.append(_timeline_dto(row, scope["namespace"]))
+    sources.sort(key=lambda row: _key(row))
+    inputs.sort(key=lambda row: (row["event_at"], row["source_message_id"]))
+    coverage.update(char_limit=TIMELINE_DELTA_CHARS, source_char_limit=TIMELINE_SOURCE_CHARS,
+        omissions=omissions, previous_head_reason="verified_timeline" if proof else reason,
+        historical_order="provider_event_time_then_message_id")
+    capture = {"version": TIMELINE_VERSION, "scope": scope, "target": target,
+        "dirty_digest": state["dirty_digest"], "sources": sources,
+        "source_interval": {"first": sources[0]["message_id"], "last": sources[-1]["message_id"]},
+        "coverage": coverage, "timeline_inputs": inputs, "previous_events": retained,
+        "previous_head_version": int(client.memory_version or 0),
+        "previous_head_digest": _digest({"summary": client.memory_summary, "provenance": client.memory_provenance}),
+        "owner": {"owner_token": owner["owner_token"], "generation": owner["generation"]},
+        "captured_at": _date(now), "deadline_at": _date(now + timedelta(seconds=GENERATION_SECONDS))}
+    return {**capture, "digest": _digest(capture)}
+
+
+def _read_timeline_boundary(boundary):
+    if not isinstance(boundary, dict):
+        raise TimelineCaptureError("timeline_boundary_invalid")
+    try:
+        watermark = boundary["watermark"]
+        stamp = parse_datetime(watermark["event_at"])
+        if (type(boundary["client_id"]) is not int or boundary["client_id"] <= 0
+            or not isinstance(boundary["source_namespace"], str) or not boundary["source_namespace"]
+            or type(boundary["reset_floor"]) is not int or boundary["reset_floor"] <= 0
+            or type(watermark["message_id"]) is not int or watermark["message_id"] < boundary["reset_floor"]
+            or stamp is None or timezone.is_naive(stamp)):
+            raise TimelineCaptureError("timeline_boundary_invalid")
+        return {"client_id": boundary["client_id"], "source_namespace": boundary["source_namespace"],
+            "reset_id": boundary["reset_id"], "reset_floor": boundary["reset_floor"],
+            "erasure_epoch": boundary.get("erasure_epoch") or "",
+            "watermark": {"event_at": stamp.astimezone(datetime_timezone.utc).isoformat(),
+                "message_id": watermark["message_id"]}}
+    except (KeyError, TypeError, ValueError):
+        raise TimelineCaptureError("timeline_boundary_invalid") from None
+
+
+def _timeline_clocks_valid(row):
+    try:
+        event = parse_datetime(row["event_at"])
+        ingested = parse_datetime(row["observed_created_at"])
+        provider = parse_datetime(row["provider_created_at"]) if row["provider_created_at"] is not None else None
+        if event is None or ingested is None or timezone.is_naive(event) or timezone.is_naive(ingested):
+            return False
+        if row["provider_created_at"] is not None:
+            return provider is not None and not timezone.is_naive(provider) and row["time_basis"] == "provider" and event == provider
+        return row["time_basis"] == "local_ingest" and event == ingested
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def validate_memory_timeline_read(memory, boundary):
+    """Pure request-snapshot check. Empty reason means valid; never performs I/O."""
+    from management.services.ig_memory_timeline import render_timeline
+    try:
+        bound = _read_timeline_boundary(boundary)
+        if not isinstance(memory, dict) or memory.get("reason") != "historical_as_of":
+            return "timeline_read_unproven"
+        proof, text = memory["provenance"], memory["text"]
+        if not isinstance(text, str) or len(text) > 4000 or proof.get("version") != TIMELINE_VERSION:
+            return "timeline_integrity_invalid"
+        read_keys = {"read_delta", "read_boundary", "read_digest"}
+        publication = {key: value for key, value in proof.items() if key not in read_keys}
+        capture = proof["capture"]
+        scope = capture["scope"]
+        expected = {"client_id": bound["client_id"], "namespace": bound["source_namespace"],
+            "reset_id": bound["reset_id"], "reset_floor": bound["reset_floor"], "erasure_at": bound["erasure_epoch"]}
+        delta = proof["read_delta"]
+        target = capture["target"]
+        target_stamp = parse_datetime(target["event_at"])
+        sources = capture["sources"]
+        if (capture.get("version") != TIMELINE_VERSION
+            or type(proof.get("head_version")) is not int or proof["head_version"] <= 0
+            or not isinstance(capture.get("generation_input_digest"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", capture["generation_input_digest"])
+            or type(target["message_id"]) is not int or target["message_id"] < bound["reset_floor"]
+            or target["message_id"] > bound["watermark"]["message_id"]
+            or target_stamp is None or timezone.is_naive(target_stamp)
+            or not isinstance(sources, list) or not 1 <= len(sources) <= TIMELINE_DELTA_LIMIT + 8):
+            return "timeline_integrity_invalid"
+        seen_sources = set()
+        for row in sources:
+            stamp = parse_datetime(row["event_at"])
+            identity = row["message_id"]
+            if (set(row) != {"message_id", "source_digest", "event_at", "time_basis", "role", "scope", "chars_sent", "chars_omitted", "provider_created_at", "observed_created_at"}
+                or type(identity) is not int or not bound["reset_floor"] <= identity <= target["message_id"]
+                or identity in seen_sources or stamp is None or timezone.is_naive(stamp)
+                or _key(row) > _key(target)
+                or not isinstance(row["source_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", row["source_digest"])
+                or row["role"] not in {"user", "manager", "model"}
+                or row["time_basis"] not in {"provider", "local_ingest"} or row["scope"] is not None
+                or type(row["chars_sent"]) is not int or row["chars_sent"] < 0
+                or type(row["chars_omitted"]) is not int or row["chars_omitted"] != 0):
+                return "timeline_source_invalid"
+            if not _timeline_clocks_valid(row):
+                return "timeline_source_invalid"
+            seen_sources.add(identity)
+        by_id = {row["message_id"]: row for row in sources}
+        for event in proof["timeline"]["events"]:
+            source = by_id.get(event["source_message_id"])
+            if (source is None or source["role"] != "user"
+                or any(event[key] != source[key] for key in ("source_digest", "event_at", "time_basis", "scope"))
+                or _key({"message_id": event["source_message_id"], "event_at": event["event_at"]}) > _key(target)):
+                return "timeline_event_source_invalid"
+        if (scope != expected or proof["read_boundary"] != bound
+            or proof["digest"] != _digest({key: value for key, value in publication.items() if key != "digest"})
+            or proof["summary_digest"] != hashlib.sha256(text.encode()).hexdigest()
+            or render_timeline(proof["timeline"]) != text
+            or proof["read_digest"] != _digest({"head_digest": proof["digest"], "boundary": bound, "delta": delta})
+            or _key(capture["target"]) > _key(bound["watermark"])
+            or not isinstance(delta, list) or len(delta) > TIMELINE_DELTA_LIMIT
+            or sum(len(row["text"]) for row in delta) > TIMELINE_DELTA_CHARS):
+            return "timeline_integrity_invalid"
+        seen = set()
+        prior_key = _key(target)
+        for row in delta:
+            identity = row["source_message_id"]
+            stamp = parse_datetime(row["event_at"])
+            row_key = _key({"event_at": row["event_at"], "message_id": identity})
+            if (type(identity) is not int or identity in seen or identity < bound["reset_floor"]
+                or identity > bound["watermark"]["message_id"]
+                or set(row) != {"source_message_id", "text", "event_at", "time_basis", "source_digest", "role", "scope", "provider_created_at", "observed_created_at"}
+                or stamp is None or timezone.is_naive(stamp)
+                or row["role"] not in {"user", "manager", "model"} or row["scope"] is not None
+                or not isinstance(row["text"], str) or not isinstance(row["source_digest"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", row["source_digest"])
+                or row["time_basis"] not in {"provider", "local_ingest"}
+                or not prior_key < row_key <= _key(bound["watermark"])):
+                return "timeline_delta_invalid"
+            if not _timeline_clocks_valid(row):
+                return "timeline_delta_invalid"
+            seen.add(identity)
+            prior_key = row_key
+        return ""
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return "timeline_integrity_invalid"
+
+
+def read_memory_timeline(client, *, boundary, sealed_sources=(), history=()):
+    """Read verified historical events plus a complete bounded sealed delta.
+
+    Caller collections never grant ownership or completeness: the adapter checks
+    the authoritative source interval itself. It neither modifies a head nor
+    invokes a provider, and never borrows an older head when the current fails.
+    """
+    if not _timeline_enabled():
+        return MemoryRead(reason="timeline_disabled")
+    try:
+        bound = _read_timeline_boundary(boundary)
+        client_id = getattr(client, "pk", client)
+        if type(client_id) is not int or client_id != bound["client_id"]:
+            return MemoryRead(reason="timeline_boundary_invalid")
+        current = IgClient.objects.filter(pk=client_id).first()
+        if current is None:
+            return MemoryRead(reason="client_missing")
+        if current.privacy_erasure_started_at:
+            return MemoryRead(reason="client_erasing")
+        if current.hidden_at:
+            return MemoryRead(reason="client_hidden")
+        scope = _scope(current, bound["source_namespace"], timeline=True)
+        expected = {"client_id": bound["client_id"], "namespace": bound["source_namespace"],
+            "reset_id": bound["reset_id"], "reset_floor": bound["reset_floor"], "erasure_at": bound["erasure_epoch"]}
+        if scope != expected:
+            return MemoryRead(reason="timeline_scope_changed")
+        proof, _inputs, reason = _validated_timeline_head(current)
+        if proof is None:
+            return MemoryRead(reason=reason)
+        if (proof["capture"]["scope"] != scope or _key(proof["capture"]["target"]) > _key(bound["watermark"])
+            or proof["capture"]["target"]["message_id"] > bound["watermark"]["message_id"]):
+            return MemoryRead(reason="timeline_head_after_sealed_watermark")
+        rows, _coverage = _timeline_rows(current, scope, target=bound["watermark"], after=proof["capture"]["target"])
+        delta = [_timeline_dto(row, scope["namespace"]) for row in rows]
+        if sum(len(row["text"]) for row in delta) > TIMELINE_DELTA_CHARS:
+            return MemoryRead(reason="timeline_delta_char_budget")
+        proof["read_delta"] = delta
+        proof["read_boundary"] = bound
+        proof["read_digest"] = _digest({"head_digest": proof["digest"], "boundary": bound, "delta": delta})
+        view = {"text": current.memory_summary, "reason": "historical_as_of", "provenance": proof}
+        reason = validate_memory_timeline_read(view, boundary)
+        if reason:
+            return MemoryRead(reason=reason)
+        latest = IgClient.objects.filter(pk=client_id).first()
+        if (latest is None or latest.hidden_at or latest.privacy_erasure_started_at
+            or latest.memory_version != current.memory_version
+            or latest.memory_provenance != current.memory_provenance
+            or _scope(latest, bound["source_namespace"], timeline=True) != scope):
+            return MemoryRead(reason="timeline_head_or_scope_changed")
+        return MemoryRead(current.memory_summary, "historical_as_of", proof)
+    except TimelineCaptureError as exc:
+        return MemoryRead(reason=exc.code)
+    except (KeyError, TypeError, ValueError):
+        return MemoryRead(reason="timeline_integrity_invalid")

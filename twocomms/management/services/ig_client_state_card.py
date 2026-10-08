@@ -526,7 +526,7 @@ def client_state_admin_payload(state: CapturedClientState):
     return state.as_dict()
 
 
-def render_client_state_prompt(state: CapturedClientState, *, budget) -> RenderResult:
+def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_slots=()) -> RenderResult:
     """Budget estimated tokens by whole slots; oversized mandatory data fails.
 
     ``budget`` is an explicit integer estimate, not a provider token count. No
@@ -535,6 +535,12 @@ def render_client_state_prompt(state: CapturedClientState, *, budget) -> RenderR
     limit = _integer(budget)
     if limit is None:
         raise ValueError("budget must be a nonnegative integer token estimate")
+    # Only optional context with a dedicated whole-snapshot module may move
+    # out of this rendering. Choices/payment/permission remain mandatory here.
+    if (not isinstance(excluded_slots, (tuple, list, set, frozenset))
+            or len(excluded_slots) > 1 or any(key != "context.narrative" for key in excluded_slots)):
+        raise ValueError("excluded_slots must contain only context.narrative")
+    excluded = frozenset(excluded_slots)
     payload = state.as_dict()
     included, omitted, mandatory, optional = [], [], [], []
     cart = payload.get("source_cart") or {}
@@ -542,6 +548,9 @@ def render_client_state_prompt(state: CapturedClientState, *, budget) -> RenderR
         if cart.get("status") == "captured" and cart.get("lines") else {})
     represented_choices = []
     for key, slot in payload["slots"].items():
+        if key in excluded:
+            omitted.append((key, "dedicated_memory_module"))
+            continue
         reason = slot["omission_reason"]
         if reason or slot["status"] in {"unknown", "stale"}:
             omitted.append((key, reason or "slot_" + slot["status"]))

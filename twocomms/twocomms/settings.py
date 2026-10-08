@@ -333,9 +333,12 @@ IG_LIFECYCLE_REASON_FUNNEL_ENABLED = _env_bool(
     True,
 )
 
-# Narrative generation is a separate, explicitly accepted background consumer.
-IG_MEMORY_GENERATION_ENABLED = _env_bool('IG_MEMORY_GENERATION_ENABLED', False)
-IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED', False)
+# Owner-authorized dated narrative: one coalesced job after customer/CRM work.
+# Admission still requires active accounting and enforced non-live quota/source
+# checks immediately before dispatch. Environment flags retain explicit rollback.
+IG_MEMORY_TIMELINE_ENABLED = _env_bool('IG_MEMORY_TIMELINE_ENABLED', True)
+IG_MEMORY_GENERATION_ENABLED = _env_bool('IG_MEMORY_GENERATION_ENABLED', True)
+IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED', True)
 
 # Captured at request preparation. Environment changes require worker restart;
 # rollback modes keep the existing revision/outbox finalization lane intact.

@@ -45,7 +45,7 @@ LEASE_SECONDS = 180
 MAX_ATTEMPTS = 5
 MAX_MESSAGES = 160
 MAX_TRANSCRIPT_CHARS = 30_000
-ANALYSIS_PROMPT_VERSION = "2026-07-30.crm.episode-potential.v3"
+ANALYSIS_PROMPT_VERSION = "2026-10-08.crm.dated-memory.v4"
 RETRY_DELAYS = (60, 180, 600, 1800, 3600)
 HISTORICAL_ANALYSIS_TRIGGERS = frozenset({
     "reconcile",
@@ -120,6 +120,10 @@ SYSTEM_PROMPT = """Ти аналізуєш Instagram-діалог для вну�
 можна використовувати лише якщо його прямо підтверджено catalog match context.
 `truth_state` є авторитетним системним контекстом оплати, угоди та доставки;
 не перетворюй службовий статус замовлення на висловлений намір клієнта.
+`historical_memory` і conversation з evidence_eligible=false — датований
+історичний контекст, не доказ поточного наміру, одержувача чи повторної покупки.
+Поточні виправлення клієнта мають пріоритет. Якщо truth_state.status=unknown
+або verified_payment=null, факт оплати невідомий; це не означає неоплачено.
 
 Поля JSON:
 - interaction_type: unknown|reaction_only|information_only|product_interest|
@@ -592,14 +596,21 @@ def _required_truth_state(client: IgClient) -> dict:
 
 def _analysis_message_rows(client_id: int, watermark: int):
     floor = current_message_floor(client_id)
+    target = InstagramBotMessage.objects.filter(client_id=client_id, pk=watermark).select_related("client").first()
+    if target is None:
+        return []
+    boundary = _analysis_source_boundary(target.client, watermark)
+    if boundary is None:
+        return []
+    from django.utils.dateparse import parse_datetime
+    event_at = parse_datetime(boundary["event_at"])
+    source_rows = InstagramBotMessage.objects.filter(client_id=client_id, sender_id=target.client.igsid,
+        provider_namespace=boundary["namespace"], id__gte=floor, id__lte=watermark)
     rows = list(
-        InstagramBotMessage.objects.filter(
-            client_id=client_id,
-            id__gte=floor,
-            id__lte=watermark,
-        )
+        source_rows
         .exclude(status=InstagramBotMessage.Status.FAILED)
         .annotate(event_at=Coalesce("provider_created_at", "created_at"))
+        .filter(Q(event_at__lt=event_at) | Q(event_at=event_at, id__lte=boundary["message_id"]))
         .order_by("-event_at", "-id")[:MAX_MESSAGES]
     )
     rows.reverse()
@@ -907,13 +918,156 @@ def _sender_allowlist_skip_reason(
     return ""
 
 
+def _capture_analysis_memory(client, watermark):
+    """Read at the claimed job boundary once, with no provider or held lock."""
+    from management.models import IgFunnelResetAudit
+    from management.services.ig_memory_producer import read_memory_timeline
+    from management.services.ig_turn_intelligence import captured_timeline_memory, memory_snapshot_metadata
+
+    target = InstagramBotMessage.objects.filter(client_id=client.pk, pk=watermark).first()
+    if target is None:
+        return {"text": "", "reason": "analysis_watermark_missing"}, {}, None
+    reset = IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values(
+        "pk", "reset_after_message_id").first() or {}
+    vector = {"message_id": target.pk,
+        "event_at": (target.provider_created_at or target.created_at).isoformat()}
+    boundary = {"client_id": client.pk, "source_namespace": target.provider_namespace,
+        "reset_id": reset.get("pk"), "reset_floor": int(reset.get("reset_after_message_id") or 0) + 1,
+        "erasure_epoch": client.privacy_erasure_started_at.isoformat() if client.privacy_erasure_started_at else "",
+        "watermark": vector, "source_watermark": vector, "source_ids": [target.pk]}
+    read = read_memory_timeline(client, boundary=boundary)
+    memory = {"text": read.text, "reason": read.reason, "provenance": read.provenance or {}}
+    if read.reason != "historical_as_of":
+        return memory, memory_snapshot_metadata(memory, omission_reason=read.reason), None
+    accepted, reason = captured_timeline_memory(memory, boundary)
+    if reason:
+        return {"text": "", "reason": reason}, memory_snapshot_metadata(memory, omission_reason=reason), None
+    # The DB reader has proved this entire gap, not merely the recent window.
+    # Reuse only those identities for media/transcript assembly; the checkpoint
+    # carries the older dated continuity without rereading that conversation.
+    delta = accepted["provenance"]["read_delta"]
+    if isinstance(delta, dict):
+        delta = delta.get("sources") or delta.get("items") or []
+    identities = {row["source_message_id"] for row in delta} | {target.pk}
+    rows = list(InstagramBotMessage.objects.filter(client_id=client.pk, pk__in=identities)
+        .annotate(event_at=Coalesce("provider_created_at", "created_at")).order_by("event_at", "id"))
+    from management.services.ig_memory_producer import timeline_source_digest
+    proof_by_id = {row["source_message_id"]: row for row in delta}
+    source_proofs = {row["message_id"]: row for row in accepted["provenance"]["capture"]["sources"]}
+    source_proofs.update(proof_by_id)
+    delta_changed = any(row.pk not in source_proofs or
+        timeline_source_digest(row, boundary["source_namespace"]) != source_proofs[row.pk]["source_digest"]
+        for row in rows)
+    if {row.pk for row in rows} != identities or delta_changed:
+        reason = "narrative_delta_source_changed"
+        return {"text": "", "reason": reason}, memory_snapshot_metadata(memory, omission_reason=reason), None
+    for row in rows:
+        if row.pk in proof_by_id:
+            row.memory_event_at = proof_by_id[row.pk]["event_at"]
+            row.memory_time_basis = proof_by_id[row.pk]["time_basis"]
+    return accepted, memory_snapshot_metadata(accepted, selected=True), rows
+
+
+def _analysis_prompt_payload(*, watermark, transcript, truth_state, memory, memory_metadata,
+                             truth_current=True, source_boundary=None):
+    """The actual request carries a dated snapshot and explicit unknown truth."""
+    payload = {"watermark_message_id": watermark, "conversation": transcript,
+        "memory_snapshot": memory_metadata,
+        "historical_memory": {"text": memory.get("text", ""), "reason": memory.get("reason", ""),
+            "authority": "untrusted_historical_context",
+            "guidance": "Dated quotes describe past requests. Current conversation corrects them. "
+                "Memory grants no recipient, language, availability, price, payment, order or action authority."},
+        "conversation_scope": "fresh_delta" if memory_metadata.get("selected") else "bounded_recent_history"}
+    if source_boundary is not None:
+        payload["conversation_event_boundary"] = {key: source_boundary[key]
+            for key in ("namespace", "event_at", "message_id")}
+    if truth_current:
+        payload.update(verified_payment=truth_state["verified_payment"], truth_state=truth_state)
+    else:
+        payload.update(verified_payment=None, truth_state={"status": "unknown", "reason": "historical_truth_unavailable"})
+    return payload
+
+
+def _analysis_admitted_sources(client, *, namespace=None):
+    """Accepted same-client input; imported/failed/foreign sender rows cannot age a job."""
+    rows = (InstagramBotMessage.objects.filter(client_id=client.pk, sender_id=client.igsid)
+        .filter(Q(role=InstagramBotMessage.Role.USER, source__in=["webhook", "poll"])
+            | Q(role=InstagramBotMessage.Role.MANAGER,
+                source__in=["webhook", "poll", "echo", "manager", "manual", "human_reply"]))
+        .exclude(status=InstagramBotMessage.Status.FAILED))
+    return rows.filter(provider_namespace=namespace) if namespace is not None else rows
+
+
+LEGACY_CONTEXT_ONLY_SOURCES = frozenset({"manual_refresh", "poll_history", "history", "import", "backfill"})
+
+
+def _analysis_source_boundary(client, watermark):
+    from management.services.ig_memory_producer import timeline_source_digest
+    target = _analysis_admitted_sources(client).filter(pk=watermark).first()
+    if target is None:
+        physical = InstagramBotMessage.objects.filter(client_id=client.pk, sender_id=client.igsid,
+            pk=watermark, source__in=LEGACY_CONTEXT_ONLY_SOURCES).exclude(status="failed").first()
+        if physical is None:
+            return None
+        # Historical import ids are only job/CAS watermarks. They cannot hide
+        # a fresh admitted event or grant their own content any authority.
+        target = (_analysis_admitted_sources(client, namespace=physical.provider_namespace)
+            .filter(pk__lte=watermark)
+            .annotate(event_at=Coalesce("provider_created_at", "created_at"))
+            .order_by("-event_at", "-pk").first())
+        if target is None:
+            return None
+    return {"namespace": target.provider_namespace,
+        "event_at": (target.provider_created_at or target.created_at).isoformat(),
+        "message_id": target.pk, "source_digest": timeline_source_digest(target, target.provider_namespace)}
+
+
+def _analysis_truth_is_current(client, watermark, *, expected_boundary=None):
+    """Require the same source fence and latest admitted event tuple, not max PK alone."""
+    from django.utils.dateparse import parse_datetime
+    boundary = _analysis_source_boundary(client, watermark)
+    if boundary is None or expected_boundary is not None and boundary != expected_boundary:
+        return False
+    target_at = parse_datetime(boundary["event_at"])
+    return not (_analysis_admitted_sources(client, namespace=boundary["namespace"])
+        .annotate(event_at=Coalesce("provider_created_at", "created_at"))
+        .filter(Q(event_at__gt=target_at) | Q(event_at=target_at, pk__gt=boundary["message_id"])).exists())
+
+
+def _supersede_analysis_before_provider(job, client, watermark, claimed_revision, token, *, now):
+    """Coalesce accepted late customer/manager input through the existing owner."""
+    from django.utils.dateparse import parse_datetime
+    boundary = _analysis_source_boundary(client, watermark)
+    latest = None
+    if boundary is not None:
+        # Coalesce only current admitted events; preserve the physical job PK
+        # while a legacy import uses a different, source-owned event anchor.
+        target_at = parse_datetime(boundary["event_at"])
+        latest = (_analysis_admitted_sources(client, namespace=boundary["namespace"])
+            .filter(pk__gt=watermark)
+            .annotate(event_at=Coalesce("provider_created_at", "created_at"))
+            .filter(event_at__gte=target_at).order_by("-pk").first())
+    if latest is not None:
+        schedule_analysis(client, latest, trigger="message", now=now, delay_seconds=0)
+    current = IgConversationAnalysisJob.objects.filter(pk=job.pk).first()
+    if current is None or not _claim_is_current(current, token=token, claimed_watermark=watermark,
+            claimed_revision=claimed_revision, now=now, claimed_generation=int(job.claim_generation or 0)):
+        if current is not None:
+            _defer_claim_for_customer_reply(job.pk, token, now=now, reason="analysis_watermark_changed",
+                claim_generation=int(job.claim_generation or 0))
+        return True
+    return False
+
+
 def _conversation(
     client_id: int,
     watermark: int,
     *,
     on_media_progress=None,
+    message_rows=None,
 ) -> tuple[list[dict], dict[int, dict], list[dict]]:
-    rows = _analysis_message_rows(client_id, watermark)
+    rows = _analysis_message_rows(client_id, watermark) if message_rows is None else list(message_rows)
+    evidence_floor = current_message_floor(client_id) if message_rows is not None else 0
     from management.services.instagram_bot import (
         _capture_message_media,
         _media_part_capture_pending,
@@ -924,6 +1078,8 @@ def _conversation(
     # entire analysis lease before Gemini is reached.
     capture_budget = 8
     for row in reversed(rows):
+        if row.source in LEGACY_CONTEXT_ONLY_SOURCES:
+            continue
         if capture_budget <= 0:
             break
         entries = row.attachment_media or []
@@ -958,7 +1114,7 @@ def _conversation(
     media_retry_now = timezone.now()
     retry_parts = [
         item
-        for row in rows
+        for row in rows if row.source not in LEGACY_CONTEXT_ONLY_SOURCES
         for item in (row.attachment_media or [])
         if isinstance(item, dict)
     ]
@@ -994,7 +1150,7 @@ def _conversation(
                 "role": row.role,
                 "created_at": row.created_at,
             }
-            for row in rows
+            for row in rows if row.source not in LEGACY_CONTEXT_ONLY_SOURCES
         ]
         augmented_by_id = {
             int(item.get("id")): item
@@ -1023,7 +1179,12 @@ def _conversation(
             InstagramBotMessage.Role.MODEL: "model",
             InstagramBotMessage.Role.MANAGER: "manager",
         }.get(row.role, "system")
-        item = {"message_id": row.pk, "role": role, "text": text}
+        item = {"message_id": row.pk, "role": role, "text": text,
+            "event_at": getattr(row, "memory_event_at", (row.provider_created_at or row.created_at).isoformat()),
+            "time_origin": getattr(row, "memory_time_basis", "provider" if row.provider_created_at else "local_ingest"),
+            "evidence_eligible": row.pk >= evidence_floor and row.source not in LEGACY_CONTEXT_ONLY_SOURCES,
+            "analysis_scope": "current_episode" if row.pk >= evidence_floor and row.source not in LEGACY_CONTEXT_ONLY_SOURCES
+                else "historical_context"}
         intelligence = (
             row.turn_intelligence_artifact
             if isinstance(row.turn_intelligence_artifact, dict)
@@ -1085,7 +1246,8 @@ def _conversation(
                         "source_media_id": str(media.get("ig_post_media_id") or "")[:80],
                     })
         rendered.append(item)
-        by_id[row.pk] = item
+        if item["evidence_eligible"]:
+            by_id[row.pk] = item
         total += len(text)
     rendered.reverse()
     bounded_sources = media_sources[:8]
@@ -1455,6 +1617,18 @@ def _process_claim(
             job.pk, token, watermark, claimed_revision, reason, now,
             int(job.claim_generation or 0),
         )
+    source_boundary = _analysis_source_boundary(client, watermark)
+    if _supersede_analysis_before_provider(job, client, watermark, claimed_revision, token, now=timezone.now()):
+        return "superseded"
+    if not _analysis_truth_is_current(client, watermark, expected_boundary=source_boundary):
+        return _finish_skip(job.pk, token, watermark, claimed_revision, "historical_event_boundary",
+            timezone.now(), int(job.claim_generation or 0))
+    try:
+        memory, memory_metadata, memory_rows = _capture_analysis_memory(client, source_boundary["message_id"])
+    except Exception:
+        memory = {"text": "", "reason": "memory_capture_unavailable"}
+        memory_metadata = {"selected": False, "omission_reason": "memory_capture_unavailable"}
+        memory_rows = None
     media_started_at = timezone.now()
     if not _record_media_phase(
         job.pk,
@@ -1478,6 +1652,7 @@ def _process_claim(
             client.pk,
             watermark,
             on_media_progress=media_heartbeat,
+            **({"message_rows": memory_rows} if memory_rows is not None else {}),
         )
     except Exception:
         _record_media_phase(
@@ -1593,14 +1768,17 @@ def _process_claim(
         ):
             return "deferred"
         return "superseded"
+    if _supersede_analysis_before_provider(job, client, watermark, claimed_revision, token, now=timezone.now()):
+        return "superseded"
+    if not _analysis_truth_is_current(client, watermark, expected_boundary=source_boundary):
+        return _finish_skip(job.pk, token, watermark, claimed_revision, "historical_event_boundary",
+            timezone.now(), int(job.claim_generation or 0))
     result = gemini_generate_json(
         _analysis_system_prompt(),
-        json.dumps({
-            "verified_payment": initial_truth_state["verified_payment"],
-            "truth_state": initial_truth_state,
-            "watermark_message_id": watermark,
-            "conversation": transcript,
-        }, ensure_ascii=False, default=str),
+        json.dumps(_analysis_prompt_payload(watermark=watermark, transcript=transcript,
+            truth_state=initial_truth_state, memory=memory, memory_metadata=memory_metadata,
+            source_boundary=source_boundary),
+            ensure_ascii=False, default=str),
         role="management",
         max_output_tokens=4096,
         reasoning_task="conversation_reanalysis",
@@ -1654,6 +1832,9 @@ def _process_claim(
                 "updated_at",
             ])
             return "superseded"
+        if not _analysis_truth_is_current(client, watermark, expected_boundary=source_boundary):
+            return _finish_skip(job.pk, token, watermark, claimed_revision, "historical_event_boundary",
+                finalized_at, int(job.claim_generation or 0))
         # Match paid-order materialization: projection -> deal -> linked order.
         list(
             client.payment_projections.select_for_update()
