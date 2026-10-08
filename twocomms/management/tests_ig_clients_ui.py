@@ -1,7 +1,7 @@
 """Тести Phase 3 / Task 13 — вкладка «Клиенти» (CRM IG-клієнтів).
 
 JSON-API списку карток і детальної (переписка, кружечки воронки, summary,
-угоди, замовлення). Доступ лише адмінам.
+угоди, замовлення). Доступ перевіряється окремими можливостями оператора.
 """
 from decimal import Decimal
 from datetime import timedelta
@@ -16,7 +16,7 @@ import uuid
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
+from django.contrib.auth.models import Group, Permission
 from django.db import connection
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -42,7 +42,13 @@ from management.ig_bot_models import (
     IgPaymentReviewDecision,
     IgPostSaleCase,
 )
-from management.bot_access import META_REVIEWER_GROUP_NAME
+from management.bot_access import (
+    EDIT_IG_PROMPT_PERMISSION,
+    MANAGE_IG_PAYMENTS_PERMISSION,
+    META_REVIEWER_GROUP_NAME,
+    OPERATE_IG_BOT_PERMISSION,
+    VIEW_IG_CONVERSATION_PII_PERMISSION,
+)
 from management.bot_views import (
     _group_signal_rows,
     _review_media_groups,
@@ -55,6 +61,19 @@ MGMT = override_settings(
     ROOT_URLCONF="twocomms.urls_management",
     SECURE_SSL_REDIRECT=False,
 )
+
+
+def _operator(username, *capabilities):
+    """Create a real, explicitly authorized operator, without superuser bypass."""
+    user = User.objects.create_user(username, password="x", is_staff=True)
+    permissions = list(Permission.objects.filter(
+        content_type__app_label="management",
+        codename__in={capability.split(".", 1)[1] for capability in capabilities},
+    ))
+    if len(permissions) != len(set(capabilities)):
+        raise AssertionError("Bot capability migrations must exist in the test database")
+    user.user_permissions.add(*permissions)
+    return user
 
 
 class ClientWorkspaceTemplateContractTests(SimpleTestCase):
@@ -374,7 +393,7 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
             "Зупинити відповіді бота для всіх клієнтів?",
             "Приховати цього клієнта з активної черги",
             "Позначити цього клієнта як втраченого",
-            "Видалити цю інструкцію без можливості відновлення?",
+            "Видалити цю інструкцію з чернетки?",
             'id="bot-global-feedback"',
             'id="bot-kb-feedback"',
             "if(!response.ok||!data.success)throw new Error",
@@ -572,7 +591,7 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
             ".bot-client-action.pause{background:#4a3512;",
             ".bot-client-action.lost{background:#2c1519;",
             "c.bot_paused?'▶ Вернути боту':'⏸ Відповідати самому'",
-            "«Вернути боту» не поновлює згоду",
+            "Автоматичні повідомлення вимкнено за відмовою клієнта. Повернення бота можливе після окремо підтвердженої згоди.",
             "c.hidden?'↩ Повернути до активних':'Приховати'",
             "node('button','bot-client-action lost','Позначити як втрачено')",
             "node('button','bot-client-action reset','Скинути')",
@@ -711,10 +730,25 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
 
     def test_evidence_link_auto_pages_bounded_history_without_reversing_rows(self):
         self.assertIn("async function revealRequestedMessage", self.template)
-        self.assertIn("while(!evidence&&convHasOlder&&pages<20)", self.template)
+        self.assertIn("while(!evidence&&convHasOlder&&pages<20&&convId===evidenceClient&&messages.isConnected)", self.template)
         self.assertIn("Повідомлення #'+target+' не знайдено", self.template)
         self.assertIn("(d.messages||[]).forEach(m=>", self.template)
         self.assertNotIn("(d.messages||[]).slice().reverse().forEach(m=>", self.template)
+
+    def test_memory_card_uses_external_bounded_text_renderer(self):
+        static = Path(__file__).with_name("static") / "management"
+        renderer = (static / "js" / "ig_memory_card.js").read_text(encoding="utf-8")
+        styles = (static / "ig_memory_card.css").read_text(encoding="utf-8")
+        self.assertIn("management/js/ig_memory_card.js", self.template)
+        self.assertIn("management/ig_memory_card.css", self.template)
+        self.assertIn("window.IgMemoryCard.render(memoryRoot,c.memory_view", self.template)
+        self.assertNotIn("c.memory_summary", self.template)
+        self.assertIn("node.textContent = value", renderer)
+        self.assertNotIn("innerHTML", renderer)
+        self.assertIn("Europe/Kyiv", renderer)
+        self.assertIn("overflow-wrap:anywhere", styles)
+        self.assertIn("min-width:0", styles)
+        self.assertIn("flex-wrap:wrap", styles)
 
     def test_order_resolution_actions_are_explicit_and_rejection_has_reason(self):
         for visible_copy in (
@@ -733,7 +767,9 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
     def test_manager_confirmation_posts_exact_amount_and_shows_money_breakdown(self):
         self.assertIn("Сума, яку фактично перевірив менеджер", self.template)
         self.assertIn("confirmed_amount", self.template)
-        self.assertIn("До сплати", self.template)
+        self.assertIn("addFact(facts,'Разом до сплати',money(displayedOrderTotal))", self.template)
+        self.assertIn("addFact(facts,'Товари',money(payment.merchandise_total||payment.order_subtotal))", self.template)
+        self.assertIn("addFact(facts,'Доставка',money(payment.delivery_total))", self.template)
         self.assertIn("Сума до знижки", self.template)
         self.assertIn("Знижка", self.template)
         self.assertIn("Запитано зараз", self.template)
@@ -744,7 +780,8 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
         self.assertIn("reconciliation.setAttribute('role','alert')", self.template)
         self.assertIn("reconciliation.setAttribute('aria-live','assertive')", self.template)
         self.assertIn("const canResolveOrder=!payment.needs_reconciliation", self.template)
-        self.assertIn("displayedOrderTotal!=='—'?displayedOrderTotal+' грн':'—'", self.template)
+        self.assertIn("const money=value=>value!==undefined&&value!==null&&value!==''?value+' '+currency:'—'", self.template)
+        self.assertIn("const currency=payment.currency==='UAH'||!payment.currency?'грн':payment.currency", self.template)
         self.assertIn("function reconciliationMessage(payment)", self.template)
         self.assertIn("Monobank зафіксував часткове повернення", self.template)
         self.assertIn("Уточнити підтверджену суму", self.template)
@@ -1139,7 +1176,17 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
         )
 
     def test_order_resolution_copy_is_consistently_ukrainian(self):
-        self.assertIn("Нове замовлення не створюється автоматично", self.template)
+        # The payment decision now tries authorized automatic creation; this
+        # branch is explicitly the remaining manual-completion fallback.
+        start = self.template.index("if(approval.can_link_existing||approval.can_create)")
+        end = self.template.index("if(item.order&&item.order.id)", start)
+        resolution = self.template[start:end]
+        self.assertIn("Для автоматичного створення не вистачило перевірених даних", resolution)
+        self.assertIn("Доповніть замовлення вручну або прив'яжіть уже створене, щоб зберегти один продаж", resolution)
+        self.assertIn("postReview(item,'link_order'", resolution)
+        self.assertIn("const createUrl=safeHttpUrl(approval.create_order_url)", resolution)
+        self.assertIn("create.target='_blank'", resolution)
+        self.assertNotIn("postReview(item,'create_order'", resolution)
         self.assertNotIn("Новий заказ", self.template)
 
     def test_workspace_has_reduced_motion_and_target_responsive_breakpoints(self):
@@ -1215,7 +1262,7 @@ class SignalGroupingTests(SimpleTestCase):
 @MGMT
 class ClientsApiTests(TestCase):
     def setUp(self):
-        self.admin = User.objects.create_user("adm", password="x", is_staff=True)
+        self.admin = _operator("adm", VIEW_IG_CONVERSATION_PII_PERMISSION, OPERATE_IG_BOT_PERMISSION)
         self.client.force_login(self.admin)
         self.c = IgClient.get_or_create_for_sender("igX")
         self.c.display_name = "Іван"
@@ -1447,7 +1494,14 @@ class ClientsApiTests(TestCase):
         sql = "\n".join(row["sql"].lower() for row in queries.captured_queries)
         self.assertNotIn("management_igconversationanalysissnapshot", sql)
         self.assertNotIn("management_igdeal", sql)
-        self.assertLessEqual(len(queries), 2, sql)
+        business_queries = [row["sql"].lower() for row in queries.captured_queries
+            if not re.search(r"\b(?:from|join)\s+[`\"]?auth_", row["sql"].lower())]
+        auth_queries = [row["sql"].lower() for row in queries.captured_queries
+            if re.search(r"\b(?:from|join)\s+[`\"]?auth_", row["sql"].lower())]
+        self.assertTrue(auth_queries, "The real capability checks must run")
+        self.assertTrue(any("auth_permission" in row for row in auth_queries))
+        self.assertLessEqual(len(business_queries), 2, "\n".join(business_queries))
+        self.assertTrue(any("count(*)" in row and "management_igclient" in row for row in business_queries))
 
     def test_clients_twenty_row_projection_has_constant_query_budget(self):
         def query_count():
@@ -1698,6 +1752,10 @@ class ClientsApiTests(TestCase):
         review.confirmed_at = timezone.now()
         review.save(update_fields=["status", "confirmed_by", "confirmed_at", "updated_at"])
 
+        from management.services.ig_commercial_episodes import ensure_episode_for_review
+        episode = ensure_episode_for_review(review)
+        self.assertEqual(episode.primary_payment_review_id, review.pk)
+
         data = self.client.get(
             reverse("management_bot_client_detail_api", args=[self.c.id])
         ).json()
@@ -1705,7 +1763,12 @@ class ClientsApiTests(TestCase):
         self.assertEqual(data["automation"]["owner"], "manager")
         self.assertEqual(data["automation"]["paused_reason"], "Менеджер уточнює замовлення")
         self.assertEqual(data["payment"]["manager_truth"], "manager_verified")
-        self.assertEqual(data["payment"]["provider_truth"], "unverified")
+        self.assertEqual(data["payment"]["provider_truth"], "")
+        self.assertEqual(data["payment"]["provider_source"], "none")
+        self.assertIsNone(data["payment"]["projection_id"])
+        self.assertEqual(data["payment"]["episode_id"], episode.pk)
+        self.assertEqual(data["payment"]["review_id"], review.pk)
+        self.assertTrue(data["payment"]["authoritative_for_fulfillment"])
         self.assertEqual(data["review"]["confirmed_count"], 1)
         self.assertEqual(data["review"]["history"][0]["decision_history"][0]["decision"], "manager_verified")
         self.assertIn(
@@ -1874,6 +1937,8 @@ class ClientsApiTests(TestCase):
             truth=IgDeal.PaymentTruth.CONFIRMED,
             gross_amount=Decimal("950.00"),
         )
+        from management.services.ig_commercial_episodes import ensure_episode_for_deal
+        episode = ensure_episode_for_deal(paid_deal)
         IgPaymentConfirmationReview.objects.create(
             client=self.c,
             dedupe_key="newer-pending-review",
@@ -1884,9 +1949,14 @@ class ClientsApiTests(TestCase):
         ).json()
 
         self.assertEqual(data["payment"]["provider_truth"], "confirmed")
-        self.assertEqual(data["payment"]["provider_source"], "provider_projection")
+        self.assertEqual(data["payment"]["provider_source"], "monobank_projection")
+        self.assertEqual(data["payment"]["episode_id"], episode.pk)
+        self.assertEqual(data["payment"]["deal_id"], paid_deal.pk)
+        self.assertEqual(data["payment"]["projection_id"], paid_deal.payment_projection.pk)
+        self.assertEqual(data["payment"]["provider_confirmed_amount"], "950.00")
+        self.assertTrue(data["payment"]["authoritative_for_fulfillment"])
 
-    def test_latest_manager_truth_is_not_lost_behind_twenty_newer_reviews(self):
+    def test_current_episode_manager_truth_is_not_lost_behind_twenty_newer_reviews(self):
         verified = IgPaymentConfirmationReview.objects.create(
             client=self.c,
             dedupe_key="older-verified-review",
@@ -1906,6 +1976,8 @@ class ClientsApiTests(TestCase):
             review_status_before=IgPaymentConfirmationReview.Status.PENDING,
             review_status_after=IgPaymentConfirmationReview.Status.CONFIRMED,
         )
+        from management.services.ig_commercial_episodes import ensure_episode_for_review
+        episode = ensure_episode_for_review(verified)
         for index in range(21):
             IgPaymentConfirmationReview.objects.create(
                 client=self.c,
@@ -1918,6 +1990,9 @@ class ClientsApiTests(TestCase):
 
         self.assertEqual(data["payment"]["manager_truth"], "manager_verified")
         self.assertEqual(data["payment"]["manager_decision"]["id"], decision.id)
+        self.assertEqual(data["payment"]["episode_id"], episode.pk)
+        self.assertEqual(data["payment"]["review_id"], verified.pk)
+        self.assertEqual(data["payment"]["scope"], "current_episode")
 
     def test_manager_verified_linked_order_keeps_paid_stage_without_provider_deal(self):
         from orders.models import Order
@@ -1955,6 +2030,9 @@ class ClientsApiTests(TestCase):
             review_status_before=IgPaymentConfirmationReview.Status.PENDING,
             review_status_after=IgPaymentConfirmationReview.Status.CONFIRMED,
         )
+        from management.services.ig_commercial_episodes import ensure_episode_for_review
+        owned_review_episode = ensure_episode_for_review(review)
+        self.assertEqual(owned_review_episode.primary_payment_review_id, review.pk)
         attribution = IgOrderAttribution.objects.create(
             order=order,
             client=self.c,
@@ -1963,9 +2041,12 @@ class ClientsApiTests(TestCase):
             creation_mode="linked_existing",
             payment_source="manager_verified",
         )
-        from management.services.ig_commercial_episodes import ensure_episode_for_attribution
+        from management.services.ig_commercial_episodes import bind_episode_order, ensure_episode_for_attribution
 
+        bind_episode_order(owned_review_episode, order, attribution=attribution,
+            creation_mode=attribution.creation_mode, payment_source=attribution.payment_source)
         episode = ensure_episode_for_attribution(attribution)
+        self.assertEqual(episode.pk, owned_review_episode.pk)
         self.assertEqual(episode.state, "order_created")
 
         detail = self.client.get(
@@ -1992,7 +2073,10 @@ class ClientsApiTests(TestCase):
         self.assertTrue(funnel[IgClient.Stage.ORDER_CREATED]["current"])
         self.assertTrue(funnel[IgClient.Stage.ORDER_CREATED]["done"])
         self.assertFalse(funnel[IgClient.Stage.DONE]["done"])
-        self.assertEqual(detail["payment"]["provider_truth"], "unverified")
+        self.assertEqual(detail["payment"]["provider_truth"], "")
+        self.assertEqual(detail["payment"]["provider_source"], "none")
+        self.assertIsNone(detail["payment"]["projection_id"])
+        self.assertEqual(detail["payment"]["episode_id"], owned_review_episode.pk)
         self.assertEqual(detail["payment"]["manager_truth"], "manager_verified")
         self.assertTrue(detail["payment"]["authoritative_for_fulfillment"])
         self.assertIsNone(detail["review"]["active"])
@@ -2195,7 +2279,7 @@ class ClientsApiTests(TestCase):
         self.c.stage = IgClient.Stage.PAID
         self.c.save(update_fields=["stage", "updated_at"])
         order = Order.objects.create(
-            order_number="TWC-INCREMENTAL-STAGE",
+            order_number="TWC-INCR-STAGE",
             full_name="Іван",
             phone="380000000000",
             total_sum=Decimal("950.00"),
@@ -2292,7 +2376,7 @@ class ClientsApiTests(TestCase):
 
     def test_meta_reviewer_cannot_read_commercial_client_detail(self):
         self.client.logout()
-        reviewer = User.objects.create_user("meta_detail_reviewer", password="x")
+        reviewer = _operator("meta_detail_reviewer", VIEW_IG_CONVERSATION_PII_PERMISSION)
         group = Group.objects.create(name=META_REVIEWER_GROUP_NAME)
         reviewer.groups.add(group)
         self.client.force_login(reviewer)
@@ -2303,6 +2387,19 @@ class ClientsApiTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_staff_without_explicit_conversation_permission_is_denied(self):
+        staff = User.objects.create_user("staff_without_bot_capabilities", password="x", is_staff=True)
+        self.client.force_login(staff)
+        for url in (
+            reverse("management_bot_clients_api"),
+            reverse("management_bot_client_detail_api", args=[self.c.pk]),
+        ):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 403)
+                self.assertNotIn("client", response.json())
+                self.assertNotIn("clients", response.json())
+
     def test_requires_admin(self):
         self.client.logout()
         nonadmin = User.objects.create_user("u", password="x")
@@ -2312,9 +2409,125 @@ class ClientsApiTests(TestCase):
 
 
 @MGMT
+@override_settings(IG_MEMORY_TIMELINE_ENABLED=True, GOOGLE_INDEXING_ENABLED=False)
+class ClientDetailMemoryApiTests(TestCase):
+    """Real publication and reader boundaries, through the authorized detail API."""
+    def setUp(self):
+        from management.services.ig_analysis_lane import owner_scope
+
+        env = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.clock = timezone.now() - timedelta(minutes=1)
+        owner = owner_scope(now=self.clock, lease_seconds=3600)
+        owner.__enter__()
+        self.addCleanup(owner.__exit__, None, None, None)
+        InstagramBotSettings.objects.create(pk=1, ig_user_id="memory-ui-owner", is_enabled=True)
+        self.namespace = "instagram_login:memory-ui-owner"
+        self.customer = IgClient.objects.create(igsid="memory-ui-customer")
+        self.operator = _operator("memory_ui_operator", VIEW_IG_CONVERSATION_PII_PERMISSION)
+        self.client.force_login(self.operator)
+        self.source_count = 0
+
+    def source(self, text, *, role="user", namespace=None):
+        self.source_count += 1
+        return InstagramBotMessage.objects.create(
+            client=self.customer, sender_id=self.customer.igsid, role=role,
+            source="echo" if role == "manager" else "webhook", status="done",
+            text=text, mid=f"memory-ui-{self.source_count}",
+            provider_namespace=namespace or self.namespace,
+            provider_created_at=self.clock + timedelta(seconds=self.source_count),
+        )
+
+    def publish(self, source, *, target=None):
+        from management.services import ig_memory_producer as producer
+        from management.services.ig_memory_timeline import VERSION
+
+        target = target or source
+        self.assertTrue(producer.enqueue_memory_source(target.pk, now=self.clock).queued)
+        claim = producer.claim_memory_job(client_id=self.customer.pk, now=self.clock + timedelta(seconds=4))
+        self.assertIsNotNone(claim)
+        result = producer.publish_memory_result(claim, {"version": VERSION, "events": [{
+            "source_message_id": source.pk, "quote": source.text, "topic": "gift",
+        }]}, now=self.clock + timedelta(seconds=5))
+        self.assertTrue(result.published, result.reason)
+        self.customer.refresh_from_db()
+        self.assertIn("HISTORICAL SOURCE OBSERVATIONS", self.customer.memory_summary)
+
+    def detail(self):
+        with patch("management.services.bot_memory.gemini_generate_text",
+                side_effect=AssertionError("Unexpected legacy memory generation")) as generate, \
+                patch("management.services.call_ai_analysis.gemini_generate_text",
+                    side_effect=AssertionError("Unexpected canonical memory generation")) as canonical_generate, \
+                patch("management.services.instagram_bot._provider_http",
+                    side_effect=AssertionError("Unexpected Meta provider I/O")) as provider:
+            response = self.client.get(reverse("management_bot_client_detail_api", args=[self.customer.pk]))
+        self.assertEqual(response.status_code, 200, response.content)
+        generate.assert_not_called()
+        canonical_generate.assert_not_called()
+        provider.assert_not_called()
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertNotIn("memory_summary", data["client"])
+        self.assertNotIn("memory_provenance", data["client"])
+        for machine in ("HISTORICAL SOURCE OBSERVATIONS", "read_digest", "source_digest", "generation_input_digest"):
+            self.assertNotIn(machine, response.content.decode())
+        return data["client"]["memory_view"]
+
+    def test_unverified_machine_memory_is_not_an_api_fallback(self):
+        self.customer.memory_summary = "[HISTORICAL SOURCE OBSERVATIONS] PRIVATE_MACHINE_HEAD"
+        self.customer.save(update_fields=["memory_summary"])
+        view = self.detail()
+        self.assertEqual(view["status"], "unavailable")
+        self.assertEqual(view["events"], [])
+        self.assertEqual(view["legacy_text"], "")
+        self.assertNotIn("PRIVATE_MACHINE_HEAD", json.dumps(view))
+
+    def test_actual_published_head_accepts_latest_own_manager_echo(self):
+        user = self.source("Це подарунок для друга.")
+        manager = self.source("Добре, допоможемо обрати.", role="manager")
+        self.publish(user, target=manager)
+        view = self.detail()
+        self.assertEqual(view["status"], "timeline")
+        self.assertEqual(view["events"], [{
+            "event_at": user.provider_created_at.isoformat(), "time_basis": "provider",
+            "topic_label": "Подарунок", "quote": user.text,
+            "source_id": user.pk, "scope_label": "Розмова клієнта",
+        }])
+        self.assertEqual(view["as_of"], manager.provider_created_at.isoformat())
+        self.assertEqual(view["coverage"]["pending_count"], 0)
+
+    def test_newer_own_manager_echo_is_a_read_delta_without_rewriting_head(self):
+        user = self.source("Це подарунок для друга.")
+        self.publish(user)
+        before = (self.customer.memory_version, self.customer.memory_summary, self.customer.memory_provenance)
+        manager = self.source("Посилку отримано.", role="manager")
+        view = self.detail()
+        self.assertEqual(view["status"], "timeline")
+        self.assertEqual(view["events"][0]["source_id"], user.pk)
+        self.assertEqual(view["as_of"], manager.provider_created_at.isoformat())
+        self.assertEqual(view["coverage"]["pending_count"], 1)
+        self.customer.refresh_from_db()
+        self.assertEqual((self.customer.memory_version, self.customer.memory_summary,
+            self.customer.memory_provenance), before)
+        self.assertNotEqual(manager.pk, view["events"][0]["source_id"])
+
+    def test_foreign_manager_namespace_does_not_advance_memory_boundary(self):
+        user = self.source("Це подарунок для друга.")
+        self.publish(user)
+        foreign = self.source("FOREIGN_MANAGER_MEMORY", role="manager", namespace="instagram_login:foreign-owner")
+        view = self.detail()
+        self.assertEqual(view["status"], "timeline")
+        self.assertEqual(view["coverage"]["pending_count"], 0)
+        self.assertEqual(view["events"][0]["source_id"], user.pk)
+        self.assertNotIn("FOREIGN_MANAGER_MEMORY", json.dumps(view))
+        self.assertNotEqual(foreign.pk, view["events"][0]["source_id"])
+
+
+@MGMT
 class ClientsPageRenderTests(TestCase):
     def test_bot_page_has_tabbed_structure(self):
-        admin = User.objects.create_user("adm2", password="x", is_staff=True)
+        admin = _operator("adm2", VIEW_IG_CONVERSATION_PII_PERMISSION, OPERATE_IG_BOT_PERMISSION, MANAGE_IG_PAYMENTS_PERMISSION, EDIT_IG_PROMPT_PERMISSION)
         self.client.force_login(admin)
         r = self.client.get(reverse("management_bot"))
         self.assertEqual(r.status_code, 200)
@@ -2384,7 +2597,7 @@ class ClientsPageRenderTests(TestCase):
 @MGMT
 class OrdersWorkspaceApiTests(TestCase):
     def setUp(self):
-        self.admin = User.objects.create_user("orders_api_admin", password="x", is_staff=True)
+        self.admin = _operator("orders_api_admin", VIEW_IG_CONVERSATION_PII_PERMISSION, MANAGE_IG_PAYMENTS_PERMISSION)
         self.client.force_login(self.admin)
         self.customer = IgClient.get_or_create_for_sender("orders-api-client")
         self.pending = IgPaymentConfirmationReview.objects.create(
@@ -3050,8 +3263,16 @@ class OrdersWorkspaceApiTests(TestCase):
         delivery = item["draft"]["delivery"]
 
         self.assertEqual(set(media), {
-            "role", "source_message_id", "product_id", "product_title", "url",
+            "role", "source_message_id", "product_id", "product_title", "availability",
+            "receipt_reported_amount", "receipt_currency", "receipt_payment_status",
+            "receipt_inspection_state", "receipt_inspection_role",
         })
+        self.assertEqual(media["availability"], "unavailable")
+        self.assertEqual(media["receipt_inspection_state"], "uninspected")
+        for key in ("receipt_reported_amount", "receipt_currency", "receipt_payment_status", "receipt_inspection_role"):
+            self.assertEqual(media[key], "")
+        for key in ("url", "local_url", "preview_url", "private_storage", "storage_name", "unexpected"):
+            self.assertNotIn(key, media)
         self.assertEqual(media["source_message_id"], 42)
         self.assertEqual(media["product_id"], 17)
         self.assertLessEqual(len(media["product_title"]), 240)
@@ -3094,7 +3315,12 @@ class OrdersWorkspaceApiTests(TestCase):
             source="manual",
             sale_source="Instagram",
         )
+        deal = IgDeal.objects.create(client=self.customer, order=order, amount=Decimal("1200.00"),
+            payment_truth=IgDeal.PaymentTruth.CONFIRMED)
+        projection = IgPaymentProjection.objects.create(client=self.customer, deal=deal,
+            truth=IgDeal.PaymentTruth.CONFIRMED, gross_amount=Decimal("1200.00"))
         IgOrderAttribution.objects.create(
+            deal=deal,
             order=order,
             client=self.customer,
             creation_mode="provider_auto",
@@ -3110,8 +3336,12 @@ class OrdersWorkspaceApiTests(TestCase):
 
         provider_card = next(item for item in data["items"] if item["order"].get("id") == order.id)
         self.assertIsNone(provider_card["review_id"])
-        self.assertEqual(provider_card["approval"]["state"], "confirmed")
+        # Workflow state and payment proof are separate contracts.
+        self.assertEqual(provider_card["approval"]["state"], "order_created")
         self.assertEqual(provider_card["payment"]["provider_truth"], "confirmed")
+        self.assertEqual(provider_card["payment"]["projection_id"], projection.pk)
+        self.assertEqual(provider_card["payment"]["provider_confirmed_amount"], "1200.00")
+        self.assertTrue(provider_card["payment"]["authoritative_for_fulfillment"])
         self.assertEqual(provider_card["draft"]["items"][0]["fit"], "classic")
         self.assertEqual(data["counts"], {"action": 2, "confirmed": 2, "all": 3})
 
@@ -3130,6 +3360,20 @@ class OrdersWorkspaceApiTests(TestCase):
                 sale_source="Instagram",
             )
 
+        def manager_decision(review, order):
+            return IgPaymentReviewDecision.objects.create(
+                review=review, client=self.customer,
+                decision=IgPaymentReviewDecision.Decision.MANAGER_VERIFIED,
+                verification_source="manager",
+                verification_scope=IgPaymentReviewDecision.VerificationScope.FULL_PAYMENT,
+                confirmed_amount=order.total_sum, order_total_amount=order.total_sum,
+                order_total_source="linked_order_final_total", amount_source="manager_input",
+                actor=self.admin, actor_source=IgPaymentReviewDecision.ActorSource.MANAGEMENT_USER,
+                actor_external_id=str(self.admin.pk),
+                review_status_before=IgPaymentConfirmationReview.Status.PENDING,
+                review_status_after=IgPaymentConfirmationReview.Status.CONFIRMED,
+            )
+
         created_order = make_order("900.00")
         self.confirmed.order = created_order
         self.confirmed.save(update_fields=["order", "updated_at"])
@@ -3137,6 +3381,7 @@ class OrdersWorkspaceApiTests(TestCase):
             order=created_order,
             client=self.customer,
             payment_review=self.confirmed,
+            manager_decision=manager_decision(self.confirmed, created_order),
             creation_mode="manager_review",
             payment_source="manager_verified",
         )
@@ -3152,6 +3397,7 @@ class OrdersWorkspaceApiTests(TestCase):
             order=linked_order,
             client=self.customer,
             payment_review=linked_review,
+            manager_decision=manager_decision(linked_review, linked_order),
             creation_mode="linked_existing",
             payment_source="manager_verified",
         )
@@ -3163,6 +3409,11 @@ class OrdersWorkspaceApiTests(TestCase):
 
         self.assertEqual(states[self.confirmed.id], "created_new")
         self.assertEqual(states[linked_review.id], "linked_existing")
+        for item in data["items"]:
+            if item["review_id"] in {self.confirmed.pk, linked_review.pk}:
+                self.assertEqual(item["payment"]["manager_truth"], "manager_verified")
+                self.assertTrue(item["payment"]["authoritative_for_fulfillment"])
+                self.assertEqual(item["payment"]["manager_confirmed_amount"], item["order"]["amount"])
 
     def test_get_endpoints_keep_unsuperseded_review_history_read_only(self):
         """Legacy repair is explicit; read endpoints do not mutate review history."""
@@ -3312,7 +3563,12 @@ class OrdersWorkspaceApiTests(TestCase):
         ).json()
         card = next(item for item in data["items"] if item["order"].get("id") == order.id)
 
-        self.assertEqual(card["payment"]["provider_truth"], "unverified")
+        self.assertEqual(card["payment"]["provider_truth"], "")
+        self.assertEqual(card["payment"]["provider_source"], "none")
+        self.assertIsNone(card["payment"]["projection_id"])
+        self.assertEqual(card["payment"]["provider_confirmed_amount"], "0.00")
+        self.assertEqual(card["payment"]["confirmed_paid_amount"], "0.00")
+        self.assertEqual(card["payment"]["manager_truth"], "")
         self.assertFalse(card["payment"]["authoritative_for_fulfillment"])
 
     def test_orphaned_review_attribution_remains_visible_as_order_card(self):
@@ -3354,7 +3610,7 @@ class OrdersWorkspaceApiTests(TestCase):
 @MGMT
 class ClientPauseResumeApiTests(TestCase):
     def setUp(self):
-        self.admin = User.objects.create_user("adm3", password="x", is_staff=True)
+        self.admin = _operator("adm3", VIEW_IG_CONVERSATION_PII_PERMISSION, OPERATE_IG_BOT_PERMISSION)
         self.client.force_login(self.admin)
         self.c = IgClient.get_or_create_for_sender("igPause")
 
@@ -3443,7 +3699,7 @@ class ClientDetailCursorTests(TestCase):
     """Фаза 3: live chat — інкрементальна дозагрузка переписки через after_id."""
 
     def setUp(self):
-        self.admin = User.objects.create_user("adm_cur", password="x", is_staff=True)
+        self.admin = _operator("adm_cur", VIEW_IG_CONVERSATION_PII_PERMISSION)
         self.client.force_login(self.admin)
         self.c = IgClient.get_or_create_for_sender("igCur")
         self.m0 = InstagramBotMessage.objects.create(

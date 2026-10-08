@@ -339,14 +339,23 @@ def ugc_identity_already_rewarded(client) -> bool:
 
 
 def ugc_identity_lifetime_conflicted(client) -> bool:
-    """Read at most two matching slots; multiple empty slots are not unused truth."""
+    """Read bounded matching slots and unverifiable client-held legacy identity.
+
+    Neither multiple empty matches nor an unmatched legacy hold proves that
+    this identity has an unused entitlement. Consumption is checked separately.
+    """
     from management.ig_bot_models import IgUgcRewardLifetime
 
     digests = _identity_digest_candidates(client)
-    return len(list(
+    if len(list(
         IgUgcRewardLifetime.objects.filter(identity_digest__in=digests)
         .values_list("pk", flat=True)[:2]
-    )) > 1
+    )) > 1:
+        return True
+    client_id = getattr(client, "pk", None)
+    return bool(client_id and IgUgcRewardLifetime.objects.filter(
+        client_id=client_id,
+    ).exclude(identity_digest__in=digests).exists())
 
 
 def ugc_reward_eligibility(client, *, assignments=None, now=None) -> tuple[bool, str]:
@@ -359,15 +368,14 @@ def ugc_reward_eligibility(client, *, assignments=None, now=None) -> tuple[bool,
 
     del now  # reserved for time-bounded policy extensions
     digests = _identity_digest_candidates(client)
-    lifetime = IgUgcRewardLifetime.objects.filter(identity_digest__in=digests).first()
-    if lifetime is not None and (lifetime.reward_id or lifetime.consumed_at):
+    if ugc_identity_already_rewarded(client):
         return False, "already_rewarded"
     if getattr(client, "pk", None) and IgUgcRewardLifetime.objects.filter(
         client_id=client.pk,
     ).exclude(identity_digest__in=digests).exists():
-        return False, "already_rewarded"
-    if getattr(client, "pk", None) and _legacy_reward_for_client(client) is not None:
-        return False, "already_rewarded"
+        return False, "lifetime_identity_unverified"
+    if ugc_identity_lifetime_conflicted(client):
+        return False, "lifetime_conflict"
     service_reason = ugc_service_case_reason(client)
     if service_reason:
         return False, service_reason

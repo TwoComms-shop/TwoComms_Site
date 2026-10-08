@@ -369,3 +369,76 @@ class CanonicalPostPurchaseInvitationTests(TestCase):
         with patch("management.services.instagram_bot.send_text") as send:
             self.assertEqual(dispatch_lifecycle_event(event.pk), "ambiguous")
         send.assert_not_called()
+
+
+@override_settings(
+    IG_UGC_IDENTITY_HMAC_ACTIVE_KEY_ID="active",
+    IG_UGC_IDENTITY_HMAC_KEYRING={
+        "active": "active-test-identity-secret-00000000000000",
+        "retained": "retained-test-identity-secret-000000000000",
+    },
+)
+class ManagerUgcLifetimeEligibilityTests(TestCase):
+    def setUp(self):
+        from management.ig_bot_models import IgClient, IgUgcRewardLifetime
+        from management.services.ig_ugc_rewards import _identity_digest_candidates
+        from orders.models import Order
+
+        self.customer = IgClient.objects.create(igsid="manager-retained-lifetime")
+        self.order = Order.objects.create(
+            order_number="TWC-ELIGIBILITY", full_name="Buyer", phone="380501112233",
+            city="Kyiv", np_office="Branch 1", total_sum="790.00", status="done",
+            tracking_number="20400000000009", tracking_status_code=9,
+            tracking_terminal_at=timezone.now(),
+        )
+        active, retained = _identity_digest_candidates(self.customer)
+        self.active_slot = IgUgcRewardLifetime.objects.create(
+            client=self.customer, identity_digest=active,
+        )
+        self.retained_slot = IgUgcRewardLifetime.objects.create(identity_digest=retained)
+
+    def test_manager_eligibility_detects_consumed_retained_slot_after_empty_active(self):
+        from management.services.ig_ugc_rewards import ugc_reward_eligibility
+
+        self.retained_slot.consumed_at = timezone.now()
+        self.retained_slot.save(update_fields=["consumed_at", "updated_at"])
+        self.assertEqual(
+            ugc_reward_eligibility(self.customer, assignments=[SimpleNamespace(order=self.order)]),
+            (False, "already_rewarded"),
+        )
+
+    def test_manager_eligibility_reports_two_empty_matching_slots_as_conflict(self):
+        from management.services.ig_ugc_rewards import ugc_reward_eligibility
+
+        self.assertEqual(
+            ugc_reward_eligibility(self.customer, assignments=[SimpleNamespace(order=self.order)]),
+            (False, "lifetime_conflict"),
+        )
+
+    def test_empty_unmatched_legacy_slot_is_unknown_without_claiming_issuance(self):
+        from management.ig_bot_models import IgUgcRewardLifetime
+        from management.services.ig_ugc_rewards import (
+            ugc_identity_already_rewarded, ugc_identity_lifetime_conflicted,
+            ugc_reward_eligibility,
+        )
+
+        self.active_slot.delete()
+        self.retained_slot.delete()
+        legacy = IgUgcRewardLifetime.objects.create(
+            client=self.customer, identity_digest="legacy-empty-unverified-identity",
+        )
+        self.assertFalse(ugc_identity_already_rewarded(self.customer))
+        self.assertTrue(ugc_identity_lifetime_conflicted(self.customer))
+        self.assertEqual(
+            ugc_reward_eligibility(self.customer, assignments=[SimpleNamespace(order=self.order)]),
+            (False, "lifetime_identity_unverified"),
+        )
+        self.assertEqual(
+            post_purchase_invitation_block_reason(self.customer, self.order),
+            "post_purchase_eligibility_unknown",
+        )
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.identity_digest, "legacy-empty-unverified-identity")
+        self.assertIsNone(legacy.reward_id)
+        self.assertIsNone(legacy.consumed_at)
+        self.assertEqual(IgUgcRewardLifetime.objects.count(), 1)

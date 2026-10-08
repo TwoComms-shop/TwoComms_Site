@@ -2933,7 +2933,24 @@ body.bot-drawer-open{overflow:hidden;}
         if(item.review_note)card.appendChild(node('div','bot-hint',item.review_note));block.appendChild(card);
       });
       const choices=issued.length===0&&ugc.reward_eligible===true?assignments.filter(item=>item.reward_eligible===true&&item.order&&item.order.status==='done'):[];
-      if(!choices.length){if(!issued.length)block.appendChild(node('div','bot-hint','Нагороду можна видати після отримання прив’язаного замовлення.'));return;}
+      if(!choices.length){
+        if(!issued.length){
+          const eligibilityHints={
+            lifetime_conflict:'Право на довічну UGC-нагороду потребує звірки: знайдено суперечливі записи. Видачу призупинено до перевірки.',
+            lifetime_identity_unverified:'Право на UGC-нагороду не підтверджено. Потрібна звірка запису Instagram-профілю перед видачею.',
+            already_rewarded:'UGC-нагороду для цього Instagram-профілю вже було видано. Повторна видача недоступна.',
+            service_case_open:'Спочатку завершіть відкрите сервісне звернення клієнта. Видачу UGC-нагороди тимчасово призупинено.',
+            manager_review_required:'Матеріал UGC потребує перевірки менеджером перед видачею нагороди.',
+            assessment_pending:'Перевірка матеріалу UGC ще триває. Нагороду поки не можна видати.',
+            evidence_rejected:'Матеріал UGC не підтверджено. Для нагороди потрібен відповідний доказ.',
+            assessment_provenance_invalid:'Походження матеріалу UGC не підтверджено. Потрібна перевірка перед видачею нагороди.',
+          };
+          const completed=assignments.some(item=>item.order&&item.order.status==='done');
+          const hint=eligibilityHints[ugc.eligibility_reason]||(completed?'Замовлення завершене, але право на UGC-нагороду ще не підтверджене. Перевірте доказ і умови видачі.':'Нагороду можна видати після підтвердженого отримання прив’язаного замовлення та перевірки доказу UGC.');
+          block.appendChild(node('div','bot-hint',hint));
+        }
+        return;
+      }
       const form=node('div','bot-assignment-card');
       const orderSelect=document.createElement('select');orderSelect.className='bot-input';
       choices.forEach(item=>{const option=document.createElement('option');option.value=String(item.order.id);option.textContent='№'+(item.order.number||item.order.id);orderSelect.appendChild(option);});
