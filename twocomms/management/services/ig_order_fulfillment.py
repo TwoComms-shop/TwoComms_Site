@@ -25,6 +25,10 @@ from management.services.ig_delivery_receipts import (
     normalize_provider_message_id,
     normalize_provider_message_ids,
 )
+from management.services.ig_post_purchase_invitation import (
+    post_purchase_invitation_block_reason,
+    post_purchase_invitation_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,26 +144,7 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
             f"Орієнтовний термін доставки - 1-3 робочі дні. "
             f"Стежити за статусом: {tracking_url}"
         )
-    if locale == "en":
-        return (
-            f"Thank you for your order #{number}! How are the quality and fit? "
-            "If you share your T-shirt in a story and tag @twocomms, send us the "
-            "story link or screenshot in Direct. After we verify it, we will issue "
-            "a one-use 10% discount for your next order."
-        )
-    if locale == "ru":
-        return (
-            f"Спасибо за заказ №{number}! Довольны ли вы качеством и посадкой? "
-            "Если покажете футболку в сторис и отметите @twocomms, пришлите ссылку "
-            "или скрин в Direct. После проверки выдадим одноразовую скидку 10% "
-            "на следующий заказ."
-        )
-    return (
-        f"Дякуємо за замовлення №{number}! Чи задоволені ви якістю і посадкою? "
-        "Якщо покажете футболку в сторіс і відмітите @twocomms, надішліть посилання "
-        "або скрін у Direct. Після перевірки видамо одноразову знижку 10% "
-        "на наступне замовлення."
-    )
+    return post_purchase_invitation_text(locale, order)
 
 
 def _uses_canonical_lifecycle(assignment) -> bool:
@@ -530,11 +515,16 @@ def _event_send_boundary(
             )
             if canonical_handoff:
                 boundary_state["canonical_handoff"] = True
+            invitation_reason = ""
+            if current_event and order and client and current_event.kind == "delivered_review":
+                invitation_reason = post_purchase_invitation_block_reason(client, order)
+                boundary_state["invitation_reason"] = invitation_reason
             eligible_without_window = bool(
                 current_event
                 and assignment
                 and fulfillment_current
                 and not canonical_handoff
+                and not invitation_reason
                 and assignment.client_id == event.client_id
                 and assignment.unassigned_at is None
                 and assignment.version == event.assignment_version
@@ -618,6 +608,12 @@ def deliver_event(event_id, *, send=True, now=None):
     if client.hidden_at or client.is_blocked or _active_opt_out(client):
         _finish(event, token=token, state=IgOrderCustomerEvent.State.CANCELLED, now=now, error="client hidden or opted out")
         return "cancelled"
+    if event.kind == "delivered_review":
+        invitation_reason = post_purchase_invitation_block_reason(client, event.order)
+        if invitation_reason:
+            _finish(event, token=token, state=IgOrderCustomerEvent.State.CANCELLED,
+                    now=now, error=invitation_reason)
+            return "cancelled"
     if client.bot_paused or client.manager_takeover:
         # F-OPS-005: раньше здесь был безусловный ретрай каждые 15 минут без
         # верхней границы. На проде событие с ТТН провисело 53 попытки (~13 ч),
@@ -663,6 +659,7 @@ def deliver_event(event_id, *, send=True, now=None):
         "superseded": False,
         "canonical_handoff": False,
         "window_closed": False,
+        "invitation_reason": "",
     }
 
     def checkpoint_provider_receipt(message_id):
@@ -716,7 +713,14 @@ def deliver_event(event_id, *, send=True, now=None):
         )
         return "ambiguous"
     if kind == "cancelled":
-        if boundary_state["canonical_handoff"]:
+        if boundary_state["invitation_reason"]:
+            error = boundary_state["invitation_reason"]
+            if provider_message_ids:
+                _finish(event, token=token, state=IgOrderCustomerEvent.State.AMBIGUOUS,
+                        now=now, error=f"partial delivery before {error}",
+                        provider_message_id=provider_message_id)
+                return "ambiguous"
+        elif boundary_state["canonical_handoff"]:
             error = CANONICAL_LIFECYCLE_ERROR
         elif boundary_state["superseded"]:
             error = SUPERSEDED_ERROR

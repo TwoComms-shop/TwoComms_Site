@@ -460,7 +460,7 @@ class IgOrderFulfillmentTests(TestCase):
         second_client.last_message_at = timezone.now()
         second_client.save(update_fields=["last_message_at", "updated_at"])
         older_order = Order.objects.create(
-            order_number="TWC-FULFILLMENT-OLDER",
+            order_number="TWC-FULFILL-OLDER",
             full_name="Older website buyer",
             phone="380509998877",
             total_sum=Decimal("790.00"),

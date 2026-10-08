@@ -324,8 +324,9 @@ def ugc_identity_already_rewarded(client) -> bool:
     from management.ig_bot_models import IgUgcRewardLifetime
 
     digests = _identity_digest_candidates(client)
-    lifetime = IgUgcRewardLifetime.objects.filter(identity_digest__in=digests).first()
-    if lifetime is not None and (lifetime.reward_id or lifetime.consumed_at):
+    if IgUgcRewardLifetime.objects.filter(identity_digest__in=digests).filter(
+        Q(reward_id__isnull=False) | Q(consumed_at__isnull=False)
+    ).exists():
         return True
     client_id = getattr(client, "pk", None)
     if not client_id:
@@ -335,6 +336,17 @@ def ugc_identity_already_rewarded(client) -> bool:
     ).filter(Q(reward_id__isnull=False) | Q(consumed_at__isnull=False)).exists():
         return True
     return _legacy_reward_for_client(client) is not None
+
+
+def ugc_identity_lifetime_conflicted(client) -> bool:
+    """Read at most two matching slots; multiple empty slots are not unused truth."""
+    from management.ig_bot_models import IgUgcRewardLifetime
+
+    digests = _identity_digest_candidates(client)
+    return len(list(
+        IgUgcRewardLifetime.objects.filter(identity_digest__in=digests)
+        .values_list("pk", flat=True)[:2]
+    )) > 1
 
 
 def ugc_reward_eligibility(client, *, assignments=None, now=None) -> tuple[bool, str]:

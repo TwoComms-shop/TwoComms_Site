@@ -685,7 +685,7 @@ class UgcRewardTests(TestCase):
         )
 
         paid_order = Order.objects.create(
-            order_number="TWC-UGC-REVOKED-LATE-PAID",
+            order_number="TWC-UGC-REVOKED-PAID",
             full_name="Late paid UGC buyer",
             phone="380501112266",
             city="Kyiv",
@@ -759,7 +759,7 @@ class UgcRewardTests(TestCase):
             message_snapshot="external reward",
         )
         unrelated = Order.objects.create(
-            order_number="TWC-UGC-UNRELATED-RETURN",
+            order_number="TWC-UGC-OTHER-RETURN",
             full_name="Other purchase",
             phone="380501112299",
             city="Kyiv",
@@ -782,7 +782,7 @@ class UgcRewardTests(TestCase):
     def test_unrelated_return_does_not_hold_linked_reward_for_another_order(self):
         reward = self._award()
         unrelated = Order.objects.create(
-            order_number="TWC-UGC-OTHER-LINKED-RETURN",
+            order_number="TWC-UGC-LINKED-RET",
             full_name="Other linked purchase",
             phone="380501112288",
             city="Kyiv",

@@ -33,6 +33,11 @@ from management.services.ig_delivery_receipts import (
     normalize_provider_message_id,
     normalize_provider_message_ids,
 )
+from management.services.ig_post_purchase_invitation import (
+    INVITATION_BLOCK_REASONS,
+    post_purchase_invitation_block_reason,
+    post_purchase_invitation_text,
+)
 from orders.fulfillment_truth import nova_poshta_order_fulfillment_confirmed
 from orders.models import Order
 
@@ -118,6 +123,7 @@ LAST_ERROR_REASONS = frozenset({
     LEASE_WITHOUT_EXPIRY_ERROR,
     LEGACY_LEASE_MARKER_ERROR,
     *TRANSIENT_PERMISSION_REASONS,
+    *INVITATION_BLOCK_REASONS,
 })
 
 
@@ -395,12 +401,7 @@ def _message_for(kind, locale, order, payload) -> str:
             ),
         }
         return copies[locale]
-    copies = {
-        "uk": "Дякуємо, що обрали TwoComms. Чи все добре із замовленням і чи вам сподобались речі? Якщо маєте хвилину, відмітьте @twocomms в Instagram або надішліть короткий чесний відгук. Будемо раді побачити посилання чи скрін у Direct.",
-        "ru": "Спасибо, что выбрали TwoComms. Все ли хорошо с заказом и понравились ли вам вещи? Если будет минутка, отметьте @twocomms в Instagram или отправьте короткий честный отзыв. Будем рады увидеть ссылку или скрин в Direct.",
-        "en": "Thank you for choosing TwoComms. Did everything arrive correctly, and did you like the order? If you have a minute, tag @twocomms in an Instagram story or send a short honest review. We would be glad to see the story link or a screenshot in Direct.",
-    }
-    return copies[locale]
+    return post_purchase_invitation_text(locale, order)
 
 
 def _message(event: IgLifecycleEvent) -> str:
@@ -1343,6 +1344,12 @@ def _lifecycle_quick_replies(event: IgLifecycleEvent) -> tuple:
         return ()
 
 
+def _post_purchase_cancellation_reason(event, order) -> str:
+    if event.kind != IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
+        return ""
+    return post_purchase_invitation_block_reason(event.client, order)
+
+
 def _preflight_cancellation_reason(event: IgLifecycleEvent) -> str:
     payment_truth = (
         IgPaymentProjection.objects.filter(
@@ -1353,13 +1360,14 @@ def _preflight_cancellation_reason(event: IgLifecycleEvent) -> str:
         .first()
     )
     order = Order.objects.filter(pk=event.order_id).first()
-    return _business_truth_cancellation_reason(
+    reason = _business_truth_cancellation_reason(
         kind=event.kind,
         payload=event.payload or {},
         payment_truth=payment_truth,
         order=order,
         assignment_matches=_assignment_matches_event(event),
     )
+    return reason or _post_purchase_cancellation_reason(event, order)
 
 
 def _mark_event_ambiguous(event_id: int, reason: str, *, lease: str) -> str:
@@ -1448,6 +1456,9 @@ def _start_lifecycle_provider_io(
             payment_truth=projection.truth if projection is not None else None,
             order=locked_order,
             assignment_matches=assignment_matches,
+        )
+        cancellation_reason = cancellation_reason or _post_purchase_cancellation_reason(
+            current_event, locked_order,
         )
         if cancellation_reason:
             current_event.state = IgLifecycleEvent.State.CANCELLED
@@ -1632,6 +1643,9 @@ def _lifecycle_provider_request_boundary(
                 payment_truth=projection.truth if projection is not None else None,
                 order=locked_order,
                 assignment_matches=assignment is not None,
+            )
+            cancellation_reason = cancellation_reason or _post_purchase_cancellation_reason(
+                current_event, locked_order,
             )
             marker_identity_matches = bool(
                 lifecycle_message

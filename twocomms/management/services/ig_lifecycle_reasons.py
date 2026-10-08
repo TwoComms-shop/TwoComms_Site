@@ -199,6 +199,10 @@ FIXED_REASON_CODES = {
     ig_lifecycle.LEASE_WITHOUT_EXPIRY_ERROR: Reason.LEASE_ANOMALY_AMBIGUOUS,
     ig_lifecycle.LEGACY_LEASE_MARKER_ERROR: Reason.LEASE_ANOMALY_AMBIGUOUS,
     **{
+        reason: Reason.PERMISSION_DENIED
+        for reason in ig_lifecycle.INVITATION_BLOCK_REASONS
+    },
+    **{
         reason: Reason.PERMISSION_DEFERRED
         for reason in ig_lifecycle.TRANSIENT_PERMISSION_REASONS
     },

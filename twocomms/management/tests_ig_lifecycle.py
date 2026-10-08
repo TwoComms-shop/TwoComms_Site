@@ -2070,7 +2070,7 @@ class InstagramLifecycleTests(TestCase):
         self.assertEqual(channel["kind"], delivered.kind)
         self.assertEqual(channel["provider_message_id"], "meta-delivered")
 
-    def test_delivered_review_copy_does_not_promise_unissued_discount(self):
+    def test_delivered_review_copy_conditions_discount_on_verified_story(self):
         self.order.status = "done"
         self.order.tracking_number = "20450000000009"
         self.order.tracking_status_code = 9
@@ -2090,8 +2090,9 @@ class InstagramLifecycleTests(TestCase):
 
         message = _message(event)
 
-        self.assertNotIn("10%", message)
-        self.assertNotIn("знижк", message.lower())
+        self.assertIn("10%", message)
+        self.assertIn("Після перевірки сторіс і права на нагороду", message)
+        self.assertIn("90 днів з моменту видачі", message)
         self.assertIn("@twocomms", message)
 
     def test_delivery_status_progression_materializes_one_order_event(self):
