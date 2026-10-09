@@ -66,7 +66,9 @@ def append_post_purchase_context(graph, *, is_history=False):
             if not received and key not in {'post_sale_case', 'channel_consent', 'channel_grant_checked'}:
                 readiness, label = 'waiting', 'Після отримання'
                 note = 'Отримання ще не підтверджено. ' + note.replace('Отримання підтверджене. ', '')
-            consent = deepcopy(node.get('consent_progress') or result.get('marketing_consent', {}))
+            consent = deepcopy(node.get('consent_progress') or
+                (result.get('marketing_consents_by_order') or {}).get(str(order_id)) or
+                result.get('marketing_consent', {}))
             if key in {'channel_consent', 'channel_grant_checked'} and consent:
                 consent['delivery'] = {'status': 'received' if received else 'waiting', 'evidence_refs': order_refs if received else []}
                 node['consent_progress'] = consent

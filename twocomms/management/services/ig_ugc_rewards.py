@@ -8,6 +8,7 @@ import secrets
 import string
 import unicodedata
 import re
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
@@ -61,6 +62,12 @@ def _new_promo_code() -> str:
 def reward_payload(reward) -> dict:
     order = getattr(reward, "order", None)
     reviewer = getattr(reward, "reviewed_by", None)
+    from management.services.ig_review_reward import effective_reward_percent
+
+    try:
+        effective_percent = effective_reward_percent(reward)
+    except Exception:
+        effective_percent = None
     return {
         "id": reward.pk,
         "client_id": reward.client_id,
@@ -76,6 +83,9 @@ def reward_payload(reward) -> dict:
         "review_note": reward.review_note,
         "promo_code": reward.promo_code.code,
         "discount_percent": int(reward.discount_percent or 0),
+        "effective_discount_percent": effective_percent,
+        "review_bonus_percent": 5 if effective_percent == 15 else 0,
+        "review_uplift_applied": effective_percent == 15,
         "valid_until": (
             reward.promo_code.valid_until.isoformat()
             if reward.promo_code.valid_until
@@ -506,6 +516,9 @@ def _create_locked_ugc_grant(
     lifetime.reward = reward
     lifetime.consumed_at = now
     lifetime.save(update_fields=["reward", "consumed_at", "updated_at"])
+    from management.services.ig_review_reward import apply_pending_review_uplift
+
+    apply_pending_review_uplift(reward)
     return _with_ugc_delivery(reward, True)
 
 
@@ -625,20 +638,22 @@ def _ugc_expiry_label(promo) -> str:
         return promo.valid_until.strftime("%d.%m.%Y") if promo.valid_until else ""
 
 
-@transaction.atomic
-def queue_external_ugc_reward_delivery(reward):
-    """Create or recover the immutable customer-facing code message."""
-    from management.ig_bot_models import IgUgcRewardDelivery
-
-    reward = (
-        type(reward).objects.select_for_update()
-        .select_related("promo_code", "client")
-        .get(pk=getattr(reward, "pk", reward))
-    )
+def _ugc_reward_delivery_text(reward, discount_percent, *, language=None):
     expiry = _ugc_expiry_label(reward.promo_code)
-    discount_percent = int(reward.discount_percent or 0)
-    language = str(getattr(reward.client, "language", "uk") or "uk").casefold()
-    if language.startswith("ru"):
+    language = str(language if language is not None else getattr(reward.client, "language", "uk") or "uk").casefold()
+    if discount_percent == 15 and language.startswith("ru"):
+        text = (f"Спасибо за честный отзыв о покупке! Ваш промокод {reward.promo_code.code} "
+                f"теперь даёт 15%: 10% за UGC и ещё 5% за отзыв с оценкой на сайте. "
+                f"Он одноразовый. Исходный срок 90 дней не меняется — до {expiry}.")
+    elif discount_percent == 15 and language.startswith("en"):
+        text = (f"Thank you for your honest purchase review! Your code {reward.promo_code.code} "
+                f"now gives 15%: 10% for UGC plus 5% for a website review with a star rating. "
+                f"It is single-use. Its original 90-day validity is unchanged, until {expiry}.")
+    elif discount_percent == 15:
+        text = (f"Дякуємо за чесний відгук про покупку! Ваш промокод {reward.promo_code.code} "
+                f"тепер дає 15%: 10% за UGC та ще 5% за відгук із зірковою оцінкою на сайті. "
+                f"Він одноразовий. Початковий строк 90 днів не змінюється — до {expiry}.")
+    elif language.startswith("ru"):
         text = (
             f"Спасибо, что отметили TwoComms! Ваш персональный промокод на скидку {discount_percent}%: "
             f"{reward.promo_code.code}. Он одноразовый, действует 90 дней и до {expiry}."
@@ -654,14 +669,143 @@ def queue_external_ugc_reward_delivery(reward):
             f"Дякуємо, що відмітили TwoComms! Ваш персональний промокод на знижку {discount_percent}%: "
             f"{reward.promo_code.code}. Він одноразовий, діє 90 днів і до {expiry}."
         )
-    delivery, _created = IgUgcRewardDelivery.objects.get_or_create(
-        reward=reward,
-        defaults={
-            "client_id": reward.client_id,
-            "message_snapshot": text,
-            "state": IgUgcRewardDelivery.State.PENDING,
-        },
+    return text
+
+
+def _ugc_reward_delivery_language(client):
+    """Resolve new copy from at most ten current, owned provider USER rows."""
+    from management.models import InstagramBotMessage, InstagramBotSettings
+    from management.services.ig_funnel_reset import current_message_floor
+    from management.services.ig_reply_language import resolve_own_source_reply_language
+    from management.services.instagram_bot import ingress_provider_namespace
+
+    profile = str(getattr(client, "language", "uk") or "uk").casefold()
+    profile = "ru" if profile.startswith("ru") else "en" if profile.startswith("en") else "uk"
+    sources, floor, at = [], 1, timezone.now()
+    try:
+        if client is not None and not client.privacy_erasure_started_at and not client.hidden_at:
+            floor = current_message_floor(client) or 1
+            settings_obj = InstagramBotSettings.objects.order_by("pk").first()
+            namespace = ingress_provider_namespace(settings_obj) if settings_obj else ""
+            if namespace:
+                rows = list(InstagramBotMessage.objects.filter(
+                    client_id=client.pk, sender_id=client.igsid, role="user",
+                    source__in=("webhook", "poll"), provider_namespace=namespace,
+                    pk__gte=floor, created_at__lte=at,
+                ).filter(Q(provider_created_at__isnull=True) | Q(provider_created_at__lte=at))
+                    .exclude(mid__isnull=True).exclude(mid="").order_by("-pk")[:10])
+                sources = [{"message_id": row.pk, "role": "user", "text": row.text,
+                            "event_at": (row.provider_created_at or row.created_at).isoformat()}
+                           for row in rows]
+    except Exception:
+        # Language fallback grants neither source nor marketing authority.
+        sources = []
+    decision = resolve_own_source_reply_language(
+        sources=sources[:1], history=sources[1:], profile_language=profile,
+        reset_floor=floor, watermark_message_id=sources[0]["message_id"] if sources else None,
+        watermark_event_at=at,
     )
+    locale = decision.template_family if decision.template_family in {"uk", "ru", "en"} else decision.knowledge_locale
+    return locale, decision.as_dict()
+
+
+def _ugc_review_offer_snapshot(reward, *, locale=None, language_proof=None):
+    """Producer-only captured links, with explicit business-purpose receipt."""
+    if reward.discount_percent != 10 or not reward.order_id or not reward.client_id:
+        return {}
+    try:
+        from management.ig_bot_models import IgOrderAssignment
+        from management.services.ig_marketing_consent import (
+            has_post_purchase_consent, post_purchase_consent_source,
+        )
+        from management.services.ig_post_purchase_invitation import (
+            INVITATION_PAYLOAD_KEY, MODE_REVIEW_AND_UPLIFT, _v2_snapshot,
+        )
+
+        if not has_post_purchase_consent(reward.client, reward.order_id):
+            return {}
+        consent = post_purchase_consent_source(reward.client, reward.order_id)
+        if not isinstance(consent, dict) or not consent:
+            return {}
+        assignment = IgOrderAssignment.objects.filter(
+            pk=reward.assignment_id, version=reward.assignment_version,
+            client_id=reward.client_id, order_id=reward.order_id, unassigned_at__isnull=True,
+        ).first()
+        if locale is None or language_proof is None:
+            locale, language_proof = _ugc_reward_delivery_language(reward.client)
+        snapshot = _v2_snapshot(reward.client, reward.order, locale, assignment)
+        if snapshot is None:
+            return {}
+        metadata, _text = snapshot
+        if (metadata["mode"] != MODE_REVIEW_AND_UPLIFT or metadata["reward_id"] != reward.pk
+                or metadata.get("business_consent") != consent):
+            return {}
+        return {"version": 1, "locale": locale, "language_proof": language_proof, "consent": consent,
+                INVITATION_PAYLOAD_KEY: metadata}
+    except Exception:
+        # Owed reward fulfillment does not acquire marketing authority from
+        # a missing/unreadable source. No invitation is frozen in that case.
+        return {}
+
+
+def _ugc_reward_invitation_text(reward, snapshot):
+    from management.services.ig_post_purchase_invitation import (
+        INVITATION_PAYLOAD_KEY, post_purchase_invitation_v2_text,
+    )
+
+    return (_ugc_reward_delivery_text(reward, 10, language=snapshot["locale"])
+            + "\n\n" + post_purchase_invitation_v2_text(
+                snapshot["locale"], reward.order,
+                metadata=snapshot[INVITATION_PAYLOAD_KEY],
+            ))
+
+
+@transaction.atomic
+def queue_external_ugc_reward_delivery(reward):
+    """Create or recover one immutable customer-facing generation."""
+    from management.ig_bot_models import IgClient, IgUgcReward, IgUgcRewardDelivery
+    from management.services.ig_review_reward import effective_reward_percent
+    from storefront.models import PromoCode
+
+    source_reward = reward
+    identity = IgUgcReward.objects.values("client_id", "promo_code_id").get(pk=getattr(reward, "pk", reward))
+    if identity["client_id"] is not None:
+        IgClient.objects.select_for_update().get(pk=identity["client_id"])
+    PromoCode.objects.select_for_update().get(pk=identity["promo_code_id"])
+    reward = (IgUgcReward.objects.select_for_update().select_related("promo_code", "client")
+              .get(pk=getattr(reward, "pk", reward)))
+    discount_percent = effective_reward_percent(reward)
+    generation = 2 if discount_percent == 15 else 1
+    delivery = IgUgcRewardDelivery.objects.filter(reward=reward, generation=generation).first()
+    if delivery is None:
+        locale, language_proof = _ugc_reward_delivery_language(reward.client)
+        snapshot = (_ugc_review_offer_snapshot(reward, locale=locale, language_proof=language_proof)
+                    if discount_percent == 10 else {})
+        text = _ugc_reward_delivery_text(reward, discount_percent, language=locale)
+        if snapshot:
+            from management.services.ig_post_purchase_invitation import INVITATION_PAYLOAD_KEY, _v2_copy_fits
+
+            reviews = snapshot[INVITATION_PAYLOAD_KEY]["reviews"]
+            while reviews:
+                text = _ugc_reward_invitation_text(reward, snapshot)
+                if _v2_copy_fits(text):
+                    break
+                reviews.pop()
+            if not reviews:
+                snapshot = {}
+                text = _ugc_reward_delivery_text(reward, discount_percent, language=locale)
+        delivery = IgUgcRewardDelivery.objects.create(
+            reward=reward, generation=generation,
+            client_id=reward.client_id,
+            message_snapshot=text, state=IgUgcRewardDelivery.State.PENDING,
+            discount_percent_snapshot=discount_percent,
+            promo_code_snapshot=reward.promo_code.code,
+            valid_until_snapshot=reward.promo_code.valid_until,
+            invitation_snapshot=snapshot,
+        )
+    reward._ugc_delivery_cache = delivery
+    if hasattr(source_reward, "__dict__"):
+        source_reward._ugc_delivery_cache = delivery
     return delivery
 
 
@@ -675,6 +819,7 @@ UGC_DELIVERY_AMBIGUOUS_KINDS = frozenset({"transient", "unknown", "ambiguous"})
 UGC_LIFECYCLE_HOLD_REASONS = frozenset({
     "service_case_open",
     "source_order_not_eligible",
+    "review_proof_invalid",
 })
 UGC_LIFECYCLE_REFUND_TRUTHS = frozenset({"refunded", "reversed"})
 UGC_LIFECYCLE_JOB_RETRY_BASE = timedelta(minutes=1)
@@ -736,12 +881,27 @@ def _ugc_source_order_returned(order_id: int, *, using=None) -> bool:
     ).exists()
 
 
+def ugc_source_order_disqualified(order, *, using=None):
+    """Read-only projection-first refund/return authority for review invitations."""
+    from management.ig_bot_models import IgDeal, IgPaymentProjection, IgPostSaleCase
+
+    db_alias = using or "default"
+    order_id = getattr(order, "pk", order)
+    truths = list(IgPaymentProjection.objects.using(db_alias).filter(
+        deal__order_id=order_id,
+    ).values_list("truth", flat=True))
+    refunded = any(value in UGC_LIFECYCLE_REFUND_TRUTHS for value in truths) if truths else (
+        IgDeal.objects.using(db_alias).filter(order_id=order_id, payment_truth__in=UGC_LIFECYCLE_REFUND_TRUTHS).exists()
+    )
+    return refunded or IgPostSaleCase.objects.using(db_alias).filter(
+        order_id=order_id, case_type="return", status="completed",
+    ).exists()
+
+
 def _ugc_lifecycle_decision(*, reward, promo, order, using=None):
     """Return the durable state/reason without mutating grant or redemption truth."""
     from management.ig_bot_models import IgUgcReward
 
-    if reward.reward_path != "delivered_order" or order is None:
-        return IgUgcReward.LifecycleState.ACTIVE, "", False
     if reward.lifecycle_state == IgUgcReward.LifecycleState.REVOKED:
         return reward.lifecycle_state, reward.lifecycle_reason, False
 
@@ -751,6 +911,16 @@ def _ugc_lifecycle_decision(*, reward, promo, order, using=None):
         # consumed on a later purchase.  Reservation/usage ledgers remain the
         # sole authority for that redemption.
         return IgUgcReward.LifecycleState.ACTIVE, "", True
+    from management.services.ig_review_reward import effective_reward_percent
+
+    try:
+        effective_percent = effective_reward_percent(reward)
+    except Exception:
+        return IgUgcReward.LifecycleState.HELD, "review_proof_invalid", False
+    if effective_percent == 15 and ugc_service_case_reason(reward.client, using=using):
+        return IgUgcReward.LifecycleState.HELD, "service_case_open", False
+    if reward.reward_path != "delivered_order" or order is None:
+        return IgUgcReward.LifecycleState.ACTIVE, "", False
     if order.status == "cancelled":
         return IgUgcReward.LifecycleState.REVOKED, "source_order_cancelled", False
     if _ugc_source_order_fully_refunded(order.pk, using=using):
@@ -850,28 +1020,26 @@ def _apply_ugc_delivery_lifecycle(
 
 
 def _reconcile_locked_ugc_reward_lifecycle(reward_id: int, *, now, using=None):
-    from management.ig_bot_models import IgUgcReward, IgUgcRewardDelivery
+    from management.ig_bot_models import IgClient, IgUgcReward, IgUgcRewardDelivery
     from orders.models import Order
     from storefront.models import PromoCode
 
     db_alias = using or "default"
+    locator = IgUgcReward.objects.using(db_alias).values("client_id", "order_id", "promo_code_id").get(pk=reward_id)
+    if locator["client_id"] is not None:
+        IgClient.objects.using(db_alias).select_for_update().get(pk=locator["client_id"])
+    order = (Order.objects.using(db_alias).select_for_update().filter(pk=locator["order_id"]).first()
+             if locator["order_id"] else None)
+    promo = PromoCode.objects.using(db_alias).select_for_update().select_related("group").get(pk=locator["promo_code_id"])
     reward = (
         IgUgcReward.objects.using(db_alias).select_for_update()
         .select_related("client")
         .get(pk=reward_id)
     )
-    if reward.reward_path != "delivered_order" or reward.order_id is None:
-        return reward.lifecycle_state
-    promo = (
-        PromoCode.objects.using(db_alias).select_for_update()
-        .select_related("group")
-        .get(pk=reward.promo_code_id)
-    )
-    order = Order.objects.using(db_alias).filter(pk=reward.order_id).first()
-    delivery = (
+    reward.promo_code = promo
+    deliveries = list(
         IgUgcRewardDelivery.objects.using(db_alias).select_for_update()
         .filter(reward_id=reward.pk)
-        .first()
     )
     previous_state = reward.lifecycle_state
     previous_reason = reward.lifecycle_reason
@@ -924,15 +1092,11 @@ def _reconcile_locked_ugc_reward_lifecycle(reward_id: int, *, now, using=None):
             "lifecycle_reason",
             "lifecycle_updated_at",
         ])
-    _apply_ugc_delivery_lifecycle(
-        delivery,
-        previous_state=previous_state,
-        previous_reason=previous_reason,
-        state=state,
-        reason=reason,
-        now=now,
-        using=db_alias,
-    )
+    for delivery in deliveries:
+        _apply_ugc_delivery_lifecycle(
+            delivery, previous_state=previous_state, previous_reason=previous_reason,
+            state=state, reason=reason, now=now, using=db_alias,
+        )
     return state
 
 
@@ -991,10 +1155,17 @@ def _ugc_lifecycle_job_retry_at(now, attempts: int):
 
 def process_linked_ugc_reward_lifecycle_job(job_id: int, *, now=None, using=None):
     """Apply one durable truth event and delete it only after success."""
-    from management.ig_bot_models import IgUgcReward, IgUgcRewardLifecycleJob
+    from management.ig_bot_models import IgClient, IgUgcReward, IgUgcRewardLifecycleJob
+    from orders.models import Order
+    from storefront.models import PromoCode
 
     db_alias = using or "default"
     now = now or timezone.now()
+    source = IgUgcRewardLifecycleJob.objects.using(db_alias).filter(pk=job_id).values_list("source", flat=True).first()
+    if isinstance(source, str) and source.startswith("review_uplift:"):
+        from management.services.ig_review_reward import process_review_uplift_job
+
+        return process_review_uplift_job(job_id, now=now, using=db_alias)
     with transaction.atomic(using=db_alias):
         target = (
             IgUgcRewardLifecycleJob.objects.using(db_alias)
@@ -1005,20 +1176,22 @@ def process_linked_ugc_reward_lifecycle_job(job_id: int, *, now=None, using=None
         if target is None:
             return {"state": "missing", "selected": 0}
 
-        # Scheduler and worker both serialize reward rows before touching the
-        # lifecycle-job row. The initial job read is intentionally unlocked so
-        # the worker can discover its target without inverting that order.
-        reward_queryset = (
-            IgUgcReward.objects.using(db_alias)
-            .select_for_update()
-            .filter(reward_path="delivered_order")
-        )
+        # Discover targets without locks, then take each shared fence in the
+        # same order as grant/checkout/review work. The queue row comes last.
+        reward_queryset = IgUgcReward.objects.using(db_alias).filter(reward_path="delivered_order")
         if target["order_id"] is not None:
             reward_queryset = reward_queryset.filter(order_id=target["order_id"])
         if target["client_id"] is not None:
             reward_queryset = reward_queryset.filter(client_id=target["client_id"])
+        identities = list(reward_queryset.values("client_id", "order_id", "promo_code_id"))
+        client_ids = sorted({row["client_id"] for row in identities if row["client_id"] is not None})
+        order_ids = sorted({row["order_id"] for row in identities if row["order_id"] is not None})
+        promo_ids = sorted({row["promo_code_id"] for row in identities})
+        list(IgClient.objects.using(db_alias).select_for_update().filter(pk__in=client_ids).order_by("pk"))
+        list(Order.objects.using(db_alias).select_for_update().filter(pk__in=order_ids).order_by("pk"))
+        list(PromoCode.objects.using(db_alias).select_for_update().filter(pk__in=promo_ids).order_by("pk"))
         reward_ids = list(
-            reward_queryset.order_by("id").values_list("id", flat=True)
+            reward_queryset.select_for_update().order_by("id").values_list("id", flat=True)
         )
 
         job = (
@@ -1150,6 +1323,193 @@ def _set_ugc_delivery_waiting(delivery_id, *, token="", reason, now):
         return row.state
 
 
+def _ugc_delivery_invitation_reason(delivery, reward, *, now):
+    """Validate frozen offer source without treating this leased row as a rival."""
+    snapshot = delivery.invitation_snapshot
+    if snapshot == {}:
+        return ""
+    try:
+        from django.utils.translation import override
+        from management.ig_bot_models import IgOrderAssignment
+        from management.services.ig_marketing_consent import (
+            has_post_purchase_consent, post_purchase_consent_source,
+        )
+        from management.services.ig_post_purchase_invitation import (
+            INVITATION_PAYLOAD_KEY, MODE_REVIEW_AND_UPLIFT, _v2_metadata_valid,
+            _v2_copy_fits,
+        )
+        from management.services.ig_response_debt import unresolved_reply_debts
+        from reviews.models import ReviewPurchaseInvitation
+        from reviews.services.purchase_invites import invitation_url, validate_invitation
+
+        if (not isinstance(snapshot, dict)
+                or set(snapshot) != {"version", "locale", "language_proof", "consent", INVITATION_PAYLOAD_KEY}
+                or type(snapshot["version"]) is not int or snapshot["version"] != 1
+                or snapshot["locale"] not in {"uk", "ru", "en"}
+                or not isinstance(snapshot["language_proof"], dict)
+                or snapshot["language_proof"].get("version") != "source-reply-language.v1"
+                or not isinstance(snapshot["consent"], dict) or not snapshot["consent"]
+                or delivery.generation != 1 or delivery.discount_percent_snapshot != 10
+                or reward.discount_percent != 10 or not reward.order_id):
+            return "reward_invitation_invalid"
+        metadata = snapshot[INVITATION_PAYLOAD_KEY]
+        if (not _v2_metadata_valid(metadata) or metadata["mode"] != MODE_REVIEW_AND_UPLIFT
+                or metadata["reward_id"] != reward.pk or metadata["client_id"] != reward.client_id
+                or metadata["order_id"] != reward.order_id
+                or metadata.get("business_consent") != snapshot["consent"]
+                or metadata["assignment_id"] != reward.assignment_id
+                or metadata["assignment_version"] != reward.assignment_version):
+            return "reward_invitation_invalid"
+        expected = _ugc_reward_invitation_text(reward, snapshot)
+        if delivery.message_snapshot != expected or not _v2_copy_fits(expected):
+            return "reward_message_mismatch"
+        if (not has_post_purchase_consent(reward.client, reward.order_id, now=now)
+                or post_purchase_consent_source(reward.client, reward.order_id, now=now) != snapshot["consent"]):
+            return "reward_invitation_consent_changed"
+        if unresolved_reply_debts().filter(client_id=reward.client_id).exists():
+            return "post_purchase_reply_debt_open"
+        assignment = IgOrderAssignment.objects.filter(
+            pk=reward.assignment_id, version=reward.assignment_version,
+            client_id=reward.client_id, order_id=reward.order_id, unassigned_at__isnull=True,
+        ).first()
+        if assignment is None:
+            return "reward_invitation_source_changed"
+        with override(snapshot["locale"]):
+            for source in metadata["reviews"]:
+                invitation = ReviewPurchaseInvitation.objects.filter(pk=source["invitation_id"]).first()
+                if invitation is None:
+                    return "reward_invitation_source_changed"
+                owner, order, item, current_assignment, reset_id = validate_invitation(invitation)
+                if (owner.pk != reward.client_id or order.pk != reward.order_id
+                        or item.pk != source["order_item_id"] or item.product_id != source["product_id"]
+                        or invitation.product_id != source["product_id"]
+                        or current_assignment.pk != assignment.pk or current_assignment.version != assignment.version
+                        or reset_id != source["reset_audit_id"] or invitation.reset_audit_id != reset_id
+                        or invitation_url(invitation) != source["url"]):
+                    return "reward_invitation_source_changed"
+        return ""
+    except Exception:
+        return "reward_invitation_source_unknown"
+
+
+def _ugc_delivery_snapshot_reason(delivery, reward, promo, *, now):
+    from management.services.ig_review_reward import effective_reward_percent
+
+    try:
+        percent = effective_reward_percent(reward)
+    except Exception:
+        return "review_proof_invalid"
+    if (delivery.discount_percent_snapshot != percent
+            or delivery.generation != (2 if percent == 15 else 1)
+            or delivery.promo_code_snapshot != promo.code
+            or delivery.valid_until_snapshot != promo.valid_until
+            or promo.discount_value != percent):
+        return "reward_generation_mismatch"
+    # The persisted text keeps its creation locale when the profile language
+    # changes. Unknown locales used the same Ukrainian fallback at creation.
+    if delivery.generation == 2 and delivery.message_snapshot not in {
+        _ugc_reward_delivery_text(reward, percent, language=locale)
+        for locale in ("uk", "ru", "en")
+    }:
+        return "reward_message_mismatch"
+    if not promo.is_active:
+        return "promo_inactive"
+    if promo.valid_until and now >= promo.valid_until:
+        return "promo_expired"
+    if promo.valid_from and now < promo.valid_from:
+        return "promo_not_live"
+    if promo.max_uses > 0 and promo.current_uses >= promo.max_uses:
+        return "promo_exhausted"
+    if not promo.is_guest_ugc_capability():
+        return "promo_policy_invalid"
+    return _ugc_delivery_invitation_reason(delivery, reward, now=now)
+
+
+def _checkpoint_ugc_delivery_receipt(delivery_id, token, message_id):
+    from management.ig_bot_models import IgUgcRewardDelivery
+    from management.services.ig_delivery_receipts import normalize_provider_message_ids
+
+    with transaction.atomic():
+        row = IgUgcRewardDelivery.objects.select_for_update().get(pk=delivery_id)
+        if row.lease_token != token or row.state != "processing":
+            raise RuntimeError("UGC delivery receipt lease lost")
+        row.provider_message_ids = list(normalize_provider_message_ids([
+            *(row.provider_message_ids or []), message_id,
+        ]))
+        if not row.provider_message_ids:
+            raise ValueError("UGC receipt requires a provider message ID")
+        row.save(update_fields=["provider_message_ids", "updated_at"])
+
+
+@contextmanager
+def _ugc_delivery_provider_boundary(delivery_id, token, *, settings_obj,
+                                    delivered_chunk_count=0, provider_message_ids=(),
+                                    planned_chunk_count=0):
+    """Freeze current price, proof and source rows around every Meta request."""
+    from management.ig_bot_models import IgClient, IgUgcReward, IgUgcRewardDelivery
+    from management.services.ig_delivery_receipts import normalize_provider_message_ids
+    from orders.models import Order
+    from reviews.models import Review, ReviewRewardUplift
+    from storefront.models import PromoCode
+
+    with transaction.atomic():
+        identity = IgUgcRewardDelivery.objects.values("client_id", "reward_id").get(pk=delivery_id)
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        reward_identity = IgUgcReward.objects.values("order_id", "promo_code_id").get(pk=identity["reward_id"])
+        component = ReviewRewardUplift.objects.filter(reward_id=identity["reward_id"]).first()
+        source_order_id = reward_identity["order_id"] or (
+            (component.proof_snapshot.get("source") or {}).get("order_id") if component else None
+        )
+        if source_order_id:
+            Order.objects.select_for_update().get(pk=source_order_id)
+        promo = PromoCode.objects.select_for_update().get(pk=reward_identity["promo_code_id"])
+        reward = IgUgcReward.objects.select_for_update().get(pk=identity["reward_id"])
+        reward.promo_code = promo
+        reward.client = client
+        if component is not None:
+            Review.objects.select_for_update().get(pk=component.review_id)
+        row = IgUgcRewardDelivery.objects.select_for_update().get(pk=delivery_id)
+        if row.lease_token != token or row.state != "processing":
+            yield False
+            return
+        now = timezone.now()
+        lifecycle = _reconcile_locked_ugc_reward_lifecycle(reward.pk, now=now)
+        reward.refresh_from_db()
+        promo.refresh_from_db()
+        reward.promo_code = promo
+        reward.client = client
+        allowed, permission_reason = _ugc_delivery_gate(settings_obj=settings_obj, client=client, now=now)
+        reason = permission_reason if not allowed else ""
+        if lifecycle in {"held", "revoked"}:
+            reason = reward.lifecycle_reason or "reward_not_active"
+        reason = reason or _ugc_delivery_snapshot_reason(row, reward, promo, now=now)
+        if not reason:
+            yield True
+            return
+        receipt_ids = list(normalize_provider_message_ids([
+            *(row.provider_message_ids or []), *provider_message_ids,
+        ]))
+        if receipt_ids or delivered_chunk_count:
+            row.state = "ambiguous"
+            row.completed_at = now
+            row.provider_message_ids = receipt_ids
+            row.last_error = f"partial delivery before {reason}"[:500]
+        elif not allowed:
+            row.state = "waiting_window"
+            row.completed_at = None
+            row.due_at = now + UGC_DELIVERY_RECHECK_DELAY
+            row.last_error = reason
+        else:
+            row.state = "failed"
+            row.completed_at = now
+            row.last_error = reason
+        row.lease_token = ""
+        row.lease_expires_at = None
+        row.save(update_fields=["state", "completed_at", "provider_message_ids", "due_at",
+                                "last_error", "lease_token", "lease_expires_at", "updated_at"])
+        yield False
+
+
 def process_external_ugc_reward_delivery(delivery_id: int, *, settings_obj=None):
     """Send one outbox row after fresh window and permission revalidation."""
     from management.ig_bot_models import IgClient, IgUgcReward, IgUgcRewardDelivery
@@ -1241,6 +1601,7 @@ def process_external_ugc_reward_delivery(delivery_id: int, *, settings_obj=None)
             promo_error = "promo_group_inactive"
         elif not promo.is_guest_ugc_capability():
             promo_error = "promo_policy_invalid"
+        promo_error = promo_error or _ugc_delivery_snapshot_reason(delivery, delivery.reward, promo, now=now)
         if promo_error:
             delivery.state = IgUgcRewardDelivery.State.FAILED
             delivery.lease_token = ""
@@ -1321,7 +1682,15 @@ def process_external_ugc_reward_delivery(delivery_id: int, *, settings_obj=None)
 
             from management.services.instagram_bot import send_text
 
-            receipt = send_text(settings_obj, recipient_id, text, return_receipt=True)
+            receipt = send_text(
+                settings_obj, recipient_id, text, return_receipt=True,
+                provider_request_boundary_factory=lambda **kwargs: _ugc_delivery_provider_boundary(
+                    delivery_id, token, settings_obj=settings_obj, **kwargs,
+                ),
+                provider_message_callback=lambda message_id: _checkpoint_ugc_delivery_receipt(
+                    delivery_id, token, message_id,
+                ),
+            )
         ok = bool(getattr(receipt, "ok", False))
         kind = str(getattr(receipt, "kind", "") or "")
         ids = list(getattr(receipt, "provider_message_ids", ()) or ())
@@ -1333,7 +1702,10 @@ def process_external_ugc_reward_delivery(delivery_id: int, *, settings_obj=None)
     with transaction.atomic():
         row = IgUgcRewardDelivery.objects.select_for_update().get(pk=delivery_id)
         if row.lease_token != token:
-            return "lease_lost"
+            return row.state
+        from management.services.ig_delivery_receipts import normalize_provider_message_ids
+
+        ids = list(normalize_provider_message_ids([*(row.provider_message_ids or []), *ids]))
         row.lease_token = ""
         row.lease_expires_at = None
         row.provider_message_ids = ids
@@ -1342,7 +1714,7 @@ def process_external_ugc_reward_delivery(delivery_id: int, *, settings_obj=None)
         if ok and ids:
             row.state = IgUgcRewardDelivery.State.SENT
             row.completed_at = completed_at
-        elif kind in UGC_DELIVERY_AMBIGUOUS_KINDS:
+        elif ids or kind in UGC_DELIVERY_AMBIGUOUS_KINDS:
             row.state = IgUgcRewardDelivery.State.AMBIGUOUS
             row.completed_at = completed_at
         elif kind in UGC_DELIVERY_RETRYABLE_KINDS and row.attempts < UGC_DELIVERY_MAX_ATTEMPTS:
@@ -1387,6 +1759,8 @@ def award_ugc_reward(
     if actor is None or not getattr(actor, "is_authenticated", False):
         raise UgcRewardConflict("Потрібен авторизований менеджер.")
 
+    # Client is the common fence for both grant creation and review upgrades.
+    locked_client = IgClient.objects.select_for_update().get(pk=getattr(client, "pk", client))
     locked_order = Order.objects.select_for_update().get(pk=getattr(order, "pk", order))
     assignment = (
         IgOrderAssignment.objects.select_for_update()
@@ -1403,8 +1777,6 @@ def award_ugc_reward(
         raise UgcRewardConflict(
             "Нагороду можна видати лише після підтвердженого отримання замовлення."
         )
-
-    locked_client = IgClient.objects.select_for_update().get(pk=assignment.client_id)
 
     evidence_message = None
     normalized_url = ""

@@ -7,13 +7,17 @@ unlink/relink cannot replay a message to the previous customer.
 from __future__ import annotations
 
 import logging
+import hashlib
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import BigIntegerField, Exists, F, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from orders.fulfillment_truth import (
@@ -272,7 +276,9 @@ def _event_specs(assignment, *, now):
                 "payload": {"tracking_number": tracking, "tracking_url": f"https://novaposhta.ua/tracking/?cargo_number={tracking}"},
             }
     if nova_poshta_order_fulfillment_confirmed(order):
-        invitation, message = post_purchase_invitation_snapshot(client, order, locale)
+        invitation, message = post_purchase_invitation_snapshot(
+            client, order, locale, assignment=assignment,
+        )
         yield {
             "kind": "delivered_review",
             "event_key": f"ig-assignment:{assignment.pk}:v{assignment.version}:delivered-review",
@@ -287,13 +293,17 @@ def _event_specs(assignment, *, now):
         }
 
 
-def ensure_assignment_events(assignment, *, now=None):
+def ensure_assignment_events(assignment, *, now=None, queue_consent=True):
     """Materialize all currently eligible durable events for one assignment."""
     from management.ig_bot_models import IgOrderCustomerEvent
 
     now = now or timezone.now()
     if not assignment.client_id or assignment.unassigned_at is not None:
         return []
+    if queue_consent:
+        from management.services.ig_marketing_consent import queue_post_purchase_consent
+
+        queue_post_purchase_consent(assignment.client, assignment.order, assignment, now=now)
     if _uses_canonical_lifecycle(assignment):
         _cancel_redundant_events(assignment, now=now)
         return []
@@ -318,6 +328,75 @@ def ensure_assignment_events(assignment, *, now=None):
         if was_created:
             created.append(event)
     return created
+
+
+def _queue_assignment_consent_batch(assignments, *, limit, now):
+    """Bound invitation owners independently from legacy event creation counts.
+
+    Canonical assignments legitimately create zero legacy events. Already
+    served invitation scopes are excluded in SQL so the earliest canonical
+    order cannot occupy every later producer batch.
+    """
+    bounded = max(0, min(int(limit), 100))
+    if not bounded or not getattr(settings, "IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED", False):
+        return {"consent_considered": 0, "consent_queued": 0}
+    from management.ig_consent_models import IgMarketingConsentInvitation
+    from management.models import IgFunnelResetAudit, InstagramBotMessage, InstagramBotSettings
+    from management.services.ig_marketing_consent import PURPOSE, queue_post_purchase_consent
+    from management.services.instagram_bot import allowed_sender_ids, ingress_provider_namespace
+
+    settings_obj = InstagramBotSettings.objects.order_by("pk").first()
+    namespace = ingress_provider_namespace(settings_obj) if settings_obj else ""
+    if settings_obj is None or not settings_obj.is_enabled or not namespace:
+        return {"consent_considered": 0, "consent_queued": 0}
+    latest_reset = IgFunnelResetAudit.objects.filter(client_id=OuterRef("client_id")).order_by("-pk")
+    rows = assignments.filter(order__payment_status="paid",
+        client__privacy_erasure_started_at__isnull=True, client__hidden_at__isnull=True,
+        client__is_blocked=False, client__bot_paused=False, client__manager_takeover=False,
+        client__opted_out_at__isnull=True,
+    ).exclude(order__status="cancelled").annotate(
+        _consent_reset_id=Coalesce(Subquery(latest_reset.values("pk")[:1]), Value(0), output_field=BigIntegerField()),
+        _consent_reset_boundary=Coalesce(Subquery(latest_reset.values("reset_after_message_id")[:1]), Value(0), output_field=BigIntegerField()),
+    )
+    allowed_senders = allowed_sender_ids(settings_obj)
+    if allowed_senders:
+        rows = rows.filter(client__igsid__in=allowed_senders)
+    current_source = InstagramBotMessage.objects.filter(
+        client_id=OuterRef("client_id"), sender_id=OuterRef("client__igsid"),
+        role="user", source__in=["webhook", "poll"], provider_namespace=namespace,
+        pk__gt=OuterRef("_consent_reset_boundary"),
+        provider_created_at__gt=now - RESPONSE_WINDOW, provider_created_at__lte=now,
+    ).exclude(mid__isnull=True).exclude(mid="").exclude(status="failed")
+    existing = IgMarketingConsentInvitation.objects.filter(
+        client_id=OuterRef("client_id"), order_id=OuterRef("order_id"), assignment_id=OuterRef("pk"),
+        assignment_version=OuterRef("version"), reset_audit_id=OuterRef("_consent_reset_id"), purpose=PURPOSE,
+    )
+    eligible = rows.annotate(_consent_has_source=Exists(current_source), _consent_exists=Exists(existing))
+    eligible = eligible.filter(_consent_has_source=True, _consent_exists=False).order_by("pk")
+    # This cursor controls fairness only. Cached data never admits a purchase
+    # or source: the selected row still passes the real locked queue owner.
+    cursor_key = "ig:consent-producer:v1:" + hashlib.sha256(
+        f"{settings_obj.pk}:{namespace}".encode()).hexdigest()
+    try:
+        cursor = max(0, int(cache.get(cursor_key) or 0))
+    except Exception:
+        cursor = 0
+    selected = list(eligible.filter(pk__gt=cursor)[:bounded])
+    if not selected and cursor:
+        selected = list(eligible.filter(pk__lte=cursor)[:bounded])
+    queued = 0
+    for assignment in selected:
+        try:
+            invitation = queue_post_purchase_consent(assignment.client, assignment.order, assignment, now=now)
+        finally:
+            # Permanent source/payment refusals must also relinquish the head
+            # of the advisory scan. Cache outages keep the strict owner path.
+            try:
+                cache.set(cursor_key, assignment.pk, timeout=24 * 60 * 60)
+            except Exception:
+                pass
+        queued += int(invitation is not None)
+    return {"consent_considered": len(selected), "consent_queued": queued}
 
 
 def _claim_event(event_id, *, now):
@@ -524,6 +603,7 @@ def _event_send_boundary(
                 invitation_reason = post_purchase_invitation_block_reason(
                     client, order, current_event.payload,
                     current_event.message_snapshot, current_event.locale,
+                    assignment=assignment,
                 )
                 boundary_state["invitation_reason"] = invitation_reason
             eligible_without_window = bool(
@@ -618,6 +698,7 @@ def deliver_event(event_id, *, send=True, now=None):
     if event.kind == "delivered_review":
         invitation_reason = post_purchase_invitation_block_reason(
             client, event.order, event.payload, event.message_snapshot, event.locale,
+            assignment=assignment,
         )
         if invitation_reason:
             _finish(event, token=token, state=IgOrderCustomerEvent.State.CANCELLED,
@@ -765,9 +846,10 @@ def reconcile_order_customer_events(*, order_id=None, limit=100, send=True, now=
         "paused": 0,
         "skipped": 0,
     }
+    stats.update(_queue_assignment_consent_batch(assignments, limit=limit, now=now))
     materialized = 0
     for assignment in assignments.order_by("id").iterator(chunk_size=200):
-        created = len(ensure_assignment_events(assignment, now=now))
+        created = len(ensure_assignment_events(assignment, now=now, queue_consent=False))
         stats["created"] += created
         if created:
             materialized += 1

@@ -1895,12 +1895,12 @@ class PromoCode(models.Model):
             or self.group_id is not None
             or self.promo_type != 'regular'
             or self.discount_type != 'percentage'
-            or self.discount_value not in {Decimal('5.00'), Decimal('10.00')}
+            or self.discount_value not in {Decimal('5.00'), Decimal('10.00'), Decimal('15.00')}
         ):
             return False
         from management.ig_bot_models import IgUgcReward
 
-        return (
+        reward = (
             IgUgcReward.objects.filter(
                 promo_code_id=self.pk,
                 client_id__isnull=False,
@@ -1917,11 +1917,32 @@ class PromoCode(models.Model):
                     assignment_id__isnull=False,
                 )
             )
-            .exists()
+            .select_related('promo_code')
+            .first()
         )
+        if reward is None:
+            return False
+        if self.discount_value == Decimal('15.00'):
+            from management.services.ig_review_reward import effective_reward_percent
+            from management.services.ig_ugc_rewards import ugc_service_case_reason
+
+            try:
+                return (reward.discount_percent == 10
+                        and effective_reward_percent(reward) == 15
+                        and not ugc_service_case_reason(reward.client))
+            except Exception:
+                return False
+        # Existing bounded 5/10 capabilities keep their historical contract.
+        return True
 
     def can_be_used_by_user(self, user):
         """Проверяет, может ли конкретный пользователь использовать промокод"""
+        from management.ig_bot_models import IgUgcReward
+
+        private_ugc = bool(self.pk and IgUgcReward.objects.filter(promo_code_id=self.pk).exists())
+        if (private_ugc or (self.guest_redeemable and self.discount_value == Decimal('15.00'))):
+            if not self.is_guest_ugc_capability():
+                return False, _('Право на цей промокод потребує перевірки')
         if not user or not user.is_authenticated:
             if self.is_guest_ugc_capability():
                 return (True, 'OK') if self.can_be_used() else (False, _('Промокод неактивний або вичерпаний'))

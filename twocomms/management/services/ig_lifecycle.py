@@ -681,6 +681,14 @@ def ensure_lifecycle_event(order, kind, *, payload=None, due_at=None):
     initial_context = _context_for_order(order)
     if initial_context is None:
         return None, False
+    if kind == IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
+        # Invitation production and UGC checkout use client → order ownership.
+        # Acquire the owner before this producer takes payment/order locks.
+        client = IgClient.objects.select_for_update().filter(
+            pk=initial_context["client"].pk,
+        ).first()
+        if client is None or client.privacy_erasure_started_at is not None:
+            return None, False
     projection = (
         IgPaymentProjection.objects.select_for_update()
         .filter(
@@ -720,7 +728,15 @@ def ensure_lifecycle_event(order, kind, *, payload=None, due_at=None):
     key = _event_key(order, kind, payload)
     locale = _locale(getattr(context["client"], "language", "uk"))
     if kind == IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
-        invitation, message = post_purchase_invitation_snapshot(context["client"], order, locale)
+        assignment = IgOrderAssignment.objects.filter(
+            pk=assignment_snapshot["assignment_id"],
+            version=assignment_snapshot["assignment_version"],
+            client_id=context["client"].pk, order_id=order.pk,
+            unassigned_at__isnull=True,
+        ).first()
+        invitation, message = post_purchase_invitation_snapshot(
+            context["client"], order, locale, assignment=assignment,
+        )
         payload[INVITATION_PAYLOAD_KEY] = invitation
         payload[MESSAGE_SNAPSHOT_KEY] = message
     else:
@@ -1354,9 +1370,14 @@ def _lifecycle_quick_replies(event: IgLifecycleEvent) -> tuple:
 def _post_purchase_cancellation_reason(event, order) -> str:
     if event.kind != IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
         return ""
+    assignment = IgOrderAssignment.objects.filter(
+        client_id=event.client_id, order_id=event.order_id,
+        unassigned_at__isnull=True,
+    ).first()
     return post_purchase_invitation_block_reason(
         event.client, order, event.payload, _base_message(event), event.locale,
         event.final_text,
+        assignment=assignment,
     )
 
 

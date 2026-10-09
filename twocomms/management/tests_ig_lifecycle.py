@@ -2083,6 +2083,23 @@ class InstagramLifecycleTests(TestCase):
                 "tracking_terminal_at",
             ]
         )
+        # The combined incentive requires native business consent independently
+        # of the real paid purchase and the carrier delivery receipt.
+        import os
+        from management.tests_ig_marketing_consent import _MarketingConsentFixture
+        fixture = _MarketingConsentFixture()
+        fixture.serial = 0
+        fixture.settings_row = self.settings
+        fixture.assertIsNotNone = self.assertIsNotNone
+        fixture.assertEqual = self.assertEqual
+        fixture.assertTrue = self.assertTrue
+        self.settings.ig_user_id = "1"
+        self.settings.save(update_fields=["ig_user_id", "updated_at"])
+        assignment = link_order_to_client(self.order, client=self.client)
+        environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        fixture.grant_business_consent(self.client, self.order, assignment)
         event = self._event(
             IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED,
             payload={"status_code": "9", "status": "delivered"},

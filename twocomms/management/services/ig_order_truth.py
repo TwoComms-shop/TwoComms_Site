@@ -78,11 +78,11 @@ def _schedule_ugc_reward_event(
         return None
     db_alias = _db_alias_for(using=using)
     with transaction.atomic(using=db_alias):
-        # The reward row is the common serialization boundary for order and
-        # payment/post-sale signals. Locking it before checking the job queue
-        # closes the empty-queue race where two callbacks could both insert a
-        # lifecycle job before either one became visible.
-        rewards = IgUgcReward.objects.using(db_alias).select_for_update().filter(
+        # Signals may already hold an Order or payment lock. They only persist
+        # work here; the worker owns Client -> Order -> Promo -> Reward locks.
+        # Concurrent empty-queue inserts can converge through that worker and
+        # must never invert its locks to deduplicate an internal job.
+        rewards = IgUgcReward.objects.using(db_alias).filter(
             reward_path="delivered_order",
         )
         if order_id is not None:
@@ -98,6 +98,7 @@ def _schedule_ugc_reward_event(
             IgUgcRewardLifecycleJob.objects.using(db_alias)
             .select_for_update()
             .filter(order_id=order_id, client_id=client_id)
+            .exclude(source__startswith="review_uplift:")
             .order_by("id")
             .first()
         )

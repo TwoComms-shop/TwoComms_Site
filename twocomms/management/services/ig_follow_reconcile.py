@@ -183,14 +183,33 @@ def reconcile_follow_intelligence_once(*, limit=50, dry_run=False, now=None):
     }
     if bounded == 0:
         return counts
+    from django.conf import settings
+    from management.ig_consent_models import IgMarketingConsentInvitation
+    from management.services.ig_marketing_consent import reconcile_consent_invitations, WINDOW
+
+    due_consent = False
+    if getattr(settings, "IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED", False):
+        due_consent = IgMarketingConsentInvitation.objects.filter(
+            Q(state="processing", lease_until__lte=now)
+            | Q(state="processing", lease_until__isnull=True)
+            | Q(state="pending", expires_at__gt=now, client__last_user_message_at__gte=now - WINDOW,
+                client__privacy_erasure_started_at__isnull=True, client__hidden_at__isnull=True,
+                client__bot_paused=False, client__manager_takeover=False),
+        ).exists()
     lifecycle_candidates = _due_ugc_lifecycle_jobs(now=now, limit=bounded)
     # Lifecycle invalidation is urgent, but a persistent retry backlog must
     # not consume the entire daemon batch and starve payment/follow/outbox
     # work.  A one-item command remains deterministic; larger batches reserve
     # one slot for the other due queues.
     lifecycle_budget = bounded if bounded == 1 else bounded - 1
+    if due_consent and bounded >= 3:
+        # The daemon uses batches of ten. Reserve one slot for a time-limited
+        # consent invitation and another for payment/follow/delivery work.
+        lifecycle_budget = bounded - 2
     lifecycle_jobs = lifecycle_candidates[:lifecycle_budget]
     remaining_budget = max(0, bounded - len(lifecycle_jobs))
+    consent_budget = int(due_consent and remaining_budget > 1)
+    remaining_budget -= consent_budget
     payment_candidates = _due_payment_follow_preparations(
         now=now,
         limit=remaining_budget,
@@ -216,6 +235,12 @@ def reconcile_follow_intelligence_once(*, limit=50, dry_run=False, now=None):
     counts["selected"] = len(deliveries)
     if dry_run:
         return counts
+
+    if consent_budget:
+        consent_result = reconcile_consent_invitations(limit=consent_budget)
+        counts["consent_selected"] = int(consent_result["considered"])
+        for state, count in consent_result["states"].items():
+            counts[f"consent_{state}"] = count
 
     for job in lifecycle_jobs:
         result = process_linked_ugc_reward_lifecycle_job(job.pk, now=now)
@@ -267,6 +292,7 @@ def reconcile_follow_intelligence_once(*, limit=50, dry_run=False, now=None):
     media_budget = max(
         0,
         bounded
+        - consent_budget
         - len(lifecycle_jobs)
         - len(payment_preparations)
         - len(follow_jobs)

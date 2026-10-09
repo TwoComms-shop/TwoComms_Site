@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import timedelta
 import hashlib
+import os
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from management.services.ig_order_fulfillment import deliver_event, ensure_assig
 from management.services.ig_post_purchase_invitation import post_purchase_invitation_text
 from management.services.ig_response_debt import DEBT_REASON
 from management.services.ig_ugc_rewards import _identity_digest_candidates
+from management.tests_ig_marketing_consent import _MarketingConsentFixture
 from orders.models import Order, PaymentAttempt
 
 
@@ -102,7 +104,7 @@ class ReviewOnlyCopyContractTests(SimpleTestCase):
         used.assert_not_called()
 
 
-class ReviewOnlyOwnerContract:
+class ReviewOnlyOwnerContract(_MarketingConsentFixture):
     """Use native eligibility and outbox rows; replace transport only."""
     canonical = False
 
@@ -118,7 +120,19 @@ class ReviewOnlyOwnerContract:
         self.customer.last_user_message_at = timezone.now()
         self.customer.save(update_fields=["last_user_message_at", "updated_at"])
         self.serial = 0
+        from management.models import InstagramBotSettings
+        environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.settings_row = InstagramBotSettings.load()
+        self.settings_row.ig_user_id = "1"
+        self.settings_row.is_enabled = True
+        self.settings_row.save(update_fields=["ig_user_id", "is_enabled", "updated_at"])
         self._delivered(self.order)
+
+    def _grant_consent(self):
+        assignment = link_order_to_client(self.order, client=self.customer)
+        return self.grant_business_consent(self.customer, self.order, assignment)
 
     def _delivered(self, order):
         order.status = "done"
@@ -275,6 +289,7 @@ class ReviewOnlyOwnerContract:
         self.assertEqual(IgUgcRewardLifetime.objects.count(), 2)
 
     def test_unused_identity_keeps_conditional_reward_and_creation_uses_no_lifetime_dml(self):
+        self._grant_consent()
         event = self._event()
         self.assertEqual(event.payload[MODE_KEY]["mode"], "review_and_reward")
         for token in ("@twocomms", "10%", "90"):
@@ -286,17 +301,61 @@ class ReviewOnlyOwnerContract:
         self.assertEqual(send.call_count, 1)
         self.assertEqual(IgUgcRewardLifetime.objects.count(), 0)
 
-    def test_unknown_at_creation_keeps_combined_snapshot_and_can_recover_before_dispatch(self):
+    def test_missing_business_consent_creates_plain_review_with_real_receipt(self):
+        from management.services.ig_marketing_consent import has_post_purchase_consent
+        self.assertFalse(has_post_purchase_consent(self.customer, self.order.pk))
+        event = self._event()
+        self.assertEqual(event.payload[MODE_KEY]["mode"], "review_only")
+        self._assert_plain(self._text(event))
+        state, send = self._dispatch(event, transport=self._transport_success)
+        self.assertEqual(state, "sent", event.last_error)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(event.provider_message_id, "mid.review-only.success")
+        self.assertEqual(IgUgcReward.objects.count(), 0)
+        self.assertEqual(IgUgcRewardLifetime.objects.count(), 0)
+
+    def test_old_frozen_combined_snapshot_without_business_consent_cannot_send(self):
+        def frozen_combined(defaults):
+            # Historical rows are created before their immutable first INSERT;
+            # native row validation and final provider guards remain active.
+            defaults["payload"][MODE_KEY] = {"version": 1, "mode": "review_and_reward",
+                "order_number": self.order.order_number}
+            text = post_purchase_invitation_text(self.customer.language, self.order, mode="review_and_reward")
+            if self.canonical:
+                defaults["payload"][MESSAGE_SNAPSHOT_KEY] = text
+            else:
+                defaults["message_snapshot"] = text
+
+        event = self._event(insert_defaults=frozen_combined)
+        frozen = (deepcopy(event.payload), self._text(event), event.event_key)
+        self.assertIn("10%", self._text(event))
+        state, send = self._dispatch(event)
+        self.assertEqual(state, "cancelled", event.last_error)
+        self.assertEqual(event.last_error, "post_purchase_marketing_consent_required")
+        send.assert_not_called()
+        self.assertFalse(event.provider_message_id)
+        self.assertEqual((event.payload, self._text(event), event.event_key), frozen)
+        self.assertEqual(IgUgcReward.objects.count(), 0)
+        self.assertEqual(IgUgcRewardLifetime.objects.count(), 0)
+        state, send = self._dispatch(event)
+        send.assert_not_called()
+        self.assertEqual(event.state, "cancelled")
+
+    def test_unknown_at_creation_freezes_plain_review_without_upgrading_after_recovery(self):
+        self._grant_consent()
         with override_settings(IG_UGC_IDENTITY_HMAC_KEYRING={}):
             event = self._event()
-        self.assertEqual(event.payload[MODE_KEY]["mode"], "review_and_reward")
+        self.assertEqual(event.payload[MODE_KEY]["mode"], "review_only")
+        self._assert_plain(self._text(event))
         immutable = deepcopy(event.payload)
         state, send = self._dispatch(event, transport=self._transport_success)
         self.assertEqual(state, "sent", event.last_error)
         self.assertEqual(send.call_count, 1)
         self.assertEqual(event.payload, immutable)
+        self.assertEqual(IgUgcReward.objects.count(), 0)
 
     def test_unknown_combined_dispatch_fails_closed_without_plain_review_downgrade(self):
+        self._grant_consent()
         event = self._event()
         original = self._text(event)
         with override_settings(IG_UGC_IDENTITY_HMAC_KEYRING={}):
@@ -309,6 +368,7 @@ class ReviewOnlyOwnerContract:
         self.assertEqual(type(event).objects.filter(order=self.order, kind=event.kind).count(), 1)
 
     def test_old_no_mode_combined_snapshot_is_immutable_and_used_identity_cancels(self):
+        self._grant_consent()
         event = self._event(insert_defaults=lambda defaults: defaults["payload"].pop(MODE_KEY))
         original = (deepcopy(event.payload), self._text(event), event.event_key)
         self._consume()
@@ -321,6 +381,7 @@ class ReviewOnlyOwnerContract:
         send.assert_not_called()
 
     def test_plain_mode_flag_cannot_authorize_a_reward_snapshot(self):
+        self._grant_consent()
         def forged_defaults(defaults):
             defaults["payload"][MODE_KEY]["mode"] = "review_only"
 
@@ -364,12 +425,12 @@ class ReviewOnlyOwnerContract:
         original_payload = deepcopy(event.payload)
         from management.services.ig_post_purchase_invitation import post_purchase_invitation_block_reason
 
-        def detached_observation(client, order, payload=None, text=None, locale=None, final_text=""):
+        def detached_observation(client, order, payload=None, text=None, locale=None, final_text="", **kwargs):
             # Adversarial read seam only. No stored row or immutable field is
             # changed, and the genuine validator decides the observed payload.
             observed = deepcopy(payload)
             observed[MODE_KEY]["order_number"] = "FORGED-ORDER"
-            return post_purchase_invitation_block_reason(client, order, observed, text, locale, final_text)
+            return post_purchase_invitation_block_reason(client, order, observed, text, locale, final_text, **kwargs)
 
         def forged_transport(_settings, _recipient, _text, **kwargs):
             self._start(kwargs)
@@ -575,12 +636,14 @@ class ReviewOnlyOwnerContract:
         self.assertEqual(IgUgcRewardLifetime.objects.count(), 1)
 
 
-@override_settings(IG_UGC_IDENTITY_HMAC_ACTIVE_KEY_ID="active", IG_UGC_IDENTITY_HMAC_KEYRING=IDENTITY_KEYS)
+@override_settings(IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED=True,
+    IG_UGC_IDENTITY_HMAC_ACTIVE_KEY_ID="active", IG_UGC_IDENTITY_HMAC_KEYRING=IDENTITY_KEYS)
 class LegacyReviewOnlyContractTests(ReviewOnlyOwnerContract, TestCase):
     pass
 
 
-@override_settings(IG_UGC_IDENTITY_HMAC_ACTIVE_KEY_ID="active", IG_UGC_IDENTITY_HMAC_KEYRING=IDENTITY_KEYS)
+@override_settings(IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED=True,
+    IG_UGC_IDENTITY_HMAC_ACTIVE_KEY_ID="active", IG_UGC_IDENTITY_HMAC_KEYRING=IDENTITY_KEYS)
 class CanonicalReviewOnlyContractTests(ReviewOnlyOwnerContract, TestCase):
     canonical = True
 

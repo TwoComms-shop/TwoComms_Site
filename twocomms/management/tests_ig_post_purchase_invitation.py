@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import os
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -9,6 +10,20 @@ from management.services.ig_post_purchase_invitation import (
     post_purchase_invitation_block_reason,
     post_purchase_invitation_text,
 )
+from management.tests_ig_marketing_consent import _MarketingConsentFixture
+
+
+class _ConsentedInvitationFixture(_MarketingConsentFixture):
+    def _setup_consent_transport(self):
+        from management.models import InstagramBotSettings
+        environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.serial = 0
+        self.settings_row = InstagramBotSettings.load()
+        self.settings_row.ig_user_id = "1"
+        self.settings_row.is_enabled = True
+        self.settings_row.save(update_fields=["ig_user_id", "is_enabled", "updated_at"])
 
 
 class PostPurchaseInvitationPolicyTests(SimpleTestCase):
@@ -38,7 +53,7 @@ class PostPurchaseInvitationPolicyTests(SimpleTestCase):
             ("service_case_open", False, False, "post_purchase_service_case_open"),
             ("", True, False, "post_purchase_reply_debt_open"),
             ("", False, True, "post_purchase_already_rewarded"),
-            ("", False, False, ""),
+            ("", False, False, "post_purchase_marketing_consent_required"),
         )
         for service, debt, used, expected in checks:
             with (
@@ -47,6 +62,7 @@ class PostPurchaseInvitationPolicyTests(SimpleTestCase):
                 patch("management.services.ig_response_debt.unresolved_reply_debts") as debts,
                 patch("management.services.ig_ugc_rewards.ugc_identity_already_rewarded", return_value=used),
                 patch("management.services.ig_ugc_rewards.ugc_identity_lifetime_conflicted", return_value=False),
+                patch("management.services.ig_marketing_consent.has_post_purchase_consent", return_value=False),
             ):
                 debts.return_value.filter.return_value.exists.return_value = debt
                 self.assertEqual(post_purchase_invitation_block_reason(self.customer, self.order), expected)
@@ -68,13 +84,15 @@ class PostPurchaseInvitationPolicyTests(SimpleTestCase):
             self.assertEqual(FIXED_REASON_CODES[reason], Reason.PERMISSION_DENIED)
 
 
-class LegacyPostPurchaseInvitationTests(TestCase):
+@override_settings(IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED=True)
+class LegacyPostPurchaseInvitationTests(_ConsentedInvitationFixture, TestCase):
     def setUp(self):
         from management import tests_ig_order_fulfillment as fixtures
 
         fixtures.IgOrderFulfillmentTests.setUp(self)
+        self._setup_consent_transport()
 
-    def _review_event(self):
+    def _review_event(self, *, consent=True, frozen_combined=False):
         from management.ig_bot_models import IgOrderCustomerEvent
         from management.services.ig_order_assignments import link_order_to_client
         from management.services.ig_order_fulfillment import ensure_assignment_events
@@ -84,7 +102,29 @@ class LegacyPostPurchaseInvitationTests(TestCase):
         self.order.tracking_terminal_at = timezone.now()
         self.order.save(update_fields=["status", "tracking_status_code", "tracking_terminal_at"])
         assignment = link_order_to_client(self.order, client=self.ig_client, actor=self.manager)
-        ensure_assignment_events(assignment)
+        if consent:
+            self.grant_business_consent(self.ig_client, self.order, assignment)
+        if frozen_combined:
+            create = IgOrderCustomerEvent.objects.get_or_create
+
+            def native_insert(**kwargs):
+                defaults = dict(kwargs["defaults"])
+                if defaults["kind"] == "delivered_review":
+                    defaults["payload"] = dict(defaults["payload"])
+                    defaults["payload"]["post_purchase_invitation"] = {
+                        "version": 1, "mode": "review_and_reward", "order_number": self.order.order_number,
+                    }
+                    defaults["message_snapshot"] = post_purchase_invitation_text(
+                        self.ig_client.language, self.order, mode="review_and_reward")
+                    kwargs["defaults"] = defaults
+                return create(**kwargs)
+
+            # Historical copy is frozen before the native model's first insert;
+            # current consent and provider-boundary eligibility still decide.
+            with patch.object(IgOrderCustomerEvent.objects, "get_or_create", side_effect=native_insert):
+                ensure_assignment_events(assignment)
+        else:
+            ensure_assignment_events(assignment)
         return IgOrderCustomerEvent.objects.get(assignment=assignment, kind="delivered_review")
 
     def test_invitation_blocks_before_transport_and_remains_terminal(self):
@@ -112,7 +152,7 @@ class LegacyPostPurchaseInvitationTests(TestCase):
         event = self._review_event()
         blocked = False
 
-        def reason(*_args):
+        def reason(*_args, **_kwargs):
             return "post_purchase_already_rewarded" if blocked else ""
 
         def send_text(_settings, _igsid, _text, **kwargs):
@@ -227,7 +267,7 @@ class LegacyPostPurchaseInvitationTests(TestCase):
         event = self._review_event()
         blocked = False
 
-        def reason(*_args):
+        def reason(*_args, **_kwargs):
             return "post_purchase_already_rewarded" if blocked else ""
 
         def send_text(_settings, _igsid, _text, **kwargs):
@@ -257,7 +297,7 @@ class LegacyPostPurchaseInvitationTests(TestCase):
     def test_missing_identity_keyring_cannot_be_treated_as_unused_reward(self):
         from management.services.ig_order_fulfillment import deliver_event
 
-        event = self._review_event()
+        event = self._review_event(frozen_combined=True)
         with patch("management.services.instagram_bot.send_text") as send:
             self.assertEqual(deliver_event(event.pk), "cancelled")
         event.refresh_from_db()
@@ -275,11 +315,13 @@ class LegacyPostPurchaseInvitationTests(TestCase):
         guard.assert_not_called()
 
 
-class CanonicalPostPurchaseInvitationTests(TestCase):
+@override_settings(IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED=True)
+class CanonicalPostPurchaseInvitationTests(_ConsentedInvitationFixture, TestCase):
     def setUp(self):
         from management import tests_ig_lifecycle as fixtures
 
         fixtures.InstagramLifecycleTests.setUp(self)
+        self._setup_consent_transport()
 
     def _review_event(self):
         from management import tests_ig_lifecycle as fixtures
@@ -289,6 +331,9 @@ class CanonicalPostPurchaseInvitationTests(TestCase):
         self.order.tracking_status_code = 9
         self.order.tracking_terminal_at = timezone.now()
         self.order.save(update_fields=["status", "tracking_number", "tracking_status_code", "tracking_terminal_at"])
+        from management.services.ig_order_assignments import link_order_to_client
+        assignment = link_order_to_client(self.order, client=self.client)
+        self.grant_business_consent(self.client, self.order, assignment)
         return fixtures.InstagramLifecycleTests._event(self, "delivered_review_requested", {"status_code": "9"})
 
     def test_unknown_entitlement_cancels_before_provider_io_and_stays_terminal(self):
@@ -314,7 +359,7 @@ class CanonicalPostPurchaseInvitationTests(TestCase):
         event = self._review_event()
         blocked = False
 
-        def reason(*_args):
+        def reason(*_args, **_kwargs):
             return "post_purchase_service_case_open" if blocked else ""
 
         def send_text(_settings, _igsid, _text, **kwargs):
@@ -340,7 +385,7 @@ class CanonicalPostPurchaseInvitationTests(TestCase):
         event = self._review_event()
         blocked = False
 
-        def reason(*_args):
+        def reason(*_args, **_kwargs):
             return "post_purchase_service_case_open" if blocked else ""
 
         def send_text(_settings, _igsid, _text, **kwargs):

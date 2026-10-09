@@ -111,6 +111,21 @@ class ReviewAdmin(ReviewWriteFreezeAdminMixin, admin.ModelAdmin):
         }),
     )
 
+    def get_readonly_fields(self, request, obj=None):
+        fields = super().get_readonly_fields(request, obj)
+        if obj is not None and obj.purchase_invitation_id:
+            fields = (*fields, "product", "kind", "rating", "title", "body", "city", "pros", "cons",
+                      "author_name", "user", "email", "anon_key", "moderated_by")
+        return fields
+
+    def save_model(self, request, obj, form, change):
+        # Direct status edits need the same genuine staff moderation receipt as
+        # bulk actions. Keep ordinary review editing behavior unchanged.
+        if change and "status" in form.changed_data:
+            obj.moderated_by = request.user
+            obj.moderated_at = timezone.now()
+        return super().save_model(request, obj, form, change)
+
     @admin.display(description="Оцінка", ordering="rating")
     def rating_stars(self, obj: Review) -> str:
         if obj.rating is None:

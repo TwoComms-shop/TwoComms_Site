@@ -29,6 +29,8 @@ declared below.
 
 from __future__ import annotations
 
+import uuid
+
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -55,6 +57,88 @@ class ReviewCampaign(models.Model):
             raise ValidationError({"rules_url": "Для запуску потрібне HTTPS-посилання на опубліковані правила."})
 
 
+class ImmutableReviewProofQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if set(kwargs) - {"revoked_at"}:
+            raise ValueError("Purchase review proof is immutable")
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValueError("Purchase review proof is immutable")
+
+    def delete(self):
+        raise ValueError("Purchase review proof is retained for audit")
+
+    def _raw_delete(self, using):
+        raise ValueError("Purchase review proof is retained for audit")
+
+
+class ReviewPurchaseInvitation(models.Model):
+    """Private capability for one purchased catalog line; never an account login."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey("management.IgClient", null=True, blank=True,
+                              on_delete=models.SET_NULL, db_constraint=False, related_name="review_invitations")
+    client_id_snapshot = models.PositiveBigIntegerField()
+    order = models.ForeignKey("orders.Order", on_delete=models.PROTECT, db_constraint=False)
+    order_item = models.ForeignKey("orders.OrderItem", on_delete=models.PROTECT, db_constraint=False)
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, db_constraint=False)
+    assignment_id = models.PositiveBigIntegerField()
+    assignment_version = models.PositiveIntegerField()
+    reset_audit_id = models.PositiveBigIntegerField(default=0)
+    identity_digest = models.CharField(max_length=64)
+    signing_key_id = models.CharField(max_length=24)
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    objects = ImmutableReviewProofQuerySet.as_manager()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["client_id_snapshot", "order_item", "assignment_version", "reset_audit_id"],
+            name="review_invite_source_once",
+        )]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            fields = [f.attname for f in self._meta.concrete_fields if f.name not in {"client", "revoked_at"}]
+            previous = type(self).objects.filter(pk=self.pk).values(*fields, "client_id").first()
+            if previous and (any(previous[field] != getattr(self, field) for field in fields)
+                             or self.client_id not in {previous["client_id"], None}):
+                raise ValueError("Purchase review invitation source is immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Purchase review invitation is retained for audit")
+
+
+class ReviewQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        mutable = {"status", "moderation_note", "moderated_by", "moderated_by_id", "moderated_at",
+                   "updated_at", "helpful_count", "unhelpful_count"}
+        if (set(kwargs) - mutable or "status" in kwargs) and self.filter(purchase_invitation__isnull=False).exists():
+            raise ValueError("Bound review content and purchase proof are immutable")
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        objs = tuple(objs)
+        if any(obj.purchase_invitation_id for obj in objs):
+            raise ValueError("Bound review bulk updates are unsupported")
+        return super().bulk_update(objs, fields, batch_size=batch_size)
+
+    def delete(self):
+        if self.filter(purchase_invitation__isnull=False).exists():
+            raise ValueError("Bound purchase review is retained for audit")
+        return super().delete()
+
+    def _raw_delete(self, using):
+        if self.filter(purchase_invitation__isnull=False).exists():
+            raise ValueError("Bound purchase review is retained for audit")
+        return super()._raw_delete(using)
+
+
 class Review(models.Model):
     """A user-submitted review for one product."""
 
@@ -64,6 +148,13 @@ class Review(models.Model):
         related_name="reviews",
         verbose_name="Товар",
     )
+    purchase_invitation = models.OneToOneField(ReviewPurchaseInvitation, null=True, blank=True,
+                                              on_delete=models.PROTECT, db_constraint=False,
+                                              related_name="review", editable=False)
+    purchase_proof_version = models.PositiveSmallIntegerField(default=0, editable=False)
+    purchase_content_digest = models.CharField(max_length=64, blank=True, editable=False)
+    purchase_proof_signature = models.CharField(max_length=64, blank=True, editable=False)
+    objects = ReviewQuerySet.as_manager()
 
     # Author identity. ``user`` is set when the submitter is logged in;
     # for guests we keep ``author_name`` + ``email`` (used only for
@@ -197,6 +288,37 @@ class Review(models.Model):
     def __str__(self) -> str:  # pragma: no cover — admin display
         return f"#{self.pk} {self.product_id} {self.rating}★ {self.status}"
 
+    def save(self, *args, **kwargs):
+        from django.db import router, transaction
+        using = kwargs.get("using") or router.db_for_write(type(self), instance=self)
+        # The post-save moderation receiver persists its retry job before this
+        # transaction commits. Enqueue failure rolls back approval as well;
+        # an on-commit fast path is only an optimization over durable recovery.
+        with transaction.atomic(using=using):
+            if self.pk:
+                previous = type(self).objects.using(using).select_for_update().filter(pk=self.pk).values().first()
+                if previous and previous["purchase_invitation_id"]:
+                    if self.status == ReviewStatus.APPROVED and previous["status"] != ReviewStatus.APPROVED:
+                        from .services.purchase_invites import validate_bound_review
+                        validate_bound_review(self, require_approved=False)
+                    mutable = {"status", "moderation_note", "moderated_by_id", "moderated_at", "updated_at",
+                               "helpful_count", "unhelpful_count", "user_id", "story_confirmed"}
+                    # A proof is sealed once, after the database assigned the review ID.
+                    if not previous["purchase_proof_signature"]:
+                        mutable |= {"purchase_proof_version", "purchase_content_digest", "purchase_proof_signature"}
+                    for field in self._meta.concrete_fields:
+                        name = field.attname
+                        if name not in mutable and previous[name] != getattr(self, name):
+                            raise ValueError("Bound review content and purchase proof are immutable")
+                    if self.user_id not in {previous["user_id"], None}:
+                        raise ValueError("Bound review owner is immutable")
+            return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.purchase_invitation_id:
+            raise ValueError("Bound purchase review is retained for audit")
+        return super().delete(*args, **kwargs)
+
     @property
     def campaign_entries(self):
         if self.campaign_opt_in and self.is_verified_purchase and self.status == ReviewStatus.APPROVED and self.kind == "review":
@@ -321,3 +443,32 @@ class ReviewSubmissionWindow(models.Model):
     key = models.CharField(max_length=64, unique=True)
     attempts = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+
+class ReviewRewardUplift(models.Model):
+    """Append-only +5 component; the original UGC grant remains unchanged."""
+
+    reward = models.OneToOneField("management.IgUgcReward", on_delete=models.PROTECT,
+                                  db_constraint=False, related_name="review_uplift")
+    review = models.OneToOneField(Review, on_delete=models.PROTECT, db_constraint=False,
+                                  related_name="reward_uplift")
+    added_percent = models.PositiveSmallIntegerField(default=5)
+    proof_snapshot = models.JSONField(default=dict)
+    proof_digest = models.CharField(max_length=64)
+    signing_key_id = models.CharField(max_length=24)
+    proof_signature = models.CharField(max_length=64)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    objects = ImmutableReviewProofQuerySet.as_manager()
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(added_percent=5), name="review_uplift_five_only")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            previous = type(self).objects.filter(pk=self.pk).values().first()
+            if previous and any(previous[f.attname] != getattr(self, f.attname) for f in self._meta.concrete_fields):
+                raise ValueError("Review reward uplift is immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Review reward uplift is retained for audit")

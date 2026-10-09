@@ -97,6 +97,10 @@ def dispatch_postback(row: InstagramBotMessage) -> PostbackOutcome | None:
     проковтнути невідомий payload було б гірше: клієнт натиснув і не отримав
     нічого.
     """
+    from management.services.ig_marketing_consent import PREFIX, handle_consent_reply
+
+    if str(getattr(row, "quick_reply_payload", "") or "").startswith(PREFIX):
+        return handle_consent_reply(row)
     parsed = parse_payload(getattr(row, "quick_reply_payload", "") or "")
     if not parsed or not row.client_id:
         return None

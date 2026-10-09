@@ -340,6 +340,12 @@ IG_MEMORY_TIMELINE_ENABLED = _env_bool('IG_MEMORY_TIMELINE_ENABLED', True)
 IG_MEMORY_GENERATION_ENABLED = _env_bool('IG_MEMORY_GENERATION_ENABLED', True)
 IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED', True)
 
+# Owner-authorized, source-bound business opt-in. Dispatch still requires the
+# existing sender permission and current standard window; no future Meta grant.
+IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED = _env_bool(
+    'IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED', True,
+)
+
 # Captured at request preparation. Environment changes require worker restart;
 # rollback modes keep the existing revision/outbox finalization lane intact.
 IG_TURN_CONTEXT_MODE = os.environ.get('IG_TURN_CONTEXT_MODE', 'unified').strip().casefold()

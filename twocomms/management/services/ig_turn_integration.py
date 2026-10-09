@@ -79,6 +79,9 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             "scope": signals.get("scope"), "observed_at": boundary["watermark"]["event_at"],
         }
     state_inputs.setdefault("slots", {}).update(policy_inputs.state_slots)
+    from management.services.ig_review_reward_context import SLOT, VERSION as REVIEW_REWARD_CONTEXT_VERSION, capture_review_reward_context
+    state_inputs["slots"][SLOT] = capture_review_reward_context(revision.client_id,
+        boundary=boundary, captured_at=captured_at)
     state = assemble_client_state(boundary=boundary, components=state_inputs,
         captured_at=captured_at)
     if state.as_dict()["status"] != "captured" and (state_inputs.get("source_cart") or {}).get("status") == "captured":
@@ -94,6 +97,7 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
     safe_versions["receipt_observation"] = "payment-observation.v1"
     from management.services.approved_public_facts import APPROVED_PUBLIC_FACTS_VERSION
     safe_versions["facts_version"] = APPROVED_PUBLIC_FACTS_VERSION
+    safe_versions["ugc_review_benefit"] = REVIEW_REWARD_CONTEXT_VERSION
     sources = revision.bundle_snapshot["sources"]
     admitted = [str(part.source_part_id) for part in collection.parts]
     unavailable = [str(part["source_part_id"]) for source in sources

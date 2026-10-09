@@ -32,7 +32,7 @@ _VIEW_KEYS = {
     "memory_capture_digest", "publication_hash", "routing_policy", "facts_version",
     "state_view_version", "core_version",
     "reply_language",
-    "conversation_agreement", "receipt_observation",
+    "conversation_agreement", "receipt_observation", "ugc_review_benefit",
 }
 _DIGEST_VIEW_KEYS = {"response_plan_digest", "memory_capture_digest", "publication_hash"}
 _METADATA_KEYS = {

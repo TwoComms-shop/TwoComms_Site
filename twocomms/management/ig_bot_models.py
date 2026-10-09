@@ -1796,6 +1796,18 @@ class IgUgcReward(models.Model):
             ),
         ]
 
+    @property
+    def delivery(self):
+        """Compatibility accessor for the current immutable outbox generation."""
+        latest_id = self.deliveries.order_by("-generation", "-pk").values_list("pk", flat=True).first()
+        cached = getattr(self, "_ugc_delivery_cache", None)
+        if cached is None or cached.pk != latest_id:
+            row = self.deliveries.order_by("-generation", "-pk").first()
+            if row is None:
+                raise IgUgcRewardDelivery.DoesNotExist("Reward delivery not materialized")
+            self._ugc_delivery_cache = row
+        return self._ugc_delivery_cache
+
 
 class IgUgcEvidenceAssessment(models.Model):
     """Durable, provenance-bound UGC assessment with deterministic policy gates."""
@@ -1897,6 +1909,24 @@ class IgUgcRewardLifetime(models.Model):
         indexes = [models.Index(fields=["client", "reward"], name="ig_ugc_life_client_reward")]
 
 
+class _IgUgcRewardDeliveryQuerySet(models.QuerySet):
+    IDENTITY_FIELDS = frozenset({
+        "reward", "reward_id", "client", "client_id", "generation",
+        "message_snapshot", "discount_percent_snapshot", "promo_code_snapshot",
+        "valid_until_snapshot", "invitation_snapshot",
+    })
+
+    def update(self, **kwargs):
+        if self.IDENTITY_FIELDS.intersection(kwargs):
+            raise ValueError("UGC delivery identity is immutable")
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        if self.IDENTITY_FIELDS.intersection(fields):
+            raise ValueError("UGC delivery identity is immutable")
+        return super().bulk_update(objs, fields, batch_size=batch_size)
+
+
 class IgUgcRewardDelivery(models.Model):
     """Receipt-backed outbox for the private UGC code message."""
 
@@ -1908,10 +1938,10 @@ class IgUgcRewardDelivery(models.Model):
         AMBIGUOUS = "ambiguous", "Ambiguous"
         FAILED = "failed", "Failed"
 
-    reward = models.OneToOneField(
+    reward = models.ForeignKey(
         "management.IgUgcReward",
         on_delete=models.PROTECT,
-        related_name="delivery",
+        related_name="deliveries",
         db_constraint=False,
     )
     client = models.ForeignKey(
@@ -1923,6 +1953,11 @@ class IgUgcRewardDelivery(models.Model):
         blank=True,
     )
     message_snapshot = models.TextField()
+    generation = models.PositiveSmallIntegerField(default=1)
+    discount_percent_snapshot = models.PositiveSmallIntegerField(default=0)
+    promo_code_snapshot = models.CharField(max_length=20, blank=True, default="")
+    valid_until_snapshot = models.DateTimeField(null=True, blank=True)
+    invitation_snapshot = models.JSONField(default=dict, blank=True)
     state = models.CharField(max_length=20, choices=State.choices, default=State.PENDING, db_index=True)
     due_at = models.DateTimeField(default=timezone.now, db_index=True)
     attempts = models.PositiveIntegerField(default=0)
@@ -1933,6 +1968,7 @@ class IgUgcRewardDelivery(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
+    objects = models.Manager.from_queryset(_IgUgcRewardDeliveryQuerySet)()
 
     class Meta:
         ordering = ["due_at", "id"]
@@ -1940,6 +1976,27 @@ class IgUgcRewardDelivery(models.Model):
             models.Index(fields=["state", "due_at", "id"], name="ig_ugc_delivery_due"),
             models.Index(fields=["client", "-created_at"], name="ig_ugc_delivery_client"),
         ]
+        constraints = [
+            models.UniqueConstraint(fields=["reward", "generation"], name="ig_ugc_delivery_generation"),
+            models.CheckConstraint(condition=models.Q(generation__in=(1, 2)), name="ig_ugc_delivery_generation_range"),
+            models.CheckConstraint(condition=models.Q(discount_percent_snapshot__in=(5, 10, 15)), name="ig_ugc_delivery_percent_range"),
+        ]
+
+    def save(self, *args, **kwargs):
+        identity = _IgUgcRewardDeliveryQuerySet.IDENTITY_FIELDS - {"reward", "client"}
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values(*identity).first()
+            if previous and any(getattr(self, name) != previous[name] for name in identity):
+                raise ValidationError("UGC delivery identity is immutable")
+        else:
+            # Compatibility for historical fixtures/callers creating base rows.
+            if not self.discount_percent_snapshot:
+                self.discount_percent_snapshot = self.reward.discount_percent
+            if not self.promo_code_snapshot:
+                self.promo_code_snapshot = self.reward.promo_code.code
+            if self.valid_until_snapshot is None:
+                self.valid_until_snapshot = self.reward.promo_code.valid_until
+        return super().save(*args, **kwargs)
 
 
 class IgUgcRewardLifecycleJob(models.Model):

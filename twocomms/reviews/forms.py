@@ -24,9 +24,10 @@ _MIN_BODY_LEN = 20
 
 
 class ReviewForm(forms.Form):
-    def __init__(self, *args, guest=False, **kwargs):
+    def __init__(self, *args, guest=False, purchase_invited=False, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["email"].required = guest
+        self.purchase_invited = purchase_invited
+        self.fields["email"].required = guest and not purchase_invited
         self.fields["email"].error_messages["required"] = _("Залиш email для зв’язку. Він не публікується.")
 
     campaign_opt_in = forms.BooleanField(required=False)
@@ -88,6 +89,10 @@ class ReviewForm(forms.Form):
 
     def clean(self):
         cleaned = super().clean()
+        if self.purchase_invited:
+            if cleaned.get("kind") == "comment":
+                self.add_error("kind", _("За цим запрошенням потрібен відгук з оцінкою 1–5."))
+            cleaned["kind"] = "review"
         cleaned["kind"] = cleaned.get("kind") or ("review" if cleaned.get("rating") else "comment")
         if cleaned["kind"] == "comment":
             cleaned["rating"] = None

@@ -13,19 +13,38 @@
   const fields = ['body', 'rating', 'author_name'];
   let csrf = '';
   let needsRating = false;
+  let invitationRatingRequired = root.dataset.purchaseRatingRequired === '1';
+  let invitationEmailOptional = root.dataset.purchaseEmailOptional === '1';
+  const defaultEmailRequired = form.elements.email.dataset.defaultRequired === '1';
   let previewURLs = [];
   const notify = message => { feedback.textContent = message; };
   function refreshForm() {
     const hasRating = Boolean(form.elements.rating.value);
-    form.querySelectorAll('[name=rating]').forEach(input => { input.required = needsRating; });
+    const requiredRating = needsRating || invitationRatingRequired;
+    form.querySelectorAll('[name=rating]').forEach(input => { input.required = requiredRating; });
     const hint = root.querySelector('[data-rating-hint]');
-    hint.textContent = needsRating ? hint.dataset.followup : hint.dataset.default;
-    root.querySelector('[data-rating-optional]').hidden = needsRating;
-    root.querySelector('[data-clear-rating]').hidden = !hasRating || needsRating;
+    hint.textContent = invitationRatingRequired ? hint.dataset.invited : needsRating ? hint.dataset.followup : hint.dataset.default;
+    root.querySelector('[data-rating-optional]').hidden = requiredRating;
+    root.querySelector('[data-clear-rating]').hidden = !hasRating || requiredRating;
     const optin = form.elements.campaign_opt_in;
-    if (optin) { optin.disabled = !hasRating; if (!hasRating) optin.checked = false; form.elements.email.required = optin.checked; }
+    if (optin) { optin.disabled = !hasRating; if (!hasRating) optin.checked = false; }
+    form.elements.email.required = (defaultEmailRequired && !invitationEmailOptional) || Boolean(optin && optin.checked);
+    const emailOptional = root.querySelector('[data-email-optional]');
+    if (emailOptional) emailOptional.hidden = form.elements.email.required;
     root.querySelector('[data-draft-status]').hidden = !form.elements.body.value;
     root.querySelector('[data-body-count]').textContent = `${form.elements.body.value.length} / 4000`;
+  }
+  function applyPurchaseContext(context) {
+    const valid = context && typeof context === 'object' && !Array.isArray(context);
+    const invited = valid && context.has_valid_invitation === true;
+    invitationRatingRequired = invited && context.rating_required === true;
+    invitationEmailOptional = invited && context.email_optional === true;
+    const offer = root.querySelector('[data-purchase-review-offer]');
+    if (!offer) return;
+    const status = valid && ['none', 'eligible', 'pending', 'approved', 'applied', 'unavailable'].includes(context.status) ? context.status : 'none';
+    const kind = ['pending', 'approved', 'applied'].includes(status) ? status : invited && status === 'eligible' ? context.bonus_available === true ? 'perk' : 'invitation' : '';
+    offer.hidden = !kind;
+    offer.querySelectorAll('[data-purchase-review-kind]').forEach(part => { part.hidden = part.dataset.purchaseReviewKind !== kind; });
   }
   try {
     const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
@@ -75,6 +94,7 @@
     root.dataset.stateReady = "1";
     compose.hidden = data.form_complete;
     needsRating = data.submitted_kinds.includes('comment');
+    applyPurchaseContext(data.purchase_review_context);
     refreshForm();
     return data;
   }

@@ -61,15 +61,6 @@ class DeliveredReviewCopyTests(SimpleTestCase):
         self.assertLess(source.index(reward_id_lookup), source.index(reconcile_call))
         self.assertLess(source.index(reconcile_call), source.index(delivery_lock))
 
-    def test_lifecycle_worker_locks_reward_before_job(self):
-        source = inspect.getsource(process_linked_ugc_reward_lifecycle_job)
-
-        reward_lock = "reward_queryset = ("
-        job_lock = "job = ("
-        self.assertIn("IgUgcReward.objects.using(db_alias)", source)
-        self.assertIn("IgUgcRewardLifecycleJob.objects.using(db_alias)", source)
-        self.assertLess(source.index(reward_lock), source.index(job_lock))
-
     def test_order_truth_callback_defers_unsupported_database_alias(self):
         from management.services.ig_order_truth import _publish_instagram_order_truth
 
@@ -147,6 +138,39 @@ class UgcRewardTests(TestCase):
             case_type=case_type,
             status=status,
         )
+
+    def test_lifecycle_worker_locks_client_order_promo_reward_before_job(self):
+        import re
+        from django.db import connection
+        from management.ig_bot_models import IgUgcRewardLifecycleJob
+
+        if not connection.features.has_select_for_update:
+            self.skipTest("Actual lifecycle FOR UPDATE ordering requires the native database")
+        reward = self._award()
+        job = IgUgcRewardLifecycleJob.objects.create(client_id=self.ig_client.pk,
+            order_id=self.order.pk, source="order_truth")
+        observed = []
+
+        def observe(execute, sql, params, many, context):
+            if "for update" in sql.lower():
+                table = re.search(r'\bFROM\s+[`"]?(\w+)', sql, re.IGNORECASE)
+                if table:
+                    observed.append(table.group(1))
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(observe), patch(
+            "management.services.instagram_bot.send_text",
+            side_effect=AssertionError("Lifecycle reconciliation must not deliver a reward"),
+        ) as send:
+            result = process_linked_ugc_reward_lifecycle_job(job.pk)
+        self.assertEqual(result["state"], "done", result)
+        self.assertEqual(result["selected"], 1)
+        self.assertEqual(observed[:5], [IgClient._meta.db_table, Order._meta.db_table,
+            PromoCode._meta.db_table, IgUgcReward._meta.db_table, IgUgcRewardLifecycleJob._meta.db_table])
+        self.assertFalse(IgUgcRewardLifecycleJob.objects.filter(pk=job.pk).exists())
+        reward.promo_code.refresh_from_db()
+        self.assertEqual(reward.promo_code.discount_value, Decimal("10.00"))
+        send.assert_not_called()
 
     def _award(self):
         reward, created = award_ugc_reward(
@@ -263,7 +287,7 @@ class UgcRewardTests(TestCase):
 
         with patch.object(
             IgUgcRewardDelivery.objects,
-            "get_or_create",
+            "create",
             side_effect=RuntimeError("forced order-linked outbox failure"),
         ), self.assertRaisesRegex(RuntimeError, "forced order-linked outbox failure"):
             award_ugc_reward(

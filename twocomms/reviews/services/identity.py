@@ -15,7 +15,12 @@ def guest_key(request, *, create=False):
     return salted_hmac("reviews.guest", token, algorithm="sha256").hexdigest() if token else ""
 
 
-def submission_identity(request):
+def submission_identity(request, product=None):
+    if product is not None:
+        from .purchase_invites import session_invitation, invitation_submission_identity
+        invitation = session_invitation(request, product)
+        if invitation is not None:
+            return invitation_submission_identity(invitation)
     if request.user.is_authenticated:
         return salted_hmac("reviews.user", str(request.user.pk), algorithm="sha256").hexdigest()
     return guest_key(request, create=True)
@@ -23,10 +28,23 @@ def submission_identity(request):
 
 def owned_reviews(request, product):
     from reviews.models import Review
+    from django.db.models import Q
+    from .purchase_invites import session_invitation, invitation_submission_identity
     qs = Review.objects.filter(product=product)
+    invitation = session_invitation(request, product, require_live=False)
+    if invitation is not None:
+        # A purchase invitation proves its own IG author. A different account
+        # already logged into this browser must not hide or block that author.
+        return qs.filter(submission_identity=invitation_submission_identity(invitation))
+    invited_owner = Q(submission_identity=invitation_submission_identity(invitation)) if invitation else Q(pk__in=[])
     if request.user.is_authenticated:
-        from django.db.models import Q
         key = guest_key(request)
-        return qs.filter(Q(user=request.user) | Q(user__isnull=True, anon_key=key)) if key else qs.filter(user=request.user)
+        owner = Q(user=request.user) | invited_owner
+        if key:
+            owner |= Q(user__isnull=True, anon_key=key)
+        return qs.filter(owner)
     key = guest_key(request)
-    return qs.filter(user__isnull=True, anon_key=key) if key else qs.none()
+    owner = invited_owner
+    if key:
+        owner |= Q(user__isnull=True, anon_key=key)
+    return qs.filter(owner)

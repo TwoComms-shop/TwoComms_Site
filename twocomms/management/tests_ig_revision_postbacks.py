@@ -15,8 +15,17 @@ from management.services.ig_revision_outbox import PublicationBinding
 from orders.models import Order
 
 
+class _CheckoutFixtureAdmission:
+    """Bind the native admission helper required by shared checkout setup.
+
+    Importing only the helper keeps unrelated checkout tests out of discovery
+    and preserves these postback-specific source and order fixtures.
+    """
+    _admit_choice = checkout_fixtures.RevisionCheckoutTests._admit_choice
+
+
 @override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.shop")
-class RevisionPostbackTests(TransactionTestCase):
+class RevisionPostbackTests(_CheckoutFixtureAdmission, TransactionTestCase):
     reset_sequences = True
     postback_action = "got"
 
@@ -211,7 +220,7 @@ class RevisionPostbackTests(TransactionTestCase):
 
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.shop")
-class RevisionPostbackLaterTests(TransactionTestCase):
+class RevisionPostbackLaterTests(_CheckoutFixtureAdmission, TransactionTestCase):
     reset_sequences = True
     postback_action = "later"
     setUp = RevisionPostbackTests.setUp
@@ -238,7 +247,7 @@ class RevisionPostbackLaterTests(TransactionTestCase):
 
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.shop")
-class RevisionPostbackInertTests(TransactionTestCase):
+class RevisionPostbackInertTests(_CheckoutFixtureAdmission, TransactionTestCase):
     reset_sequences = True
     postback_action = "got"
     payload_override = "twc:1:diagnostic:inout:1"
@@ -274,7 +283,7 @@ class RevisionPostbackInertTests(TransactionTestCase):
 
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.shop")
-class RevisionPostbackPreviewTests(TransactionTestCase):
+class RevisionPostbackPreviewTests(_CheckoutFixtureAdmission, TransactionTestCase):
     reset_sequences = True
     postback_action = "got"
     payload_override = "twc:1:preview:buttons:size_m:1"
@@ -293,7 +302,7 @@ class RevisionPostbackPreviewTests(TransactionTestCase):
 
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.shop")
-class RevisionPostbackUnknownTests(TransactionTestCase):
+class RevisionPostbackUnknownTests(_CheckoutFixtureAdmission, TransactionTestCase):
     reset_sequences = True
     postback_action = "got"
     payload_override = "twc:v1:checkout_payment:prepay_200_cod"

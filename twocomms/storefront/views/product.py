@@ -367,7 +367,14 @@ def _pdp_cache_condition(request):
     analytics and canonical redirects remain accurate. Path-style variants
     are already part of the cache key and are safe to cache independently.
     """
-    return not request.GET and not request.session.get("product_review_identity") and not request.session.get("review_draft")
+    from reviews.services.purchase_invites import SESSION_KEY as purchase_review_session_key
+
+    return (
+        not request.GET
+        and not request.session.get("product_review_identity")
+        and not request.session.get("review_draft")
+        and not request.session.get(purchase_review_session_key)
+    )
 
 
 def _pdp_cache_prefix(request, view_func):
@@ -1287,7 +1294,12 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
     product._visible_community_reviews = approved_reviews
     product_customer_has_paid_order = _has_paid_order(request.user, product)
     from reviews.services.identity import owned_reviews
+    from reviews.services.purchase_invites import (
+        SESSION_KEY as purchase_review_session_key,
+        purchase_review_context,
+    )
     from reviews.models import ReviewCampaign
+    purchased_review_context = purchase_review_context(request, product)
     own_reviews = list(owned_reviews(request, product).order_by("-created_at")[:5])
     review_draft = request.session.get("review_draft", {})
     if review_draft.get("product_id") != product.pk:
@@ -1422,6 +1434,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
             'has_own_comment': any(row.kind == 'comment' for row in own_reviews),
             'review_campaign': ReviewCampaign.objects.filter(enabled=True).order_by('-pk').first(),
             'review_draft': review_draft.get('data', {}),
+            'purchase_review_context': purchased_review_context,
             'product_customer_has_paid_order': product_customer_has_paid_order,
             # Phase 15 — per-product SEO landing block.
             'product_seo_landing': product_seo_landing,
@@ -1438,7 +1451,7 @@ def product_detail(request, slug, v1=None, v2=None, v3=None):
         }
     )
 
-    if own_reviews or review_draft or request.user.is_authenticated:
+    if own_reviews or review_draft or request.user.is_authenticated or request.session.get(purchase_review_session_key):
         response["Cache-Control"] = "private, no-store, max-age=0"
     return response
 

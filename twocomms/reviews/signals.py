@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
@@ -40,44 +41,50 @@ _STATUS_CHANGED_ATTR = "_phase21_status_was"
 
 
 @receiver(pre_save, sender=Review)
-def _capture_previous_status(sender, instance: Review, **kwargs):
+def _capture_previous_status(sender, instance: Review, using=None, **kwargs):
     """Stash the pre-save status so post_save can detect transitions."""
     if not instance.pk:
         setattr(instance, _STATUS_CHANGED_ATTR, None)
         return
     try:
-        prev = Review.objects.only("status").get(pk=instance.pk)
+        prev = Review.objects.using(using or instance._state.db or "default").only("status").get(pk=instance.pk)
         setattr(instance, _STATUS_CHANGED_ATTR, prev.status)
     except Review.DoesNotExist:
         setattr(instance, _STATUS_CHANGED_ATTR, None)
 
 
 @receiver(post_save, sender=Review)
-def notify_moderator_on_pending_review(sender, instance: Review, created: bool, **kwargs):
+def notify_moderator_on_pending_review(sender, instance: Review, created: bool, using=None, **kwargs):
     """Telegram ping when a review enters the moderation queue."""
     if not created or instance.status != ReviewStatus.PENDING:
         return
-    try:
-        _send_pending_telegram(instance)
-    except Exception:  # pragma: no cover — defensive
-        logger.exception("reviews.notify.pending failed for review=%s", instance.pk)
+    def notify():
+        try:
+            _send_pending_telegram(instance)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception("reviews.notify.pending failed for review=%s", instance.pk)
+
+    transaction.on_commit(notify, using=using or instance._state.db or "default", robust=True)
 
 
 @receiver(post_save, sender=Review)
-def ping_indexnow_on_first_approval(sender, instance: Review, created: bool, **kwargs):
+def ping_indexnow_on_first_approval(sender, instance: Review, created: bool, using=None, **kwargs):
     """IndexNow ping when status flips ``pending|rejected`` → ``approved``."""
     previous = getattr(instance, _STATUS_CHANGED_ATTR, None)
     if instance.status != ReviewStatus.APPROVED:
         return
     if previous == ReviewStatus.APPROVED:
         return  # Nothing changed — already approved.
-    try:
-        _submit_indexnow_for_product(instance.product)
-    except Exception:  # pragma: no cover — defensive
-        logger.exception(
-            "reviews.indexnow.approval-ping failed for review=%s product=%s",
-            instance.pk, instance.product_id,
-        )
+    def ping():
+        try:
+            _submit_indexnow_for_product(instance.product)
+        except Exception:  # pragma: no cover — defensive
+            logger.exception(
+                "reviews.indexnow.approval-ping failed for review=%s product=%s",
+                instance.pk, instance.product_id,
+            )
+
+    transaction.on_commit(ping, using=using or instance._state.db or "default", robust=True)
 
 
 # --------------------------------------------------------------------
@@ -150,8 +157,37 @@ def _submit_indexnow_for_product(product) -> None:
 
 
 @receiver(post_save, sender=Review)
-def invalidate_public_review_cache(sender, instance, **kwargs):
+def invalidate_public_review_cache(sender, instance, using=None, **kwargs):
     from django.db import transaction
     from storefront.services.catalog_helpers import bump_public_product_order_version
     if instance.status == ReviewStatus.APPROVED or getattr(instance, _STATUS_CHANGED_ATTR, None) == ReviewStatus.APPROVED:
-        transaction.on_commit(bump_public_product_order_version)
+        transaction.on_commit(bump_public_product_order_version,
+                              using=using or instance._state.db or "default", robust=True)
+
+
+@receiver(post_save, sender=Review)
+def reconcile_purchase_review_uplift(sender, instance, using=None, **kwargs):
+    """Persist moderation work atomically; process it only after review locks release."""
+    if not instance.purchase_invitation_id or not instance.purchase_proof_signature:
+        return
+    previous = getattr(instance, _STATUS_CHANGED_ATTR, None)
+    if previous == instance.status and instance.status != ReviewStatus.APPROVED:
+        return
+    from django.db import transaction
+    from management.services.ig_review_reward import queue_review_uplift_job
+
+    db_alias = using or instance._state.db or "default"
+    # Do not swallow this failure: Review.save owns the transaction containing
+    # both moderation and the durable work row. No client/promo locks here.
+    job = queue_review_uplift_job(instance.pk, using=db_alias)
+    job_id = job.pk
+
+    def reconcile():
+        try:
+            from management.services.ig_review_reward import process_review_uplift_job
+            process_review_uplift_job(job_id, using=db_alias)
+        except Exception:
+            # The committed job remains available to the periodic processor.
+            logger.exception("reviews.purchase-uplift fast path failed job=%s", job_id)
+
+    transaction.on_commit(reconcile, using=db_alias, robust=True)

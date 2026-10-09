@@ -51,42 +51,50 @@ class ReviewSignalTests(TestCase):
 
     @patch("reviews.signals._send_pending_telegram")
     def test_pending_creation_fires_telegram_notifier(self, mock_send):
-        self._make_review(status=ReviewStatus.PENDING)
+        with self.captureOnCommitCallbacks(execute=True):
+            self._make_review(status=ReviewStatus.PENDING)
         self.assertTrue(mock_send.called)
 
     @patch("reviews.signals._send_pending_telegram")
     def test_status_update_does_not_re_fire_pending_notify(self, mock_send):
-        review = self._make_review(status=ReviewStatus.PENDING)
+        with self.captureOnCommitCallbacks(execute=True):
+            review = self._make_review(status=ReviewStatus.PENDING)
         mock_send.reset_mock()
-        review.mark_approved()
+        with self.captureOnCommitCallbacks(execute=True):
+            review.mark_approved()
         self.assertFalse(mock_send.called)
 
     @patch("reviews.signals._submit_indexnow_for_product")
     def test_pending_to_approved_pings_indexnow_once(self, mock_indexnow):
         review = self._make_review(status=ReviewStatus.PENDING)
         mock_indexnow.assert_not_called()
-        review.mark_approved()
+        with self.captureOnCommitCallbacks(execute=True):
+            review.mark_approved()
         mock_indexnow.assert_called_once_with(self.product)
 
     @patch("reviews.signals._submit_indexnow_for_product")
     def test_re_saving_approved_does_not_re_ping_indexnow(self, mock_indexnow):
-        review = self._make_review(status=ReviewStatus.APPROVED)
+        with self.captureOnCommitCallbacks(execute=True):
+            review = self._make_review(status=ReviewStatus.APPROVED)
         # First create already approved → ping fires once.
         self.assertEqual(mock_indexnow.call_count, 1)
         review.body = (review.body or "") + " edit"
-        review.save(update_fields=["body", "updated_at"])
+        with self.captureOnCommitCallbacks(execute=True):
+            review.save(update_fields=["body", "updated_at"])
         # No additional ping — status didn't change.
         self.assertEqual(mock_indexnow.call_count, 1)
 
     @patch("reviews.signals._send_pending_telegram", side_effect=RuntimeError("boom"))
     def test_telegram_exception_does_not_break_save(self, _mock_send):
         # Must not raise.
-        review = self._make_review(status=ReviewStatus.PENDING)
+        with self.captureOnCommitCallbacks(execute=True):
+            review = self._make_review(status=ReviewStatus.PENDING)
         self.assertEqual(review.status, ReviewStatus.PENDING)
 
     @patch("reviews.signals._submit_indexnow_for_product", side_effect=RuntimeError("boom"))
     def test_indexnow_exception_does_not_break_save(self, _mock_indexnow):
         review = self._make_review(status=ReviewStatus.PENDING)
         # Must not raise on transition.
-        review.mark_approved()
+        with self.captureOnCommitCallbacks(execute=True):
+            review.mark_approved()
         self.assertEqual(review.status, ReviewStatus.APPROVED)

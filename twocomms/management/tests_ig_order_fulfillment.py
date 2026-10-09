@@ -508,7 +508,10 @@ class IgOrderFulfillmentTests(TestCase):
         reconcile_order_customer_events(order_id=self.order.pk, send=False)
         event = IgOrderCustomerEvent.objects.get(kind=IgOrderCustomerEvent.Kind.DELIVERED_REVIEW)
         self.assertIn("Thank you", event.message_snapshot)
-        self.assertIn("10%", event.message_snapshot)
+        self.assertIn("honest review", event.message_snapshot)
+        self.assertEqual(event.payload["post_purchase_invitation"]["mode"], "review_only")
+        for incentive in ("10%", "@twocomms", "90", "story"):
+            self.assertNotIn(incentive, event.message_snapshot)
         self.assertEqual(event.locale, "en")
         self.assertFalse(
             IgOrderCustomerEvent.objects.filter(

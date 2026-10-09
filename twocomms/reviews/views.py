@@ -25,7 +25,7 @@ import logging
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
+from django.http import HttpRequest, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse, HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -37,6 +37,9 @@ from .models import Review, ReviewImage, ReviewStatus, ReviewVote, ReviewCampaig
 from .services.permissions import has_paid_order_with_product
 from .write_freeze import review_writes_frozen
 from .services.identity import guest_key, owned_reviews, submission_identity
+from .services.purchase_invites import (PurchaseReviewError, SESSION_KEY as PURCHASE_REVIEW_SESSION_KEY,
+                                       capture_invitation, session_invitation, validate_invitation,
+                                       seal_bound_review, purchase_review_context)
 
 
 log = logging.getLogger(__name__)
@@ -162,6 +165,14 @@ def submit_review(request: HttpRequest, product_slug: str):
 
     is_ajax = request.headers.get("X-Requested-With", "") == "XMLHttpRequest"
 
+    invitation = session_invitation(request, product)
+    if (request.session.get(PURCHASE_REVIEW_SESSION_KEY) or {}).get(str(product.pk)) and invitation is None:
+        msg = _("Запрошення більше не дійсне. Попросіть нове посилання в Instagram.")
+        if is_ajax:
+            return JsonResponse({"ok": False, "error": msg}, status=403)
+        messages.error(request, msg)
+        return _redirect_back(request, product)
+
     if _is_rate_limited(request, product.id):
         msg = _("Забагато спроб. Спробуйте через годину.")
         if is_ajax:
@@ -176,7 +187,7 @@ def submit_review(request: HttpRequest, product_slug: str):
             "data": {key: request.POST.get(key, "")[:4000] for key in
                      ("kind", "rating", "title", "body", "author_name", "email", "city", "pros", "cons")},
         }
-    form = ReviewForm(request.POST, guest=not request.user.is_authenticated)
+    form = ReviewForm(request.POST, guest=not request.user.is_authenticated, purchase_invited=invitation is not None)
     if not form.is_valid():
         # Compact error format for AJAX, message-bus for traditional POST.
         if is_ajax:
@@ -205,7 +216,7 @@ def submit_review(request: HttpRequest, product_slug: str):
         return _redirect_back(request, product)
 
     campaign = ReviewCampaign.objects.filter(enabled=True).order_by("-pk").first()
-    verified = has_paid_order_with_product(request.user, product)
+    verified = bool(invitation) or has_paid_order_with_product(request.user, product)
     if cleaned.get("campaign_opt_in") and (not campaign or not verified or cleaned["kind"] != "review" or not cleaned.get("email")):
         return JsonResponse({"ok": False, "error": "Для участі потрібні підтверджена покупка, відгук і email для зв’язку."}, status=400)
 
@@ -218,17 +229,30 @@ def submit_review(request: HttpRequest, product_slug: str):
         messages.error(request, str(exc))
         return _redirect_back(request, product)
 
-    user = request.user if request.user.is_authenticated else None
-    anon_key = "" if user else _anon_key(request)
-    is_verified = has_paid_order_with_product(user, product) if user else False
+    # The invitation identifies the IG owner, never whichever account happens
+    # to be logged into this browser. Public account-owned reviews keep their
+    # existing account association.
+    user = request.user if request.user.is_authenticated and invitation is None else None
+    anon_key = "" if user or invitation else _anon_key(request)
+    is_verified = bool(invitation) or (has_paid_order_with_product(user, product) if user else False)
 
     try:
         with transaction.atomic():
+            if invitation is not None:
+                from management.ig_bot_models import IgClient
+                from .models import ReviewPurchaseInvitation
+                if IgClient.objects.select_for_update().filter(pk=invitation.client_id).first() is None:
+                    raise PurchaseReviewError("invitation_owner_unavailable")
+                invitation = ReviewPurchaseInvitation.objects.select_for_update().filter(pk=invitation.pk).first()
+                if invitation is None:
+                    raise PurchaseReviewError("invitation_unavailable")
+                validate_invitation(invitation)
             review = Review.objects.create(
                 product=product,
-                submission_identity=submission_identity(request),
+                submission_identity=submission_identity(request, product),
+                purchase_invitation=invitation,
                 campaign=campaign,
-                is_incentivized_review=bool(campaign),
+                is_incentivized_review=bool(invitation or campaign),
                 campaign_opt_in=bool(cleaned.get("campaign_opt_in")),
                 campaign_rules_url=campaign.rules_url if campaign else "",
                 kind=cleaned["kind"], city=cleaned.get("city", ""),
@@ -243,8 +267,16 @@ def submit_review(request: HttpRequest, product_slug: str):
                 is_verified_purchase=is_verified,
                 status=ReviewStatus.PENDING,
             )
+            if invitation is not None:
+                seal_bound_review(review)
             for idx, f in enumerate(images):
                 ReviewImage.objects.create(review=review, image=f, order=idx)
+    except PurchaseReviewError:
+        msg = _("Покупку для цього запрошення більше не підтверджено. Зверніться в Instagram.")
+        if is_ajax:
+            return JsonResponse({"ok": False, "error": msg}, status=403)
+        messages.error(request, msg)
+        return _redirect_back(request, product)
     except IntegrityError:
         if not owned_reviews(request, product).filter(kind=cleaned["kind"]).exists():
             raise
@@ -252,7 +284,8 @@ def submit_review(request: HttpRequest, product_slug: str):
     request.session.pop("review_draft", None)
 
     if is_ajax:
-        return JsonResponse({"ok": True, "status": "pending", "review_id": review.id})
+        return JsonResponse({"ok": True, "status": "pending", "review_id": review.id,
+                             "purchase_review_context": purchase_review_context(request, product)})
     messages.success(
         request,
         "Дякуємо! Ваш відгук відправлено на модерацію — після перевірки він зʼявиться на сторінці товару.",
@@ -354,7 +387,24 @@ def review_state(request, product_slug):
     rows = list(owned_reviews(request, product).order_by("-created_at")[:5])
     html = render_to_string("partials/review_private.html", {"own_reviews": rows}, request=request)
     kinds = sorted({row.kind for row in rows})
-    return JsonResponse({"csrf": get_token(request), "html": html, "has_review": bool(rows), "form_complete": "review" in kinds, "submitted_kinds": kinds})
+    return JsonResponse({"csrf": get_token(request), "html": html, "has_review": bool(rows), "form_complete": "review" in kinds, "submitted_kinds": kinds,
+                         "purchase_review_context": purchase_review_context(request, product)})
+
+
+@never_cache
+@require_GET
+def purchase_invitation(request, token):
+    """Exchange a private capability for session authority, then clean the URL."""
+    try:
+        invitation = capture_invitation(request, token)
+    except PurchaseReviewError:
+        response = HttpResponse(_("Посилання на відгук недійсне або термін його дії минув."), status=403)
+    else:
+        response = HttpResponseRedirect(reverse("product", kwargs={"slug": invitation.product.slug}) + "#product-reviews")
+    response["Referrer-Policy"] = "no-referrer"
+    response["Cache-Control"] = "private, no-store, max-age=0"
+    response["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 
 @require_GET

@@ -407,6 +407,9 @@ def _delete_direct_bot_records(
             )
         client_ids = [client.pk for client in clients]
         if client_ids:
+            from management.services.ig_marketing_consent_privacy import purge_marketing_consent_data
+
+            purge_marketing_consent_data(client_ids)
             # Analysis/memory tables use DO_NOTHING relations and append-only
             # guards during normal runtime. The already committed privacy
             # fence is the only boundary allowed to purge those behavioral
@@ -425,6 +428,12 @@ def _delete_direct_bot_records(
                 )
             )
             promo_ids = [row["promo_code_id"] for row in reward_rows if row["promo_code_id"]]
+            if promo_ids:
+                from storefront.models import PromoCode
+
+                list(PromoCode.objects.select_for_update().filter(
+                    pk__in=promo_ids,
+                ).order_by("pk"))
             reward_order_ids = [row["order_id"] for row in reward_rows if row["order_id"]]
             IgUgcRewardLifecycleJob.objects.filter(client_id__in=client_ids).delete()
             if reward_order_ids:
@@ -456,6 +465,9 @@ def _delete_direct_bot_records(
                         )
                         lifetime.consumed_at = issued_at
                         lifetime.save(update_fields=["consumed_at", "updated_at"])
+            from reviews.services.privacy import purge_purchase_review_data
+
+            purge_purchase_review_data(client_ids)
             IgUgcRewardDelivery.objects.filter(
                 reward_id__in=[row["pk"] for row in reward_rows]
             ).delete()

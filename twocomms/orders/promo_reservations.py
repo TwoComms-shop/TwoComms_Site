@@ -99,9 +99,51 @@ def _lock_promo(*, promo_id=None, code=None):
 @transaction.atomic
 def reserve_promo_for_checkout(*, promo_id=None, code=None, user=None, total_amount):
     """Validate and reserve one promo before creating an external invoice."""
+    from management.ig_bot_models import IgClient, IgUgcReward
+    from orders.models import Order
+    from reviews.models import Review, ReviewRewardUplift
+    from storefront.models import PromoCode
+
+    locator = PromoCode.objects.all()
+    locator = (locator.filter(pk=promo_id) if promo_id is not None else
+               locator.filter(code__iexact=str(code or "").strip()))
+    located_promo_id = locator.values_list("pk", flat=True).first()
+    reward_identity = IgUgcReward.objects.filter(promo_code_id=located_promo_id).values(
+        "pk", "client_id", "order_id",
+    ).first() if located_promo_id is not None else None
+    if reward_identity is not None:
+        # Match the grant/upgrade/privacy fence before taking the promo lock.
+        # Moderators release Review before their on-commit uplift callback.
+        client_id = reward_identity["client_id"]
+        if client_id is None or not IgClient.objects.select_for_update().filter(pk=client_id).exists():
+            raise PromoReservationError("ugc_capability_unverified")
+        component = ReviewRewardUplift.objects.filter(reward_id=reward_identity["pk"]).first()
+        source_order_id = reward_identity["order_id"] or (
+            (component.proof_snapshot.get("source") or {}).get("order_id") if component else None
+        )
+        if source_order_id and not Order.objects.select_for_update().filter(pk=source_order_id).exists():
+            raise PromoReservationError("ugc_capability_unverified")
+        promo_id = located_promo_id
     promo, group = _lock_promo(promo_id=promo_id, code=code)
     if not promo.can_be_used():
         raise PromoReservationError("invalid")
+    # The UGC bearer capability must remain evidenced for authenticated
+    # checkout too; login cannot bypass a rejected review component.
+    issued_reward = IgUgcReward.objects.select_for_update().filter(promo_code_id=promo.pk).first()
+    if issued_reward is not None:
+        if (reward_identity is None or issued_reward.pk != reward_identity["pk"]
+                or issued_reward.client_id != reward_identity["client_id"]
+                or issued_reward.order_id != reward_identity["order_id"]):
+            raise PromoReservationError("ugc_capability_unverified")
+        component = ReviewRewardUplift.objects.filter(reward_id=issued_reward.pk).first()
+        if component is not None:
+            if not Review.objects.select_for_update().filter(pk=component.review_id).exists():
+                raise PromoReservationError("ugc_capability_unverified")
+    requires_ugc_proof = issued_reward is not None or (
+        promo.guest_redeemable and promo.discount_value == 15
+    )
+    if requires_ugc_proof and not promo.is_guest_ugc_capability():
+        raise PromoReservationError("ugc_capability_unverified")
 
     user_id = _authenticated_user_id(user)
     if user_id is None and not promo.is_guest_ugc_capability():

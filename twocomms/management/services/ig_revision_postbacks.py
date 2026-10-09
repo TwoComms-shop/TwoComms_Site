@@ -50,10 +50,13 @@ class _Rollback(Exception):
 
 def _candidate(snapshot, client_id):
     from management.services.ig_message_templates import parse_payload
+    from management.services.ig_marketing_consent import PREFIX
 
     raw = str(snapshot.get("quick_reply_payload") or snapshot.get("text") or "").strip()
     if not raw or len(raw) > 1000:
         return None
+    if str(snapshot.get("quick_reply_payload") or "").startswith(PREFIX):
+        return {"action": "marketing_consent", "order_id": 0, "payload_digest": _digest(raw)}
     parsed = parse_payload(raw)
     if not parsed or parsed.get("version") != "1":
         return None
@@ -282,8 +285,20 @@ def apply_revision_postback(
             else:
                 language = str(client.language or "uk").casefold()
                 language = language if language in {"uk", "ru", "en"} else "uk"
-                effect = _apply_parcel(client, source, candidate, language, now) if candidate["order_id"] else {}
-                outcome = {**candidate, **effect, "reply_text": _copy(candidate["action"], language), "language": language, "recorded_at": now.isoformat()}
+                if candidate["action"] == "marketing_consent":
+                    from management.services.ig_marketing_consent import handle_consent_reply
+
+                    consent = handle_consent_reply(source.message)
+                    if consent is None:
+                        raise _Rollback("postback_consent_not_handled")
+                    effect = {"consent_reason": consent.reason,
+                              "quick_replies": [{"title": button.title, "payload": button.payload}
+                                                for button in consent.quick_replies]}
+                    reply_text = consent.reply_text
+                else:
+                    effect = _apply_parcel(client, source, candidate, language, now) if candidate["order_id"] else {}
+                    reply_text = _copy(candidate["action"], language)
+                outcome = {**candidate, **effect, "reply_text": reply_text, "language": language, "recorded_at": now.isoformat()}
                 global_receipt = IgSourceActionReceipt.objects.create(
                     client=client, source_message_id=source_message_id, kind="postback",
                     source_digest=_action_source_digest(selected), payload_digest=candidate["payload_digest"],
@@ -305,7 +320,13 @@ def apply_revision_postback(
                 revision.save(update_fields=["action_receipts", "updated_at"])
             elif previous != manifest:
                 raise _Rollback("postback_manifest_changed")
-            return RevisionPostbackResult(True, True, reply_text=receipt["reply_text"], reason=candidate["action"], receipt=receipt, replayed=replayed, requires_model=requires_model)
+            from management.services.ig_message_templates import QuickReply
+
+            buttons = tuple(QuickReply(item["title"], item["payload"])
+                            for item in receipt.get("quick_replies", ()))
+            return RevisionPostbackResult(True, True, reply_text=receipt["reply_text"],
+                quick_replies=buttons, reason=candidate["action"], receipt=receipt,
+                replayed=replayed, requires_model=requires_model)
     except _Rollback as exc:
         return RevisionPostbackResult(handled=handled, reason=str(exc))
     except Exception:
