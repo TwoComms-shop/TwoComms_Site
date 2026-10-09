@@ -1,0 +1,196 @@
+TAP version 13
+# Subtest: early Meta calls survive missing inline pixel, preserving CAPI ID and custom method
+ok 1 - early Meta calls survive missing inline pixel, preserving CAPI ID and custom method
+  ---
+  duration_ms: 3.17025
+  type: 'test'
+  ...
+# Subtest: loading orchestrator twice does not disable an already active Meta bridge
+ok 2 - loading orchestrator twice does not disable an already active Meta bridge
+  ---
+  duration_ms: 0.4585
+  type: 'test'
+  ...
+# Subtest: GTM owns matching GA and Clarity without duplicate scripts, config or pageview
+ok 3 - GTM owns matching GA and Clarity without duplicate scripts, config or pageview
+  ---
+  duration_ms: 0.511833
+  type: 'test'
+  ...
+# Subtest: standalone GA initializes queue before early events and requests only one script
+ok 4 - standalone GA initializes queue before early events and requests only one script
+  ---
+  duration_ms: 0.390292
+  type: 'test'
+  ...
+# Subtest: TikTok flushes original conversion ID once without readiness polling
+ok 5 - TikTok flushes original conversion ID once without readiness polling
+  ---
+  duration_ms: 0.931125
+  type: 'test'
+  ...
+# Subtest: Instagram checkout consent denial leaves all SDKs and identifiers inactive
+ok 6 - Instagram checkout consent denial leaves all SDKs and identifiers inactive
+  ---
+  duration_ms: 0.323334
+  type: 'test'
+  ...
+# Subtest: ownership suppresses only exact destination matches
+ok 7 - ownership suppresses only exact destination matches
+  ---
+  duration_ms: 0.318292
+  type: 'test'
+  ...
+# Subtest: terminal GTM failure activates standalone destinations once, also when failure preceded loader
+ok 8 - terminal GTM failure activates standalone destinations once, also when failure preceded loader
+  ---
+  duration_ms: 0.64875
+  type: 'test'
+  ...
+# Subtest: existing inline Meta PageView is retained without a duplicate PageView
+ok 9 - existing inline Meta PageView is retained without a duplicate PageView
+  ---
+  duration_ms: 0.4505
+  type: 'test'
+  ...
+# Subtest: inline Meta queue receives early ViewContent immediately without interaction or idle callbacks
+ok 10 - inline Meta queue receives early ViewContent immediately without interaction or idle callbacks
+  ---
+  duration_ms: 0.47425
+  type: 'test'
+  ...
+# Subtest: temporary Meta handoff failure preserves queued event and retries once SDK recovers
+ok 11 - temporary Meta handoff failure preserves queued event and retries once SDK recovers
+  ---
+  duration_ms: 0.337375
+  type: 'test'
+  ...
+# Subtest: temporary TikTok handoff failure preserves conversion and retries after SDK recovers
+ok 12 - temporary TikTok handoff failure preserves conversion and retries after SDK recovers
+  ---
+  duration_ms: 0.283209
+  type: 'test'
+  ...
+# Subtest: terminal GTM failure replays all six canonical events after config, retaining values and source IDs
+ok 13 - terminal GTM failure replays all six canonical events after config, retaining values and source IDs
+  ---
+  duration_ms: 0.335708
+  type: 'test'
+  ...
+# Subtest: failed-GTM observer preserves patched push receiver, variadic arguments and return value
+ok 14 - failed-GTM observer preserves patched push receiver, variadic arguments and return value
+  ---
+  duration_ms: 0.338584
+  type: 'test'
+  ...
+# Subtest: fallback deduplicates recreated events by name and ID and skips supplemental listing handoffs
+ok 15 - fallback deduplicates recreated events by name and ID and skips supplemental listing handoffs
+  ---
+  duration_ms: 0.223042
+  type: 'test'
+  ...
+# Subtest: fallback becomes dormant if GTM recovers, without replacing the live vendor queue
+ok 16 - fallback becomes dormant if GTM recovers, without replacing the live vendor queue
+  ---
+  duration_ms: 0.21
+  type: 'test'
+  ...
+# Subtest: late GTM failure can install relay even while an independent GA script is already in flight
+ok 17 - late GTM failure can install relay even while an independent GA script is already in flight
+  ---
+  duration_ms: 0.210625
+  type: 'test'
+  ...
+# Subtest: consent denial prevents fallback from relaying buffered or future ecommerce
+ok 18 - consent denial prevents fallback from relaying buffered or future ecommerce
+  ---
+  duration_ms: 0.704583
+  type: 'test'
+  ...
+# Subtest: organic visits start GTM without interaction and loader in one second
+ok 19 - organic visits start GTM without interaction and loader in one second
+  ---
+  duration_ms: 0.961959
+  type: 'test'
+  ...
+# Subtest: paid visit and fast repeated interactions still inject each script once
+ok 20 - paid visit and fast repeated interactions still inject each script once
+  ---
+  duration_ms: 0.303375
+  type: 'test'
+  ...
+# Subtest: GTM definite failure retries once and signals fallback only on terminal failure
+ok 21 - GTM definite failure retries once and signals fallback only on terminal failure
+  ---
+  duration_ms: 0.470708
+  type: 'test'
+  ...
+# Subtest: GTM retry success clears fallback and does not reissue initialization event
+ok 22 - GTM retry success clears fallback and does not reissue initialization event
+  ---
+  duration_ms: 0.740625
+  type: 'test'
+  ...
+# Subtest: loader definite failure can recover once without duplicating GTM
+ok 23 - loader definite failure can recover once without duplicating GTM
+  ---
+  duration_ms: 0.34825
+  type: 'test'
+  ...
+# Subtest: slow scripts stay in flight without timeout reinjection
+ok 24 - slow scripts stay in flight without timeout reinjection
+  ---
+  duration_ms: 0.247875
+  type: 'test'
+  ...
+# Subtest: pages without GTM retain direct loader and an early Google event queue
+ok 25 - pages without GTM retain direct loader and an early Google event queue
+  ---
+  duration_ms: 0.288375
+  type: 'test'
+  ...
+# Subtest: reexecuting startup preserves queues and does not add timers or listeners
+ok 26 - reexecuting startup preserves queues and does not add timers or listeners
+  ---
+  duration_ms: 0.281833
+  type: 'test'
+  ...
+# Subtest: actual list and link handlers queue one GA event and retain GTM object with shared ID
+ok 27 - actual list and link handlers queue one GA event and retain GTM object with shared ID
+  ---
+  duration_ms: 1.009792
+  type: 'test'
+  ...
+# Subtest: favorite and color button clicks are not product selections
+ok 28 - favorite and color button clicks are not product selections
+  ---
+  duration_ms: 0.250375
+  type: 'test'
+  ...
+# Subtest: a repeated list initializer emits only one list impression
+ok 29 - a repeated list initializer emits only one list impression
+  ---
+  duration_ms: 0.234667
+  type: 'test'
+  ...
+# Subtest: terminal GTM failure leaves canonical entries for the loader relay
+ok 30 - terminal GTM failure leaves canonical entries for the loader relay
+  ---
+  duration_ms: 0.277541
+  type: 'test'
+  ...
+# Subtest: disabled GA or denied consent does not queue direct Google commands
+ok 31 - disabled GA or denied consent does not queue direct Google commands
+  ---
+  duration_ms: 0.59375
+  type: 'test'
+  ...
+1..31
+# tests 31
+# suites 0
+# pass 31
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 48.205708

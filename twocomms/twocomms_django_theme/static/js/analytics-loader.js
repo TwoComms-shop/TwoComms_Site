@@ -13,6 +13,10 @@
   var root = doc.documentElement;
   var GA_ID = root.getAttribute('data-ga-id');
   var CLARITY_ID = root.getAttribute('data-clarity-id');
+  // The published GTM container owns these exact destinations. Other pages
+  // retain standalone loaders; never infer ownership from gtag's existence.
+  var GTM_GA_ID = root.getAttribute('data-gtm-ga-id');
+  var GTM_CLARITY_ID = root.getAttribute('data-gtm-clarity-id');
   var PIXEL_ID = root.getAttribute('data-meta-pixel-id');
   var TIKTOK_PIXEL_ID = root.getAttribute('data-tiktok-pixel-id');
   var TIKTOK_TEST_EVENT_CODE = root.getAttribute('data-tiktok-test-event-code') || 
@@ -82,6 +86,82 @@
     return;
   }
 
+  if (win.__twcAnalyticsLoaderInitialized) return;
+  win.__twcAnalyticsLoaderInitialized = true;
+
+  // Establish the command queue before draining early storefront events.
+  // GTM configures its own destination; standalone pages configure it once
+  // before any event commands, even while gtag.js is still downloading.
+  win.dataLayer = win.dataLayer || [];
+  if (GA_ID && typeof win.gtag !== 'function') {
+    win.gtag = function () { win.dataLayer.push(arguments); };
+  }
+  function configureStandaloneGoogleAnalytics() {
+    if (!GA_ID || win.__twcGaConfigured) return;
+    win.__twcGaConfigured = true;
+    win.gtag('js', new Date());
+    win.gtag('config', GA_ID, { send_page_view: false });
+    win.gtag('event', 'page_view', {
+      page_title: doc.title,
+      page_location: win.location.href,
+    });
+  }
+
+  function installGoogleEcommerceFallback() {
+    if (!GA_ID || win.__twcGaEcommerceFallbackInstalled) return;
+    win.__twcGaEcommerceFallbackInstalled = true;
+    var layer = win.dataLayer;
+    var originalPush = layer.push;
+    var supportedEvents = {
+      view_item: true, add_to_cart: true, begin_checkout: true,
+      purchase: true, view_item_list: true, select_item: true,
+    };
+    var sent = Object.create(null);
+    var sentOrder = [];
+    var maxRememberedEvents = 256;
+
+    function relay(entry) {
+      if (win.__twcGtmFailed !== true || !entry || entry.ga_direct_sent === true
+          || !Object.prototype.hasOwnProperty.call(supportedEvents, entry.event)
+          || !entry.ecommerce || typeof entry.ecommerce !== 'object') return;
+      var eventId = entry.event_id || entry.eventModel && entry.eventModel.event_id;
+      var key = eventId ? entry.event + '\n' + String(eventId) : null;
+      if (key && sent[key]) return;
+      var parameters = Object.assign({}, entry.ecommerce);
+      if (eventId) parameters.event_id = eventId;
+      parameters.send_to = GA_ID;
+      try {
+        // Arguments commands have no .event/.ecommerce, so our push observer
+        // cannot relay its own gtag command or loop through the vendor queue.
+        win.gtag('event', entry.event, parameters);
+        entry.ga_direct_sent = true;
+        if (key) {
+          sent[key] = true;
+          sentOrder.push(key);
+          if (sentOrder.length > maxRememberedEvents) delete sent[sentOrder.shift()];
+        }
+      } catch (err) {
+        if (console && console.debug) console.debug('GA4 ecommerce fallback error', err);
+      }
+    }
+
+    // Preserve the live queue and any GTM/vendor push implementation. The
+    // observer stays dormant if GTM subsequently recovers; do not replace a
+    // vendor's newer wrapper when that happens.
+    layer.push = function () {
+      var result = originalPush.apply(this, arguments);
+      if (this === layer) {
+        for (var i = 0; i < arguments.length; i++) relay(arguments[i]);
+      }
+      return result;
+    };
+    var buffered = layer.slice();
+    for (var i = 0; i < buffered.length; i++) relay(buffered[i]);
+  }
+  if (GA_ID && (GTM_GA_ID !== GA_ID || win.__twcGtmFailed)) {
+    configureStandaloneGoogleAnalytics();
+  }
+
   function schedule(fn, timeout) {
     if (!fn) {
       return;
@@ -108,10 +188,43 @@
 
   // Event buffer to queue events before pixel loads
   win._fbqBuffer = win._fbqBuffer || [];
-  win._fbqLoaded = false;
+  // The inline snippet already owns a usable SDK queue. Early product events
+  // must use it immediately, including visitors who leave before idle work.
+  win._fbqLoaded = !!win.__fbPixelInline && typeof win.fbq === 'function';
   win._ttqBuffer = win._ttqBuffer || [];
   win._ttqLoaded = false;
   win._ttqScriptLoaded = false; // Флаг реальной загрузки скрипта TikTok
+
+  function flushMetaBuffer() {
+    if (!win._fbqLoaded || typeof win.fbq !== 'function') return;
+    var pending = win._fbqBuffer || [];
+    win._fbqBuffer = [];
+    pending.forEach(function (buffered) {
+      if (!buffered) return;
+      var method = buffered.custom ? 'trackCustom' : 'track';
+      try {
+        win.fbq(method, buffered.event, buffered.data, buffered.options);
+      } catch (err) {
+        win._fbqBuffer.push(buffered);
+        if (console && console.debug) console.debug('Meta Pixel buffered event error', err);
+      }
+    });
+  }
+
+  function flushTikTokBuffer() {
+    if (!win._ttqLoaded || !win._ttqScriptLoaded
+        || !win.ttq || typeof win.ttq.track !== 'function') return;
+    var pending = win._ttqBuffer || [];
+    win._ttqBuffer = [];
+    pending.forEach(function (buffered) {
+      try {
+        win.ttq.track(buffered.event, buffered.data);
+      } catch (err) {
+        win._ttqBuffer.push(buffered);
+        if (console && console.debug) console.debug('TikTok Pixel buffered event error', err);
+      }
+    });
+  }
 
   function getCookieValue(name) {
     if (!name || !doc || !doc.cookie) {
@@ -356,9 +469,10 @@
       // Buffer Meta Pixel events until loaded
       // Защита от блокировки: проверяем что Pixel действительно доступен
       try {
-        if (PIXEL_ID && win.fbq && typeof win.fbq === 'function') {
+        if (PIXEL_ID) {
           // Проверяем что Pixel инициализирован
-          if (win._fbqLoaded) {
+          if (win._fbqLoaded && typeof win.fbq === 'function') {
+            flushMetaBuffer();
             try {
               var metaOptions = {};
               if (eventId) {
@@ -391,18 +505,18 @@
                 win._fbqBuffer.push({ event: eventName, data: fbPayload, options: metaOptions, custom: metaTrackMethod === 'trackCustom' });
               }
             }
-        } else if (PIXEL_ID) {
+          } else {
             // Pixel еще не загружен - буферизуем
             if (!win._fbqBuffer) {
               win._fbqBuffer = [];
             }
-          win._fbqBuffer.push({ event: eventName, data: fbPayload, custom: metaTrackMethod === 'trackCustom', options: {
-            eventID: eventId ? String(eventId) : undefined,
-            external_id: externalId ? String(externalId) : undefined,
-            fbp: fbpValue ? String(fbpValue) : undefined,
-            fbc: fbcValue ? String(fbcValue) : undefined,
-            user_data: fbUserData && typeof fbUserData === 'object' ? Object.assign({}, fbUserData) : undefined
-          }});
+            win._fbqBuffer.push({ event: eventName, data: fbPayload, custom: metaTrackMethod === 'trackCustom', options: {
+              eventID: eventId ? String(eventId) : undefined,
+              external_id: externalId ? String(externalId) : undefined,
+              fbp: fbpValue ? String(fbpValue) : undefined,
+              fbc: fbcValue ? String(fbcValue) : undefined,
+              user_data: fbUserData && typeof fbUserData === 'object' ? Object.assign({}, fbUserData) : undefined
+            }});
           }
         }
       } catch (err1) {
@@ -457,6 +571,7 @@
                              win._ttqScriptLoaded; // Дополнительная проверка что скрипт загрузился
           
           if (isTikTokReady) {
+            flushTikTokBuffer();
             try {
               // Преобразуем payload в формат TikTok
               var ttqPayload = buildTikTokPayload(eventName, payload, isEcommerceEvent);
@@ -969,21 +1084,17 @@
   }
 
   function loadGoogleAnalytics() {
-    if (!GA_ID || win.__gaLoaded) {
+    if (GA_ID && win.__twcGtmFailed === true) {
+      configureStandaloneGoogleAnalytics();
+      installGoogleEcommerceFallback();
+    }
+    if (!GA_ID || win.__gaLoaded || win.__twcGaLoading
+        || (GTM_GA_ID === GA_ID && !win.__twcGtmFailed)) {
       return;
     }
+    win.__twcGaLoading = true;
+    configureStandaloneGoogleAnalytics();
     
-    // ИСПРАВЛЕНИЕ: Используем существующий dataLayer от GTM (не создаем новый)
-    // GTM уже создает dataLayer в base.html, используем его
-    win.dataLayer = win.dataLayer || [];
-    
-    // Создаем gtag функцию если её еще нет (GTM может её не создать)
-    if (!win.gtag) {
-      win.gtag = function () {
-        win.dataLayer.push(arguments);
-      };
-    }
-
     // Защита от блокировки: проверяем что скрипт действительно загрузился
     var script = doc.createElement('script');
     script.async = true;
@@ -998,26 +1109,13 @@
     
     script.onload = function () {
       clearTimeout(loadTimeout);
-      // Проверяем что gtag действительно работает
-      try {
       win.__gaLoaded = true;
-      win.gtag('js', new Date());
-      win.gtag('config', GA_ID, {
-        send_page_view: false,
-      });
-      win.gtag('event', 'page_view', {
-        page_title: doc.title,
-        page_location: win.location.href,
-      });
-      } catch (err) {
-        if (console && console.debug) {
-          console.debug('GA4 initialization error (possible blocker):', err);
-        }
-      }
+      win.__twcGaLoading = false;
     };
     
     script.onerror = function() {
       clearTimeout(loadTimeout);
+      win.__twcGaLoading = false;
       if (console && console.debug) {
         console.debug('GA4 script failed to load - possible ad blocker');
       }
@@ -1026,6 +1124,7 @@
     try {
     doc.head.appendChild(script);
     } catch (err) {
+      win.__twcGaLoading = false;
       if (console && console.debug) {
         console.debug('Failed to append GA4 script:', err);
       }
@@ -1033,7 +1132,8 @@
   }
 
   function loadClarity() {
-    if (!CLARITY_ID || win.__clarityLoaded) {
+    if (!CLARITY_ID || win.__clarityLoaded
+        || (GTM_CLARITY_ID === CLARITY_ID && !win.__twcGtmFailed)) {
       return;
     }
     
@@ -1229,29 +1329,7 @@
     
     // Mark pixel as loaded and process buffered events
     win._fbqLoaded = true;
-    if (win._fbqBuffer && win._fbqBuffer.length > 0) {
-      if (console && console.log) {
-        console.log('Meta Pixel: Processing ' + win._fbqBuffer.length + ' buffered events');
-      }
-      win._fbqBuffer.forEach(function(buffered) {
-        try {
-          if (!buffered) {
-            return;
-          }
-          var method = buffered.custom ? 'trackCustom' : 'track';
-          if (buffered && buffered.options) {
-            win.fbq(method, buffered.event, buffered.data, buffered.options);
-          } else {
-            win.fbq(method, buffered.event, buffered.data);
-          }
-        } catch (err) {
-          if (console && console.debug) {
-            console.debug('Meta Pixel buffered event error', err);
-          }
-        }
-      });
-      win._fbqBuffer = []; // Clear buffer
-    }
+    flushMetaBuffer();
   }
 
   function loadTikTokPixel() {
@@ -1331,108 +1409,13 @@
               }
             }
             
-            // Проверяем что ttq.track доступен и реально работает (не только очередь)
-            var checkReady = setInterval(function() {
-              // Проверяем что ttq существует и track это функция
-              if (w.ttq && typeof w.ttq.track === 'function') {
-                // Пробуем проверить что это не просто очередь, а реальная функция
-                var trackStr = String(w.ttq.track);
-                var isRealFunction = trackStr.indexOf('[native code]') !== -1 || 
-                                    trackStr.indexOf('function') !== -1 ||
-                                    (w.ttq.track.length !== undefined); // Если это функция, у неё есть length
-                
-                // Дополнительная проверка: проверяем что есть instance или _i (внутренние структуры TikTok)
-                var hasInternalStructures = (w.ttq._i && typeof w.ttq._i === 'object') || 
-                                           (w.ttq.instance && typeof w.ttq.instance === 'function');
-                
-                if (isRealFunction || hasInternalStructures) {
-                  clearInterval(checkReady);
-                  w._ttqLoaded = true;
-                  if (console && console.log) {
-                    console.log('[TikTok Pixel] Pixel ready, track function available');
-                  }
-                  
-                  // Обрабатываем буферизованные события
-                  if (w._ttqBuffer && w._ttqBuffer.length > 0) {
-                    if (console && console.log) {
-                      console.log('[TikTok Pixel] Processing ' + w._ttqBuffer.length + ' buffered events');
-                    }
-                    w._ttqBuffer.forEach(function(buffered) {
-                      try {
-                        if (console && console.log) {
-                          console.log('[TikTok Pixel] Sending buffered event:', buffered.event, buffered.data);
-                        }
-                        w.ttq.track(buffered.event, buffered.data);
-                      } catch (err) {
-                        if (console && console.debug) {
-                          console.debug('TikTok Pixel buffered event error', err);
-                        }
-                      }
-                    });
-                    w._ttqBuffer = []; // Clear buffer
-                  }
-                }
-              }
-              
-              // Также проверяем ready callback если доступен (более надежный способ)
-              if (w.ttq && typeof w.ttq.ready === 'function') {
-                clearInterval(checkReady);
-                w.ttq.ready(function() {
-                  w._ttqLoaded = true;
-                  if (console && console.log) {
-                    console.log('[TikTok Pixel] Pixel ready via ready callback');
-                  }
-                  
-                  // Обрабатываем буферизованные события
-                  if (w._ttqBuffer && w._ttqBuffer.length > 0) {
-                    if (console && console.log) {
-                      console.log('[TikTok Pixel] Processing ' + w._ttqBuffer.length + ' buffered events (via ready callback)');
-                    }
-                    w._ttqBuffer.forEach(function(buffered) {
-                      try {
-                        if (console && console.log) {
-                          console.log('[TikTok Pixel] Sending buffered event:', buffered.event, buffered.data);
-                        }
-                        w.ttq.track(buffered.event, buffered.data);
-                      } catch (err) {
-                        if (console && console.debug) {
-                          console.debug('TikTok Pixel buffered event error', err);
-                        }
-                      }
-                    });
-                    w._ttqBuffer = []; // Clear buffer
-                  }
-                });
-              }
-            }, 100); // Проверяем каждые 100ms (немного реже для производительности)
-            
-            // Таймаут для проверки готовности (макс 5 секунд)
-            setTimeout(function() {
-              clearInterval(checkReady);
-              if (!w._ttqLoaded) {
-                // Если через 5 секунд все еще не готово - помечаем как загруженное и пытаемся отправить события
-                w._ttqLoaded = true;
-                w._ttqScriptLoaded = true;
-                if (console && console.warn) {
-                  console.warn('[TikTok Pixel] Timeout waiting for ready state, processing events anyway');
-                }
-                
-                if (w._ttqBuffer && w._ttqBuffer.length > 0) {
-                  w._ttqBuffer.forEach(function(buffered) {
-                    try {
-                      if (w.ttq && typeof w.ttq.track === 'function') {
-                        w.ttq.track(buffered.event, buffered.data);
-                      }
-                    } catch (err) {
-                      if (console && console.debug) {
-                        console.debug('TikTok Pixel timeout event error', err);
-                      }
-                    }
-                  });
-                  w._ttqBuffer = [];
-                }
-              }
-            }, 5000);
+            // TikTok's SDK queue accepts track calls during bootstrap. Checking
+            // Function.length/String(track) cannot distinguish it from the SDK,
+            // and polling only delays the same queue. Hand events over once.
+            if (w.ttq && typeof w.ttq.track === 'function') {
+              w._ttqLoaded = true;
+              flushTikTokBuffer();
+            }
           };
           
           e=doc.getElementsByTagName("script")[0];
@@ -1485,6 +1468,18 @@
   }
 
   setupGlobalEventBridge();
+
+  // The template reports terminal GTM load failure, including failure before
+  // this file arrived. Retain standalone collection on those pages.
+  win.addEventListener('twc:gtm-failed', function () {
+    win.__twcGtmFailed = true;
+    loadGoogleAnalytics();
+    loadClarity();
+  });
+  if (win.__twcGtmFailed) {
+    loadGoogleAnalytics();
+    loadClarity();
+  }
   
   // PERF OPTIMIZATION: Defer pixel loading to improve PageSpeed TBT score
   // Pixels will be loaded on user interaction OR after idle window (whichever first).

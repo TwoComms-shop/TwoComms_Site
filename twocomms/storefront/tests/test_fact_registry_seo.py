@@ -35,10 +35,7 @@ class PublicFactRegistrySeoTests(TestCase):
                 self.assertEqual(response.status_code, 200)
                 body = response.content.decode("utf-8")
                 for marker in (
-                    "Origin city: Kharkiv",
                     "Founded: 2022",
-                    "Founder: Артем Синіло",
-                    "Founder story (external source)",
                     "Catalogue price range: approximately",
                     "Payment methods:",
                     "Production / handling time: 1–2 business days",
@@ -56,6 +53,10 @@ class PublicFactRegistrySeoTests(TestCase):
                 ):
                     self.assertNotIn(marker, body)
                 self.assertIn("custom-print/", body)
+                self.assertIn("Origin city: Kharkiv / Харків, Ukraine", body)
+                self.assertIn("Founder: Артем Синіло", body)
+                self.assertIn("Founder story (external source)", body)
+                self.assertIn("https://mva.gov.ua/", body)
 
     def test_llms_full_uses_public_product_eligibility(self):
         from storefront.models import Category, Product

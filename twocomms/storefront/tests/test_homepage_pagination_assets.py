@@ -1,10 +1,112 @@
 import re
+from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 
-from django.test import SimpleTestCase
+from django.template import Context, Template
+from django.test import RequestFactory, SimpleTestCase, override_settings
+
+
+class ButtonMarkupAudit(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.button_depth = 0
+        self.non_phrasing_children = []
+
+    def handle_starttag(self, tag, attrs):
+        if self.button_depth and tag in {"div", "p", "section", "article", "h1", "h2", "h3"}:
+            self.non_phrasing_children.append(tag)
+        if tag == "button":
+            self.button_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag == "button":
+            self.button_depth -= 1
 
 
 class HomepagePaginationCssTests(SimpleTestCase):
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+        "fragments": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+    })
+    def test_home_below_fold_product_images_are_lazy_and_listing_eager_is_supported(self):
+        theme_root = Path(__file__).resolve().parents[2] / "twocomms_django_theme"
+        template = (theme_root / "templates" / "pages" / "index.html").read_text(encoding="utf-8")
+        product_loop = re.search(r"{% for p in products %}([\s\S]*?){% endfor %}", template)
+        self.assertIsNotNone(product_loop)
+
+        class Images(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.images = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "img":
+                    self.images.append(dict(attrs))
+
+        # Render the actual homepage loop, covering preferred, fallback and
+        # placeholder images without creating a database or querying taxonomy.
+        products = [SimpleNamespace(
+            pk=index, id=index, slug=f"test-product-{index}", title=f"Product {index}",
+            final_price=500, category=SimpleNamespace(name="T-shirts"),
+            preferred_card_image_url="/media/test-preferred.jpg" if index == 1 else "",
+            homepage_image=SimpleNamespace(url="/media/test-home.jpg") if index == 2 else None,
+        ) for index in range(1, 4)]
+        request = SimpleNamespace(_brigade_card_ids=set())
+        rendered = Template("{% load cache i18n %}" + product_loop.group(0)).render(
+            Context({"products": products, "request": request, "LANGUAGE_CODE": "uk"})
+        )
+        parsed = Images()
+        parsed.feed(rendered)
+        self.assertEqual(len(parsed.images), 3)
+        self.assertTrue(all(image.get("loading") == "lazy" for image in parsed.images))
+        self.assertTrue(all(image.get("width") == "1080" for image in parsed.images))
+        self.assertIn("home-product-media-link", rendered)
+        self.assertIn("product_card_home_v6_lazy_below_fold", product_loop.group(0))
+
+        eager = Template('{% include "partials/product_card.html" with p=p home_card=True eager=True %}').render(
+            Context({"p": products[0], "request": request})
+        )
+        parsed = Images()
+        parsed.feed(eager)
+        self.assertEqual(len(parsed.images), 1)
+        self.assertEqual(parsed.images[0].get("loading"), "eager")
+
+        for markup in (rendered, eager):
+            buttons = ButtonMarkupAudit()
+            buttons.feed(markup)
+            self.assertEqual(buttons.non_phrasing_children, [])
+
+    @override_settings(CACHES={
+        "default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+        "fragments": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+    })
+    def test_header_and_category_buttons_render_phrasing_content(self):
+        request = RequestFactory().get("/")
+        request.session = {}
+        for authenticated in (False, True):
+            request.user = SimpleNamespace(is_authenticated=authenticated, is_staff=False)
+            rendered = Template('{% include "partials/header.html" %}').render(Context({
+                "request": request, "LANGUAGE_CODE": "uk",
+            }))
+            buttons = ButtonMarkupAudit()
+            buttons.feed(rendered)
+            self.assertEqual(buttons.non_phrasing_children, [])
+            self.assertIn('class="cart-icon-wrapper"', rendered)
+            self.assertIn('class="avatar-wrapper" style="display: block;"', rendered)
+            self.assertIn('id="cart-count"', rendered)
+            self.assertIn('id="mini-cart-panel"', rendered)
+
+        theme_root = Path(__file__).resolve().parents[2] / "twocomms_django_theme"
+        template = (theme_root / "templates" / "pages" / "index.html").read_text(encoding="utf-8")
+        category_toggle = re.search(r'<button[^>]*id="categoriesToggle"[\s\S]*?</button>', template)
+        self.assertIsNotNone(category_toggle)
+        rendered = Template("{% load i18n %}" + category_toggle.group(0)).render(Context())
+        buttons = ButtonMarkupAudit()
+        buttons.feed(rendered)
+        self.assertEqual(buttons.non_phrasing_children, [])
+        self.assertIn('class="toggle-icon"', rendered)
+
     def test_home_pagination_has_single_mobile_safe_base_ruleset(self):
         css_path = (
             Path(__file__).resolve().parents[2]
@@ -240,12 +342,26 @@ class HomepagePaginationCssTests(SimpleTestCase):
         base_template = (theme_root / "templates" / "base.html").read_text(encoding="utf-8")
 
         dynamic_version = re.search(r"homepage\.js\?v=([\w-]+)", main_js)
-        preload_version = re.search(r"homepage\.js' %\}\?v=([\w-]+)", base_template)
+        preload_version = re.search(r'homepage\.js\?v=([\w-]+)"', base_template)
 
         self.assertIsNotNone(dynamic_version)
         self.assertIsNotNone(preload_version)
         self.assertEqual(dynamic_version.group(1), preload_version.group(1))
         self.assertEqual(dynamic_version.group(1), "20260718-home-perf")
+
+    def test_module_preloads_match_import_urls_including_unhashed_paths(self):
+        theme_root = Path(__file__).resolve().parents[2] / "twocomms_django_theme"
+        main_js = (theme_root / "static" / "js" / "main.js").read_text(encoding="utf-8")
+        base_template = (theme_root / "templates" / "base.html").read_text(encoding="utf-8")
+        imports = set(re.findall(r"(?:from\s+|import\()['\"]\./(modules/[^'\"]+)['\"]", main_js))
+        preloads = re.findall(r'<link rel="modulepreload" href="([^\"]+)"', base_template)
+        self.assertTrue(preloads)
+        for preload in preloads:
+            self.assertTrue(preload.startswith("{{ static_prefix }}js/"), preload)
+            # Hashed static URLs are separate module identities from the
+            # literal relative imports used by the served main.js file.
+            target = preload.removeprefix("{{ static_prefix }}js/")
+            self.assertIn(target, imports)
 
     def test_home_pagination_has_ellipsis_style(self):
         css_path = (

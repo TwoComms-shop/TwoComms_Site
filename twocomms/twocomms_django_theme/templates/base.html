@@ -6,11 +6,13 @@
 {% load image_optimization %}
 {% load inline_assets %}
 {% load i18n_links %}
+{% get_static_prefix as static_prefix %}
 {% html_lang_for LANGUAGE_CODE as html_lang_attr %}
 <!DOCTYPE html>
-<html lang='{{ html_lang_attr }}' data-bs-theme='dark' data-route-name="{{ request.resolver_match.url_name|default:'' }}" data-page-shell="{% if request.resolver_match.url_name == 'about' %}marketing{% else %}commerce{% endif %}" data-analytics-mode="{% if request.resolver_match.url_name == 'about' %}passive{% else %}default{% endif %}" {% if not debug %}data-ga-id="G-109EFTWM05" data-clarity-id="t7u94cvpqc"
-  data-meta-pixel-id="{{ META_PIXEL_ID }}" {% endif %}
-  data-tiktok-pixel-id="{% if TIKTOK_PIXEL_ID %}{{ TIKTOK_PIXEL_ID }}{% else %}D43L7DBC77UA61AHLTVG{% endif %}"{% if TIKTOK_TEST_EVENT_CODE %} data-tiktok-test-event-code="{{ TIKTOK_TEST_EVENT_CODE }}"{% endif %}>
+<html lang='{{ html_lang_attr }}' data-bs-theme='dark' data-route-name="{{ request.resolver_match.url_name|default:'' }}" data-page-shell="{% if request.resolver_match.url_name == 'about' %}marketing{% else %}commerce{% endif %}" data-analytics-mode="{% if request.resolver_match.url_name == 'about' %}passive{% else %}default{% endif %}" {% if analytics_enabled %}data-ga-id="G-109EFTWM05" data-clarity-id="t7u94cvpqc"
+  data-gtm-id="GTM-PRLLBF9H" data-gtm-ga-id="G-109EFTWM05" data-gtm-clarity-id="t7u94cvpqc"
+  data-meta-pixel-id="{{ META_PIXEL_ID }}"
+  data-tiktok-pixel-id="{% if TIKTOK_PIXEL_ID %}{{ TIKTOK_PIXEL_ID }}{% else %}D43L7DBC77UA61AHLTVG{% endif %}"{% if TIKTOK_TEST_EVENT_CODE %} data-tiktok-test-event-code="{{ TIKTOK_TEST_EVENT_CODE }}"{% endif %}{% endif %}>
 
 <head>
   <meta charset='utf-8'>
@@ -244,14 +246,9 @@
   <meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
 
   {% comment %}
-  Phase 17n (2026-05-13) — REGIONAL SEO SIGNALS. Three complementary
-  meta tags tell crawlers (Google, Bing, Yandex) that every page on the
-  domain targets the Ukrainian market, regardless of language:
+  Phase 17n (2026-05-13) — REGIONAL SEO SIGNALS. Location hints accompany reciprocal hreflang for the Ukrainian market:
 
-  • ``http-equiv="content-language"`` mirrors the HTML ``lang`` regional
-    code so legacy crawlers without BCP-47 parsing still receive a
-    region hint. Modern Google relies on ``hreflang`` instead, but Bing
-    still honours this tag.
+  The document language uses the standard HTML lang attribute.
   • ``geo.region`` (ISO 3166-2 ``UA`` for Ukraine country code, no
     sub-region) and ``geo.placename`` ("Ukraine") are legacy Dublin
     Core / "geo tag" attributes. Yandex and some specialised crawlers
@@ -262,7 +259,6 @@
     service point at those coordinates. A country/placename hint is retained
     without asserting a precise address.
   {% endcomment %}
-  <meta http-equiv="content-language" content="{{ html_lang_attr }}">
   <meta name="geo.region" content="UA-63">
   <meta name="geo.placename" content="Kharkiv, Ukraine">
 
@@ -287,7 +283,7 @@
   <!-- Preconnects для аналитики: TCP+TLS handshake параллельно с парсингом
        HTML, чтобы когда interaction-триггер запустит GTM/Pixel/Clarity/TikTok,
        соединение уже было готово (экономия 150–350 ms на late-load). -->
-  {% if not debug %}
+  {% if analytics_enabled %}
   {% if request.resolver_match.url_name != 'home' and request.resolver_match.url_name != 'about' %}
   <link rel="preconnect" href="https://www.googletagmanager.com" crossorigin>
   <link rel="preconnect" href="https://connect.facebook.net" crossorigin>
@@ -326,7 +322,7 @@
   </script>
   {% endif %}
 
-  {% if not debug %}
+  {% if analytics_enabled %}
   <!-- Ahrefs Web Analytics: defer to interaction/quiet window, same as other non-critical analytics. -->
   <script {% csp_nonce_attr %}>
     (function () {
@@ -1028,151 +1024,11 @@
       w.trackEvent = stub;
     })(window);
   </script>
-  <!-- Google Tag Manager - AGGRESSIVE deferred loading for PageSpeed -->
-  {% if not debug %}
-  <script {% csp_nonce_attr %}>
-    // Initialize dataLayer immediately for event buffering
-    window.dataLayer = window.dataLayer || [];
-    // Defer GTM load until user interaction OR long timeout
-    (function() {
-      var gtmLoaded = false;
-      var docEl = document.documentElement;
-      var deviceClass = (docEl.getAttribute('data-device-class') || '').toLowerCase();
-      var routeName = (docEl.getAttribute('data-route-name') || '').toLowerCase();
-      var analyticsMode = (docEl.getAttribute('data-analytics-mode') || '').toLowerCase();
-      var isPassiveAnalytics = analyticsMode === 'passive';
-      var interactionEvents = routeName === 'home'
-        ? ['click', 'pointerdown', 'keydown']
-        : (isPassiveAnalytics
-          ? ['click', 'pointerdown', 'keydown']
-          : ['scroll', 'click', 'touchstart', 'pointerdown', 'keydown']);
-      {% comment %}
-      Phase 22e (2026-05-13) — bumped home GTM timeout from 20s/15s/12s
-      to 35s/30s/25s so a typical Lighthouse mobile audit window
-      (30-60 s, slow-4G simulated) does NOT fire the timeout fallback.
-      Real users almost always interact within 1-3 s (scroll/click),
-      so the fallback only matters for bots and idle long-read
-      sessions where missing analytics is acceptable. Other routes
-      retain their slightly shorter fallback to capture organic
-      bounces (about/blog/product detail).
-      
-      Phase 22b context: original gap was Lighthouse triggering GTM
-      + kingsideaconnections.org RTB partner tag inside the audit
-      window, adding 3.6 s to the critical chain. With 30 s+ timeout
-      on home the fallback simply cannot fire before LH wraps up.
-      {% endcomment %}
-      var gtmTimeout = isPassiveAnalytics
-        ? (deviceClass === 'low' ? 18000 : 12000)
-        : (routeName === 'home'
-          ? (deviceClass === 'low' ? 35000 : (deviceClass === 'mid' ? 30000 : 25000))
-          : (deviceClass === 'low' ? 9000 : (deviceClass === 'mid' ? 6000 : 4000)));
-      
-      function loadGTM() {
-        if (gtmLoaded) return;
-        gtmLoaded = true;
-        // Remove interaction listeners
-        interactionEvents.forEach(function(evt) {
-          window.removeEventListener(evt, loadGTM, {passive: true, capture: true});
-        });
-        
-        var w = window, d = document, l = 'dataLayer', i = 'GTM-PRLLBF9H';
-        w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
-        var f = d.getElementsByTagName('script')[0],
-          j = d.createElement('script'),
-          dl = l != 'dataLayer' ? '&l=' + l : '';
-        j.async = true;
-        j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
-        j.onerror = function () {
-          if (console && console.debug) console.debug('GTM script failed to load - possible ad blocker');
-        };
-        if (f && f.parentNode) {
-          f.parentNode.insertBefore(j, f);
-        } else {
-          (d.head || d.getElementsByTagName('head')[0]).appendChild(j);
-        }
-      }
-      
-      // W2-5 (CRO-004/AN-002): fast-path для платного трафика.
-      // Если в URL есть click-id или utm-метки — грузим GTM СРАЗУ:
-      // иначе paid-bounce (ушёл до interaction/таймаута) невидим в
-      // аналитике, а _fbc-кука не успевает создаться из fbclid.
-      // PageSpeed не страдает: Lighthouse не ходит с ?utm_/fbclid.
-      var isPaidLanding = /[?&](gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign)=/i.test(window.location.search);
-      if (isPaidLanding) {
-        loadGTM();
-        return;
-      }
-
-      // Load on first user interaction (scroll, click, touch, etc.)
-      interactionEvents.forEach(function(evt) {
-        window.addEventListener(evt, loadGTM, {passive: true, capture: true, once: true});
-      });
-      
-      // Fallback: weaker devices get a longer quiet window before GTM startup.
-      setTimeout(loadGTM, gtmTimeout);
-    })();
-  </script>
-  {% endif %}
-  <!-- End Google Tag Manager -->
-
-  {% comment %}
-  Phase 22e (2026-05-13) — analytics-loader.js (~55 KB) теперь грузится
-  ТОЛЬКО на первом user interaction (scroll/click/keydown/pointerdown).
-  
-  Background: Phase 19b использовала requestIdleCallback(timeout=4000),
-  что в Lighthouse mobile audit гарантированно срабатывало внутри окна
-  замеров (audit длится 30-60 c). Это давало 281 ms CPU только на парс
-  loader-а + 800 ms на загрузку Pixel/TikTok/Clarity внутри него +
-  выполнение GTM tags на дочерних запросах. Lighthouse trace
-  фиксировал ~1.3 s на JS execution и ~3.6 s blocking main thread.
-  
-  Phase 22e gating: реальные пользователи делают первый interaction
-  в первые 1-3 с (scroll/click) — для них tracking подключается
-  моментально, разница незаметна. Lighthouse и SEO боты НЕ делают
-  interaction — для них analytics просто не подключается в окне
-  замера, что даёт «честный» CPU/TBT профиль страницы.
-  
-  Fallback setTimeout=25000 ms гарантирует подключение трекинга на
-  long-read сессиях где юзер действительно ничего не делает 25 c —
-  такие сессии редки и не критичны для маркетинга.
-  
-  Phase 19b preload удалён (не нужен — мы больше не догружаем файл
-  во время критического окна, поэтому удержание в HTTP-кэше через
-  preload только тратит bandwidth на Lighthouse-like ботах).
-  {% endcomment %}
-  <script {% csp_nonce_attr %}>
-    (function () {
-      var src = "{% static 'js/analytics-loader.js' %}?v=13";
-      var loaded = false;
-      function inject() {
-        if (loaded) return;
-        loaded = true;
-        interactionEvents.forEach(function (evt) {
-          window.removeEventListener(evt, inject, { passive: true, capture: true });
-        });
-        var s = document.createElement('script');
-        s.src = src;
-        s.async = true;
-        s.fetchPriority = 'low';
-        (document.head || document.documentElement).appendChild(s);
-      }
-      var interactionEvents = ['scroll', 'click', 'touchstart', 'pointerdown', 'keydown'];
-      // W2-5 (CRO-004/AN-002): fast-path для платного трафика — Pixel/TikTok
-      // должны инициализироваться сразу, чтобы _fbc/_ttclid куки создались
-      // из click-id даже при мгновенном bounce.
-      if (/[?&](gclid|fbclid|ttclid|wbraid|gbraid|msclkid|utm_source|utm_medium|utm_campaign)=/i.test(window.location.search)) {
-        inject();
-        return;
-      }
-      interactionEvents.forEach(function (evt) {
-        window.addEventListener(evt, inject, { passive: true, capture: true, once: true });
-      });
-      // Long fallback: only fires on idle/long-read sessions without any
-      // interaction. Crawlers and Lighthouse never trigger this — exactly
-      // what we want to keep their CPU profile clean.
-      setTimeout(inject, 25000);
-    })();
-  </script>
+  {% comment %}GTM owns the matching GA4/Clarity IDs above. The small startup
+  script measures passive visits too and retries definite network failures;
+  commerce calls stay buffered by trackEvent until the full loader is ready.{% endcomment %}
+  <script defer src="{% static 'js/analytics-startup.js' %}?v=20261009-startup-v1"
+    data-loader-src="{% static 'js/analytics-loader.js' %}?v=20261009-analytics-v14"></script>
   {% comment %}
   RUM beacon — Core Web Vitals на реальных устройствах. defer, 0 зависимостей,
   отправка единственным sendBeacon() на visibilitychange=hidden / pagehide.
@@ -1210,8 +1066,10 @@
   <!-- Analytics preconnects moved to <head> (2026-04-20) — TCP/TLS handshake
        параллельно с HTML parse, not blocking paint. -->
   <!-- Google Tag Manager (noscript) -->
-  <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-PRLLBF9H" height="0" width="0"
+  {% if analytics_enabled %}
+  <noscript><iframe title="Google Tag Manager" src="https://www.googletagmanager.com/ns.html?id=GTM-PRLLBF9H" height="0" width="0"
       style="display:none;visibility:hidden"></iframe></noscript>
+  {% endif %}
   <!-- End Google Tag Manager (noscript) -->
 
   {% comment %}
@@ -1230,7 +1088,7 @@
     data-ct="{{ user_profile.city|default:''|escapejs }}" style="display:none"></div>
   {% endwith %}
   {% else %}
-  {% if not debug %}
+  {% if analytics_enabled %}
   {% with "109EFTWM05" as ga_id %}
   {% with "t7u94cvpqc" as clarity_id %}
   <div id="am" data-ga-id="{{ ga_id }}" data-clarity-id="{{ clarity_id }}" data-meta-pixel-id="{{ META_PIXEL_ID }}"
@@ -1374,15 +1232,15 @@
   finished parsing. With targeted modulepreload they fetch in parallel
   with main.js, cutting ~3 s off the critical chain on mobile.
   {% endcomment %}
-  <link rel="modulepreload" href="{% static 'js/modules/shared.js' %}" crossorigin="anonymous">
-  <link rel="modulepreload" href="{% static 'js/modules/optimizers.js' %}" crossorigin="anonymous">
+  <link rel="modulepreload" href="{{ static_prefix }}js/modules/shared.js" crossorigin="anonymous">
+  <link rel="modulepreload" href="{{ static_prefix }}js/modules/optimizers.js" crossorigin="anonymous">
   {% if request.resolver_match.url_name == 'home' %}
-  <link rel="modulepreload" href="{% static 'js/modules/product-media.js' %}?v=20260715-fable5-v1" crossorigin="anonymous">
-  <link rel="modulepreload" href="{% static 'js/modules/homepage.js' %}?v=20260718-home-perf" crossorigin="anonymous">
+  <link rel="modulepreload" href="{{ static_prefix }}js/modules/product-media.js?v=20260715-product_catalog-v1" crossorigin="anonymous">
+  <link rel="modulepreload" href="{{ static_prefix }}js/modules/homepage.js?v=20260718-home-perf" crossorigin="anonymous">
   {% elif request.resolver_match.url_name == 'product_detail' %}
-  <link rel="modulepreload" href="{% static 'js/modules/product-media.js' %}?v=20260715-fable5-v1" crossorigin="anonymous">
+  <link rel="modulepreload" href="{{ static_prefix }}js/modules/product-media.js?v=20260715-product_catalog-v1" crossorigin="anonymous">
   {% endif %}
-  <script type="module" src="{% static 'js/main.js' %}?v=20260930-bundles-v2" onload="this.classList.add('script-loaded')"
+  <script type="module" src="{% static 'js/main.js' %}?v=20261009-list-events-v3" onload="this.classList.add('script-loaded')"
     onerror="this.classList.add('script-error')" crossorigin="anonymous"></script>
   <script defer src="{% static 'js/mobile-shell.js' %}?v=20260809-shell-stability"></script>
 

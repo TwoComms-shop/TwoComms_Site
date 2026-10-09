@@ -1,6 +1,6 @@
 {% load static %}
 <!doctype html>
-<html lang="{{ html_lang }}" data-checkout-state="{{ checkout_state }}" data-proposal-revision="{{ proposal.revision }}" data-route-name="ig_checkout_proposal" data-page-shell="commerce" data-analytics-mode="default" data-meta-pixel-id="{{ META_PIXEL_ID|default:'' }}" data-tiktok-pixel-id="{{ TIKTOK_PIXEL_ID|default:'' }}" data-view-content-event-id="{{ analytics.view_content_event_id }}" data-initiate-checkout-event-id="{{ analytics.initiate_checkout_event_id }}" data-purchase-event-id="{{ analytics.purchase_event_id }}"{% if form_error_field %} data-form-error-field="{{ form_error_field }}"{% endif %}>
+<html lang="{{ html_lang }}" data-checkout-state="{{ checkout_state }}" data-proposal-revision="{{ proposal.revision }}" data-route-name="ig_checkout_proposal" data-page-shell="commerce" data-analytics-mode="default" data-meta-pixel-id="{% if analytics_enabled %}{{ META_PIXEL_ID|default:'' }}{% endif %}" data-tiktok-pixel-id="{% if analytics_enabled %}{{ TIKTOK_PIXEL_ID|default:'' }}{% endif %}" data-view-content-event-id="{{ analytics.view_content_event_id }}" data-initiate-checkout-event-id="{{ analytics.initiate_checkout_event_id }}" data-purchase-event-id="{{ analytics.purchase_event_id }}"{% if form_error_field %} data-form-error-field="{{ form_error_field }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -352,7 +352,7 @@
   </main>
 
   <script type="module" src="{% static 'js/modules/nova-poshta-form-bridge.js' %}?v=20260801c3"></script>
-  <script defer src="{% static 'js/analytics-loader.js' %}?v=12"></script>
+  <script defer src="{% static 'js/analytics-loader.js' %}?v=20261009-analytics-v14"></script>
   <script defer src="{% static 'js/instagram-checkout.js' %}?v=20260801c3"></script>
 </body>
 </html>

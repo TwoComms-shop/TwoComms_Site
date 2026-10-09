@@ -98,6 +98,9 @@ def analytics_settings(request):
     )
 
     return {
+        # The optional Django debug context processor is not installed here.
+        # Use an explicit flag so development traffic cannot hit live tags.
+        'analytics_enabled': not settings.DEBUG,
         'TIKTOK_PIXEL_ID': tiktok_pixel_id,
         'TIKTOK_TEST_EVENT_CODE': tiktok_test_event_code,
         'META_PIXEL_ID': getattr(settings, 'META_PIXEL_ID', ''),

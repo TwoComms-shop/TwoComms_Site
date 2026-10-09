@@ -17355,3 +17355,120 @@ msgstr "Payment is being processed. We will notify you as soon as it is confirme
 #: twocomms_django_theme/templates/partials/catalog_smart_selector.html:255
 msgid "Зміни застосовуються миттєво"
 msgstr "Changes apply instantly"
+
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Оберіть формат для команди або бренду, вкажіть кількість, розміри та контакт. Конфігуратор враховує вибрані параметри й доступні умови для партії; менеджер підтвердить макет, комплектацію, фінальну ціну та дедлайн."
+msgstr "Choose the team or brand format and provide quantities, sizes and contact details. The configurator considers your selections and available batch terms; a manager confirms the artwork, specifications, final price and deadline."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Для виробу з нашою основою розрахунок складається з вартості одягу, вибраного друку та додаткових опцій. Для свого одягу потрібен окремий прорахунок менеджера. Підсумок у конфігураторі є попереднім: фінальну ціну підтверджуємо після перевірки основи й макета."
+msgstr "For an item using our garment base, the estimate includes the garment, selected print and extras. Printing on your own garment requires a separate manager estimate. The configurator total is preliminary: we confirm the final price after checking the garment and artwork."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Строк виготовлення погоджуємо після перевірки макета, вибору основи та уточнення тиражу. Якщо замовлення потрібне до певної події, вкажіть дату у брифі — менеджер перевірить можливість виконання. Строк перевезення залежить від перевізника й маршруту."
+msgstr "We agree on production timing after checking the artwork, garment base and quantity. If you need the order for an event, include its date in the brief so a manager can check feasibility. Transit time depends on the carrier and route."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "DTF (Direct-to-Film) — спосіб нанесення зображення: макет друкують на спеціальній плівці, а потім переносять на тканину термопресом. Для замовлення оберіть основу, зони та розміри друку; сумісність матеріалу й підготовку макета перевірить менеджер."
+msgstr "DTF (Direct-to-Film) applies an image by printing it on a special film and transferring it to fabric with a heat press. Select the garment base, print areas and dimensions; a manager checks material compatibility and artwork preparation."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Так, заявку можна оформити онлайн з будь-якого міста України. Спосіб відправлення й умови погоджуємо для конкретного замовлення. Строк доставки Новою Поштою залежить від маршруту та поточної роботи перевізника."
+msgstr "Yes, you can submit an online request from any city in Ukraine. We agree on shipping arrangements for the specific order. Nova Poshta transit time depends on the route and current carrier operations."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Оберіть доступні основу, посадку, тканину та колір у конфігураторі. Склад і щільність уточнюємо за специфікацією вибраної основи; параметри однієї моделі не поширюються автоматично на інші. Для свого одягу додайте опис матеріалу й фото."
+msgstr "Choose an available garment base, fit, fabric and colour in the configurator. Composition and weight depend on the selected base specifications; one model’s details do not automatically apply to others. For your own garment, include material details and a photo."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Дотримуйтеся інструкцій на ярлику вибраного виробу та рекомендацій для погодженого друку. Якщо ярлик відсутній або матеріал незнайомий, уточніть догляд у менеджера перед пранням. Стійкість принта залежить від основи, нанесення й догляду."
+msgstr "Follow the care label for your selected garment and the guidance for the agreed print. If the label is missing or the material is unfamiliar, ask a manager before washing. Print durability depends on the garment, application and care."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Так. Опишіть проєкт, кількість виробів, потрібні розміри та дату події. Менеджер перевірить доступні основи й погодить вартість та умови конкретної партії."
+msgstr "Yes. Describe your project, quantities, sizes and event date. A manager checks available garment bases and agrees on pricing and terms for your batch."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Вкажіть побажання до упаковки, листівки чи маркування у брифі. Менеджер уточнить, що можна виконати для вашої партії, і погодить комплектацію та вартість до підтвердження замовлення."
+msgstr "Include packaging, card or labelling requests in your brief. A manager checks what is possible for your batch and agrees on the contents and cost before confirming the order."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Кастомний DTF-друк: виріб і принт під ваше завдання"
+msgstr "Custom DTF printing: a garment and print for your project"
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "У конфігураторі можна зібрати футболку, худі або лонгслів із власним зображенням: обрати основу, посадку, тканину, колір, зони й розмір друку. Для друку на своєму одязі додайте опис речі та матеріалу — менеджер окремо перевірить сумісність і прорахує роботу."
+msgstr "Build a T-shirt, hoodie or long sleeve with your artwork by selecting the garment base, fit, fabric, colour, print areas and size. For printing on your own clothing, describe the item and material so a manager can check compatibility and estimate the work separately."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Як формується вартість"
+msgstr "How pricing works"
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Конфігуратор показує попередній розрахунок за вибраною основою, друком і додатковими опціями. Вартість готового виробу з принтом та друку на своєму одязі — різні сценарії. Фінальні параметри й ціну менеджер підтверджує після перевірки файлів; умови партії залежать від формату та кількості в конфігураторі."
+msgstr "The configurator estimates the selected garment, print and extras. A complete garment with a print and printing on your own clothing are separate options. A manager confirms specifications and price after checking the files; batch terms depend on the format and quantity selected in the configurator."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Технологія DTF і перевірка матеріалу"
+msgstr "DTF technology and material checks"
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "DTF-друк переносить зображення зі спеціальної плівки на тканину за допомогою термопреса. Перед виконанням важливо перевірити не лише файл, а й сумісність конкретного матеріалу з нанесенням. Для свого виробу повідомте склад, колір і особливості тканини, якщо вони відомі."
+msgstr "DTF printing transfers an image from special film to fabric with a heat press. Before production, both the artwork and the specific material’s compatibility need checking. For your own garment, provide its composition, colour and fabric details if known."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Розмір і зони друку обирайте під свій макет; фінальне розташування перевірить менеджер."
+msgstr "Choose print dimensions and areas to suit your artwork; a manager checks the final placement."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Склад і щільність тканини уточнюйте за специфікацією вибраної основи."
+msgstr "Check fabric composition and weight against the selected garment specifications."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Догляд узгоджуйте з ярликом виробу та рекомендаціями для погодженого друку."
+msgstr "Follow the garment care label and the guidance for the agreed print."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "один виріб із власним зображенням, написом або ідеєю. Оберіть подарунковий сценарій окремо від упаковки; побажання до пакування додайте в конфігурацію."
+msgstr "a single item with your image, message or idea. Choose the gift purpose separately from packaging, and include packaging requests in the configuration."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Для команд, організацій і бригад"
+msgstr "For teams, organisations and brigades"
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "мерч для спільноти, підрозділу, спортивної команди чи події. Вкажіть кількість, розміри та бажану дату — менеджер погодить основу, макети й умови партії."
+msgstr "merchandise for a community, unit, sports team or event. Provide quantities, sizes and the desired date so a manager can agree on garment bases, artwork and batch terms."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Для брендів і дропшиперів"
+msgstr "For brands and dropshippers"
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "опишіть колекцію або замовлення клієнта, побажання до маркування та упаковки. Можливості виконання, комплектацію й ціну погоджуємо для конкретного замовлення."
+msgstr "describe your collection or customer order, including labelling and packaging requests. We agree on feasibility, specifications and price for the specific order."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "додайте опис ініціативи, тираж і потрібний строк. Менеджер допоможе уточнити доступні варіанти й погодити умови."
+msgstr "include your initiative, quantity and required date. A manager helps clarify available options and agree on the terms."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Додайте файл у конфігуратор і вкажіть бажані розміри та зони друку. Зображення має бути чітким у розмірі нанесення; для макета без фону збережіть прозорість. Менеджер перевірить файл і підкаже, чи потрібна підготовка перед друком."
+msgstr "Upload the file and specify print dimensions and areas. The image should be sharp at its intended print size; preserve transparency for artwork without a background. A manager checks the file and advises whether preparation is needed."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Якщо готового макета немає, опишіть ідею в брифі й додайте референси. Оберіть потрібний сценарій роботи з файлом; обсяг підготовки, вартість і строк погодить менеджер."
+msgstr "If you do not have finished artwork, describe your idea and add references. Choose the appropriate file preparation option; a manager agrees on the work, cost and timing."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Строки виготовлення та доставки"
+msgstr "Production and delivery timing"
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Дату виготовлення погоджуємо після перевірки макета, основи та тиражу. Якщо потрібен мерч до події або подарунок до певної дати, вкажіть це у брифі. Час перевезення залежить від перевізника й маршруту та рахується окремо від виготовлення."
+msgstr "We agree on production timing after checking the artwork, garment and quantity. Include any event or gift deadline in your brief. Transit time depends on the carrier and route and is separate from production."
+
+#: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
+msgid "Кастомний друк на футболках, худі та лонгслівах"
+msgstr "Custom printing on T-shirts, hoodies and long sleeves"

@@ -1,0 +1,17 @@
+Clean baseline HEAD8ba5a5cb95c89eeea9dd362ada7795c9bf3109e1. No source modifications.
+Requested baseline IG checkout + UTM batch:60 tests;5 errors;0 failures;3.172s. Temporary DB destroyed.
+
+1. test_post_blocks_catalog_drift_before_provider_call
+CheckoutConfigurationError(checkout_episode_scope_changed) at management/services/ig_checkout.py898 while building proposal, before any browser/provider request.
+Probe: current episode_id1 bound deal_id1; test passes new deal_id2. setUp already binds self.deal through ensure_episode_for_deal. Fixture does not establish a scope for second deal. Correct current authority rejects cross-episode deal. Stale fixture; intended catalog drift gate unexercised by this test.
+
+2. test_cod_order_gets_full_utm_attribution
+3. test_cod_order_rebuilds_utm_session_from_first_touch_cookie
+4. test_cod_order_tracking_context_with_fbclid_synthesis
+5. test_cod_order_utm_fallback_from_session_data
+Each errors Order.DoesNotExist after unconditionally expecting order creation from pay_type=cod. Actual POST302 Location/cart/ with message Оплата при отриманні недоступна. Оберіть повну онлайн-оплату або передплату. checkout.py207–212 intentionally rejects COD; existing test_checkout.CreateOrderTests.test_create_order_rejects_cod_without_creating_order verifies this contract.
+Stale COD fixtures; no attribution defect established because rejected requests never create orders or enter link_order_to_utm.
+
+Additional diagnostic probe of exact5 tests:5 errors reproduced in0.215s. Monkeypatch logging only responses and local synthetic episode IDs; no source edits, no provider/browser/prod operations. Probe log baseline-analytics-probe.log.
+
+Acceptance boundary: patch introduced no additional errors in these suites. Baseline suite is not100%green, and these5 tests do not verify current successful-payment attribution or catalog-drift protection; revised contract-aligned fixtures needed separately before asserting those specific behaviors from these tests.

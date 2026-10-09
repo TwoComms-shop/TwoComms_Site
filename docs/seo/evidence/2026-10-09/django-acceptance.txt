@@ -1,0 +1,11 @@
+Creating test database for alias 'default'...
+/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/seo-ai-performance/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+..........................................................................
+----------------------------------------------------------------------
+Ran 74 tests in 0.632s
+
+OK
+Destroying test database for alias 'default'...
+Found 74 test(s).
+System check identified no issues (0 silenced).

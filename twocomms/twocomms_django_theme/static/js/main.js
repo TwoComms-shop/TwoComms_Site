@@ -2237,12 +2237,37 @@ document.addEventListener('change', function (e) {
   }
 });
 
+// The published GTM container owns four checkout events; list discovery is
+// sent directly to the same GA destination until those tags exist in GTM.
+function pushListingAnalyticsEvent(eventName, eventId, ecommerce) {
+  const entry = { event: eventName, event_id: eventId, ecommerce: ecommerce };
+  window.dataLayer = window.dataLayer || [];
+  try {
+    const gaId = document.documentElement.getAttribute('data-ga-id');
+    if (gaId && !window.__twcGtmFailed && window.__twcAnalyticsConsent !== false
+        && (eventName === 'view_item_list' || eventName === 'select_item')) {
+      if (typeof window.gtag !== 'function') {
+        window.gtag = function () { window.dataLayer.push(arguments); };
+      }
+      window.gtag('event', eventName, Object.assign({}, ecommerce, {
+        event_id: eventId, send_to: gaId
+      }));
+      // Keep the shared object marked so a later GTM-failure replay is unique.
+      entry.ga_direct_sent = true;
+    }
+  } catch (_) { }
+  window.dataLayer.push(entry);
+  return entry;
+}
+
 // GA4 select_item на листингах. ViewContent отправляется один раз на PDP,
 // где выбранный вариант известен точно; карточка не создает второй Meta view.
 document.addEventListener('click', function (e) {
   try {
     const card = e.target.closest && e.target.closest('.card.product');
     if (!card) return;
+    const link = e.target.closest('a[href]');
+    if (!link || !card.contains(link)) return;
     const pid = card.getAttribute('data-product-id');
     const title = card.getAttribute('data-product-title');
     const price = card.getAttribute('data-product-price');
@@ -2259,11 +2284,7 @@ document.addEventListener('click', function (e) {
         const cards = Array.prototype.slice.call(document.querySelectorAll('.card.product'));
         const position = cards.indexOf(card);
         const listName = (document.documentElement.getAttribute('data-route-name') || 'catalog');
-        window.dataLayer = window.dataLayer || [];
-        window.dataLayer.push({
-          event: 'select_item',
-          event_id: eventId,
-          ecommerce: {
+        pushListingAnalyticsEvent('select_item', eventId, {
             item_list_name: listName,
             items: [{
               item_id: offerId,
@@ -2275,7 +2296,6 @@ document.addEventListener('click', function (e) {
               quantity: 1,
               currency: 'UAH'
             }]
-          }
         });
       } catch (_) { }
     }
@@ -2284,8 +2304,8 @@ document.addEventListener('click', function (e) {
 
 // GA4 view_item_list — один push при загрузке листинга каталога/главной.
 // Даёт полную ecommerce-воронку (показ списка → select_item → view_item →
-// add_to_cart → begin_checkout → purchase). Только dataLayer (у Meta нет
-// стандартного события списка; слать массовый ViewContent нежелательно).
+// add_to_cart → begin_checkout → purchase). GTM objects remain available,
+// with direct GA forwarding for the two list events missing from GTM.
 (function () {
   function pushViewItemList() {
     try {
@@ -2312,14 +2332,9 @@ document.addEventListener('click', function (e) {
         };
       }).filter(Boolean);
       if (!items.length) return;
-      window.dataLayer = window.dataLayer || [];
-      window.dataLayer.push({
-        event: 'view_item_list',
-        event_id: safeGenerateAnalyticsEventId(),
-        ecommerce: {
-          item_list_name: listName,
-          items: items
-        }
+      pushListingAnalyticsEvent('view_item_list', safeGenerateAnalyticsEventId(), {
+        item_list_name: listName,
+        items: items
       });
     } catch (_) { }
   }

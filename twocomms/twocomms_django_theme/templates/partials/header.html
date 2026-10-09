@@ -64,13 +64,13 @@
           <div class="cart-container position-relative d-none d-lg-block">
             {# Phase 21 (T20 a11y) — see favorites-btn comment above; same pattern keeps accessible name == aria-label. #}
             <button id="cart-toggle" type="button" class="cart-btn" data-cart-attention aria-label="{% trans 'Відкрити міні-корзину' %}">
-              <div class="cart-icon-wrapper" aria-hidden="true">
+              <span class="cart-icon-wrapper" aria-hidden="true">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" class="cart-icon">
                   <path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12L8.1 13h7.45c.75 0 1.41-.41 1.75-1.03L21.7 4H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/>
                 </svg>
-                <div class="cart-glow"></div>
+                <span class="cart-glow"></span>
                 <span id="cart-count" class="cart-badge">0</span>
-              </div>
+              </span>
             </button>
           </div>
         </div>
@@ -106,7 +106,7 @@
         <!-- Аватар/профіль -->
         <div class="user-profile-container position-relative d-none d-lg-block ms-4" data-mobile-hide="true">
           <button id="user-toggle" type="button" class="user-avatar-btn" aria-label="{% trans 'Відкрити панель користувача' %}">
-            <div class="avatar-wrapper">
+            <span class="avatar-wrapper" style="display: block;">
               {% if request.user.is_authenticated and request.user.userprofile and request.user.userprofile.avatar %}
                 <img src="{{ request.user.userprofile.avatar.url }}" alt="{% trans 'Аватар користувача — TwoComms' %}" class="avatar-image" width="36" height="36">
               {% elif request.user.is_authenticated and request.session.profile_avatar %}
@@ -114,19 +114,19 @@
               {% elif request.user.is_authenticated %}
                 <img src="{% static 'img/placeholder.jpg' %}" alt="{% trans 'Аватар користувача — TwoComms' %}" class="avatar-image" width="36" height="36">
               {% else %}
-                <div class="guest-avatar">
+                <span class="guest-avatar">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
                   </svg>
-                </div>
+                </span>
               {% endif %}
-              <div class="avatar-glow"></div>
+              <span class="avatar-glow"></span>
               {% if request.user.is_staff and orders_processing_count > 0 %}
                 <span class="orders-badge">
                   {{ orders_processing_count }}
                 </span>
               {% endif %}
-            </div>
+            </span>
           </button>
           
           <div id="user-panel" class="user-panel mpx d-none" aria-hidden="true" inert>

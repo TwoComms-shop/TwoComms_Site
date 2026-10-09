@@ -158,7 +158,19 @@ process.stdout.write(JSON.stringify({ fbc: context.fbc, fbp: context.fbp, writes
         )
         source = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("analytics-loader.js' %}?v=13", source)
+        self.assertIn("analytics-loader.js' %}?v=20261009-analytics-v14", source)
+
+    @skipUnless(shutil.which("node"), "Node.js is required for analytics browser runtime checks")
+    def test_sdk_startup_buffering_and_ownership_runtime(self):
+        test_path = (
+            Path(__file__).resolve().parents[3]
+            / "tests" / "js" / "analytics-loader.test.cjs"
+        )
+        result = subprocess.run(
+            [shutil.which("node"), "--test", str(test_path)],
+            text=True, capture_output=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_non_standard_meta_events_use_track_custom_and_keep_buffer_type(self):
         source = self._loader_source()

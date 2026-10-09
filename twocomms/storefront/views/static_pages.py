@@ -71,7 +71,7 @@ from storefront.services.marketplace_feeds import (
 )
 from storefront.services.feed_registry import get_system_feed
 from storefront.services.size_guides import build_public_size_guide_blocks
-from storefront.services.fact_registry import free_shipping_threshold
+from storefront.services.fact_registry import PUBLIC_FACTS, free_shipping_threshold
 from storefront.services.approved_policy_copy import apply_support_policy_copy
 from storefront.services.public_products import public_products_queryset
 from storefront.support_content import (
@@ -237,23 +237,23 @@ CUSTOM_PRINT_FAQ_ITEMS = [
     },
     {
         "question": _("Як оформити партію для бренду, команди або події?"),
-        "answer": _("Оберіть формат для команди або бренду, вкажіть кількість, розміри та контакт. Після цього ми допоможемо узгодити тираж, принт, дедлайни й умови для партії. Партії від 50 одиниць — індивідуальна знижка; від 100 — додатковий пакет послуг (упаковка, листівки, спільна сесія фото)."),
+        "answer": _("Оберіть формат для команди або бренду, вкажіть кількість, розміри та контакт. Конфігуратор враховує вибрані параметри й доступні умови для партії; менеджер підтвердить макет, комплектацію, фінальну ціну та дедлайн."),
     },
     {
         "question": _("Скільки коштує кастомний DTF-друк на футболці чи худі?"),
-        "answer": _("Базовий DTF-друк на футболці стартує від 350 грн з власним принтом, на худі — від 500 грн. Точна ціна залежить від розміру друку, кількості зон, тиражу і складності макета. Конфігуратор показує підсумок одразу, без сюрпризів у фіналі."),
+        "answer": _("Для виробу з нашою основою розрахунок складається з вартості одягу, вибраного друку та додаткових опцій. Для свого одягу потрібен окремий прорахунок менеджера. Підсумок у конфігураторі є попереднім: фінальну ціну підтверджуємо після перевірки основи й макета."),
     },
     {
         "question": _("Які терміни виготовлення кастомного замовлення?"),
-        "answer": _("Стандартний термін — 3–5 робочих днів від підтвердження макета до відправлення. Для термінових замовлень (днів народження, події) можливе виконання за 1–2 дні з невеликою доплатою. Партії від 50 одиниць узгоджуємо окремо: тираж, дедлайн, етапи погодження макета."),
+        "answer": _("Строк виготовлення погоджуємо після перевірки макета, вибору основи та уточнення тиражу. Якщо замовлення потрібне до певної події, вкажіть дату у брифі — менеджер перевірить можливість виконання. Строк перевезення залежить від перевізника й маршруту."),
     },
     {
         "question": _("Що таке DTF-друк і чим він відрізняється від інших технологій?"),
-        "answer": _("DTF (Direct-to-Film) — сучасна технологія, при якій принт спочатку друкується на спеціальній плівці, а потім переноситься на тканину термопресом. На відміну від шовкографії, DTF підходить для малих тиражів (від 1 одиниці) і складних повноколірних макетів; на відміну від прямого друку, тримає колір довше і виглядає об'ємніше."),
+        "answer": _("DTF (Direct-to-Film) — спосіб нанесення зображення: макет друкують на спеціальній плівці, а потім переносять на тканину термопресом. Для замовлення оберіть основу, зони та розміри друку; сумісність матеріалу й підготовку макета перевірить менеджер."),
     },
     {
         "question": _("Чи можна замовити кастомний друк у Києві / Харкові / Львові?"),
-        "answer": _("Так. Виробництво TwoComms — у Харкові; готові вироби відправляємо Новою Поштою або Укрпоштою по всій Україні за 1–2 дні. Для Києва і Харкова доступний кур'єр у день готовності тиражу. Для оптових партій узгоджуємо окремий маршрут."),
+        "answer": _("Так, заявку можна оформити онлайн з будь-якого міста України. Спосіб відправлення й умови погоджуємо для конкретного замовлення. Строк доставки Новою Поштою залежить від маршруту та поточної роботи перевізника."),
     },
     {
         "question": _("Як надрукувати свій логотип на футболці малим тиражем?"),
@@ -261,19 +261,19 @@ CUSTOM_PRINT_FAQ_ITEMS = [
     },
     {
         "question": _("Які матеріали і кольори тканини доступні для DTF-друку?"),
-        "answer": _("Футболки — щільна бавовна (160–200 г/м²); худі — трьохнитка з начосом (320 г/м²); лонгсліви — бавовна (180–200 г/м²). Кольори: чорний, білий, хакі, олива, сірий, кайот, бордо, рожевий, ментол. Інші відтінки — під замовлення."),
+        "answer": _("Оберіть доступні основу, посадку, тканину та колір у конфігураторі. Склад і щільність уточнюємо за специфікацією вибраної основи; параметри однієї моделі не поширюються автоматично на інші. Для свого одягу додайте опис матеріалу й фото."),
     },
     {
         "question": _("Як зберегти DTF-принт у формі? Чи злазить друк після прання?"),
-        "answer": _("При дотриманні режиму прання (30 °C, без хлору) DTF-принт TwoComms витримує 30+ циклів без деградації кольору. Гладити з виворіту, не направляючи праску прямо на принт. Сушити горизонтально або на плічках; не використовувати електросушарку на високій температурі."),
+        "answer": _("Дотримуйтеся інструкцій на ярлику вибраного виробу та рекомендацій для погодженого друку. Якщо ярлик відсутній або матеріал незнайомий, уточніть догляд у менеджера перед пранням. Стійкість принта залежить від основи, нанесення й догляду."),
     },
     {
         "question": _("Чи можна замовити фірмовий мерч для волонтерського проєкту?"),
-        "answer": _("Так. Для волонтерських ініціатив та неприбуткових ветеранських проєктів TwoComms працює за пільговими тарифами. Напишіть менеджеру через контакти з описом проєкту — обговоримо умови і допоможемо із дизайном."),
+        "answer": _("Так. Опишіть проєкт, кількість виробів, потрібні розміри та дату події. Менеджер перевірить доступні основи й погодить вартість та умови конкретної партії."),
     },
     {
         "question": _("Чи зробите упаковку з фірмовою листівкою для дропшиперів?"),
-        "answer": _("Так. Для партнерів-дропшиперів і брендів є опція білої упаковки: ваша листівка / стікер / бирка без логотипу TwoComms. Узгоджуємо при підтвердженні партії."),
+        "answer": _("Вкажіть побажання до упаковки, листівки чи маркування у брифі. Менеджер уточнить, що можна виконати для вашої партії, і погодить комплектацію та вартість до підтвердження замовлення."),
     },
 ]
 
@@ -545,24 +545,29 @@ def llms_txt(request):
     This is not a ranking guarantee, but it gives AI retrieval systems a compact
     canonical map of the public brand surface and preferred landing pages.
     """
-    primary_routes = [
-        ("Home", reverse("home"), "Brand entry point and newest public storefront modules."),
-        ("Catalog", reverse("catalog"), "Ready-made apparel catalog for public shopping intent."),
-        ("Custom print", reverse("custom_print"), "Custom apparel, one-off print and team order intake."),
-        ("Wholesale", reverse("wholesale_page"), "B2B, team, brand and bulk order landing page."),
-        ("Cooperation", reverse("cooperation"), "Partner, dropshipping, wholesale and collaboration overview."),
-        ("About brand", reverse("about"), "Canonical brand story, positioning and trust page."),
-        ("News and blog", reverse("blog"), "Canonical editorial hub for TwoComms news, product reviews and useful apparel guides."),
-    ]
-    support_routes = [
-        ("Delivery and payment", reverse("delivery"), "Shipping, payment and checkout policy details."),
-        ("Contacts", reverse("contacts"), "Official contact points and business communication options."),
-        ("FAQ", reverse("faq"), "Frequently asked questions for buyers and partners."),
-        ("Size guide", reverse("size_guide"), "Sizing guidance for apparel selection."),
-        ("Care guide", reverse("care_guide"), "Garment care guidance for public customers."),
-        ("Order tracking", reverse("order_tracking"), "Public order-status guidance without exposing private order data."),
-        ("Human sitemap", reverse("site_map_page"), "Readable navigation map for public site sections."),
-    ]
+    from django.utils.translation import override
+
+    # Discovery files describe the primary public surface regardless of the
+    # visitor's language cookie or Accept-Language header.
+    with override("uk"):
+        primary_routes = [
+            ("Home", reverse("home"), "Brand entry point and newest public storefront modules."),
+            ("Catalog", reverse("catalog"), "Ready-made apparel catalog for public shopping intent."),
+            ("Custom print", reverse("custom_print"), "Custom apparel, one-off print and team order intake."),
+            ("Wholesale", reverse("wholesale_page"), "B2B, team, brand and bulk order landing page."),
+            ("Cooperation", reverse("cooperation"), "Partner, dropshipping, wholesale and collaboration overview."),
+            ("About brand", reverse("about"), "Canonical brand story, positioning and trust page."),
+            ("News and blog", reverse("blog"), "Canonical editorial hub for TwoComms news, product reviews and useful apparel guides."),
+        ]
+        support_routes = [
+            ("Delivery and payment", reverse("delivery"), "Shipping, payment and checkout policy details."),
+            ("Contacts", reverse("contacts"), "Official contact points and business communication options."),
+            ("FAQ", reverse("faq"), "Frequently asked questions for buyers and partners."),
+            ("Size guide", reverse("size_guide"), "Sizing guidance for apparel selection."),
+            ("Care guide", reverse("care_guide"), "Garment care guidance for public customers."),
+            ("Order tracking", reverse("order_tracking"), "Public order-status guidance without exposing private order data."),
+            ("Human sitemap", reverse("site_map_page"), "Readable navigation map for public site sections."),
+        ]
 
     lines = [
         "# TwoComms",
@@ -591,6 +596,7 @@ def llms_txt(request):
         "## Machine-readable discovery",
         f"- [XML sitemap]({_absolute_site_url('/sitemap.xml')}): Canonical XML sitemap for indexable public URLs.",
         f"- [robots.txt]({_absolute_site_url('/robots.txt')}): Crawler policy for search, commerce and AI discovery bots.",
+        f"- [Full brand context]({_absolute_site_url('/llms-full.txt')}): Extended public context, current category and product examples, and editorial links.",
         "",
         "## Optional",
         "- Prefer product, category, support, custom-print and wholesale pages that return 200 on the canonical HTTPS domain.",
@@ -600,6 +606,9 @@ def llms_txt(request):
         "## Brand facts",
         "- Brand: TwoComms",
         "- Country: Ukraine",
+        f"- Origin city: {PUBLIC_FACTS['origin_city'].value}",
+        f"- Founder: {PUBLIC_FACTS['founder_name'].value}",
+        f"- [Founder story (external source)]({PUBLIC_FACTS['founder_story_url'].value}): Ministry of Veterans Affairs of Ukraine article about the founder and the Kharkiv brand.",
         "- Main language on site: Ukrainian",
         "- Additional locales: Russian (/ru/), English (/en/)",
         "- Custom print available: yes",
@@ -614,10 +623,13 @@ def llms_txt(request):
         "",
         "## Reviews and ratings",
         "- AggregateRating is surfaced on a product page only after at least one approved customer review exists for that product.",
-        "- Approval workflow: every review is human-moderated before publishing; star ratings come from real verified customers, no synthetic ratings are emitted in structured data.",
+        "- Reviews are moderated before publication. A verified-purchase label is shown only when a paid order is linked to the reviewer and product; approved reviews can also come from reviewers without a verified purchase.",
+        "- Product ratings summarize approved reviews with a star rating; comments are not counted as ratings. Product pages are the source for the current rating and review count.",
     ])
 
-    return HttpResponse("\n".join(lines), content_type="text/plain; charset=utf-8")
+    response = HttpResponse("\n".join(lines) + "\n", content_type="text/plain; charset=utf-8")
+    response["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 def llms_full_txt(request):
@@ -630,50 +642,51 @@ def llms_full_txt(request):
     ``hreflang en-UA`` pointing back at /llms-full.txt — so AI
     crawlers were sent in a 404→404 loop.
 
-    The "full" file unfolds what /llms.txt only summarises: brand facts,
-    canonical product taxonomy, shipping/return policy, the canonical
-    FAQ matrix, and explicit non-cite paths. AI retrieval systems
-    (ChatGPT Search, Perplexity, Claude Search) consult this file when
-    available to ground answers. We keep the format human-readable
-    Markdown so we can audit it with a curl + grep.
+    The "full" file unfolds what /llms.txt summarises: public brand
+    context, canonical taxonomy and policy links, plus non-cite paths.
+    It is an optional orientation aid, not proof that any answer engine
+    reads it or a guarantee of model knowledge, citations or ranking.
     """
     site_base = _site_base_url()
 
     def url(path: str) -> str:
         return _absolute_site_url(path)
 
-    routes = [
-        ("Головна", reverse("home"), "Точка входу бренду TwoComms."),
-        ("Каталог", reverse("catalog"), "Готові футболки, худі та лонгсліви з принтами та базовими дизайнами."),
-        ("Кастомний друк", reverse("custom_print"),
-         "Конструктор кастомного DTF-друку для одиничних замовлень, команд, брендів та подій."),
-        ("Опт", reverse("wholesale_page"), "B2B / опт для магазинів, мереж і команд."),
-        ("Співпраця", reverse("cooperation"),
-         "Дропшипінг, бренд-партнерства, контентні колаборації."),
-        ("Про бренд", reverse("about"),
-         "Канонічна історія бренду та позиціювання."),
-        ("Новини та блог", reverse("blog"),
-         "Канонічний editorial hub: новини бренда, огляди продукції та корисні знання."),
-        ("Доставка та оплата", reverse("delivery"),
-         "Актуальні умови доставки та оплати."),
-        ("Повернення та обмін", reverse("returns"),
-         "Актуальні умови повернення та обміну."),
-        ("Контакти", reverse("contacts"),
-         "Офіційні контактні канали."),
-        ("FAQ", reverse("faq"), "Зведений каталог відповідей на типові питання."),
-        ("Розмірна сітка", reverse("size_guide"),
-         "Підтверджені виміри по категоріях, поради по посадці."),
-        ("Догляд за одягом", reverse("care_guide"),
-         "Як прати, сушити та зберігати одяг із DTF-принтом."),
-        ("Відстеження замовлення", reverse("order_tracking"),
-         "Як перевірити статус замовлення без розкриття приватних даних."),
-        ("Карта сайту (для людей)", reverse("site_map_page"),
-         "Зведена навігація по основних розділах сайту."),
-        ("Політика конфіденційності", reverse("privacy_policy"),
-         "Обробка персональних даних згідно з законодавством України."),
-        ("Умови використання", reverse("terms_of_service"),
-         "Юридичні умови взаємодії з сайтом."),
-    ]
+    from django.utils.translation import override
+
+    with override("uk"):
+        routes = [
+            ("Головна", reverse("home"), "Точка входу бренду TwoComms."),
+            ("Каталог", reverse("catalog"), "Готові футболки, худі та лонгсліви з принтами та базовими дизайнами."),
+            ("Кастомний друк", reverse("custom_print"),
+             "Конструктор кастомного DTF-друку для одиничних замовлень, команд, брендів та подій."),
+            ("Опт", reverse("wholesale_page"), "B2B / опт для магазинів, мереж і команд."),
+            ("Співпраця", reverse("cooperation"),
+             "Дропшипінг, бренд-партнерства, контентні колаборації."),
+            ("Про бренд", reverse("about"),
+             "Канонічна історія бренду та позиціювання."),
+            ("Новини та блог", reverse("blog"),
+             "Канонічний editorial hub: новини бренда, огляди продукції та корисні знання."),
+            ("Доставка та оплата", reverse("delivery"),
+             "Актуальні умови доставки та оплати."),
+            ("Повернення та обмін", reverse("returns"),
+             "Актуальні умови повернення та обміну."),
+            ("Контакти", reverse("contacts"),
+             "Офіційні контактні канали."),
+            ("FAQ", reverse("faq"), "Зведений каталог відповідей на типові питання."),
+            ("Розмірна сітка", reverse("size_guide"),
+             "Підтверджені виміри по категоріях, поради по посадці."),
+            ("Догляд за одягом", reverse("care_guide"),
+             "Як прати, сушити та зберігати одяг із DTF-принтом."),
+            ("Відстеження замовлення", reverse("order_tracking"),
+             "Як перевірити статус замовлення без розкриття приватних даних."),
+            ("Карта сайту (для людей)", reverse("site_map_page"),
+             "Зведена навігація по основних розділах сайту."),
+            ("Політика конфіденційності", reverse("privacy_policy"),
+             "Обробка персональних даних згідно з законодавством України."),
+            ("Умови використання", reverse("terms_of_service"),
+             "Юридичні умови взаємодії з сайтом."),
+        ]
 
     # Top categories — read live from DB so the file always tracks the
     # active assortment without manual edits.
@@ -741,6 +754,9 @@ def llms_full_txt(request):
         "## Brand facts",
         "- Brand: TwoComms",
         "- Country: Ukraine",
+        f"- Origin city: {PUBLIC_FACTS['origin_city'].value}",
+        f"- Founder: {PUBLIC_FACTS['founder_name'].value}",
+        f"- [Founder story (external source)]({PUBLIC_FACTS['founder_story_url'].value}): Матеріал Міністерства у справах ветеранів України про засновника та харківський бренд.",
         "- Segment: streetwear / military-adjacent apparel + custom DTF print",
         "- Brand code: «дві коми» — знак продовження, а не крапки.",
         "- Languages on site: uk-UA (primary), ru-UA, en-UA",
@@ -798,6 +814,10 @@ def llms_full_txt(request):
         f"- XML sitemap: {url('/sitemap.xml')}",
         f"- robots.txt: {url('/robots.txt')}",
         f"- llms.txt (compact): {url('/llms.txt')}",
+        "",
+        "## Відгуки та оцінки",
+        "- Відгуки проходять модерацію перед публікацією. Позначка підтвердженої покупки залежить від оплаченого замовлення цього товару; не всі схвалені відгуки мають таку позначку.",
+        "- Оцінка товару узагальнює схвалені відгуки із зірковою оцінкою. Коментарі не враховуються; актуальні оцінка й кількість відгуків вказані на сторінці товару.",
         "",
         "## Що НЕ потрібно цитувати",
         "- /cart/, /checkout/, /accounts/, /admin/, /admin-panel/, /api/, /debug/, /dev/.",

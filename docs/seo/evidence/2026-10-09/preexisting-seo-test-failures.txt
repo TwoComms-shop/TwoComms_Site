@@ -1,0 +1,59 @@
+Clean baseline HEAD8ba5a5cb95c89eeea9dd362ada7795c9bf3109e1 (direct child27acbf6d4; tested source files unchanged).
+158 tests;14 failures;0 errors; duration1.687s.
+No source edit; isolated test DB destroyed.
+
+test_product_page_does_not_emit_legacy_inline_organization
+AssertionError: 4 != 1
+Stale raw count includes @id references as well as the actual Organization node; 4 references does not prove duplicate definitions.
+
+test_home_page_includes_organization_schema_with_stable_id
+AssertionError: False is not true : Couldn't find '"@type": "Organization"' in the following response
+Stale exact JSON spelling: canonical type is [Organization, OnlineStore].
+
+test_organization_schema_has_logo_and_contact_point
+AssertionError: ['Organization', 'OnlineStore'] != 'Organization'
+Stale type scalar: multi-type Organization/OnlineStore is intentional.
+
+test_custom_print_safe_exit_notification_uses_custom_admin_deeplink_when_lead_exists
+AssertionError: 'safe exit' not found in '🚪 <b>кастомний принт: пользователь покинул конфігуратор</b>\n<code>cp09102026l001</code>\n\n👤 <b>контакт</b>\n• <b>імʼя:</b> микита\n• <b>канал звʼязку:</b> telegram\n•
+Stale English title assertion; actual notification says client left configurator and retains deeplink.
+
+test_custom_print_adjust_requires_brief_and_file
+AssertionError: {'ok'[70 chars]лі.'], 'files': ['Додайте файли для всіх зон, [17 chars].']}} != {'ok'[70 chars]лі.']}}
+Stale expected error shape omits required files error. forms.py explicitly requires files for ready/adjust.
+
+test_custom_print_adjust_submission_creates_lead
+AssertionError: 400 != 200
+Stale fixture: two artwork zones back+sleeve, only one file; current form requires one file per artwork zone.
+
+test_custom_print_config_exposes_progress_steps_tshirt_rules_and_zone_presets
+AssertionError: Lists differ: ['format', 'garment', 'config', 'placement'[38 chars]act'] != ['mode', 'product', 'config', 'zones', 'art[32 chars]act']
+Stale step names: current format,garment,config,placement,artwork,quantity,gift,contact.
+
+test_custom_print_page_cache_busts_configurator_script
+AssertionError: Regex didn't match: 'custom-print-configurator(?:\\.[0-9a-f]+)?\\.css\\?v=' not found in '\n\n\n\n\n\n\n\n\n<!DOCTYPE html>\n<html lang=\'uk-UA\' data-bs-theme=\'dark\' data-route-name="custom_p
+Stale stylesheet filename: current versioned guided-studio/mobile-hero/purpose/collection/gift/refinements files.
+
+test_custom_print_page_renders_adaptive_configurator
+AssertionError: False is not true : Couldn't find 'Написати нам у Telegram' in the following response
+Stale button text; current manager links use Написати в Telegram.
+
+test_custom_print_phone_channel_validates_contact_value
+AssertionError: {'ok'[51 chars]ктний український номер телефону (наприклад +380XXXXXXXXX).']}} != {'ok'[51 chars]ктний номер телефону.']}}
+Stale exact error text; actual explicitly Ukrainian number with +380 example.
+
+test_custom_print_safe_exit_with_contact_persists_snapshot_and_returns_manager_link
+AssertionError: 'black' != 'graphite'
+Stale graphite fixture: current oversize colors black/pink; normalization deliberately falls back to default black.
+
+test_home_page_uses_custom_survey_and_pagination_shells
+AssertionError: False is not true : Couldn't find '<section class="mb-4 mb-md-5" id="survey-section">' in the following response
+Stale literal opening tag; actual survey section includes data-survey-section and other attributes.
+
+test_about_page_uses_brand_story_layout
+AssertionError: False is not true : Couldn't find '"@type": "Organization"' in the following response
+Stale exact Organization JSON spelling; same multi-type canonical node.
+
+test_key_service_pages_override_default_social_meta
+AssertionError: False is not true : Couldn't find '<meta property="og:title" content="Доставка і оплата TwoComms — Нова Пошта, 1–3 дні по Україні">' in the following response
+Stale delivery transit promise; approved_policy_copy overrides meta_title with page_title, Доставка та оплата — TwoComms.

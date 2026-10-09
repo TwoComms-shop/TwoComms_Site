@@ -458,16 +458,16 @@ canonical entry point for the brand's URL graph.
         
         <!-- Кнопка сворачивания в центре -->
         <button class="categories-toggle-btn" id="categoriesToggle" aria-label="{% trans 'Згорнути/розгорнути категорії' %}">
-          <div class="toggle-btn-content">
-            <div class="toggle-icon">
+          <span class="toggle-btn-content">
+            <span class="toggle-icon">
               <svg class="toggle-arrow" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
               </svg>
-            </div>
+            </span>
             <span class="toggle-text">{% trans 'Згорнути' %}</span>
-          </div>
-          <div class="toggle-btn-glow"></div>
-          <div class="toggle-btn-ripple"></div>
+          </span>
+          <span class="toggle-btn-glow"></span>
+          <span class="toggle-btn-ripple"></span>
         </button>
         
         <a href="{% url 'catalog' %}" class="catalog-link-compact">
@@ -578,12 +578,9 @@ canonical entry point for the brand's URL graph.
   <div class="row g-3 g-md-4 row-cols-2 row-cols-md-3 row-cols-lg-4 home-products-grid" data-stagger-grid id="products-container" data-mobile-stagger="true">
     {% for p in products %}
     <div class="col product-card-wrap stagger-item reveal-stagger">
-      {% cache 900 product_card_home_v5_webp_swap LANGUAGE_CODE p.id p.updated_at|date:'U' p.final_price p.discount_percent p.home_card_image.name p.display_image.name p.category_id p.colors_preview_key forloop.counter0 using="fragments" %}
-        {% if forloop.counter0 < 2 %}
-          {% include "partials/product_card.html" with p=p stagger=True eager=True home_card=True %}
-        {% else %}
-          {% include "partials/product_card.html" with p=p stagger=True eager=False home_card=True %}
-        {% endif %}
+      {% cache 900 product_card_home_v6_lazy_below_fold LANGUAGE_CODE p.id p.updated_at|date:'U' p.final_price p.discount_percent p.home_card_image.name p.display_image.name p.category_id p.colors_preview_key forloop.counter0 using="fragments" %}
+        {# Cards follow the hero, survey and categories; keep their images off the initial critical path. #}
+        {% include "partials/product_card.html" with p=p stagger=True eager=False home_card=True %}
       {% endcache %}
     </div>
     {% empty %}
