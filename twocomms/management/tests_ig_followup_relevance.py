@@ -46,6 +46,9 @@ class RadioReplyPipelineTests(TransactionTestCase):
             "catalog_candidates": [], "intent": "visual_question", "confidence": 0.9,
             "audio_status": "not_applicable", "transcript": "",
             "image_observations": [{"source_image_index": 0, "outcome": "understood", "evidence_code": "visual_content", "type_code": "document"}],
+            "media_observations": [{"source_inline_index": 0, "outcome": "understood",
+                "content_kind": "neutral_mention", "sentiment": "neutral", "confidence": 0.9,
+                "evidence_code": "visual_content", "evidence": "News article about the team"}],
         }
         self.case.parsed["customer_routes"] = {
             "schema_version": "customer-route.v1", "focus_index": 0,
@@ -92,6 +95,20 @@ class RadioReplyPipelineTests(TransactionTestCase):
         self.case.revision.refresh_from_db()
         text = self.case.revision.delivery_effects.get(group="substantive_text").payload["message"]["text"]
         self.assertEqual(text, "Дякуємо, що поділилися 💛")
+
+    def test_legacy_image_observation_keeps_limitation_without_claiming_understanding(self):
+        self.case.parsed["turn_intelligence"].pop("media_observations")
+        result, generation, transport = self.execute("Дякуємо, що поділилися 💛")
+        self.assertEqual(result.state, "completed", result.reasons)
+        generation.assert_called_once()
+        transport.assert_called_once()
+        self.assertFalse(IgFollowUpTask.objects.exists())
+        self.case.revision.refresh_from_db()
+        text = self.case.revision.delivery_effects.get(group="substantive_text").payload["message"]["text"]
+        self.assertIn("Дякуємо, що поділилися", text)
+        self.assertIn("Не вдалося розібрати зображення", text)
+        self.assertNotIn("Бажаєте підібрати", text)
+        self.assertNotIn("наш одяг", text)
 
     def test_topic_acknowledgement_sends_once_and_cannot_start_a_sales_ladder(self):
         result, generation, transport = self.execute("Дякуємо, що поділилися сюжетом про нашу команду!")

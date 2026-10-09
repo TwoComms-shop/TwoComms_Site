@@ -6,6 +6,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.db.models.query import QuerySet
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -401,7 +402,8 @@ class FollowupDeliveryFsmTests(TestCase):
         task = self._task(
             status=IgFollowUpTask.Status.SENT,
             provider_message_id="mid-finalize-race",
-            reason="first_reply_silence",
+            kind=IgFollowUpTask.Kind.PAYMENT,
+            reason="payment_link_unpaid",
         )
         with patch(
             "management.services.bot_followups._schedule_next_policy_step",
@@ -482,6 +484,10 @@ class FollowupDeliveryResolutionTests(TestCase):
         self.admin = get_user_model().objects.create_user(
             "imp102-admin", password="x", is_staff=True
         )
+        self.admin.user_permissions.add(*[
+            Permission.objects.get(content_type__app_label="management", codename=codename)
+            for codename in ("operate_ig_bot", "view_ig_conversation_pii")
+        ])
         self.client.force_login(self.admin)
         self.client_record = IgClient.get_or_create_for_sender("imp102-resolution")
         self.client_record.stage = IgClient.Stage.QUALIFYING
@@ -577,6 +583,20 @@ class FollowupDeliveryResolutionTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_generic_staff_cannot_read_or_resolve_delivery_without_capabilities(self):
+        staff = get_user_model().objects.create_user("imp102-staff-without-capabilities", password="x", is_staff=True)
+        self.client.force_login(staff)
+        source, review = self._ambiguous_pair("unauthorized")
+        with patch("management.services.instagram_bot.send_text") as send:
+            response = self.client.post(self._resolve_url(source), {"outcome": "delivered", "note": "No authority"})
+            detail = self.client.get(reverse("management_bot_client_detail_api", args=[self.client_record.pk]))
+        self.assertEqual((response.status_code, detail.status_code), (403, 403))
+        send.assert_not_called()
+        source.refresh_from_db()
+        review.refresh_from_db()
+        self.assertEqual((source.status, review.status), ("ambiguous", "pending"))
+        self.assertFalse(AdminAuditLog.objects.filter(action="ig_followup_delivery_resolved", entity_id=str(source.pk)).exists())
 
     def test_not_delivered_resolution_is_terminal_and_never_resends(self):
         source, review = self._ambiguous_pair("not-delivered")

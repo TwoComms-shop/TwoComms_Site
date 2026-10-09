@@ -1,6 +1,6 @@
 # Website review + UGC · контракт владельца · 09.10.2026
 
-CODE/TEST реализованы; PROD PENDING до фактической квитанции. Этот файл фиксирует контракт и границы приёмки.
+✅ CODE/TEST/PROD принят в736b1ef6c; [фактическая квитанция](PRODUCTION_RELEASE_2026-10-09.md). Этот файл фиксирует контракт и границы приёмки.
 
 - По прямому уточнению владельца **5% — только добавка к подтверждённой UGC-награде10%**. Отдельный бонус5% не выдаётся.
 - Повышается **тот же неиспользованный активный код10% до15%**, один раз. Изначальные code/issued_at/valid_until и90дней сохраняются; lifetime grant не повторяется.
@@ -42,7 +42,7 @@ Context7 прочитан по официальной Instagram Platform док�
 Приёмка: fresh-schema native78 PASS/16.210s. Финальные affected/provider dispatch/producer budget gates и production evidence записываются в RELEASE после фактического завершения. Browser composer1816/390/320 проверен: overflow0, обязательные звёзды, optional email, очищенный URL, disclosure; screenshots доступны в private local QA, production assets проверяются отдельно.
 
 
-Финальный native набор:482сценария,481PASS/49.970s; единственная ошибка — oversized order_number новой fixture, не ослабленный guard. Fixture приведена к реальному max_length, весь consent набор повторно проходит отдельно (квитанция в RELEASE). Посторонние legacy проверки14 предварительно воспроизводились теми же14ошибками на исходном HEAD bot_followups; относятся к отдельному P1-4 пакету и не входят в этот релиз.
+Финальный native набор:482сценария,481PASS/49.970s; единственная ошибка — oversized order_number новой fixture, не ослабленный guard. Fixture приведена к реальному max_length, весь consent набор повторно прошёл32/32PASS/3.419s (квитанция в RELEASE). Посторонние legacy проверки14 предварительно воспроизводились теми же14ошибками на исходном HEAD bot_followups; относятся к отдельному P1-4 пакету и не входят в этот релиз.
 
 Producer приглашений отдельно ограничен min(limit,100), учитывает current provider-dated USER/namespace/reset и исключает уже существующие exact scopes в SQL. Advisory cursor продвигается также после отказа owner, поэтому непроверенный manual paid заказ не блокирует более поздний проверенный. Cache не создаёт business authority. В default daemon batch10 зарезервирован consent slot и отдельный slot для остальных due queues даже при постоянном lifecycle backlog. Generic opt-in/resume не отменяет ANY prior global opt-out для business purpose.
 

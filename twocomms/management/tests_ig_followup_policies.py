@@ -188,7 +188,7 @@ class FollowupPolicyResolutionTests(TestCase):
             "delivery_ready_unpaid",
         )
 
-    def test_next_step_comes_from_the_same_policy(self):
+    def test_ordinary_thinking_silence_does_not_schedule_another_step(self):
         from management.services.bot_followups import _schedule_next_policy_step
 
         sent = IgFollowUpTask.objects.create(
@@ -201,20 +201,20 @@ class FollowupPolicyResolutionTests(TestCase):
             level=0,
         )
 
-        self.assertTrue(
+        self.assertFalse(
             _schedule_next_policy_step(sent, self.client_record, now=self.now)
         )
-        nxt = IgFollowUpTask.objects.get(
+        self.assertFalse(IgFollowUpTask.objects.filter(
             client=self.client_record,
             status=IgFollowUpTask.Status.PENDING,
-        )
-        self.assertEqual(nxt.reason, "thinking_hesitation")
-        self.assertEqual(nxt.level, 1)
-        self.assertEqual(nxt.due_at, self.now + timedelta(hours=52))
+        ).exists())
+        sent.refresh_from_db()
+        self.assertEqual((sent.status, sent.reason, sent.level), ("sent", "thinking_hesitation", 0))
 
-    def test_terminal_step_records_reason_and_moves_client_to_cold_via_fsm(self):
+    def test_ordinary_silence_completion_does_not_make_customer_cold(self):
         from management.services.bot_followups import _complete_policy_after_send
 
+        before = (self.client_record.stage, self.client_record.lost_reason)
         terminal = IgFollowUpTask.objects.create(
             client=self.client_record,
             due_at=self.now,
@@ -227,8 +227,7 @@ class FollowupPolicyResolutionTests(TestCase):
 
         self.assertTrue(_complete_policy_after_send(terminal, self.client_record))
         self.client_record.refresh_from_db()
-        self.assertEqual(self.client_record.lost_reason, "thinking_exhausted")
-        self.assertEqual(self.client_record.stage, IgClient.Stage.COLD)
+        self.assertEqual((self.client_record.stage, self.client_record.lost_reason), before)
 
 
 class FollowupPolicyIntegrationTests(TestCase):
@@ -519,7 +518,7 @@ class FollowupPolicyIntegrationTests(TestCase):
         "management.services.instagram_bot.send_text",
         return_value=ProviderDeliveryReceipt(True, "", "", "policy-next"),
     )
-    def test_sent_policy_step_schedules_the_next_step_without_spam(self, _send_text):
+    def test_unbound_legacy_ordinary_step_never_sends_or_starts_ladder(self, send_text):
         from management.services.bot_followups import process_due_followups
 
         first = IgFollowUpTask.objects.create(
@@ -534,19 +533,20 @@ class FollowupPolicyIntegrationTests(TestCase):
 
         self.assertEqual(
             process_due_followups(self.settings, now=self.now, limit=1),
-            1,
+            0,
         )
 
         first.refresh_from_db()
-        self.assertEqual(first.status, IgFollowUpTask.Status.SENT)
-        second = IgFollowUpTask.objects.get(
+        self.assertEqual(first.status, IgFollowUpTask.Status.SKIPPED)
+        self.assertEqual(first.skip_reason, "legacy_ordinary_followup_unbound")
+        self.assertFalse(first.sent_message_id)
+        self.assertFalse(IgFollowUpTask.objects.filter(
             client=self.client_record,
             status=IgFollowUpTask.Status.PENDING,
             reason="first_reply_silence",
-            level=1,
-        )
-        self.assertGreaterEqual(second.due_at - first.sent_at, timedelta(hours=18))
-        self.assertLessEqual(second.due_at, first.meta_window_deadline)
+        ).exists())
+        self.assertEqual(process_due_followups(self.settings, now=self.now, limit=1), 0)
+        send_text.assert_not_called()
 
     @patch("management.services.instagram_bot.send_text")
     def test_changed_policy_condition_skips_send(self, send_text):
@@ -616,14 +616,16 @@ class FollowupPolicyIntegrationTests(TestCase):
     def test_out_of_window_policy_step_keeps_reason_and_prepared_copy(self):
         from management.services.bot_followups import _schedule_next_policy_step
 
+        deal = IgDeal.objects.create(client=self.client_record, status=IgDeal.Status.AWAITING_PAYMENT)
         sent = IgFollowUpTask.objects.create(
             client=self.client_record,
+            deal=deal,
             due_at=self.now,
             status=IgFollowUpTask.Status.SENT,
             sent_at=self.now,
-            kind=IgFollowUpTask.Kind.THINKING,
-            reason="thinking_hesitation",
-            level=0,
+            kind=IgFollowUpTask.Kind.PAYMENT,
+            reason="payment_link_unpaid",
+            level=2,
         )
 
         self.assertTrue(
@@ -635,7 +637,8 @@ class FollowupPolicyIntegrationTests(TestCase):
             status=IgFollowUpTask.Status.PENDING,
         )
         self.assertEqual(manager_task.kind, IgFollowUpTask.Kind.MANAGER_TASK)
-        self.assertEqual(manager_task.reason, "thinking_hesitation")
+        self.assertEqual(manager_task.reason, "payment_link_unpaid")
+        self.assertEqual((manager_task.deal_id, manager_task.level), (deal.pk, 4))
         self.assertEqual(manager_task.skip_reason, "meta_window_closed")
         self.assertTrue(manager_task.message_text.strip())
 

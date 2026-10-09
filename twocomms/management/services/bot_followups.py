@@ -596,6 +596,20 @@ def _frequency_limit_reason(client: IgClient, *, now: datetime | None = None) ->
     return ""
 
 
+def _task_followup_commerce_binding(task: IgFollowUpTask | None) -> dict | None:
+    """Keep ordinary task checks on their captured purchase at every claim.
+
+    The policy gate revalidates this binding against canonical source/episode
+    records. A missing ordinary binding must fail that gate rather than fall
+    back to the legacy customer's lifetime purchase boundary.
+    """
+    payload = task.event_payload if task is not None else None
+    if not isinstance(payload, dict) or payload.get("origin") != "ordinary_intent_followup":
+        return None
+    binding = payload.get("commerce_binding")
+    return binding if isinstance(binding, dict) else {}
+
+
 def _client_allows_followup(
     client: IgClient,
     *,
@@ -2741,6 +2755,7 @@ def _claim_due_followup(
                 fresh_client,
                 deal=stale_task.deal if stale_task else None,
                 kind=stale_task.kind if stale_task else None,
+                commerce_binding=_task_followup_commerce_binding(stale_task),
             )
             if not allowed:
                 if stale_task:
@@ -2773,6 +2788,7 @@ def _claim_due_followup(
         client,
         deal=task.deal,
         kind=task.kind,
+        commerce_binding=_task_followup_commerce_binding(task),
     )
     if not allowed:
         _mark_skipped(task, why)
@@ -2808,6 +2824,7 @@ def _renew_due_followup_claim(
         client,
         deal=task.deal,
         kind=task.kind,
+        commerce_binding=_task_followup_commerce_binding(task),
     )
     if not allowed:
         _mark_skipped(task, why)
