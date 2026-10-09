@@ -231,6 +231,10 @@ def _window_is_open(client, *, source_message=None, now) -> bool:
 
 
 def _has_post_sale_risk(client, *, order=None, lifecycle_event=None) -> bool:
+    from management.services.ig_service_complaints import promotion_service_hold_reason
+
+    if promotion_service_hold_reason(client):
+        return True
     active_statuses = {
         IgPostSaleCase.Status.NEEDS_DETAILS,
         IgPostSaleCase.Status.OPEN,

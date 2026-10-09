@@ -28,10 +28,11 @@ PREFIX = "twc-consent:1:"
 WINDOW = timedelta(hours=23)
 VALIDITY = timedelta(days=90)
 LEASE = timedelta(minutes=2)
+SERVICE_HOLD_BACKOFF = timedelta(minutes=5)
 COPY = {
-    "uk": ("Хочеш отримати умови бонусу за сторіс після отримання замовлення, а також новинки й пропозиції TwoComms? Це за бажанням — відмовитися можна будь-коли.", "Так, хочу бонуси", "Не зараз", "Відмовитися"),
-    "ru": ("Хочешь получить условия бонуса за сторис после получения заказа, а также новости и предложения TwoComms? Это по желанию — отказаться можно в любой момент.", "Да, хочу бонусы", "Не сейчас", "Отказаться"),
-    "en": ("Want details of our story bonus after your order arrives, plus TwoComms news and offers? It is optional, and you can opt out anytime.", "Yes, keep me updated", "Not now", "Opt out"),
+    "uk": ("Дякуємо за замовлення 💜\n\nХочеш отримувати новинки й пропозиції TwoComms, а після отримання замовлення — дізнатися умови бонусу за сторіс? Підпишися за бажанням. Відмовитися можна будь-коли.", "Так, хочу", "Не зараз", "Відмовитися"),
+    "ru": ("Спасибо за заказ 💜\n\nХочешь получать новости и предложения TwoComms, а после получения заказа — узнать условия бонуса за сторис? Подпишись по желанию. Отказаться можно в любой момент.", "Да, хочу", "Не сейчас", "Отказаться"),
+    "en": ("Thank you for your order 💜\n\nWant TwoComms news and offers, plus details of our story bonus after your order arrives? Subscribe if you like. You can opt out anytime.", "Yes, keep me updated", "Not now", "Opt out"),
 }
 ACK = {
     "uk": {"accept": "Згоду на новинки й пропозиції TwoComms зафіксовано. Відмовитися можна будь-коли.", "decline": "Добре, згоду на новинки й пропозиції не надано. Сервіс щодо замовлення доступний як і раніше.", "revoke": "Згоду на новинки й пропозиції відкликано. Сервіс щодо замовлення доступний як і раніше.", "invalid": "Це запрошення вже недоступне. Згоду не змінено."},
@@ -170,6 +171,42 @@ def _scope_reason(invitation, client, order, assignment, reset_id, *, now, verif
     return ""
 
 
+def _pre_shipment_reason(order):
+    """Optional acquisition belongs before any shipment, including old parcels."""
+    from management.ig_bot_models import IgOrderShipment
+    if (order.status not in {"new", "prep"} or str(order.tracking_number or "").strip()
+            or order.nova_poshta_document_ref or order.shipment_status
+            or order.tracking_status_code is not None or order.tracking_terminal_at is not None
+            or IgOrderShipment.objects.using(order._state.db or "default").filter(order_id=order.pk).exists()):
+        return "purchase_already_shipped"
+    return ""
+
+
+def _promotion_send_check(invitation, client, order, reset, *, now):
+    """Send-only checks must not rewrite accepted consent or old answer proofs."""
+    from management.services.ig_service_complaints import promotion_service_hold_reason
+    reason = _pre_shipment_reason(order)
+    if reason:
+        return reason, ""
+    reason = promotion_service_hold_reason(client, now=now)
+    if reason:
+        return reason, "service_hold"
+    source = _current_source(client, invitation.provider_namespace, now,
+        reset_boundary=reset["reset_after_message_id"], lock=True)
+    if source is None:
+        return "standard_window_closed", ""
+    if source.pk != invitation.source_message_id or _message_digest(source) != invitation.source_digest:
+        return "invitation_source_superseded", ""
+    # A later-ingested real USER may have an earlier provider timestamp. It is
+    # still intervening customer activity and must not be hidden by sort order.
+    if _current_source(client, invitation.provider_namespace, now,
+            reset_boundary=max(reset["reset_after_message_id"], invitation.source_message_id), lock=True):
+        return "invitation_source_superseded", ""
+    if source.status != "done":
+        return "source_reply_pending", "waiting_source"
+    return "", ""
+
+
 def _payload(invitation, choice):
     body = {"id": invitation.pk.hex, "choice": choice, "client": invitation.client_id,
             "order": invitation.order_id, "assignment": invitation.assignment_id,
@@ -181,8 +218,10 @@ def _payload(invitation, choice):
 
 def consent_quick_reply_message(invitation):
     copy = COPY[invitation.locale]
+    # Old signed decline payloads remain valid, but new delivery offers one
+    # affirmative action. The immutable body and all signed payloads stay intact.
     return QuickReplyMessage(invitation.message_snapshot,
-        (QuickReply(copy[1], invitation.accept_payload), QuickReply(copy[2], invitation.decline_payload)),
+        (QuickReply(copy[1], invitation.accept_payload),),
         projection_text=invitation.message_snapshot)
 
 
@@ -194,6 +233,7 @@ def queue_post_purchase_consent(client, order, assignment, *, now=None):
     from management.services.instagram_bot import ingress_provider_namespace
     from management.services.ig_order_links import order_fulfillment_payment_verified
     from management.services.ig_reply_language import resolve_own_source_reply_language
+    from management.services.ig_service_complaints import promotion_service_hold_reason
     from orders.models import Order
 
     now = now or timezone.now()
@@ -205,13 +245,15 @@ def queue_post_purchase_consent(client, order, assignment, *, now=None):
         if (_blocked(current) or assignment is None or order.status == "cancelled" or order.payment_status != "paid"
                 or not order_fulfillment_payment_verified(order) or settings_obj is None):
             return None
+        if _pre_shipment_reason(order) or promotion_service_hold_reason(current, now=now):
+            return None
         namespace = ingress_provider_namespace(settings_obj)
         permission = capture_reply_permission(settings_obj.pk, current.pk)
         if not namespace or not permission:
             return None
         reset = _reset(current.pk)
         source = _current_source(current, namespace, now, reset_boundary=reset["reset_after_message_id"], lock=True)
-        if source is None:
+        if source is None or source.status != "done":
             return None
         existing = IgMarketingConsentInvitation.objects.filter(client_id=current.pk, order_id=order.pk,
             assignment_id=assignment.pk, assignment_version=assignment.version, reset_audit_id=reset["pk"], purpose=PURPOSE).first()
@@ -254,13 +296,14 @@ def _locked_invitation(invitation_id):
 
 
 @contextmanager
-def _send_boundary(invitation_id, token, permission):
+def _send_boundary(invitation_id, token, permission, result=None):
     from management.models import InstagramBotSettings
     from management.services.instagram_bot import ingress_provider_namespace
     with customer_send_boundary(permission.settings_id, permission.client_id, permission) as allowed:
         with transaction.atomic():
             locked = _locked_invitation(invitation_id)
             reason = "invitation_missing" if not locked else ""
+            hold_state = ""
             if locked:
                 invitation, client, order, assignment = locked
                 now = timezone.now()
@@ -277,11 +320,12 @@ def _send_boundary(invitation_id, token, permission):
                 settings_obj = InstagramBotSettings.objects.filter(pk=invitation.settings_id_snapshot).first()
                 if not reason and (not allowed or settings_obj is None or ingress_provider_namespace(settings_obj) != invitation.provider_namespace):
                     reason = "permission_or_namespace_changed"
-                if not reason and _current_source(client, invitation.provider_namespace, now,
-                    reset_boundary=reset["reset_after_message_id"], lock=True) is None:
-                    reason = "standard_window_closed"
+                if not reason:
+                    reason, hold_state = _promotion_send_check(invitation, client, order, reset, now=now)
                 if not reason and invitation.answers.exists():
                     reason = "consent_answer_already_present"
+            if result is not None:
+                result.update(reason=reason, hold_state=hold_state)
             yield not bool(reason)
 
 
@@ -309,7 +353,9 @@ def process_consent_invitation(invitation_id):
             invitation.save(update_fields=["state", "last_error", "lease_token", "lease_until", "updated_at"])
             return "unknown"
         reset = _reset(client.pk) if client is not None else {"pk": 0, "reset_after_message_id": 0}
-        reason = "source_missing" if client is None or order is None else _scope_reason(invitation, client, order, assignment, reset["pk"], now=now)
+        reason = "source_missing" if client is None or order is None else (
+            _scope_reason(invitation, client, order, assignment, reset["pk"], now=now)
+            or _pre_shipment_reason(order))
         if reason:
             invitation.state = "failed"
             invitation.last_error = reason
@@ -320,6 +366,13 @@ def process_consent_invitation(invitation_id):
         if not permission or _current_source(client, invitation.provider_namespace, now,
             reset_boundary=reset["reset_after_message_id"], lock=True) is None:
             return "waiting_window"
+        reason, hold_state = _promotion_send_check(invitation, client, order, reset, now=now)
+        if reason:
+            invitation.last_error = reason
+            if not hold_state:
+                invitation.state = "failed"
+            invitation.save(update_fields=["state", "last_error", "updated_at"])
+            return hold_state or "failed"
         invitation.state = "processing"
         invitation.attempts += 1
         invitation.lease_token = secrets.token_hex(24)
@@ -327,13 +380,23 @@ def process_consent_invitation(invitation_id):
         invitation.provider_started_at = now
         invitation.save(update_fields=["state", "attempts", "lease_token", "lease_until", "provider_started_at", "updated_at"])
         token = invitation.lease_token
+    boundary_result = {}
     try:
         delivery = send_quick_replies(settings_obj, invitation.recipient_igsid,
             consent_quick_reply_message(invitation), allow_text_fallback=False,
-            permission_boundary_factory=lambda: _send_boundary(invitation.pk, token, permission))
+            permission_boundary_factory=lambda: _send_boundary(invitation.pk, token, permission, boundary_result))
         mid = normalize_provider_message_id(getattr(delivery, "provider_message_id", ""))
         outcome = "sent" if delivery.ok and mid else "unknown" if delivery.ok or delivery.kind in {"unknown", "transient", "ambiguous"} else "failed"
         error = "" if outcome == "sent" else "provider_outcome_unknown" if outcome == "unknown" else str(delivery.kind or "provider_failed")[:80]
+        if delivery.kind == "cancelled" and boundary_result.get("reason"):
+            error = boundary_result["reason"]
+            if mid or getattr(delivery, "provider_message_id", ""):
+                # A receipt claim contradicts a known unsent denial. Preserve
+                # the ambiguous attempt permanently rather than reopening it.
+                outcome, error = "unknown", "provider_outcome_unknown"
+            # A claimed attempt cannot return to PENDING under the physical
+            # ledger guard. This known unsent denial is terminal FAILED; only
+            # pre-claim holds can wait and retry without creating an attempt.
     except Exception:
         mid, outcome, error = "", "unknown", "provider_exception"
     with transaction.atomic():
@@ -341,13 +404,14 @@ def process_consent_invitation(invitation_id):
         if invitation.state != "processing" or invitation.lease_token != token:
             return invitation.state
         invitation.state = outcome
-        invitation.provider_message_id = mid if outcome == "sent" else ""
+        invitation.provider_message_id = mid if outcome in {"sent", "unknown"} else ""
         invitation.sent_at = timezone.now() if outcome == "sent" else None
         invitation.receipt_hmac = _mac("post-purchase-consent-receipt.v1", _receipt_body(invitation), invitation.signing_key_id) if outcome == "sent" else ""
         invitation.last_error = error
         invitation.lease_token = ""
         invitation.lease_until = None
-        invitation.save(update_fields=["state", "provider_message_id", "receipt_hmac", "sent_at", "last_error", "lease_token", "lease_until", "updated_at"])
+        fields = ["state", "provider_message_id", "receipt_hmac", "sent_at", "last_error", "lease_token", "lease_until", "updated_at"]
+        invitation.save(update_fields=fields)
     return outcome
 
 
@@ -538,15 +602,23 @@ def reconcile_consent_invitations(*, limit=1):
     """Drain a bounded natural queue; terminal UNKNOWN is never reconsidered."""
     if not _enabled():
         return {"mode": "off", "considered": 0, "states": {}}
+    from management.services.ig_service_complaints import HOLD_REASON
     now = timezone.now()
     rows = IgMarketingConsentInvitation.objects.filter(
         Q(state="processing", lease_until__lte=now) | Q(state="processing", lease_until__isnull=True) | Q(state="pending"))
     # Pending requests only compete for the drain while an actual inbound
     # customer window is open. Closed old windows cannot starve fresh clients.
     rows = rows.filter(Q(state="processing") | Q(client__last_user_message_at__gte=now - WINDOW))
+    rows = rows.filter(Q(state="processing") | Q(
+        source_message__provider_created_at__gt=now - WINDOW,
+        source_message__provider_created_at__lte=now))
     rows = rows.filter(Q(state="processing") | Q(expires_at__gt=now,
         client__privacy_erasure_started_at__isnull=True, client__hidden_at__isnull=True,
         client__bot_paused=False, client__manager_takeover=False))
+    # A service hold is known unsent. Its finite cooldown keeps one customer's
+    # unresolved issue from taking every bounded drain slot from other clients.
+    rows = rows.exclude(state="pending", last_error__in=[HOLD_REASON, "source_reply_pending"],
+        updated_at__gt=now - SERVICE_HOLD_BACKOFF)
     selected = list(rows.order_by("issued_at", "pk").values_list("pk", flat=True)[:max(1, min(int(limit or 1), 20))])
     states = {}
     for invitation_id in selected:

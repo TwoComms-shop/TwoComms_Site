@@ -286,6 +286,11 @@ def ugc_service_case_reason(client, *, order=None, using=None) -> str:
         or getattr(getattr(client, "_state", None), "db", None)
         or "default"
     )
+    from management.services.ig_service_complaints import promotion_service_hold_reason
+
+    complaint_reason = promotion_service_hold_reason(client, using=db_alias)
+    if complaint_reason:
+        return complaint_reason
     unresolved_cases = IgPostSaleCase.objects.using(db_alias).filter(
         client_id=client.pk
     ).exclude(

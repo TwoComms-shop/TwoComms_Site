@@ -211,7 +211,9 @@ def _requested_topics(text, parsed_topics=()):
             r"|^\s*(?:фото|photos?|pictures?|images?)\s*\?\s*$", clause, re.I))
         if presentation:
             topics.add("info:presentation")
-        markers = list(re.finditer(r"скільки|сколько|яка|який|какой|коли|когда|where|when|how|what|чи\s|ли\s|підкаж|подскаж|\btell\b", clause, re.I))
+        markers = list(re.finditer(
+            r"\b(?:скільки|сколько|яка|який|какой|коли|когда|where|when|how|what|чи|ли|tell)\b"
+            r"|\b(?:підкаж|подскаж)", clause, re.I))
         asking = ("?" in clause and not markers) or any(
             not _locally_negated(clause, marker.start()) and not any(
                 negation.end() == len(clause[:marker.start()].rstrip())
@@ -753,7 +755,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             kinds.extend(sorted(payment_kinds))
             if "payment:claim" in payment_kinds:
                 payment_claim_ids.add(source["message_id"])
-        if "info:presentation" in topics:
+        if any(topic in topics for topic in ("info:presentation", "info:price")):
             commerce_present = True
         if topics:
             kinds.extend(topics)

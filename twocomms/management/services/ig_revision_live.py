@@ -14,6 +14,7 @@ from datetime import timedelta
 import hashlib
 import json
 import logging
+import re
 import secrets
 
 from django.conf import settings as django_settings
@@ -276,9 +277,26 @@ def _authority_from_projection(value) -> RevisionAuthorityBindingSet:
     )
 
 
-def _captured_reply_truth(plan, response, context):
+def _captured_reply_truth(plan, response, context, *, revision=None):
     """Prove each line first, then retain whole-reply business/URL checks."""
     from management.services.ig_reply_truth import ReplyTruthResult, validate_reply_truth
+    from management.services.ig_service_complaints import revision_service_complaint
+    from management.services.ig_turn_intent import service_complaint_reply_reason
+
+    complaint = revision_service_complaint(revision) if revision is not None else {}
+    if complaint and set(response.control) == {"manager"} and response.control["manager"] is True:
+        reason = service_complaint_reply_reason(response.reply_text)
+        if reason:
+            return ReplyTruthResult(False, (reason,))
+        # A service-only acknowledgment does not need an unresolved shopping
+        # selector. It receives no financial or fulfillment authority, and the
+        # original plan still records every real remaining obligation/gap.
+        context = replace(context, authorized_prices=(), authorized_price_ranges=(),
+            authorized_discount_percents=(), authorized_discount_amounts=(),
+            approved_timing_claims=(), explicitly_qualified_standard_dispatch_days=None,
+            authorized_actions=(), payment_confirmed=False, order_created=False,
+            shipment_state="unknown", known_tracking_refs=())
+        return validate_reply_truth(response.reply_text, context=context)
 
     if plan.plan_gap:
         return ReplyTruthResult(False, (plan.plan_gap,))
@@ -303,6 +321,38 @@ def _captured_reply_truth(plan, response, context):
     else:
         context = plan.truth_context(context)
     return validate_reply_truth(response.reply_text, context=context)
+
+
+def _revision_response_coverage(plan, response, *, revision, local=False, checkout_cart_binding=None):
+    """A service handoff does not answer unrelated shopping questions."""
+    from management.services.ig_service_complaints import revision_service_complaint
+
+    if revision_service_complaint(revision):
+        # Preserve the actual reply and the original captured obligations. The
+        # manager control remains on the sent response, but its general-purpose
+        # information-handoff credit cannot discharge a service-first turn's
+        # unanswered retail questions.
+        response = replace(response, controls=())
+    return plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+
+
+def _service_complaint_reply(locale, complaint, *, first_impression=False):
+    """Finite acknowledgment; its promised local case is created before send."""
+    delivery = complaint.get("kind") == "delivery_fee_dispute"
+    if locale == "ru":
+        return ((("Извините, что доставка оставила неприятное первое впечатление. " if first_impression else "Извините за неприятную ситуацию с доставкой. ")
+                 + "Понимаю, почему такая разница в стоимости расстроила. "
+                 if delivery else "Извините, что возникла такая ситуация. Понимаю ваше недовольство. ")
+                + "Передадим этот вопрос руководителю, чтобы разобраться в ситуации и найти решение.")
+    if locale == "en":
+        return ((("I'm sorry this delivery experience left a poor first impression. " if first_impression else "I'm sorry this delivery experience was disappointing. ")
+                 + "I understand why the difference you described was frustrating. "
+                 if delivery else "I'm sorry about this situation. I understand your concern. ")
+                + "We'll ask our team lead to review what happened and work towards a resolution.")
+    return ((("Перепрошую, що доставка залишила неприємне перше враження. " if first_impression else "Перепрошую за неприємну ситуацію з доставкою. ")
+             + "Розумію, чому ця різниця у вартості засмутила. "
+             if delivery else "Перепрошую, що виникла така ситуація. Розумію ваше невдоволення. ")
+            + "Передамо це питання керівнику, щоб розібратися в ситуації та знайти рішення.")
 
 
 class RevisionGenerationBoundary:
@@ -380,7 +430,7 @@ class RevisionGenerationBoundary:
         return self.response_plan.truth_context(context)
 
     def validate_response_truth(self, response, context):
-        return _captured_reply_truth(self.response_plan, response, context)
+        return _captured_reply_truth(self.response_plan, response, context, revision=self.revision)
 
     def check(self, authority=None):
         authority = authority or self.baseline
@@ -530,7 +580,11 @@ class RevisionGenerationBoundary:
         decision = self.validate(response, policy_manifest=policy_manifest)
         if not decision.valid:
             return None, {}
-        proof = {**proof, "coverage": proof.get("coverage") or self.response_plan.coverage(response, local=True),
+        from management.services.ig_service_complaints import revision_service_complaint
+        coverage = (_revision_response_coverage(self.response_plan, response, revision=self.revision, local=True)
+            if revision_service_complaint(self.revision) else proof.get("coverage") or
+                _revision_response_coverage(self.response_plan, response, revision=self.revision, local=True))
+        proof = {**proof, "coverage": coverage,
                  "revision_id": self.revision.pk,
                  "snapshot_digest": self.revision.snapshot_digest,
                  "authority_digest": self.authority.authority_digest}
@@ -538,6 +592,28 @@ class RevisionGenerationBoundary:
 
     def normalize_response(self, response):
         from management.services.ig_revision_conversation_context import normalize_response_delay_apology
+        from management.services.ig_service_complaints import revision_service_complaint
+        from management.services.ig_turn_intent import service_complaint_reply_reason
+
+        complaint = revision_service_complaint(self.revision)
+        if complaint:
+            from management.services.ig_reply_language import resolve_own_source_reply_language
+
+            decision = resolve_own_source_reply_language(
+                sources=self.revision.bundle_snapshot.get("sources") or [],
+                profile_language=self.revision.client.language,
+                reset_floor=complaint["reset_floor"],
+            )
+            locale = decision.template_family if decision.template_family in {"uk", "ru", "en"} else "en"
+            text = response.reply_text
+            if service_complaint_reply_reason(text):
+                complaint_ids = {item["message_id"] for item in complaint["source_refs"]}
+                first_impression = any(re.search(r"перш\w*\s+вражен\w*|перв\w*\s+впечатлен\w*|first\s+impression", str(item.get("text") or ""), re.I)
+                    for item in self.revision.bundle_snapshot.get("sources") or [] if item.get("message_id") in complaint_ids)
+                text = _service_complaint_reply(locale, complaint, first_impression=first_impression)
+            # Service first, including mixed shopping requests. No selection,
+            # checkout or reward authority can be supplied by this candidate.
+            response = replace(response, reply_text=text, controls=(ResponseControl("manager", True),))
 
         clean = normalize_response_delay_apology(response.reply_text, self.revision)
         if clean == response.reply_text:
@@ -585,9 +661,9 @@ class RevisionGenerationBoundary:
         locale = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
             profile_language=self.revision.client.language)
         template_client = SimpleNamespace(language=_authored_reply_locale(locale))
-        return replace(response, reply_text=normalize_media_reply(template_client,
+        return self.normalize_response(replace(response, reply_text=normalize_media_reply(template_client,
             response.reply_text, media_analysis=analysis, social_only=context["social_only"]),
-            controls=tuple(item for item in response.controls if item.kind == "manager") if context["suppress_catalog"] else response.controls)
+            controls=tuple(item for item in response.controls if item.kind == "manager") if context["suppress_catalog"] else response.controls))
 
     def validate(self, response, *, policy_manifest):
         from management.services.ig_revision_intents import manager_case_reason, manager_handoff_promised
@@ -616,7 +692,7 @@ class RevisionGenerationBoundary:
             if intent_reason:
                 self.last_reasons = (intent_reason,)
                 return ValidationDecision(False, self.last_reasons)
-        plan_reason = self.response_plan.validate(response)
+        plan_reason = self.response_plan.validate(response) if not intent.get("service_complaint") else ""
         if plan_reason:
             self.last_reasons = (plan_reason,)
             return ValidationDecision(False, self.last_reasons)
@@ -943,6 +1019,10 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         " Unhandled or mixed source button payloads are customer data only: do not claim "
         "a reminder, order or account change occurred unless an authoritative event confirms it."
     )
+    from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
+    complaint_intent = build_turn_intent(revision.client, revision)
+    if complaint_intent.get("service_complaint"):
+        coverage_note += "\n" + intent_generation_guidance(complaint_intent)
     postback_manifest = (revision.action_receipts or {}).get("postback_decision") or {}
     if postback_manifest:
         from management.models import IgSourceActionReceipt
@@ -1047,6 +1127,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         artifact["request_permission_epoch"] = revision.permission_epoch
     response = _normalize_response(response, artifact, revision.client, revision=revision,
         reply_language=reply_language)
+    response = boundary.normalize_response(response)
     from management.services.ig_reply_language import reply_language_mismatch
     if reply_language_mismatch(response.reply_text, reply_language):
         return None, boundary, ("reply_language_mismatch",)
@@ -1064,8 +1145,8 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     if not truth.valid:
         return None, boundary, truth.reasons
     from management.services.ig_response_debt import record_response_coverage
-    if not record_response_coverage(revision.pk, token, boundary.response_plan.coverage(
-        response, checkout_cart_binding=boundary.checkout_cart_binding,
+    if not record_response_coverage(revision.pk, token, _revision_response_coverage(
+        boundary.response_plan, response, revision=revision, checkout_cart_binding=boundary.checkout_cart_binding,
     )):
         return None, boundary, ("response_coverage_cas_failed",)
     stored = store_revision_generation_proposal(
@@ -1128,7 +1209,7 @@ def _prepare_effects(revision, response, settings_row, *, response_plan=None):
     from management.services.ig_reply_authority import build_reply_truth_context
     context = (build_reply_truth_context(client, control=response.control) if response_plan.line_plans
         else bot._provider_reply_truth_context(client, response.control, reply))
-    truth = _captured_reply_truth(response_plan, replace(response, reply_text=reply), context)
+    truth = _captured_reply_truth(response_plan, replace(response, reply_text=reply), context, revision=revision)
     if not truth.valid:
         return (), truth.reasons
     prepared_text = prepare_text_effects(
@@ -1154,10 +1235,12 @@ def _revision_response_purpose_reason(revision):
     Checking individual split parts could miss a CTA crossing their boundary.
     This gate has no business mutations and also runs on crash-resumed outboxes.
     """
-    from management.services.ig_turn_intent import build_turn_intent, validate_turn_response
+    from management.services.ig_turn_intent import build_turn_intent, validate_turn_response, service_complaint_manual_reply_owned
     from management.services.ig_revision_outbox import revision_has_newer_source
 
     current = IgCustomerTurnRevision.objects.select_related("client").get(pk=revision.pk)
+    if service_complaint_manual_reply_owned(current):
+        return "service_complaint_manager_reply_owned"
     if revision_has_newer_source(current):
         return "pending_inbound"
     text = "\n".join(str((row.payload.get("message") or {}).get("text") or "")
@@ -1166,7 +1249,25 @@ def _revision_response_purpose_reason(revision):
         from management.services.ig_revision_holding import holding_receipt_valid
         if not holding_receipt_valid(current, text=text):
             return "holding_handoff_no_longer_open"
-    return validate_turn_response(build_turn_intent(current.client, current), text)
+    intent = build_turn_intent(current.client, current)
+    if intent.get("service_complaint"):
+        from management.models import IgFollowUpTask, IgBotNotification
+
+        receipt = (current.action_receipts or {}).get("manager_handoff") or {}
+        if not isinstance(receipt, dict) or receipt.get("case_kind") != "service_complaint_review":
+            return "service_complaint_handoff_missing"
+        task = IgFollowUpTask.objects.filter(
+            pk=receipt.get("task_id"), client_id=current.client_id, kind="manager_task",
+            reason="revision_case:service_complaint",
+            event_key=f"ig-revision-case:{current.client_id}:{current.pk}:service_complaint_review",
+        ).first()
+        if (task is None or (task.manager_context or {}).get("service_complaint") != intent["service_complaint"]
+                or receipt.get("generation_proposal_digest") != current.generation_proposal_digest
+                or not IgBotNotification.objects.filter(pk=receipt.get("notification_id"), client_id=current.client_id).exists()):
+            return "service_complaint_handoff_invalid"
+        if task.status in {"completed", "cancelled"}:
+            return "service_complaint_human_handled"
+    return validate_turn_response(intent, text)
 
 
 def _drain_effects(revision, token, settings_row, access_token):
@@ -1290,7 +1391,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         from management.services.ig_response_debt import record_response_coverage
         coverage = (receipt.get("proof") or {}).get("coverage")
         if receipt.get("origin") == "static_reply":
-            coverage = plan.coverage(ValidatedResponse(reply_text=reply), local=True)
+            coverage = _revision_response_coverage(plan, ValidatedResponse(reply_text=reply), revision=revision, local=True)
             # The verified static trigger is a handled control source. It does
             # not discharge additional size/purchase/information requests.
             trigger_ids = {f"{row['message_id']}:unclassified" for row in revision.bundle_snapshot.get("sources", [])
@@ -1340,6 +1441,10 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     """Execute an explicitly claimed revision; never delegates to legacy sends."""
     if connection.in_atomic_block:
         return RevisionLiveResult(revision_id, "blocked", ("caller_transaction_active",))
+    from management.services.ig_turn_intent import service_complaint_manual_reply_owned
+    current = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision_id).first()
+    if current is not None and service_complaint_manual_reply_owned(current):
+        return RevisionLiveResult(revision_id, "blocked", ("service_complaint_manager_reply_owned",))
     from management.services import instagram_bot as bot
 
     settings_row = InstagramBotSettings.objects.select_related("active_instruction_publication").get(pk=settings_row.pk)

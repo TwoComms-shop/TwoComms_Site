@@ -146,7 +146,7 @@ class MarketingConsentAuthorityTests(_MarketingConsentFixture, TestCase):
         self.assertEqual(payload["recipient"]["id"], self.customer.igsid)
         self.assertEqual(payload["message"]["text"], invitation.message_snapshot)
         self.assertEqual([item["payload"] for item in payload["message"]["quick_replies"]],
-            [invitation.accept_payload, invitation.decline_payload])
+            [invitation.accept_payload])
         self.assertNotIn("tag", payload)
         self.assertEqual(invitation.provider_message_id, f"mid.invite.{invitation.pk.hex}")
         self.assertIsNotNone(invitation.sent_at)
@@ -184,6 +184,41 @@ class MarketingConsentAuthorityTests(_MarketingConsentFixture, TestCase):
             outcome = consent.handle_consent_reply(source)
             self.assertTrue(outcome is None or outcome.reason == "business_consent_invalid")
         self.assertEqual(IgMarketingConsentAnswer.objects.count(), 0)
+        self.assert_no_permission()
+
+    def test_ignoring_and_unrelated_positive_negative_or_empty_text_never_answers(self):
+        invitation = self.queue()
+        self.assertEqual(self.deliver(invitation)[0], "sent")
+        self.assert_no_permission()  # Merely receiving or ignoring the card.
+        for text in ("Так", "Да", "Yes", "Так, хочу", "Yes, keep me updated", "Ні",
+                "Не зараз", "No", "Where is my order?", "Дякую!", "", "   "):
+            with self.subTest(text=text):
+                source = self.consent_source(self.customer, text=text)
+                self.assertIsNone(consent.handle_consent_reply(source))
+                self.assert_no_permission()
+        self.assertEqual(IgMarketingConsentAnswer.objects.count(), 0)
+
+    def test_frozen_legacy_pending_body_and_payloads_render_one_affirmative_without_rewrite(self):
+        old_copy = ("Want details of our story bonus after your order arrives, plus TwoComms news and offers? It is optional, and you can opt out anytime.",
+            "Yes, keep me updated", "Not now", "Opt out")
+        with patch.dict(consent.COPY, {"en": old_copy}):
+            invitation = self.queue()
+        invitation.refresh_from_db()
+        snapshot = consent._snapshot(invitation)
+        self.assertEqual(invitation.message_snapshot, old_copy[0])
+        self.assertTrue(consent._invitation_valid(invitation))
+        rendered = consent.consent_quick_reply_message(invitation)
+        self.assertEqual(rendered.text, old_copy[0])
+        self.assertEqual(len(rendered.quick_replies), 1)
+        self.assertEqual(rendered.quick_replies[0].payload, invitation.accept_payload)
+        self.assertEqual(self.deliver(invitation)[0], "sent")
+        invitation.refresh_from_db()
+        self.assertEqual(consent._snapshot(invitation), snapshot)
+        self.assertTrue(consent._invitation_valid(invitation))
+        # An older delivered card's signed decline is still a real refusal.
+        outcome = consent.handle_consent_reply(self.reply(invitation, "decline"))
+        self.assertEqual(outcome.reason, "business_consent_decline")
+        self.assertEqual(outcome.quick_replies, ())
         self.assert_no_permission()
 
     def test_answer_must_be_owned_admitted_sender_mid_namespace_and_time(self):
@@ -314,6 +349,299 @@ class MarketingConsentAuthorityTests(_MarketingConsentFixture, TestCase):
         self.assertEqual(invitation.provider_message_id, "")
         self.assert_no_permission()
 
+    def test_new_invitation_only_queues_before_shipment_or_any_parcel_history(self):
+        from management.ig_bot_models import IgOrderShipment
+        cases = (("status", "ship"), ("status", "done"), ("status", "cancelled"),
+            ("tracking_number", "20450000000001"), ("nova_poshta_document_ref", "document-proof"),
+            ("shipment_status", "Отримано"), ("tracking_status_code", 9),
+            ("tracking_terminal_at", timezone.now()), ("journal", "20450000000002"))
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                customer, order, assignment, _source = self.native_purchase()
+                if field == "journal":
+                    IgOrderShipment.objects.create(order=order, tracking_number=value,
+                        direction=IgOrderShipment.Direction.OUTBOUND, purpose=IgOrderShipment.Purpose.INITIAL)
+                else:
+                    setattr(order, field, value)
+                    order.save(update_fields=[field])
+                self.assertIsNone(consent.queue_post_purchase_consent(customer, order, assignment, now=self.now))
+                self.assertFalse(IgMarketingConsentInvitation.objects.filter(order=order).exists())
+        self.order.status = "prep"
+        self.order.save(update_fields=["status"])
+        self.assertIsNotNone(consent.queue_post_purchase_consent(self.customer, self.order, self.assignment, now=self.now))
+
+    def test_shipment_after_queue_fails_known_unsent_without_provider_receipt(self):
+        invitation = self.queue()
+        self.order.status = "ship"
+        self.order.save(update_fields=["status"])
+        state, http = self.deliver(invitation)
+        self.assertEqual(state, "failed")
+        http.assert_not_called()
+        self.assertEqual((invitation.last_error, invitation.attempts, invitation.provider_message_id),
+            ("purchase_already_shipped", 0, ""))
+        self.assert_no_permission()
+
+    def test_already_shipped_pending_scope_is_terminal_even_after_reply_window_closes(self):
+        invitation = self.queue()
+        self.order.status = "done"
+        self.order.save(update_fields=["status"])
+        with patch("django.utils.timezone.now", return_value=self.now + timedelta(days=1)), patch(
+                "management.services.instagram_bot._provider_http") as http:
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+        http.assert_not_called()
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.last_error, invitation.attempts, invitation.provider_message_id),
+            ("purchase_already_shipped", 0, ""))
+        self.assert_no_permission()
+
+    def test_shipment_between_claim_and_http_boundary_blocks_real_socket(self):
+        invitation = self.queue()
+        real_adapter = consent.send_quick_replies
+        def ship_before_boundary(*args, **kwargs):
+            self.order.tracking_number = "20450000000003"
+            self.order.save(update_fields=["tracking_number"])
+            return real_adapter(*args, **kwargs)
+        with patch.object(consent, "send_quick_replies", side_effect=ship_before_boundary), patch(
+                "management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http") as http:
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+        http.assert_not_called()
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.last_error, invitation.provider_message_id), ("purchase_already_shipped", ""))
+        self.assert_no_permission()
+
+    def test_signed_historical_accept_and_separate_revoke_remain_valid_after_shipment(self):
+        invitation = self.queue()
+        self.assertEqual(self.deliver(invitation)[0], "sent")
+        self.order.status = "done"
+        self.order.save(update_fields=["status"])
+        accepted = consent.handle_consent_reply(self.reply(invitation))
+        self.assertEqual(accepted.reason, "business_consent_accept")
+        self.assertEqual(len(accepted.quick_replies), 1)
+        self.assertEqual(accepted.quick_replies[0].payload, invitation.revoke_payload)
+        self.assertTrue(consent.has_post_purchase_consent(self.customer, self.order.pk))
+        revoked = consent.handle_consent_reply(self.reply(invitation, "revoke"))
+        self.assertEqual(revoked.reason, "business_consent_revoke")
+        self.assertEqual(revoked.quick_replies, ())
+        self.assertEqual(list(invitation.answers.order_by("pk").values_list("choice", flat=True)), ["accept", "revoke"])
+        self.assert_no_permission()
+
+    def test_current_owned_complaint_cannot_become_an_invitation_source(self):
+        self.consent_source(self.customer, text="My order arrived damaged.", at=self.now, status="pending")
+        self.assertIsNone(consent.queue_post_purchase_consent(self.customer, self.order, self.assignment, now=self.now))
+        self.assertFalse(IgMarketingConsentInvitation.objects.exists())
+        self.assert_no_permission()
+
+    def test_current_complaint_holds_pending_without_claim_or_physical_attempt(self):
+        invitation = self.queue()
+        self.consent_source(self.customer, text="My order arrived damaged.")
+        state, http = self.deliver(invitation)
+        self.assertEqual(state, "service_hold")
+        http.assert_not_called()
+        self.assertEqual((invitation.state, invitation.last_error, invitation.attempts),
+            ("pending", "service_complaint_open", 0))
+        self.assertEqual(invitation.provider_message_id, "")
+        self.assertIsNone(invitation.provider_started_at)
+        self.assert_no_permission()
+
+    def test_complaint_arriving_at_http_boundary_fails_known_unsent_claim_without_replay(self):
+        invitation = self.queue()
+        real_adapter = consent.send_quick_replies
+        def complain_before_boundary(*args, **kwargs):
+            self.consent_source(self.customer, text="My order arrived damaged.", status="pending")
+            return real_adapter(*args, **kwargs)
+        with patch.object(consent, "send_quick_replies", side_effect=complain_before_boundary), patch(
+                "management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http") as http:
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+        http.assert_not_called()
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.state, invitation.last_error, invitation.attempts, invitation.lease_token),
+            ("failed", "service_complaint_open", 1, ""))
+        self.assertIsNone(invitation.lease_until)
+        self.assertIsNotNone(invitation.provider_started_at)
+        self.assertEqual((invitation.provider_message_id, invitation.receipt_hmac), ("", ""))
+        self.assert_no_permission()
+
+    def test_cancelled_boundary_with_returned_mid_is_unknown_and_never_reopened(self):
+        from management.services.ig_message_templates import TemplateDelivery
+        invitation = self.queue()
+        real_adapter = consent.send_quick_replies
+        def contradictory_receipt(*args, **kwargs):
+            self.consent_source(self.customer, text="My order arrived damaged.", status="pending")
+            actual = real_adapter(*args, **kwargs)
+            self.assertEqual(actual.kind, "cancelled")
+            return TemplateDelivery(False, "cancelled", "permission_changed",
+                provider_message_id="mid.consent.contradictory-partial")
+        with patch.object(consent, "send_quick_replies", side_effect=contradictory_receipt), patch(
+                "management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http") as http:
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "unknown")
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "unknown")
+        http.assert_not_called()
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.state, invitation.attempts, invitation.provider_message_id),
+            ("unknown", 1, "mid.consent.contradictory-partial"))
+        self.assertIsNotNone(invitation.provider_started_at)
+        self.assertIsNone(invitation.sent_at)
+        self.assertEqual(invitation.receipt_hmac, "")
+        self.assert_no_permission()
+
+    def test_optional_queue_waits_for_captured_user_processing_to_finish(self):
+        for status in ("pending", "processing"):
+            with self.subTest(status=status):
+                self.source.status = status
+                self.source.save(update_fields=["status"])
+                self.assertIsNone(consent.queue_post_purchase_consent(self.customer, self.order, self.assignment, now=self.now))
+                self.assertFalse(IgMarketingConsentInvitation.objects.exists())
+        self.source.status = "done"
+        self.source.save(update_fields=["status"])
+        self.assertIsNotNone(consent.queue_post_purchase_consent(self.customer, self.order, self.assignment, now=self.now))
+
+    def test_source_reprocessing_before_claim_waits_without_physical_attempt(self):
+        invitation = self.queue()
+        self.source.status = "processing"
+        self.source.save(update_fields=["status"])
+        state, http = self.deliver(invitation)
+        self.assertEqual(state, "waiting_source")
+        http.assert_not_called()
+        self.assertEqual((invitation.state, invitation.last_error, invitation.attempts),
+            ("pending", "source_reply_pending", 0))
+        self.source.status = "done"
+        self.source.save(update_fields=["status"])
+        self.assertEqual(self.deliver(invitation)[0], "sent")
+        self.assert_no_permission()
+
+    def test_source_reprocessing_at_boundary_fails_known_unsent_claim_without_replay(self):
+        invitation = self.queue()
+        real_adapter = consent.send_quick_replies
+        def processing_before_boundary(*args, **kwargs):
+            self.source.status = "processing"
+            self.source.save(update_fields=["status"])
+            return real_adapter(*args, **kwargs)
+        with patch.object(consent, "send_quick_replies", side_effect=processing_before_boundary), patch(
+                "management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http") as http:
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+        http.assert_not_called()
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.state, invitation.last_error, invitation.attempts),
+            ("failed", "source_reply_pending", 1))
+        self.assertIsNotNone(invitation.provider_started_at)
+        self.assertEqual(invitation.provider_message_id, "")
+        self.assert_no_permission()
+
+    def test_service_hold_cooldown_allows_next_customer_in_bounded_drain(self):
+        invitation = self.queue()
+        customer, order, assignment, _source = self.native_purchase()
+        eligible = consent.queue_post_purchase_consent(customer, order, assignment)
+        self.assertIsNotNone(eligible)
+        self.consent_source(self.customer, text="My order arrived damaged.")
+        with patch("management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http",
+                return_value=(200, '{"message_id":"mid.consent.next-customer"}')) as http:
+            first = consent.reconcile_consent_invitations(limit=1)
+            self.assertEqual((first["considered"], first["states"]), (1, {"service_hold": 1}))
+            http.assert_not_called()
+            second = consent.reconcile_consent_invitations(limit=1)
+            self.assertEqual((second["considered"], second["states"]), (1, {"sent": 1}))
+            self.assertEqual(consent.reconcile_consent_invitations(limit=1)["considered"], 0)
+        http.assert_called_once()
+        invitation.refresh_from_db()
+        eligible.refresh_from_db()
+        self.assertEqual((invitation.state, invitation.attempts, invitation.provider_message_id), ("pending", 0, ""))
+        self.assertEqual((eligible.state, eligible.provider_message_id), ("sent", "mid.consent.next-customer"))
+        with patch("django.utils.timezone.now", return_value=invitation.updated_at + consent.SERVICE_HOLD_BACKOFF), patch(
+                "management.services.instagram_bot._provider_http") as retry:
+            third = consent.reconcile_consent_invitations(limit=1)
+        retry.assert_not_called()
+        self.assertEqual((third["considered"], third["states"]), (1, {"service_hold": 1}))
+        self.assert_no_permission()
+
+    def test_closed_captured_source_window_cannot_starve_current_customer(self):
+        oldest = self.queue()
+        oldest.refresh_from_db()
+        old_snapshot = consent._snapshot(oldest)
+        old_receipt = (oldest.state, oldest.attempts, oldest.provider_message_id,
+            oldest.receipt_hmac, oldest.sent_at, oldest.provider_started_at, oldest.updated_at)
+        future = self.now + timedelta(days=1)
+        with patch("django.utils.timezone.now", return_value=future):
+            customer, order, assignment, _stale_source = self.native_purchase()
+            current_source = self.consent_source(customer, at=future)
+            customer.last_user_message_at = current_source.provider_created_at
+            customer.save(update_fields=["last_user_message_at"])
+            eligible = consent.queue_post_purchase_consent(customer, order, assignment, now=future)
+            self.assertIsNotNone(eligible)
+            # A recent cache timestamp cannot revive the captured old source.
+            self.customer.last_user_message_at = future
+            self.customer.save(update_fields=["last_user_message_at"])
+            with patch("management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                    "management.services.instagram_bot._provider_http",
+                    return_value=(200, '{"message_id":"mid.consent.current-window"}')) as http:
+                result = consent.reconcile_consent_invitations(limit=1)
+                self.assertEqual((result["considered"], result["states"]), (1, {"sent": 1}))
+                self.assertEqual(consent.reconcile_consent_invitations(limit=1)["considered"], 0)
+        http.assert_called_once()
+        payload = json.loads(http.call_args.kwargs["data"].decode())
+        self.assertEqual(payload["recipient"]["id"], customer.igsid)
+        eligible.refresh_from_db()
+        oldest.refresh_from_db()
+        self.assertEqual((eligible.state, eligible.provider_message_id), ("sent", "mid.consent.current-window"))
+        self.assertEqual(consent._snapshot(oldest), old_snapshot)
+        self.assertEqual((oldest.state, oldest.attempts, oldest.provider_message_id,
+            oldest.receipt_hmac, oldest.sent_at, oldest.provider_started_at, oldest.updated_at), old_receipt)
+        self.assert_no_permission()
+
+    def test_abandoned_processing_is_reaped_even_when_captured_window_is_closed(self):
+        class ProcessCrash(BaseException):
+            pass
+        invitation = self.queue()
+        with patch("management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http", side_effect=ProcessCrash) as first_http:
+            with self.assertRaises(ProcessCrash):
+                consent.process_consent_invitation(invitation.pk)
+        first_http.assert_called_once()
+        with patch("django.utils.timezone.now", return_value=self.now + timedelta(days=1)), patch(
+                "management.services.instagram_bot._provider_http") as again:
+            result = consent.reconcile_consent_invitations(limit=1)
+        again.assert_not_called()
+        self.assertEqual((result["considered"], result["states"]), (1, {"unknown": 1}))
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.state, invitation.last_error), ("unknown", "abandoned_provider_attempt"))
+        self.assert_no_permission()
+
+    def test_unrelated_new_user_supersedes_captured_source_before_claim(self):
+        for source_time, status in ((timezone.now(), "pending"),
+                (self.source.provider_created_at - timedelta(seconds=1), "processing")):
+            with self.subTest(source_time=source_time, status=status):
+                customer, order, assignment, _source = self.native_purchase()
+                invitation = consent.queue_post_purchase_consent(customer, order, assignment, now=self.now)
+                self.assertIsNotNone(invitation)
+                self.consent_source(customer, text="Could you change the delivery address?", at=source_time, status=status)
+                state, http = self.deliver(invitation)
+                self.assertEqual(state, "failed")
+                http.assert_not_called()
+                self.assertEqual((invitation.last_error, invitation.attempts, invitation.provider_message_id),
+                    ("invitation_source_superseded", 0, ""))
+                self.assertFalse(consent.has_post_purchase_consent(customer, order.pk))
+
+    def test_unrelated_new_user_at_boundary_supersedes_old_card_without_socket(self):
+        invitation = self.queue()
+        real_adapter = consent.send_quick_replies
+        def reply_before_boundary(*args, **kwargs):
+            self.consent_source(self.customer, text="Could you change the delivery address?", status="pending")
+            return real_adapter(*args, **kwargs)
+        with patch.object(consent, "send_quick_replies", side_effect=reply_before_boundary), patch(
+                "management.services.instagram_bot.get_page_token", return_value="fixture-token"), patch(
+                "management.services.instagram_bot._provider_http") as http:
+            self.assertEqual(consent.process_consent_invitation(invitation.pk), "failed")
+        http.assert_not_called()
+        invitation.refresh_from_db()
+        self.assertEqual((invitation.last_error, invitation.provider_message_id), ("invitation_source_superseded", ""))
+        self.assert_no_permission()
+
     def test_missing_mid_unknown_has_no_replay_and_no_answer_permission(self):
         invitation = self.queue()
         state, http = self.deliver(invitation, response=(200, "{}"))
@@ -354,10 +682,23 @@ class MarketingConsentAuthorityTests(_MarketingConsentFixture, TestCase):
                 self.assertIsNotNone(invitation)
                 self.assertEqual(invitation.locale, locale)
                 self.assertEqual(invitation.source_message_id, source.pk)
-                self.assertEqual(self.deliver(invitation)[0], "sent")
+                self.assertEqual(invitation.message_snapshot, consent.COPY[locale][0])
+                self.assertIn("\n\n", invitation.message_snapshot)
+                self.assertNotIn("%", invitation.message_snapshot)
+                state, http = self.deliver(invitation)
+                self.assertEqual(state, "sent")
+                message = json.loads(http.call_args.kwargs["data"].decode())["message"]
+                self.assertEqual(message["text"], invitation.message_snapshot)
+                buttons = message["quick_replies"]
+                self.assertEqual([(button["title"], button["payload"]) for button in buttons],
+                    [(consent.COPY[locale][1], invitation.accept_payload)])
+                self.assertLessEqual(len(buttons[0]["title"]), 20)
                 reply = self.consent_source(customer, payload=invitation.accept_payload)
                 outcome = consent.handle_consent_reply(reply)
                 self.assertEqual(outcome.reply_text, consent.ACK[locale]["accept"])
+                self.assertEqual(len(outcome.quick_replies), 1)
+                self.assertEqual(outcome.quick_replies[0].title, consent.COPY[locale][3])
+                self.assertEqual(outcome.quick_replies[0].payload, invitation.revoke_payload)
 
     def test_order_permission_never_shares_another_order_or_native_future_basis(self):
         invitation, answer = self.grant_business_consent(self.customer, self.order, self.assignment)

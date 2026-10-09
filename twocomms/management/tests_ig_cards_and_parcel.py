@@ -763,6 +763,27 @@ class QuickReplyMessageTests(TestCase):
         for reply in payload["quick_replies"]:
             self.assertEqual(reply["content_type"], "text")
 
+    def test_quick_reply_body_preserves_paragraphs_but_titles_remain_single_line(self):
+        message = templates.QuickReplyMessage(
+            text="  Дякуємо  💜\r\n\r\n  Хочете\tотримувати пропозиції?  ",
+            fallback_text=" Дякуємо 💜\n\n Хочете отримувати пропозиції? ",
+            quick_replies=(templates.QuickReply(" Так,\nхочу ", "consent-signed-payload"),),
+        )
+        normalized = templates.normalize_quick_reply_message(message)
+        expected = "Дякуємо 💜\n\nХочете отримувати пропозиції?"
+        self.assertEqual(normalized.text, expected)
+        self.assertEqual(normalized.fallback_text, expected)
+        self.assertEqual(normalized.quick_replies[0].title, "Так, хочу")
+        self.assertEqual(templates.quick_reply_message_payload(normalized)["text"], expected)
+        self.assertIn(expected, normalized.projection_text)
+
+    def test_paragraph_message_still_obeys_utf8_byte_limit(self):
+        for body in ("💜" * 251, "💜" * 125 + "\n\n" + "💜" * 125):
+            with self.subTest(body_bytes=len(body.encode("utf-8"))):
+                with self.assertRaises(templates.TemplateValidationError):
+                    templates.normalize_quick_reply_message(templates.QuickReplyMessage(
+                        text=body, quick_replies=(templates.QuickReply("Так", "signed"),)))
+
     def test_all_seven_sizes_reach_the_provider(self):
         """Сім розмірів влазять у quick replies — саме тому це не кнопки карточки."""
         sent = {}

@@ -321,7 +321,7 @@ class ExternalUGCRewardTests(TransactionTestCase):
 
         with patch.object(
             IgUgcRewardDelivery.objects,
-            "get_or_create",
+            "create",
             side_effect=RuntimeError("forced outbox failure"),
         ), self.assertRaisesRegex(RuntimeError, "forced outbox failure"):
             award_external_ugc_reward(
@@ -967,7 +967,7 @@ class ExternalUGCRewardTests(TransactionTestCase):
 
         delivered_at = timezone.now() - timedelta(minutes=5)
         order = Order.objects.create(
-            order_number="TWC-UGC-LIFECYCLE-DETAIL",
+            order_number="TWC-UGC-DETAIL",
             full_name="UGC lifecycle buyer",
             phone="380501112299",
             city="Kyiv",

@@ -116,6 +116,49 @@ class ResponsePlanTests(SimpleTestCase):
                      "Ви обрали розмір L. Ціна 600 грн?", "Ви обрали розмір L. Не знаю ціну 600 грн."):
             self.assertIn("8:info:price", plan.coverage(self.response(text))["remaining"])
 
+    def test_fresh_price_question_survives_without_selected_product_or_purchase(self):
+        for text in ("Скільки коштує худі?", "Сколько стоит худи?", "How much does a hoodie cost?",
+                     "Підкажіть ціну цього худі", "Подскажите цену этого худи",
+                     "І ще хочу замовити худі, скільки коштує?"):
+            with self.subTest(text=text):
+                plan = build_response_plan(preferences={}, readiness={}, context=ReplyTruthContext(),
+                    sources=[{"message_id": 8, "role": "user", "text": text}])
+                self.assertEqual(plan.choices, {})
+                self.assertEqual(plan.authority["prices"], [])
+                self.assertEqual(plan.obligations, ({"id": "8:info:price", "kind": "info:price",
+                                                     "source_message_id": 8},))
+                coverage = plan.coverage(self.response("Який стиль вам подобається?"))
+                self.assertEqual(coverage["remaining"], ["8:info:price"])
+                self.assertEqual(coverage["disposition"], "recovery")
+                self.assertFalse(validate_reply_truth("Ціна 600 грн.", context=plan.truth_context(ReplyTruthContext())).valid)
+
+    def test_quoted_or_negated_price_request_does_not_create_fresh_commerce_debt(self):
+        for text in ("Клієнт написав «Скільки коштує худі?»", "Клиент написал «Сколько стоит худи?»",
+                     'They wrote "How much does a hoodie cost?"', "Не підкажіть ціну цього худі",
+                     "Не подскажите цену этого худи", "Don't tell me the price"):
+            with self.subTest(text=text):
+                plan = build_response_plan(preferences={}, readiness={}, context=ReplyTruthContext(),
+                    sources=[{"message_id": 8, "role": "user", "text": text}])
+                self.assertEqual(plan.obligations, ())
+
+    def test_reported_cost_statements_do_not_contain_interrogative_word_markers(self):
+        from management.services.ig_response_plan import _requested_topics
+
+        for text in ("Доставка коштувала 90 а взяли 120", "Вартість доставки 90 грн, взяли 120 грн",
+                     "Стоимость доставки была 90 грн, а взяли 120 грн", "The showroom cost was 600 UAH"):
+            with self.subTest(text=text):
+                self.assertEqual(_requested_topics(text), [])
+                plan = build_response_plan(preferences={}, readiness={}, context=ReplyTruthContext(),
+                    sources=[{"message_id": 8, "role": "user", "text": text}])
+                self.assertEqual(plan.obligations, ())
+
+    def test_service_only_complaint_does_not_create_commerce_obligations(self):
+        plan = build_response_plan(preferences={}, readiness={}, context=ReplyTruthContext(), sources=[{
+            "message_id": 8, "role": "user", "text": "Доставка коштувала 90 а взяли 120\n"
+                "Так 30 грн не багато, але на ровному місці\nОсь такі перші враження"}])
+        self.assertEqual(plan.obligations, ())
+        self.assertEqual(plan.coverage(self.response("Перепрошую за ситуацію з доставкою. Передамо звернення команді для перевірки."))["disposition"], "complete")
+
     def test_imperative_price_request_survives_generic_selector_reply(self):
         plan = self.topic_plan("L. Підкажіть ціну цього худі", priced=True)
         coverage = plan.coverage(self.response("Ви обрали розмір L. Який стиль вам подобається?"))

@@ -516,7 +516,10 @@ def _has_open_service_conversation(client: IgClient) -> bool:
     """
     from management.ig_bot_models import IgConversationAnalysisSnapshot
     from management.services.ig_post_sale import open_service_case
+    from management.services.ig_service_complaints import promotion_service_hold_reason
 
+    if promotion_service_hold_reason(client):
+        return True
     if open_service_case(client) is not None:
         return True
     from management.services.ig_analysis_materiality import (
@@ -2276,6 +2279,41 @@ def _ordinary_followup_provider_boundary(task_id, claim_token, *, prepared_text=
     yield _FollowupSendPermission(not reason, reason)
 
 
+@contextmanager
+def _followup_promotion_provider_boundary(task_id, claim_token, *, prepared_text=None, checked_at=None, **delivery):
+    """Check fresh service debt for every follow-up at each physical request."""
+    from management.services.ig_delivery_receipts import normalize_provider_message_ids
+    from management.services.ig_service_complaints import promotion_service_hold_reason
+
+    now = checked_at or _now()
+    ordinary = False
+    with transaction.atomic():
+        task = IgFollowUpTask.objects.select_for_update().select_related("client", "deal").filter(
+            pk=task_id, status=IgFollowUpTask.Status.PROCESSING,
+            claim_token=claim_token, claim_until__gt=now,
+        ).first()
+        reason = "followup_claim_changed" if task is None else promotion_service_hold_reason(task.client, now=now)
+        if task is not None:
+            ordinary = (task.event_payload or {}).get("origin") == "ordinary_intent_followup"
+        if reason and task is not None:
+            ids = list(normalize_provider_message_ids(delivery.get("provider_message_ids") or ()))
+            if ids or delivery.get("delivered_chunk_count", 0):
+                if ids:
+                    task.provider_message_id = ids[0]
+                task.last_error = f"partial delivery before {reason}"[:500]
+                _mark_ambiguous(task, reason, now=now)
+            else:
+                _mark_skipped(task, reason)
+    if reason:
+        yield _FollowupSendPermission(False, reason)
+    elif ordinary:
+        with _ordinary_followup_provider_boundary(task_id, claim_token, prepared_text=prepared_text,
+                checked_at=checked_at, **delivery) as allowed:
+            yield allowed
+    else:
+        yield _FollowupSendPermission(True)
+
+
 def _persist_provider_receipt(
     task_id: int,
     *,
@@ -2982,10 +3020,10 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                     permission_boundary_factory=lambda: customer_send_boundary(
                         s.pk, client.id, permission
                     ),
-                    **({"provider_request_boundary_factory": lambda **state: _ordinary_followup_provider_boundary(
+                    provider_request_boundary_factory=lambda **state: _followup_promotion_provider_boundary(
                         task.id, task_claim_token,
                         prepared_text=text, checked_at=now if clock_injected else None, **state,
-                    )} if (task.event_payload or {}).get("origin") == "ordinary_intent_followup" else {}),
+                    ),
                 )
             except Exception as exc:
                 task.last_error = repr(exc)[:500]
@@ -3009,15 +3047,40 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                     claim_token=task_claim_token,
                 ).first()
                 if owned is not None:
-                    _mark_skipped(owned, hint or "permission_epoch_changed")
+                    from management.services.ig_delivery_receipts import normalize_provider_message_ids
+
+                    partial_ids = list(normalize_provider_message_ids([
+                        provider_message_id, *(getattr(delivery, "provider_message_ids", ()) or ()),
+                    ]))
+                    if partial_ids or getattr(delivery, "delivered_chunk_count", 0):
+                        if partial_ids:
+                            owned.provider_message_id = partial_ids[0]
+                        owned.last_error = f"partial delivery before {hint or 'permission_epoch_changed'}"[:500]
+                        _mark_ambiguous(owned, hint or "permission_epoch_changed", now=now)
+                    else:
+                        _mark_skipped(owned, hint or "permission_epoch_changed")
                 continue
             if receipt_present:
                 if not ok:
-                    if kind == "permanent":
-                        _mark_skipped(task, hint or "send_blocked")
-                    else:
-                        task.last_error = (hint or kind or "delivery outcome unknown")[:500]
-                        _mark_ambiguous(task, hint or kind or "delivery_unknown", now=now)
+                    from management.services.ig_delivery_receipts import normalize_provider_message_ids
+
+                    partial_ids = list(normalize_provider_message_ids([
+                        provider_message_id, *(getattr(delivery, "provider_message_ids", ()) or ()),
+                    ]))
+                    with transaction.atomic():
+                        owned = IgFollowUpTask.objects.select_for_update().select_related("client", "deal").filter(pk=task.id).first()
+                        owns_claim = bool(owned and owned.status == IgFollowUpTask.Status.PROCESSING
+                            and owned.claim_token == task_claim_token)
+                        if owned is not None and (owns_claim or owned.status == IgFollowUpTask.Status.AMBIGUOUS):
+                            # A per-request boundary may already have stored the
+                            # first MID and cleared its claim. Never replace it
+                            # with the stale pre-send object's empty receipt.
+                            owned.provider_message_id = owned.provider_message_id or (partial_ids[0] if partial_ids else "")
+                            if kind == "permanent" and not owned.provider_message_id and not partial_ids and owns_claim:
+                                _mark_skipped(owned, hint or "send_blocked")
+                            else:
+                                owned.last_error = (hint or kind or "delivery outcome unknown")[:500]
+                                _mark_ambiguous(owned, hint or kind or "delivery_unknown", now=now)
                     continue
                 if not provider_message_id:
                     task.last_error = "provider receipt missing message id"

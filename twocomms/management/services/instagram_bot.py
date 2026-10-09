@@ -1952,7 +1952,7 @@ SALES_AUTOMATION_GUARDRAILS = (
 # no invented facts, escalation) and drops only the selling part.
 POST_SALE_SERVICE_GUARDRAILS_TEMPLATE = (
     "[POST-SALE SERVICE MODE — службове]\n"
-    "Клієнт уже купив, і по його замовленню відкрито сервісне звернення: {case}. "
+    "У клієнта активне сервісне звернення: {case}. "
     "Зараз це не продаж. Не пропонуй знижок, не пропонуй інший товар, "
     "не підганяй до нової покупки і не згадуй акції. "
     "Твоє завдання — довести сервісне звернення до кінця: підтвердити потрібний "
@@ -1973,6 +1973,14 @@ def automation_guardrails(client) -> str:
     """Pick the guardrail block that matches what this conversation is about."""
     case = None
     if getattr(client, "pk", None):
+        try:
+            from management.services.ig_service_complaints import promotion_service_hold_reason
+
+            complaint_hold = promotion_service_hold_reason(client)
+        except Exception:
+            complaint_hold = "service_context_unavailable"
+        if complaint_hold:
+            return POST_SALE_SERVICE_GUARDRAILS_TEMPLATE.format(case="скарга клієнта потребує перевірки менеджера")
         try:
             from management.services.ig_post_sale import open_service_case
 

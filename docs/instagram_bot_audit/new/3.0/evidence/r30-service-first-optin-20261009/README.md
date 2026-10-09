@@ -1,0 +1,21 @@
+# Сервисный приоритет · одна кнопка подписки
+
+Код/native acceptance принят; production receipt записывается после canonical SSH pull. [Контракт и подтверждённый инцидент](CONTRACT.md).
+
+## Реализация
+
+- Один bounded source reader распознаёт собственную реальную проблему UK/RU/EN: 90→120, повреждение, неполучение, неверный товар, негативный сервисный опыт. Цитаты, гипотезы, чужие истории, нейтральные вопросы и равные суммы не получают денежную authority. Read-only guard сохраняет жалобу после нейтрального ответа; разрешение или reset требуют настоящего canonical owner receipt/notification. Максимум9SELECT, overflow удерживает рекламу.
+- Actual sealed complaint независимо от model manager control создаёт source-bound service task/queued notification/immutable receipt до HTTP. Уместное извинение и обещание проверки руководителем нормализуются внутри существующего budget; нет автоматического возврата, решения руководства, суммы компенсации или лишнего Gemini запроса. Old source-bound human disposition блокирует дублирование, в том числе после completed/cancelled task.
+- UGC, review offer, follow-up, optional CTA и consent проверяют свежую жалобу до analysis и на каждой физической отправке. Первый настоящий MID сохраняется при поздней остановке/partial; AMBIGUOUS/UNKNOWN не повторяются. Failure finalization перечитывает task под row lock, не перезаписывает его устаревшей копией.
+- Новые UK/RU/EN consent сообщения — благодарность💜, аккуратные абзацы, одна положительная кнопка. Только paid/current-owned order до любого shipment, обработанный собственный USER и доступное стандартное окно. Не нажал/обычный текст/другое сообщение — нет согласия. Старые signed decline/revoke и immutable bodies сохранены. Pre-claim hold PENDING/0, late known denial terminal FAILED/1, contradictory MID UNKNOWN; fair finite cooldown и reaper не дают старой карточке блокировать очередь.
+- Original response plan удерживает настоящий вопрос о цене без выбранного товара. Сервисный manager control не получает credit за ответ о цене; непокрытые вопросы остаются durable work. Whole-word question markers не принимают «ли» в «взяли» или how в showroom за вопрос. Quote/negation/source/business gates сохранены.
+
+## Проверки
+
+**501 сценарий, 498 PASS / 3 existing manual concurrency skips, 118.573s**, CPython3.14.6/Django6.1, disposable MariaDB11.4.12 с настоящими scoped migrations и existing ledger triggers.17affected modules; **87 новых test methods**. Три старых follow-CTA concurrency placeholders явно требуют отдельный two-worker harness; они не объявлены пройденными. Новые service/consent/MID regressions выполнены без skips. Mock только внешнего provider HTTP/Gemini ответа; реальные revision/task/source/permission/receipt owners и DB transitions.
+
+Первый focused run:108executed/4FAIL/5ERROR; исправлены fixtures и настоящие consent transition/partial-MID проблемы, без снятия immutable/SQL guards. Второй121run:1FAIL uncovered mixed request. Первый458wide:2FAIL/1ERROR/3skips; two old UGC fixtures воспроизведены на original fe51309b9 (неисполняемый get_or_create patch и oversized order number), исправлены actual create/допустимый номер.500wide выявил10service regressions одной причины — ложное question marker в «взяли»; producer исправлен. Итоговый501run принят целиком в указанных границах. Original response-plan39/39 и original service suppression15/15 PASS — отдельные baseline, не добавлены к501.
+
+Django check PASS; real migration graph management/reviews/orders: no changes; AST19Python files/diff-check PASS. Initial makemigrations с test profile отключённых migrations закономерно не является schema proof; повтор выполнен с настоящим graph, без записи migrations. Local staticfiles directory warning относится к disposable checkout; UI acceptance проводится отдельно в production. Independent read-only reviewer принял source ownership, query bound, ledger transitions, receipt preservation и response-plan correction.
+
+UGC10→тот же unused15 только stars/purchased product/staff moderation; исходные90дней сохранены. Business consent не является native future grant и не открывает outside-window dispatch. Natural one-button customer delivery/approved15/redemption, remaining purposes/native account capability, checkpoint/full P7 остаются открытыми. Нет production fixtures, forced customer sends/backfill или provider health probes.

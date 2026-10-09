@@ -27,16 +27,24 @@ def tags_for_client(client: IgClient | None) -> set[str]:
     # not help — the bot still knows about discounts and can offer them in a
     # reactive reply.
     service_case = None
+    complaint_hold = ""
     if getattr(client, "pk", None):
+        try:
+            from management.services.ig_service_complaints import promotion_service_hold_reason
+
+            complaint_hold = promotion_service_hold_reason(client)
+        except Exception:
+            complaint_hold = "service_context_unavailable"
         try:
             from management.services.ig_post_sale import open_service_case
 
             service_case = open_service_case(client)
         except Exception:
             service_case = None
-    if service_case is not None:
+    if service_case is not None or complaint_hold:
         tags.discard("sales")
-        tags.update({"post_sale", "service", str(service_case.case_type)})
+        tags.update({"post_sale", "service"})
+        tags.add(str(service_case.case_type) if service_case is not None else "service_complaint")
     for value in (
         client.intent,
         client.stage,
@@ -61,7 +69,7 @@ def tags_for_client(client: IgClient | None) -> set[str]:
         tags.add("discount")
     if client.primary_objection == IgClient.Objection.SIZE:
         tags.add("fit")
-    if service_case is not None:
+    if service_case is not None or complaint_hold:
         # A stale price objection from the pre-purchase phase must not reopen the
         # discount playbook while an exchange is in progress.
         #
@@ -78,6 +86,8 @@ def tags_for_client(client: IgClient | None) -> set[str]:
         tags.update(objection_tags_for_client(client))
     except Exception as exc:
         logger.warning("Could not project objection playbook tags: %s", exc)
+    if service_case is not None or complaint_hold:
+        tags.difference_update({"sales", "discount", "price"})
     return tags
 
 

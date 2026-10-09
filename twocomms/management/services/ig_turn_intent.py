@@ -69,6 +69,102 @@ _UNREQUESTED_SELECTION = re.compile(
     r"(?:футболк|худі|худи|одяг|одежд|принт|модел|розмір|размер|t.?shirt|hoodie|clothing|clothes|print|model|size)"
     r"|(?:оберіть|виберіть|выберите|choose|pick).{0,40}(?:модел|розмір|размер|принт|model|size|print)", re.I,
 )
+_SERVICE_PROMOTION = re.compile(
+    r"(?:мож\w*|пропон\w*|надам\w*|дамо|подар\w*|отрима\w*|да[рм]\w*|предлаг\w*|сдела\w*|получи\w*|выда\w*|offer\w*|give|add|earn|get|receive|issue|we\s+can)"
+    r"[^.!?\n]{0,70}(?:бонус\w*|знижк\w*|скидк\w*|discount\w*|coupon\w*|промокод\w*|promo\s*code|bonus)"
+    r"|(?:бонус\w*|знижк\w*|скидк\w*|discount\w*|coupon\w*|промокод\w*|bonus)[^.!?\n]{0,55}(?:наступн\w*|следующ\w*|\bnext\b)"
+    r"|(?:покаж\w*|подел\w*|виклад\w*|опубл\w*|share|post|submit)[^.!?\n]{0,55}(?:сторі[сз]\w*|сторис\w*|\bstor(?:y|ies)\b|\bugc\b)"
+    r"|(?:відміт\w*|отмет\w*|tag)[^.!?\n]{0,45}@twocomms"
+    r"|(?:залиш\w*|остав\w*|leave|submit|write).{0,45}(?:відгук\w*|отзыв\w*|\breview\b)", re.I,
+)
+_COMPLAINT_APOLOGY = re.compile(r"перепрош\w*|вибач\w*|пробач\w*|извин\w*|прощен\w*|\bsorry\b|apolog\w*|regret\w*", re.I)
+_COMPLAINT_ACK = re.compile(r"неприєм\w*|неприят\w*|ситуац\w*|вражен\w*|впечатлен\w*|достав\w*|вартіст\w*|стоимост\w*|різниц\w*|разниц\w*|пошкодж\w*|damag\w*|delivery|shipping|discrepanc\w*|experience|situation|concern|frustrat\w*", re.I)
+_COMPLAINT_REVIEW = re.compile(
+    r"(?:переда\w*|перевір\w*|провер\w*|залуч\w*|подключ\w*|forward\w*|escalat\w*|review\w*|check\w*)"
+    r"[^.!?\n]{0,100}(?:команд\w*|менеджер\w*|керів\w*|руковод\w*|team|manager|leadership)"
+    r"|(?:команд\w*|менеджер\w*|керів\w*|руковод\w*|team|manager|leadership)[^.!?\n]{0,80}"
+    r"(?:перевір\w*|провер\w*|review\w*|check\w*)", re.I,
+)
+_UNVERIFIED_SERVICE_DECISION = re.compile(
+    r"(?:керів\w*|команд\w*|менеджер\w*|руковод\w*|team|manager|leadership)[^.!?\n]{0,45}"
+    r"(?:вже|уже|already)[^.!?\n]{0,35}(?:погод\w*|схвал\w*|одобр\w*|прочит\w*|approve\w*|read|seen)"
+    r"|\b(?:поверн(?:емо|у|уть|ули|ено)|верн(?:ём|ем|ут|ули)|вернул\w*|возместим|відшкодуємо|компенсуємо|компенсируем|refunded|reimbursed)\b"
+    r"|\b(?:we|i)\s*(?:will|['’]ll)\s+(?:refund|reimburse|compensate)\b"
+    r"|\b(?:refund|reimburse)\s+(?:you|your|the|\d)"
+    r"|\b(?:мож(?:емо|у|ете)|могу|можем|сможем|готов\w*|can|could|will|ready\s+to|able\s+to|happy\s+to)\s+"
+    r"(?:(?:вам|you|просто|just)\s+)?(?:повернути|відшкодувати|компенсувати|вернуть|возместить|компенсировать|refund|reimburse|compensate|cover\s+(?:the\s+)?(?:difference|extra\s+cost)|"
+    r"(?:arrange|issue|provide|give)\s+(?:(?:a|the|your)\s+)?(?:refund|reimbursement|compensation))\b"
+    r"|\b(?:refund|reimbursement|compensation)\s+(?:is|was|has\s+been|will\s+be)\s+"
+    r"(?:already\s+)?(?:arranged|approved|scheduled|processed|confirmed|guaranteed|paid|credited)\b"
+    r"|\b(?:повернення\w*|компенсаці\w*|возврат\w*|компенсаци\w*)[^.!?\n]{0,35}"
+    r"(?:узгодж\w*|погодж\w*|схвал\w*|запланован\w*|оформлен\w*|одобрен\w*|согласован\w*|запланирован\w*)", re.I,
+)
+
+
+def service_promotion_in_reply(text):
+    """Reject positive pitches, preserving ordinary thanks and negative mentions."""
+    from management.services.ig_reply_truth import _locally_negated
+
+    for sentence in re.split(r"[.!?;\n]+|\b(?:але|но|but)\b", str(text or ""), flags=re.I):
+        # Negation may address replacing the solution rather than the noun.
+        negative_replacement = re.search(r"(?:не\s+(?:буд\w*\s+)?(?:замін\w*|замен\w*|пропон\w*|предлаг\w*)|(?:will\s+not|won['’]t|do\s+not)\s+(?:replace|offer))", sentence, re.I)
+        for match in _SERVICE_PROMOTION.finditer(sentence):
+            if not negative_replacement and not _locally_negated(sentence, match.start()):
+                return True
+    return False
+
+
+def service_complaint_reply_reason(text):
+    value = _customer_text(text)
+    if service_promotion_in_reply(value):
+        return "service_complaint_disallows_promotion"
+    from management.services.ig_reply_truth import _locally_negated
+    for clause in re.split(r"[.!?;\n]+|\b(?:але|но|but)\b", value, flags=re.I):
+        for match in _UNVERIFIED_SERVICE_DECISION.finditer(clause):
+            before = clause[max(0, match.start() - 65):match.start()]
+            promise_negated = re.search(r"(?:cannot|can['’]t|не\s+мож\w*|не\s+мог\w*)[^,;.!?]{0,45}(?:promis\w*|обіц\w*|обещ\w*)[^,;.!?]*$", before, re.I)
+            action_negated = re.search(r"(?:cannot|can['’]t|won['’]t|не\s+мож\w*|не\s+мог\w*|не\s+готов\w*)\s*(?:to\s+)?$", before, re.I)
+            conditional_review = re.search(r"(?:перевір\w*|провер\w*|check\w*|review\w*)[^,;.!?]{0,35}(?:чи|ли|whether|if)[^,;.!?]*$", before, re.I)
+            if not _locally_negated(clause, match.start()) and not promise_negated and not action_negated and not conditional_review:
+                return "service_complaint_unverified_resolution"
+    if not _COMPLAINT_APOLOGY.search(value):
+        return "service_complaint_apology_missing"
+    if not _COMPLAINT_ACK.search(value):
+        return "service_complaint_acknowledgement_missing"
+    if not _COMPLAINT_REVIEW.search(value):
+        return "service_complaint_review_missing"
+    return ""
+
+
+def service_complaint_manual_reply_owned(revision):
+    """A source-bound manual disposition blocks automation, not service debt."""
+    from management.services.ig_service_complaints import revision_service_complaint
+    from management.services.ig_response_debt import DEBT_REASON
+
+    proof = revision_service_complaint(revision)
+    if not proof:
+        return False
+    receipt = (revision.action_receipts or {}).get("response_debt") or {}
+    if not isinstance(receipt, dict):
+        return False
+    if receipt.get("owner") != "manager" or receipt.get("disposition") != "manager_reply":
+        return False
+    task = IgFollowUpTask.objects.filter(
+        pk=receipt.get("task_id"), client_id=revision.client_id, kind="manager_task",
+        reason=DEBT_REASON, event_key=f"ig-revision-debt:{revision.pk}",
+    ).first()
+    if task is None:
+        return False
+    payload, context = task.event_payload or {}, task.manager_context or {}
+    if not isinstance(payload, dict) or not isinstance(context, dict):
+        return False
+    ids = sorted(row["message_id"] for row in revision.bundle_snapshot.get("sources", ()))
+    return bool(payload.get("revision_id") == revision.pk
+                and sorted(payload.get("source_message_ids") or ()) == ids
+                and payload.get("effect_ids") == []
+                and context.get("owner") == "manager" and context.get("disposition") == "manager_reply"
+                and context.get("automatic_http_retry") is False
+                and not revision.delivery_effects.exists())
 
 
 def _customer_text(text):
@@ -237,6 +333,13 @@ def build_turn_intent(client, revision=None, source_messages=None):
     # Only the observed requests/continuations above grant retail response acts.
     if not purpose:
         purpose = next((item.get("kind") for item in intents if item.get("operation") != "withdraw"), "unknown")
+    from management.services.ig_service_complaints import revision_service_complaint, promotion_service_hold_reason
+    complaint = revision_service_complaint(revision) if revision is not None else {}
+    service_hold = promotion_service_hold_reason(client)
+    if complaint:
+        purpose, evidence = "service_complaint", []
+    elif service_hold:
+        purpose, evidence = "support", []
     acts = ["answer_current_question", "acknowledge_current_topic"]
     if evidence:
         acts += ["retail_consultation"]
@@ -251,10 +354,14 @@ def build_turn_intent(client, revision=None, source_messages=None):
             "source_revision_id": getattr(revision, "pk", 0) or 0, "reset_floor": floor,
             "selection_withdrawn": selection_withdrawn, "selection_withdrawal_refs": withdrawal_refs,
             "selection_continuity_uncertain": continuity_uncertain,
+            "service_complaint": complaint, "service_hold_reason": service_hold,
             "source_scope": _accepted_scope(journal, ids) if fresh else {}}
 
 
 def intent_generation_guidance(decision):
+    if decision.get("service_complaint"):
+        return ("Current purpose: customer-reported service complaint. Apologize for this situation, acknowledge the customer's concrete concern without minimizing the amount, and explain that their complaint will be passed to the team for review. "
+                "Do not introduce a bonus, discount, coupon, story/UGC, product review pitch or a new purchase. The report does not authorize a refund or prove the carrier's charge. Do not claim leadership already read/approved anything or promise a resolution deadline. Other shopping topics must wait for service review.")
     allowed = "retail_consultation" in decision.get("allowed_response_acts", ())
     restriction = ("The customer withdrew clothing selection. Answer any explicit factual question, but do not offer alternatives, optional sales steps or follow-ups. This is not a price objection or a refusal of an independently requested checkout. "
                    if decision.get("selection_withdrawn") else
@@ -274,6 +381,13 @@ def source_only_noncommercial(decision, source_messages):
 
 
 def validate_turn_response(decision, text, actions=()):
+    if decision.get("purpose") in {"service_complaint", "support"}:
+        if SALES_RESPONSE_ACTIONS.intersection(actions) or service_promotion_in_reply(text):
+            return "service_complaint_disallows_promotion"
+        if decision.get("service_complaint"):
+            reason = service_complaint_reply_reason(text)
+            if reason:
+                return reason
     if ((decision.get("selection_withdrawn") or decision.get("selection_continuity_uncertain"))
         and "retail_consultation" in decision.get("allowed_response_acts", ())):
         # An explicit order retains the independent checkout gate. A factual

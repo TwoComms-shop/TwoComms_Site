@@ -261,6 +261,10 @@ def collaboration_brief_for_revision(revision):
 
 
 def manager_case_reason(revision, response=None):
+    from management.services.ig_service_complaints import revision_service_complaint
+
+    if revision_service_complaint(revision):
+        return "service_complaint_review"
     from management.services.bot_sales_classifier import (
         SUPPORT_RE,
         extract_collaboration_brief,
@@ -342,11 +346,13 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         response = ValidatedResponse(reply_text=stored.get("reply_text") or "", controls=tuple(ResponseControl(item["kind"], item["value"]) for item in stored.get("controls") or ()))
         revision.client = client
         reason = manager_case_reason(revision, response)
+        from management.services.ig_service_complaints import revision_service_complaint
+        service_complaint = revision_service_complaint(revision)
         complaint_evidence = []
         if (proposal.get("turn_intelligence") or {}).get("media_analysis") is not None:
             from management.services.ig_revision_proposal import validated_media_complaint_evidence
             complaint_evidence, media_reason = validated_media_complaint_evidence(revision)
-            if complaint_evidence and reason not in {"custom_print", "collaboration_review"}:
+            if complaint_evidence and reason not in {"custom_print", "collaboration_review", "service_complaint_review"}:
                 reason = "media_complaint_review"
             elif not reason and (response.control.get("manager") or manager_handoff_promised(response)):
                 return RevisionIntentResult(reason=media_reason)
@@ -356,10 +362,11 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             "custom_print": "revision_case:custom_print",
             "collaboration_review": "revision_case:collaboration_review",
             "media_complaint_review": "revision_case:media_complaint",
+            "service_complaint_review": "revision_case:service_complaint",
         }.get(reason, "revision_case:manager_handoff")
         event_key = f"ig-revision-case:{client.pk}:{revision.pk}:{reason}"[:180]
         tasks = IgFollowUpTask.objects.select_for_update().filter(client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=task_reason).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED))
-        if complaint_evidence:
+        if complaint_evidence or service_complaint:
             # Different complaint sources have independent unresolved service
             # debt. Only this revision's exact case may be reused on replay.
             tasks = tasks.filter(event_key=event_key)
@@ -377,6 +384,8 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                     if reason == "custom_print" else
                     "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."
                     if reason == "collaboration_review" else
+                    "Клієнт повідомив про сервісну проблему: перевірити звернення та потребу в рішенні керівника; компенсацію не погоджено."
+                    if reason == "service_complaint_review" else
                     "Клієнту потрібна допомога команди: відкрийте поточну розмову."
                 ),
                 event_key=event_key,
@@ -400,6 +409,17 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         })
         if reason == "collaboration_review":
             context["collaboration_brief"] = collaboration_brief_for_revision(revision)
+        if service_complaint:
+            context["service_complaint"] = service_complaint
+            context["required_decisions"] = ["customer_service_review", "leadership_review"]
+            context["authority"].update(refund_confirmed=False, carrier_charge_verified=False)
+            # Preserve the response-plan owner's real coverage result. A
+            # service acknowledgment cannot mark mixed shopping needs done.
+            coverage = (revision.action_receipts or {}).get("response_coverage") or {}
+            if isinstance(coverage, dict) and coverage.get("remaining"):
+                context["pending_response_obligations"] = list(coverage["remaining"])
+                context["response_plan_digest"] = coverage.get("plan_digest", "")
+                context["required_decisions"].append("remaining_customer_questions")
         if complaint_evidence:
             context["media_complaint_evidence"] = complaint_evidence
             if "customer_service_review" not in context["required_decisions"]:

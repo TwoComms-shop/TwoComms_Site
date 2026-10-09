@@ -325,6 +325,13 @@ def _clean(value: str) -> str:
     return _WHITESPACE_RE.sub(" ", str(value or "")).strip()
 
 
+def _clean_paragraphs(value: str) -> str:
+    """Keep intentional message paragraphs; button labels stay single-line."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_clean(line) for line in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def _truncate(value: str, limit: int) -> str:
     """Обрізати по межі слова, а не посередині — інакше клієнт бачить обрубок."""
     clean = _clean(value)
@@ -531,7 +538,7 @@ def normalize_quick_reply_message(message: QuickReplyMessage) -> QuickReplyMessa
     яке нічим відповісти, і повідомити про успіх.
     """
     degraded: list[str] = []
-    text = _clean(message.text)
+    text = _clean_paragraphs(message.text)
     if not text:
         raise TemplateValidationError("quick reply message requires text")
     if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
@@ -553,7 +560,7 @@ def normalize_quick_reply_message(message: QuickReplyMessage) -> QuickReplyMessa
     if not replies:
         raise TemplateValidationError("quick reply message requires a valid reply")
 
-    fallback = _clean(message.fallback_text or text)
+    fallback = _clean_paragraphs(message.fallback_text or text)
     if len(fallback.encode("utf-8")) > MAX_TEXT_BYTES:
         raise TemplateValidationError("fallback text exceeds the provider limit")
     projection = message.projection_text or (
