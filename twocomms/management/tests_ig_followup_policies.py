@@ -909,7 +909,7 @@ class FollowupPolicyIntegrationTests(TestCase):
             ).exists()
         )
 
-    def test_restock_event_is_materialized_with_stable_key(self):
+    def test_legacy_restock_event_without_catalog_source_creates_no_task(self):
         from management.services.bot_followups import materialize_restock
 
         first = materialize_restock(
@@ -927,14 +927,11 @@ class FollowupPolicyIntegrationTests(TestCase):
             now=self.now,
         )
 
-        self.assertIsNotNone(first)
-        self.assertEqual(first.pk, second.pk)
-        self.assertEqual(first.level, 1)
-        self.assertEqual(first.event_key, "restock:event:41:m:1")
-        self.assertEqual(first.trigger, IgFollowUpTask.Trigger.EVENT)
-        self.assertEqual(first.event_payload["product_id"], 41)
-        self.assertEqual(first.event_payload["size"], "M")
-        self.assertEqual(first.event_payload["event"], "restock_available")
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertFalse(IgFollowUpTask.objects.filter(
+            client=self.client_record, reason__in=("restock_wait", "restock_permission_review"),
+        ).exists())
 
     def test_invoice_expiry_continuation_preserves_absolute_t72_offset(self):
         from management.services.bot_followups import _schedule_next_policy_step

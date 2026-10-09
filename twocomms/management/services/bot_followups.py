@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from django.db import transaction
@@ -789,6 +790,11 @@ def schedule_followup(
     policy_version: str = "followup-v1",
 ) -> IgFollowUpTask | None:
     """Create one pending follow-up, adjusted for quiet hours and Meta window."""
+    if _restock_customer_send_reason(SimpleNamespace(
+            reason=reason, event_payload=event_payload, event_key=event_key)):
+        # Direct legacy admission must not cancel neighboring work before the
+        # later send fence rejects a task. Inventory reviews have their own owner.
+        return None
     now = now or _now()
     deadline = meta_window_deadline(client)
     due = next_allowed_send_at(now + delay, deadline=deadline)
@@ -888,6 +894,15 @@ def schedule_event_followup(
     policy = FOLLOWUP_POLICIES.get(str(scenario or ""))
     if policy is None or step_index < 0 or step_index >= len(policy.steps):
         return None
+    if policy.scenario == "restock_wait":
+        payload = event_payload if isinstance(event_payload, dict) else {}
+        if payload.get("event") != "restock_available":
+            return None
+        return materialize_restock(client, product_id=payload.get("product_id"),
+            variant_id=payload.get("variant_id"), size=payload.get("size"),
+            fit_code=payload.get("fit_code"), option_values=payload.get("option_values"),
+            source_revision=payload.get("source_revision"), now=now,
+            occurred_at=event_occurred_at)
     step = policy.steps[step_index]
     if step.trigger != "event":
         return None
@@ -1024,6 +1039,49 @@ def schedule_proposal_expiry_event(
     )
 
 
+RESTOCK_REVIEW_MESSAGE = "Зафіксовано наявність точного варіанта. Перевірте власний запит клієнта та окрему згоду на сповіщення. Підписку не оформлено; автоматичне повідомлення не дозволено."
+_RESTOCK_TARGET_KEYS = ("product_id", "variant_id", "size", "fit_code", "option_values")
+
+
+def is_restock_permission_review(task) -> bool:
+    """Recognize only this owner's informative row; confer no send permission."""
+    payload = getattr(task, "event_payload", None)
+    context = getattr(task, "manager_context", None)
+    expected = {"event", "origin", "purpose", "permission_status", "subscription_verified",
+        "client_id", "source_revision", "interest_digest", "reset_id", *_RESTOCK_TARGET_KEYS}
+    try:
+        if (task.kind != IgFollowUpTask.Kind.MANAGER_TASK or task.reason != "restock_permission_review"
+                or task.policy_version != "restock-review.v1" or task.trigger != IgFollowUpTask.Trigger.EVENT
+                or task.discount_percent != 0 or task.deal_id is not None
+                or task.provider_message_id or task.sent_message_id
+                or task.message_text != RESTOCK_REVIEW_MESSAGE
+                or not isinstance(payload, dict) or set(payload) != expected
+                or not isinstance(context, dict) or context != {"restock_review": payload}
+                or payload["event"] != "restock_available" or payload["origin"] != "restock_permission_review"
+                or payload["purpose"] != "restock_notification" or payload["permission_status"] != "unverified"
+                or payload["subscription_verified"] is not False
+                or type(payload["client_id"]) is not int or payload["client_id"] != task.client_id
+                or type(payload["reset_id"]) is not int or payload["reset_id"] < 0
+                or any(type(payload[key]) is not int or payload[key] <= 0 for key in ("product_id", "variant_id"))
+                or not isinstance(payload["size"], str) or not 1 <= len(payload["size"]) <= 12
+                or not isinstance(payload["fit_code"], str) or len(payload["fit_code"]) > 50
+                or not isinstance(payload["option_values"], dict) or len(payload["option_values"]) > 8
+                or any(not isinstance(key, str) or not isinstance(value, str) or not key or not value
+                    or len(key) > 64 or len(value) > 64 for key, value in payload["option_values"].items())
+                or not isinstance(payload["source_revision"], str) or len(payload["source_revision"]) != 80
+                or not payload["source_revision"].startswith("product_catalog:")
+                or any(char not in "0123456789abcdef" for char in payload["source_revision"][16:])
+                or not isinstance(task.event_occurred_at, datetime) or timezone.is_naive(task.event_occurred_at)
+                or task.policy_started_at != task.event_occurred_at):
+            return False
+        interest = {key: payload[key] for key in _RESTOCK_TARGET_KEYS}
+        interest["reset_id"] = payload["reset_id"]
+        digest = hashlib.sha256(json.dumps(interest, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return payload["interest_digest"] == digest and task.event_key == f"restock-review:{task.client_id}:{digest}"
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def materialize_restock(
     client: IgClient,
     *,
@@ -1037,33 +1095,113 @@ def materialize_restock(
     now: datetime | None = None,
     occurred_at: datetime | None = None,
 ):
-    """Create the F2 restock event from an explicit inventory event."""
-    if not client or not product_id:
+    """Create internal review only; mutable interest grants no customer send."""
+    if not client or not getattr(client, "pk", None):
         return None
     now = now or _now()
     occurred_at = occurred_at or now
-    normalized_size = str(size or "").strip().upper()
-    key = event_id or f"restock:{client.pk}:{product_id}:{normalized_size}"
-    payload = {
-        "event": "restock_available",
-        "client_id": client.pk,
-        "product_id": int(product_id),
-        "variant_id": int(variant_id) if variant_id else None,
-        "fit_code": str(fit_code or "").strip().lower(),
-        "size": normalized_size,
-        "option_values": dict(option_values or {}),
-        "source_revision": str(source_revision or "")[:120],
-    }
-    return schedule_event_followup(
-        client,
-        "restock_wait",
-        step_index=1,
-        event_key=key,
-        now=now,
-        event_occurred_at=occurred_at,
-        event_payload=payload,
-        policy_started_at=occurred_at,
-    )
+    with transaction.atomic():
+        subject = _validated_restock_event(product_id, variant_id, size, fit_code,
+            option_values, source_revision, occurred_at=occurred_at, now=now, lock=True)
+        if subject is None:
+            return None
+        current = IgClient.objects.select_for_update().filter(pk=client.pk).first()
+        if (current is None or current.hidden_at or current.privacy_erasure_started_at
+                or current.is_blocked or current.bot_paused or current.manager_takeover
+                or _active_opt_out(current) or _has_open_service_conversation(current)):
+            return None
+        context = current.sales_context if isinstance(current.sales_context, dict) else {}
+        gap = context.get("_stock_gap")
+        selection = context.get("assisted_checkout_selection")
+        if not isinstance(gap, dict) or not isinstance(selection, dict):
+            return None
+        from django.utils.dateparse import parse_datetime
+        from management.models import IgFunnelResetAudit
+
+        try:
+            gap_at = parse_datetime(gap.get("at")) if isinstance(gap.get("at"), str) else None
+        except ValueError:
+            return None
+        reset = IgFunnelResetAudit.objects.filter(client=current).order_by("-pk").first()
+        if (gap_at is None or timezone.is_naive(gap_at) or gap_at > occurred_at
+                or reset and gap_at < reset.created_at):
+            return None
+        if (type(gap.get("product_id")) is not int or type(gap.get("variant_id")) is not int
+                or gap["product_id"] != subject["product_id"] or gap["variant_id"] != subject["variant_id"]
+                or current.current_product_id != subject["product_id"]
+                or type(selection.get("color_variant_id")) is not int
+                or selection["color_variant_id"] != subject["variant_id"]
+                or str(current.current_size or "").strip().upper() != subject["size"]
+                or not isinstance(gap.get("size"), str) or gap["size"].strip().upper() != subject["size"]
+                or str(selection.get("fit_option_code") or "").strip().lower() != subject["fit_code"]
+                or str(gap.get("fit_code") or "").strip().lower() != subject["fit_code"]
+                or not isinstance(gap.get("option_values"), dict)
+                or any(not isinstance(key, str) or not isinstance(value, str) for key, value in gap["option_values"].items())
+                or _normalized_restock_options(gap.get("option_values")) != subject["option_values"]):
+            return None
+        extra = {key: value for key, value in subject["option_values"].items() if key != "fit"}
+        if extra and extra != {key: value for key, value in _normalized_restock_options(selection.get("option_values")).items() if key != "fit"}:
+            return None
+        interest = {key: value for key, value in subject.items() if key != "source_revision"}
+        # Readers refresh gap.at. Stock edits refresh the inventory hash. Neither
+        # creates a new customer request; one target/reset receives one review.
+        interest.update(reset_id=reset.pk if reset else 0)
+        digest = hashlib.sha256(json.dumps(interest, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        payload = {"event": "restock_available", "origin": "restock_permission_review",
+            "purpose": "restock_notification", "permission_status": "unverified",
+            "subscription_verified": False, "client_id": current.pk, **subject,
+            "interest_digest": digest, "reset_id": reset.pk if reset else 0}
+        task, _created = IgFollowUpTask.objects.get_or_create(event_key=f"restock-review:{current.pk}:{digest}",
+            defaults={"client": current, "kind": IgFollowUpTask.Kind.MANAGER_TASK,
+                "reason": "restock_permission_review", "status": IgFollowUpTask.Status.PENDING,
+                "trigger": IgFollowUpTask.Trigger.EVENT, "due_at": now,
+                "event_occurred_at": occurred_at, "policy_started_at": occurred_at,
+                "policy_version": "restock-review.v1", "event_payload": payload,
+                "manager_context": {"restock_review": payload},
+                "message_text": RESTOCK_REVIEW_MESSAGE})
+        task._restock_review_created = _created
+        return task
+
+
+def _validated_restock_event(product_id, variant_id, size, fit_code, option_values, source_revision, *, occurred_at, now, lock=False):
+    """Admit only the caller's exact currently committed inventory source."""
+    if (type(product_id) is not int or product_id <= 0 or type(variant_id) is not int or variant_id <= 0
+            or not isinstance(size, str) or not 1 <= len(size.strip()) <= 12
+            or not isinstance(fit_code, str) or len(fit_code) > 50
+            or not isinstance(source_revision, str) or len(source_revision) != 80
+            or not source_revision.startswith("product_catalog:")
+            or any(char not in "0123456789abcdef" for char in source_revision[16:])
+            or not isinstance(option_values, dict) or len(option_values) > 8
+            or any(not isinstance(key, str) or not isinstance(value, str) or not key.strip()
+                or not value.strip() or len(key) > 64 or len(value) > 64 for key, value in option_values.items())
+            or not isinstance(occurred_at, datetime) or timezone.is_naive(occurred_at)
+            or not isinstance(now, datetime) or timezone.is_naive(now) or occurred_at > now):
+        return None
+    from product_catalog.models import VariantSizeRule
+    from product_catalog.services import variant_allows_purchase
+    from productcolors.models import ProductColorVariant
+    from storefront.models import Product, ProductStatus
+
+    products = Product.objects.filter(pk=product_id, status=ProductStatus.PUBLISHED)
+    variants = ProductColorVariant.objects.filter(pk=variant_id, product_id=product_id)
+    product = (products.select_for_update() if lock else products).first()
+    variant = (variants.select_for_update() if lock else variants).first()
+    if product is None or variant is None or VariantSizeRule.objects.filter(variant_id=variant_id).count() > 128:
+        return None
+    size, fit_code = size.strip().upper(), fit_code.strip().lower()
+    if not VariantSizeRule.objects.filter(variant_id=variant_id, fit_code=fit_code,
+            size=size, is_enabled=True).filter(Q(stock__isnull=True) | Q(stock__gt=0)).exists():
+        return None
+    options = _normalized_restock_options(option_values)
+    if fit_code:
+        if options.get("fit", fit_code) != fit_code:
+            return None
+        options.setdefault("fit", fit_code)
+    if (source_revision != f"product_catalog:{variant_inventory_revision(variant_id)}"
+            or not variant_allows_purchase(product, variant, fit_code=fit_code, size=size, option_values=options)):
+        return None
+    return {"product_id": product_id, "variant_id": variant_id, "size": size,
+        "fit_code": fit_code, "option_values": options, "source_revision": source_revision}
 
 
 def _normalized_restock_options(values) -> dict[str, str]:
@@ -1099,23 +1237,22 @@ def materialize_restock_inventory_event(
     source_revision: str,
     occurred_at: datetime | None = None,
 ) -> int:
-    """Materialize F2 from the committed variant-size update, never a read poll."""
-    product_id = int(product_id or 0)
-    variant_id = int(variant_id or 0)
-    size = str(size or "").strip().upper()
-    fit_code = str(fit_code or "").strip().lower()
-    options = _normalized_restock_options(option_values)
-    if fit_code:
-        options.setdefault("fit", fit_code)
-    revision = str(source_revision or "").strip()[:120]
-    if not product_id or not variant_id or not size or not revision:
-        return 0
+    """Record internal reviews for a committed inventory event, without consent."""
     event_time = occurred_at or _now()
+    subject = _validated_restock_event(product_id, variant_id, size, fit_code, option_values,
+        source_revision, occurred_at=event_time, now=_now())
+    if subject is None:
+        return 0
+    product_id, variant_id, size, fit_code = (subject[key] for key in ("product_id", "variant_id", "size", "fit_code"))
+    options, revision = subject["option_values"], subject["source_revision"]
     materialized = 0
-    clients = IgClient.objects.filter(current_product_id=product_id).only(
+    clients = IgClient.objects.filter(current_product_id=product_id,
+        sales_context___stock_gap__isnull=False).only(
         "id", "sales_context", "current_product_id"
     )
-    for client in clients.iterator():
+    # Bound memory per batch without dropping interests beyond the first page.
+    # Admission rereads the actual source and scope of each matching client.
+    for client in clients.order_by("pk").iterator(chunk_size=100):
         context = client.sales_context if isinstance(client.sales_context, dict) else {}
         gap = context.get("_stock_gap")
         if not isinstance(gap, dict):
@@ -1136,10 +1273,6 @@ def materialize_restock_inventory_event(
             or gap_options != options
         ):
             continue
-        event_key = (
-            f"restock:{client.pk}:{product_id}:{variant_id}:{fit_code or '-'}:"
-            f"{size}:{revision}:{event_time.isoformat()}"
-        )
         task = materialize_restock(
             client,
             product_id=product_id,
@@ -1148,21 +1281,29 @@ def materialize_restock_inventory_event(
             fit_code=fit_code,
             option_values=options,
             source_revision=revision,
-            event_id=event_key,
-            now=event_time,
+            now=_now(),
             occurred_at=event_time,
         )
-        if task is not None:
+        if task is not None and task._restock_review_created:
             materialized += 1
-            from management.services.ig_funnel_journal import clear_stock_gap
-
-            clear_stock_gap(client)
     return materialized
 
 
 def _policy_name(reason: str) -> str:
     reason = str(reason or "")
     return POLICY_REASON_ALIASES.get(reason, reason)
+
+
+def _restock_customer_send_reason(task):
+    payload = task.event_payload if isinstance(task.event_payload, dict) else {}
+    if (_policy_name(task.reason) == "restock_wait"
+            or task.reason in {"restock_permission_review", "restock_f1", "restock_f2", "restock_f3"}
+            or payload.get("event") == "restock_available"
+            or payload.get("purpose") in {"restock", "restock_notification"}
+            or str(task.event_key or "").startswith(("restock:", "restock-review:"))):
+        # No purpose-scoped subscription/native grant producer exists yet.
+        return "restock_purpose_unverified"
+    return ""
 
 
 def _policy_step_for_task(
@@ -1280,6 +1421,8 @@ def event_followup_fact_guard(
 ) -> tuple[bool, str]:
     """Revalidate the immutable source fact immediately before customer I/O."""
     now = now or _now()
+    if reason := _restock_customer_send_reason(task):
+        return False, reason
     if not _event_boundary_complete(task):
         return False, "event_boundary_missing"
     payload = task.event_payload
@@ -1471,6 +1614,8 @@ def schedule_policy_followup(
     policy = FOLLOWUP_POLICIES.get(str(scenario or ""))
     if policy is None:
         return None
+    if policy.scenario == "restock_wait":
+        return None  # No subscriber exists; review requires a real inventory event.
     first = next(
         (
             step
@@ -1503,6 +1648,8 @@ def _schedule_next_policy_step(
     now: datetime,
 ) -> bool:
     from management.services.ig_turn_intent import LEGACY_ORDINARY_REASONS
+    if _restock_customer_send_reason(task):
+        return False
     if (task.event_payload or {}).get("origin") == "ordinary_intent_followup" or task.reason in LEGACY_ORDINARY_REASONS:
         return False
     resolved = _policy_step_for_task(task)
@@ -2292,7 +2439,8 @@ def _followup_promotion_provider_boundary(task_id, claim_token, *, prepared_text
             pk=task_id, status=IgFollowUpTask.Status.PROCESSING,
             claim_token=claim_token, claim_until__gt=now,
         ).first()
-        reason = "followup_claim_changed" if task is None else promotion_service_hold_reason(task.client, now=now)
+        reason = "followup_claim_changed" if task is None else (
+            promotion_service_hold_reason(task.client, now=now) or _restock_customer_send_reason(task))
         if task is not None:
             ordinary = (task.event_payload or {}).get("origin") == "ordinary_intent_followup"
         if reason and task is not None:
@@ -2795,6 +2943,8 @@ def _claim_due_followup(
                 kind=stale_task.kind if stale_task else None,
                 commerce_binding=_task_followup_commerce_binding(stale_task),
             )
+            if allowed and stale_task is not None and (restock_reason := _restock_customer_send_reason(stale_task)):
+                allowed, why = False, restock_reason
             if not allowed:
                 if stale_task:
                     stale_task.client = fresh_client
@@ -2828,6 +2978,8 @@ def _claim_due_followup(
         kind=task.kind,
         commerce_binding=_task_followup_commerce_binding(task),
     )
+    if allowed and (restock_reason := _restock_customer_send_reason(task)):
+        allowed, why = False, restock_reason
     if not allowed:
         _mark_skipped(task, why)
         automation.release_client_automation_lease(client.id, lease_token)
@@ -2864,6 +3016,8 @@ def _renew_due_followup_claim(
         kind=task.kind,
         commerce_binding=_task_followup_commerce_binding(task),
     )
+    if allowed and (restock_reason := _restock_customer_send_reason(task)):
+        allowed, why = False, restock_reason
     if not allowed:
         _mark_skipped(task, why)
         return None

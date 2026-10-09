@@ -597,6 +597,13 @@ def purpose_blockers(client, decision, *, revision=None):
     current_scope = decision.get("source_scope") or {}
     cases = IgFollowUpTask.objects.filter(client=client, kind="manager_task").select_related("deal").exclude(status__in=("completed", "cancelled")).exclude(reason__startswith="parcel_reminder:")
     for task in cases:
+        from management.services.bot_followups import is_restock_permission_review
+
+        if is_restock_permission_review(task):
+            # A catalog observation awaiting a separate consent contract is
+            # informational work, not an unanswered service/payment obligation.
+            # It supplies no permission for a customer notification.
+            continue
         payload = task.event_payload or {}
         context = task.manager_context or {}
         if task.reason == "revision_case:execution_debt" and revision is not None:

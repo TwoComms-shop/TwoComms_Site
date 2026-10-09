@@ -13,12 +13,13 @@ Product Catalog — єдиний редактор товару (додаванн
 - Цей модуль є єдиним runtime-редактором товару.
 """
 import json
+import hashlib
 import logging
 import os
 import re
 
 from django import forms
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Max, Prefetch
 from django.http import Http404, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, render
@@ -1320,15 +1321,58 @@ def api_colors(request):
     return JsonResponse({"ok": True, "colors": [_color_payload(c) for c in colors[:200]]})
 
 
+def _serialize_variant_save(view):
+    """Serialize inventory edits even with legacy MyISAM parent tables.
+
+    Acquire before the editing transaction; release after its commit callbacks.
+    Inventory rules remain transactional, while parent FOR UPDATE is insufficient
+    on the actual production storage engines.
+    """
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        data = _json_body(request)
+        if not isinstance(data, dict):
+            raise ValueError("Некоректні дані товару")
+        identity = data.get("product_id")
+        if (type(identity) not in {int, str}
+                or isinstance(identity, str) and not identity.strip().isdigit()):
+            raise ValueError("Оберіть товар для редагування")
+        product_id = _int_or_none(identity)
+        if product_id is None or product_id <= 0:
+            raise ValueError("Оберіть товар для редагування")
+        if connection.vendor != "mysql":
+            return view(request, *args, **kwargs)
+        database_key = hashlib.sha256(str(connection.settings_dict["NAME"]).encode()).hexdigest()[:12]
+        key = f"twc:catalog-edit:{database_key}:{product_id}"
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT GET_LOCK(%s, 2)", [key])
+            acquired = cursor.fetchone()[0]
+        if acquired != 1:
+            return JsonResponse({"ok": False, "error": "Цей товар зараз зберігається. Спробуйте ще раз за кілька секунд."}, status=409)
+        try:
+            return view(request, *args, **kwargs)
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT RELEASE_LOCK(%s)", [key])
+
+    return wrapped
+
+
+@transaction.non_atomic_requests
 @staff_api
 @require_POST
+@_serialize_variant_save
 @transaction.atomic
 def api_variant_save(request):
     data = _json_body(request)
-    product = get_object_or_404(Product, pk=_int_or_none(data.get("product_id")))
+    # Serialize an editor's inventory replacement with the same product's
+    # other variant saves; the event fingerprint belongs to this transaction.
+    product = get_object_or_404(Product.objects.select_for_update(), pk=_int_or_none(data.get("product_id")))
     variant_id = _int_or_none(data.get("id"))
     if variant_id:
-        variant = get_object_or_404(ProductColorVariant, pk=variant_id, product=product)
+        variant = get_object_or_404(ProductColorVariant.objects.select_for_update(), pk=variant_id, product=product)
     else:
         next_order = (product.color_variants.aggregate(m=Max("order"))["m"] or 0) + 1
         variant = ProductColorVariant(product=product, order=next_order)
@@ -1404,9 +1448,9 @@ def api_variant_save(request):
         VariantSizeRule.objects.bulk_create(rules)
         from storefront.services.restock import schedule_restock_scan
 
-        # This is the authoritative stock-change boundary. Direct customers
-        # waiting for one exact variant/fit/size are notified from this
-        # committed editor event, never from a later chat/readiness poll.
+        # Capture the exact edit here. Its after-commit consumer must not pair
+        # these transitions with a later editor's inventory fingerprint.
+        # An inventory event alone grants no customer notification permission.
         restocked = tuple(
             (str(rule.size or "").strip().upper(), str(rule.fit_code or "").strip().lower())
             for rule in rules
@@ -1417,6 +1461,9 @@ def api_variant_save(request):
             ) not in previous_available
         )
         inventory_event_at = timezone.now()
+        from management.services.bot_followups import variant_inventory_revision
+
+        inventory_revision = f"product_catalog:{variant_inventory_revision(variant.pk)}"
 
         def materialize_direct_restock(
             *,
@@ -1424,13 +1471,10 @@ def api_variant_save(request):
             variant_id=variant.pk,
             rows=restocked,
             occurred_at=inventory_event_at,
+            revision=inventory_revision,
         ):
-            from management.services.bot_followups import (
-                materialize_restock_inventory_event,
-                variant_inventory_revision,
-            )
+            from management.services.bot_followups import materialize_restock_inventory_event
 
-            revision = f"product_catalog:{variant_inventory_revision(variant_id)}"
             for restock_size, restock_fit in rows:
                 materialize_restock_inventory_event(
                     product_id=product_id,
