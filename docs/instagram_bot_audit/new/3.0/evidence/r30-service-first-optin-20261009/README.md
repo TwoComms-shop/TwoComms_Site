@@ -1,6 +1,6 @@
 # Сервисный приоритет · одна кнопка подписки
 
-Код/native acceptance принят; production receipt записывается после canonical SSH pull. [Контракт и подтверждённый инцидент](CONTRACT.md).
+✅ Код/native/production принят: `bb1c83f17a043d158e1bc4736a0b2d9820933b1f`; [production/SHA/runtime/browser](PRODUCTION_RELEASE_2026-10-09.md). [Контракт и подтверждённый инцидент](CONTRACT.md).
 
 ## Реализация
 
@@ -12,7 +12,7 @@
 
 ## Проверки
 
-**501 сценарий, 498 PASS / 3 existing manual concurrency skips, 118.573s**, CPython3.14.6/Django6.1, disposable MariaDB11.4.12 с настоящими scoped migrations и existing ledger triggers.17affected modules; **87 новых test methods**. Три старых follow-CTA concurrency placeholders явно требуют отдельный two-worker harness; они не объявлены пройденными. Новые service/consent/MID regressions выполнены без skips. Mock только внешнего provider HTTP/Gemini ответа; реальные revision/task/source/permission/receipt owners и DB transitions.
+**501 сценарий, 498 PASS / 3 existing manual concurrency skips, 118.573s**, CPython3.14.6/Django6.1, disposable MariaDB11.4.12 с настоящими scoped migrations и existing ledger triggers.17affected modules; **87 новых test methods**. Три старых follow-CTA concurrency placeholders явно требуют отдельный two-worker harness; они не объявлены пройденными. Новые service/consent/MID regressions выполнены без skips. Сквозные regressions используют реальные revision/task/source/permission/receipt owners и DB transitions; внешние HTTP/Gemini ответы заменены fixture responses.
 
 Первый focused run:108executed/4FAIL/5ERROR; исправлены fixtures и настоящие consent transition/partial-MID проблемы, без снятия immutable/SQL guards. Второй121run:1FAIL uncovered mixed request. Первый458wide:2FAIL/1ERROR/3skips; two old UGC fixtures воспроизведены на original fe51309b9 (неисполняемый get_or_create patch и oversized order number), исправлены actual create/допустимый номер.500wide выявил10service regressions одной причины — ложное question marker в «взяли»; producer исправлен. Итоговый501run принят целиком в указанных границах. Original response-plan39/39 и original service suppression15/15 PASS — отдельные baseline, не добавлены к501.
 

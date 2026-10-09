@@ -1,0 +1,60 @@
+{
+  "health": {
+    "main_healthy": true,
+    "process_online": true,
+    "process_pid": 1561825,
+    "stalled": false,
+    "supervisor": {
+      "available": true,
+      "child_pid": 1561825,
+      "child_pid_matches_expected": true,
+      "child_release_sha": "bb1c83f17a043d158e1bc4736a0b2d9820933b1f",
+      "last_ensure_seen_at": 1791544708.344,
+      "observed_at": 1791544709.227,
+      "restart_count": 0,
+      "status": "current",
+      "supervisor_release_sha": "bb1c83f17a043d158e1bc4736a0b2d9820933b1f"
+    },
+    "workers_healthy": true
+  },
+  "incident": {
+    "bot_paused": true,
+    "client_id": 351,
+    "human_echo_count": 2,
+    "manager_takeover": true,
+    "monetary_authority": false,
+    "promotion_hold": "service_complaint_open",
+    "reported_kind": "delivery_fee_dispute",
+    "revision202_model_proposal": false,
+    "reward_count": 0,
+    "source_id": 3334,
+    "task113_status": "skipped"
+  },
+  "observed_at": "2026-10-09T11:18:32.926197+00:00",
+  "provider_probes": 0,
+  "pure_copy": [
+    {
+      "body_utf8_bytes": 342,
+      "button": "Так, хочу",
+      "buttons": 1,
+      "locale": "uk",
+      "paragraphs": 2
+    },
+    {
+      "body_utf8_bytes": 327,
+      "button": "Да, хочу",
+      "buttons": 1,
+      "locale": "ru",
+      "paragraphs": 2
+    },
+    {
+      "body_utf8_bytes": 167,
+      "button": "Yes, keep me updated",
+      "buttons": 1,
+      "locale": "en",
+      "paragraphs": 2
+    }
+  ],
+  "read_only_queries": 14,
+  "sha": "bb1c83f17a043d158e1bc4736a0b2d9820933b1f"
+}

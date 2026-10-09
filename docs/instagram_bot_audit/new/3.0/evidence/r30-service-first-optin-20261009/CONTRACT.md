@@ -1,6 +1,6 @@
 # Сервисный приоритет и приглашение к подписке
 
-Статус: код и native тесты приняты; production-выпуск ожидает SSH-проверки.
+Статус: ✅ код/native/production приняты; release `bb1c83f17a043d158e1bc4736a0b2d9820933b1f`. Подробности в PRODUCTION_RELEASE_2026-10-09.md.
 
 ## Подтверждённый инцидент
 
@@ -27,6 +27,6 @@
 
 ## Приёмка и остаток
 
-Нужны native MariaDB regressions source→purpose→durable task→candidate/final response и races рекламных отправок; однокнопочная реальная quick-reply форма, unrelated/ignored answers, старый decline, revoke, source drift и pre-shipment guards. Затем scoped commit/push/canonical SSH pull, runtime/SHA и авторизованный browser. Естественный новый клиентский контакт и прочие purpose/native future grant остаются отдельными gates. Production не является тестовым fixture.
+Выполнены native MariaDB regressions source→purpose→durable task→candidate/final response и races рекламных отправок:501scenarios/498PASS/3existing manual concurrency skips. Однокнопочная actual quick-reply форма, ignored answers, старый decline/revoke, source drift и pre-shipment guards приняты. Scoped commit/push/canonical SSH pull, runtime/SHA и авторизованный browser подтверждены в release evidence. Естественный новый клиентский контакт, три отдельные two-worker concurrency gates и прочие purpose/native future grant остаются открытыми. Production не является тестовым fixture.
 
 Откат: scoped revert на main, документированный SSH pull и обновление процессов; не удалять сохранённые receipts/tasks и не переписывать уже отправленные приглашения.
