@@ -1,6 +1,6 @@
 # P4-3 · Подтверждение наличия без выдуманной подписки
 
-Код и native-проверки приняты; production verification ещё предстоит. [Контракт](CONTRACT.md).
+✅ Код/native/production принят: `8ba5a5cb95c89eeea9dd362ada7795c9bf3109e1`; [production proof](PRODUCTION_RELEASE_2026-10-09.md). [Контракт](CONTRACT.md).
 
 ## Что изменено
 

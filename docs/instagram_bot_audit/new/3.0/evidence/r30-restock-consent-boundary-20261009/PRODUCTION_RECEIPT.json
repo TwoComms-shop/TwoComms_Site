@@ -1,0 +1,77 @@
+{
+  "affected_table_engines": {
+    "management_igclient": "InnoDB",
+    "management_igfollowuptask": "InnoDB",
+    "product_catalog_variantsizerule": "InnoDB",
+    "productcolors_productcolorvariant": "MyISAM",
+    "storefront_product": "MyISAM"
+  },
+  "business_invitation_counts": [
+    {
+      "n": 1,
+      "purpose": "post_purchase_marketing",
+      "state": "sent"
+    }
+  ],
+  "customer_test_sends": 0,
+  "data_read_only_queries": 7,
+  "editor_non_atomic": true,
+  "effective_atomic_requests": false,
+  "health": {
+    "main_healthy": true,
+    "process_online": true,
+    "process_pid": 1692386,
+    "stalled": false,
+    "supervisor": {
+      "available": true,
+      "child_pid": 1692386,
+      "child_pid_matches_expected": true,
+      "child_release_sha": "8ba5a5cb95c89eeea9dd362ada7795c9bf3109e1",
+      "last_ensure_seen_at": 1791547159.854,
+      "observed_at": 1791547160.845,
+      "restart_count": 0,
+      "status": "current",
+      "supervisor_release_sha": "8ba5a5cb95c89eeea9dd362ada7795c9bf3109e1"
+    },
+    "workers_healthy": true
+  },
+  "legacy_restock_tasks": [],
+  "native_future_grant": "unverified",
+  "observed_at": "2026-10-09T11:59:28.815174+00:00",
+  "provider_http_calls": 0,
+  "pure_boundaries": [
+    {
+      "event": "invoice_expired",
+      "purpose": null,
+      "reason": "restock_wait",
+      "result": "restock_purpose_unverified"
+    },
+    {
+      "event": "restock_available",
+      "purpose": null,
+      "reason": "other",
+      "result": "restock_purpose_unverified"
+    },
+    {
+      "event": null,
+      "purpose": "restock_notification",
+      "reason": "other",
+      "result": "restock_purpose_unverified"
+    },
+    {
+      "event": null,
+      "purpose": null,
+      "reason": "other",
+      "result": "restock_purpose_unverified"
+    },
+    {
+      "event": "invoice_expired",
+      "purpose": null,
+      "reason": "payment_link_unpaid",
+      "result": ""
+    }
+  ],
+  "restock_reviews": [],
+  "sha": "8ba5a5cb95c89eeea9dd362ada7795c9bf3109e1",
+  "transient_named_lock_probe": "acquire_owned_release_verified"
+}
