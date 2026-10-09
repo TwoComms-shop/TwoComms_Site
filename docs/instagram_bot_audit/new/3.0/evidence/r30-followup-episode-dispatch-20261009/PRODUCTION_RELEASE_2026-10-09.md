@@ -1,0 +1,10 @@
+# P1-4 · Повторная покупка: actual dispatch · production
+
+✅ Реализовано, проверено и деплойнуто **c68d0754c4edddbf89d1a48c91eeb9f032b368b5**. Наблюдение **2026-10-09T01:01:22.517982+00:00**,04:01 по Киеву. Canonical main pull, Django check, collectstatic/compress для уточнённыхv18подписей, restart/single supervisor ensure. Main/supervisor/child sameSHA/PID3977696 online/main+workers healthy/notstalled; maintenanceOFF. Read-only40queries/providerprobes0. [Квитанция](PRODUCTION_RECEIPT.json).
+
+Обычный follow-up current episode передаёт его captured commerce_binding на busy/mainclaim/renew. Historical paid не гасит новый unpaid intent; отсутствующий/необъектный binding даёт{} и отказ canonical policy, не lifetime fallback. Нынешние paid/source drift/cooldown/pause/takeover/window/permission epoch/receipt/no-replay guards сохранены. Production дополнительно проверил сам deployed helper на finite actualinputs без CRM/send изменений. **192/192 nativePASS/52.197s/skips0**, включая19новых; native histories/payment/source guards,3hprice/90mselection, claim→provider boundary→MID и UNKNOWN. Independent review принят.14устаревших baselineexpectations воспроизведены originalHEAD и приведены к нынешним contracts в3fixtures; runtime/auth не ослаблены.
+
+Уточнённая карточка consent **v18** разделяет «ще не надіслано»/queued/processing/definite failed/unknown и не утверждает отсутствие подключённого producer только потому, что у клиента ещё нет invitation. Нативный futuregrant по-прежнему unverified. Existing3migrations/6InnoDBtables/flagsTRUE подтверждены; client351/order334/event16/nativeecho3330/reward0 не изменены; naturalcustomer sends/fixtures0. Natural current-repeat send и15rewardcohort, remaining purposes/native account grant/checkpoint/P7 OPEN. [Контракт/тесты](README.md).
+
+
+Авторизованная финальная browser-проверка: после reload реально загружен **ig_journey.1b069c9a433b.js?v=journey-business-consent-v18**; раскрытый node показывает «Запрошення ще не надіслано» и отдельно «Потрібні згода та доступне стандартне вікно Meta»/outside-window не подтверждено. Nooverflow/consoleerrors0. Nativefuturegrant остаётся явно unverified.

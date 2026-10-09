@@ -1,0 +1,81 @@
+{
+  "aftercare": {
+    "authority_counts": {
+      "consent_answers": 0,
+      "consent_invitations": 0,
+      "invitations": 0,
+      "uplifts": 0
+    },
+    "authority_engines": {
+      "management_igmarketingconsentanswer": "InnoDB",
+      "management_igmarketingconsentinvitation": "InnoDB",
+      "management_igugcrewarddelivery": "InnoDB",
+      "reviews_review": "InnoDB",
+      "reviews_reviewpurchaseinvitation": "InnoDB",
+      "reviews_reviewrewarduplift": "InnoDB"
+    },
+    "authority_migrations": [
+      [
+        "management",
+        "0227_ugc_review_delivery_generations"
+      ],
+      [
+        "management",
+        "0228_post_purchase_business_consent"
+      ],
+      [
+        "reviews",
+        "0005_purchase_review_authority"
+      ]
+    ],
+    "benefit_context_version": "ugc-review-benefit-context.v1",
+    "benefit_state": "unknown",
+    "bot_paused": false,
+    "client_id": 351,
+    "legacy_event16_receipts": 0,
+    "legacy_event16_state": "manager_review",
+    "manager_eligible": true,
+    "manager_reason": "delivered_order_eligible",
+    "manager_takeover": false,
+    "memory_flags": {
+      "IG_ANALYSIS_MATERIALITY_MODE": "off",
+      "IG_ANALYSIS_V2_MODE": "off",
+      "IG_MEMORY_GENERATION_ENABLED": true,
+      "IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED": true,
+      "IG_MEMORY_TIMELINE_ENABLED": true,
+      "IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED": true,
+      "IG_TYPED_MEMORY_MODE": "off"
+    },
+    "order_id": 334,
+    "received": true,
+    "reward_count": 0,
+    "typed_heads": 0
+  },
+  "health": {
+    "main_healthy": true,
+    "process_online": true,
+    "process_pid": 3977696,
+    "stalled": false,
+    "supervisor": {
+      "available": true,
+      "child_pid": 3977696,
+      "child_pid_matches_expected": true,
+      "child_release_sha": "c68d0754c4edddbf89d1a48c91eeb9f032b368b5",
+      "last_ensure_seen_at": 1791507673.6,
+      "observed_at": 1791507674.907,
+      "restart_count": 0,
+      "status": "current",
+      "supervisor_release_sha": "c68d0754c4edddbf89d1a48c91eeb9f032b368b5"
+    },
+    "workers_healthy": true
+  },
+  "observed_at": "2026-10-09T01:01:22.517982+00:00",
+  "provider_probes": 0,
+  "pure_copy_locales": [
+    "uk",
+    "ru",
+    "en"
+  ],
+  "read_only_queries": 40,
+  "sha": "c68d0754c4edddbf89d1a48c91eeb9f032b368b5"
+}
