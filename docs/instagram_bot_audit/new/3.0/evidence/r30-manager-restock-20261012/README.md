@@ -1,6 +1,6 @@
 # P2/P4 · проверенное наличие, сроки и согласованное пополнение
 
-CODE/TEST/UI приняты; production receipt записывается отдельно после canonical deploy. Это инженерный срез, не полная приёмка пяти паспортов.
+✅ CODE/TEST/UI и canonical production deploy приняты: `974823f52`. [Production receipt](PRODUCTION_RELEASE_2026-10-12.md). Это инженерный срез, не полная приёмка пяти паспортов.
 
 ## Что работает
 

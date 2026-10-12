@@ -171,7 +171,7 @@
       root.replaceChildren();heading();
       const interest=restockInterest(current&&current.restock_interest);if(interest)root.appendChild(interest);
       const unavailable=!current||current.unavailable;
-      if(unavailable){root.append(el('p','ig-fr-muted','Поточний запит на перевірку виконання недоступний. Оновіть картку після уточнення вибору.'),feedback);return;}
+      if(unavailable){root.append(el('p','ig-fr-muted',current&&current.status==='none'?'Активної перевірки наявності чи строків поки немає.':'Поточна перевірка недоступна. Оновіть картку після уточнення вибору.'),feedback);return;}
       const validDecision=current.status==='reviewed'&&current.decision&&current.decision.request_digest===current.request_digest;
       const finalized=current.status==='reviewed',readOnly=finalized||!canOperate;
       root.appendChild(el('span','ig-fr-status',validDecision?'Перевірено менеджером':current.status==='stale'?'Попередня перевірка втратила актуальність':'Очікує перевірки'));
