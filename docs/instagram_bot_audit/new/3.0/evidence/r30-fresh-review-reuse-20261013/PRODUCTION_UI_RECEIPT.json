@@ -1,0 +1,32 @@
+{
+  "viewports": [
+    {
+      "overflow": false,
+      "page": 1816,
+      "scripts": [
+        "https://management.twocomms.shop/static/management/js/ig_fulfillment_review.31c27a1cb2d7.js?v=d4d7d222914d"
+      ],
+      "sectionWidth": 335,
+      "styles": [
+        "https://management.twocomms.shop/static/management/css/ig_fulfillment_review.66851c4698c6.css?v=b6619c0f7a98"
+      ],
+      "viewport": 1816
+    },
+    {
+      "overflow": false,
+      "page": 390,
+      "sectionWidth": 339,
+      "viewport": 390
+    },
+    {
+      "overflow": false,
+      "page": 320,
+      "sectionWidth": 269,
+      "viewport": 320
+    }
+  ],
+  "consoleErrors": 0,
+  "authenticated": true,
+  "customerMutations": 0,
+  "syntheticProductionFixtures": 0
+}

@@ -1,6 +1,6 @@
 # Engineering36 · fresh original CART review reuse
 
-Status: local acceptance complete; production verification pending. Baseline `f3258058a`.
+Status: implemented, locally accepted and production verified in `a6e9e88990cc1aebf11620d8f7f8995ef48a8fbb`. Baseline `f3258058a`. Natural live reused-event cohort remains 0.
 
 The accepted restock invitation already seals the original manager CART request, exact line, source, target and quantity. Reconciliation must reuse that actual current check rather than create a second manager task/Telegram alert for the same interest.
 
