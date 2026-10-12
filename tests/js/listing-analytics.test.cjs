@@ -12,7 +12,10 @@ function listing({ ga = 'G-OFFLINE', failed = false, consent = true } = {}) {
     'data-product-id': '12', 'data-default-offer-id': 'offer12',
     'data-product-title': 'Test tee', 'data-product-price': '740', 'data-product-category': 'T-shirts',
   };
-  const link = {};
+  const timers = [], destinations = [];
+  window.location = { href: 'https://example.com/catalog/', origin: 'https://example.com', assign: href => destinations.push(href) };
+  window.setTimeout = (fn, ms) => timers.push({ fn, ms });
+  const link = { href: 'https://example.com/product/test/', target: '', hasAttribute: () => false };
   const card = { getAttribute: name => attrs[name], contains: node => node === link };
   const document = {
     readyState: 'complete',
@@ -20,11 +23,11 @@ function listing({ ga = 'G-OFFLINE', failed = false, consent = true } = {}) {
     querySelectorAll: () => [card], addEventListener: (name, fn) => { handlers[name] = fn; },
   };
   let counter = 0;
-  const context = { window, document, ANALYTICS_BRAND_NAME: 'TwoComms',
+  const context = { window, document, URL, ANALYTICS_BRAND_NAME: 'TwoComms',
     safeGenerateAnalyticsEventId: () => 'offline-' + (++counter), scheduleIdle: fn => fn() };
   const run = () => vm.runInNewContext(source, context);
   run();
-  return { window, run, click: isLink => handlers.click({ target: {
+  return { window, run, timers, destinations, link, click: (isLink, options = {}) => handlers.click({ ...options, target: {
     closest: selector => selector === '.card.product' ? card : (isLink ? link : null),
   } }) };
 }
@@ -64,5 +67,42 @@ test('disabled GA or denied consent does not queue direct Google commands', () =
   for (const options of [{ ga: '' }, { consent: false }]) {
     const b = listing(options); b.click(true);
     assert.equal(b.window.dataLayer.filter(x => x[0] === 'event').length, 0);
+  }
+});
+
+test('same-tab navigation lets Google process selection and has a bounded fallback', () => {
+  const b = listing(); let prevented = false;
+  b.click(true, { button: 0, preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
+  const command = b.window.dataLayer.find(x => x[1] === 'select_item');
+  assert.equal(command[2].event_timeout, 250);
+  assert.equal(b.timers[0].ms, 250);
+  command[2].event_callback(); b.timers[0].fn();
+  assert.deepEqual(b.destinations, [b.link.href]);
+  assert.equal(b.window.dataLayer.find(x => x.event === 'select_item').ecommerce.event_callback, undefined);
+});
+
+test('blocked Google still navigates once when the independent timer fires', () => {
+  const b = listing(); b.click(true, { button: 0, preventDefault() {} });
+  b.timers[0].fn(); b.timers[0].fn();
+  assert.deepEqual(b.destinations, [b.link.href]);
+});
+
+test('modified, new-tab, downloaded and unavailable analytics keep native navigation', () => {
+  for (const options of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }, { defaultPrevented: true }]) {
+    const b = listing(); b.click(true, { button: 0, preventDefault: () => assert.fail('native click intercepted'), ...options });
+    assert.equal(b.timers.length, 0);
+  }
+  for (const settings of [{ failed: true }, { ga: '' }, { consent: false }]) {
+    const b = listing(settings); b.click(true, { button: 0, preventDefault: () => assert.fail('unavailable analytics intercepted') });
+    assert.equal(b.timers.length, 0);
+  }
+  for (const kind of ['target', 'download', 'external']) {
+    const b = listing();
+    if (kind === 'target') b.link.target = '_blank';
+    if (kind === 'download') b.link.hasAttribute = () => true;
+    if (kind === 'external') b.link.href = 'https://other.example/product/';
+    b.click(true, { button: 0, preventDefault: () => assert.fail('native destination intercepted') });
+    assert.equal(b.timers.length, 0);
   }
 });

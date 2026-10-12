@@ -2239,7 +2239,7 @@ document.addEventListener('change', function (e) {
 
 // The published GTM container owns four checkout events; list discovery is
 // sent directly to the same GA destination until those tags exist in GTM.
-function pushListingAnalyticsEvent(eventName, eventId, ecommerce) {
+function pushListingAnalyticsEvent(eventName, eventId, ecommerce, controls) {
   const entry = { event: eventName, event_id: eventId, ecommerce: ecommerce };
   window.dataLayer = window.dataLayer || [];
   try {
@@ -2251,7 +2251,7 @@ function pushListingAnalyticsEvent(eventName, eventId, ecommerce) {
       }
       window.gtag('event', eventName, Object.assign({}, ecommerce, {
         event_id: eventId, send_to: gaId
-      }));
+      }, controls || {}));
       // Keep the shared object marked so a later GTM-failure replay is unique.
       entry.ga_direct_sent = true;
     }
@@ -2279,6 +2279,27 @@ document.addEventListener('click', function (e) {
       const priceNum = price ? parseFloat(price) : undefined;
 
       const eventId = safeGenerateAnalyticsEventId();
+      let controls;
+      // Allow Google to process the click before same-tab navigation tears down
+      // its queue. Modified clicks and other browsing contexts keep native behavior.
+      const gaId = document.documentElement.getAttribute('data-ga-id');
+      if (gaId && !window.__twcGtmFailed && window.__twcAnalyticsConsent !== false
+          && !e.defaultPrevented && e.button === 0
+          && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+          && (!link.target || link.target === '_self') && !link.hasAttribute('download')) {
+        const destination = link.href;
+        if (destination && new URL(destination, window.location.href).origin === window.location.origin) {
+          e.preventDefault();
+          let navigated = false;
+          const navigate = function () {
+            if (navigated) return;
+            navigated = true;
+            window.location.assign(destination);
+          };
+          window.setTimeout(navigate, 250);
+          controls = { event_callback: navigate, event_timeout: 250 };
+        }
+      }
       // GA4 select_item — дополняет выбор в списке данными о позиции.
       try {
         const cards = Array.prototype.slice.call(document.querySelectorAll('.card.product'));
@@ -2296,7 +2317,7 @@ document.addEventListener('click', function (e) {
               quantity: 1,
               currency: 'UAH'
             }]
-        });
+        }, controls);
       } catch (_) { }
     }
   } catch (_) { }
