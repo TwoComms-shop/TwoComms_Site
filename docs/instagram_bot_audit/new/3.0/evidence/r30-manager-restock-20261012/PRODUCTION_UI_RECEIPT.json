@@ -1,0 +1,24 @@
+{
+  "authenticated": true,
+  "actualMountedPanel": true,
+  "emptyState": "Активної перевірки наявності чи строків поки немає.",
+  "cssVersion": "b19e93a40020",
+  "jsVersion": "02ae44829da4",
+  "mobile320": {
+    "overflow": false,
+    "pageWidth": 320,
+    "scrollWidth": 269,
+    "viewport": 320,
+    "width": 269
+  },
+  "mobile390": {
+    "overflow": false,
+    "pageWidth": 390,
+    "scrollWidth": 339,
+    "viewport": 390,
+    "width": 339
+  },
+  "applicationErrors": 0,
+  "productionFixtures": 0,
+  "customerSends": 0
+}
