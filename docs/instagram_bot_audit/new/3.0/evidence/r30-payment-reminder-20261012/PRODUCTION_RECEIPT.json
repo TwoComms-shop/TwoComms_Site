@@ -1,0 +1,51 @@
+{
+  "observed_at": "2026-10-12T13:19:24.980682+00:00",
+  "release_sha": "f9899a941638bb2dbc1f7f3c82be221c35409124",
+  "python": "3.14.8",
+  "django": "6.1",
+  "migration_0229": 1,
+  "tables": {
+    "management_igpaymentreminderreceipt": "InnoDB",
+    "management_igpaymentreminderanswer": "InnoDB",
+    "management_igpaymentreminderinvitation": "InnoDB"
+  },
+  "triggers": [
+    "ig_payrem_ans_delete",
+    "ig_payrem_ans_insert",
+    "ig_payrem_ans_update",
+    "ig_payrem_inv_delete",
+    "ig_payrem_inv_insert",
+    "ig_payrem_inv_update",
+    "ig_payrem_rec_delete",
+    "ig_payrem_rec_insert",
+    "ig_payrem_rec_update"
+  ],
+  "natural_ledger_counts": {
+    "management_igpaymentreminderanswer": 0,
+    "management_igpaymentreminderinvitation": 0,
+    "management_igpaymentreminderreceipt": 0
+  },
+  "natural_task_states": {},
+  "enabled": true,
+  "process_pid": 2274283,
+  "process_identity_verified": true,
+  "process_online": true,
+  "main_healthy": true,
+  "workers_healthy": true,
+  "stalled": false,
+  "supervisor": {
+    "available": true,
+    "status": "current",
+    "observed_at": 1791811112.893,
+    "last_ensure_seen_at": 1791811141.775,
+    "supervisor_release_sha": "f9899a941638bb2dbc1f7f3c82be221c35409124",
+    "child_release_sha": "f9899a941638bb2dbc1f7f3c82be221c35409124",
+    "restart_count": 0,
+    "child_pid": 2274283,
+    "child_pid_matches_expected": true
+  },
+  "maintenance_active": false,
+  "data_select_queries": 8,
+  "provider_probes": 0,
+  "synthetic_customer_sends": 0
+}
