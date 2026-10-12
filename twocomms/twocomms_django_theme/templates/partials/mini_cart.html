@@ -67,6 +67,18 @@
       </div>
     </div>
   {% else %}
-    <div class="mini-cart-empty"><span class="mini-cart-empty__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 2-1.7L20.5 7H6"/></svg></span><div class="mini-cart-empty__title">{% trans 'Кошик порожній.' %}</div><button type="button" class="mini-cart-empty__action" data-mini-cart-continue><span>{% trans 'Перейти до покупок' %}</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-7-7 7 7-7 7"/></svg></button></div>
+    <div class="mini-cart-empty">
+      <span class="mini-cart-empty__icon" aria-hidden="true">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 2-1.7L20.5 7H6"/></svg>
+      </span>
+      <div class="mini-cart-empty__copy">
+        <div class="mini-cart-empty__title">{% trans 'Кошик порожній' %}</div>
+        <p class="mini-cart-empty__description">{% trans 'Додайте товари до кошика, щоб зробити замовлення' %}</p>
+      </div>
+      <button type="button" class="mini-cart-empty__action" data-mini-cart-continue>
+        <span>{% trans 'Перейти до покупок' %}</span>
+        <svg width="20" height="20" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7 7 7-7 7"/></svg>
+      </button>
+    </div>
   {% endif %}
 </div>
