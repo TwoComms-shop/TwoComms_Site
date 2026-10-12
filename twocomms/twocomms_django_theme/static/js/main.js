@@ -2239,7 +2239,7 @@ document.addEventListener('change', function (e) {
 
 // The published GTM container owns four checkout events; list discovery is
 // sent directly to the same GA destination until those tags exist in GTM.
-function pushListingAnalyticsEvent(eventName, eventId, ecommerce, controls) {
+function pushListingAnalyticsEvent(eventName, eventId, ecommerce, parameters) {
   const entry = { event: eventName, event_id: eventId, ecommerce: ecommerce };
   window.dataLayer = window.dataLayer || [];
   try {
@@ -2251,7 +2251,7 @@ function pushListingAnalyticsEvent(eventName, eventId, ecommerce, controls) {
       }
       window.gtag('event', eventName, Object.assign({}, ecommerce, {
         event_id: eventId, send_to: gaId
-      }, controls || {}));
+      }, parameters || {}));
       // Keep the shared object marked so a later GTM-failure replay is unique.
       entry.ga_direct_sent = true;
     }
@@ -2259,6 +2259,41 @@ function pushListingAnalyticsEvent(eventName, eventId, ecommerce, controls) {
   window.dataLayer.push(entry);
   return entry;
 }
+
+// A same-tab navigation can destroy Google's asynchronous command queue before
+// select_item is transmitted. Carry that event once to the destination instead
+// of delaying navigation. Storage denial falls back to the direct queue.
+const LISTING_SELECTION_KEY = 'twc:pending-listing-selection:v1';
+function stageListingSelection(event, link, eventId, ecommerce) {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey
+      || event.shiftKey || event.altKey || (link.target && link.target !== '_self')
+      || link.hasAttribute('download') || window.__twcGtmFailed
+      || window.__twcAnalyticsConsent === false
+      || !document.documentElement.getAttribute('data-ga-id')) return false;
+  try {
+    const destination = new URL(link.href, window.location.href);
+    if (destination.origin !== window.location.origin) return false;
+    window.sessionStorage.setItem(LISTING_SELECTION_KEY, JSON.stringify({
+      destination: destination.href, source: window.location.href,
+      eventId: eventId, ecommerce: ecommerce, expires: Date.now() + 60000
+    }));
+    return true;
+  } catch (_) { return false; }
+}
+(function consumeListingSelection() {
+  try {
+    const raw = window.sessionStorage.getItem(LISTING_SELECTION_KEY);
+    if (!raw) return;
+    window.sessionStorage.removeItem(LISTING_SELECTION_KEY);
+    const pending = JSON.parse(raw);
+    if (pending.expires < Date.now() || pending.destination !== window.location.href
+        || window.__twcAnalyticsConsent === false || !pending.eventId
+        || !pending.ecommerce || !Array.isArray(pending.ecommerce.items)) return;
+    pushListingAnalyticsEvent('select_item', pending.eventId, pending.ecommerce, {
+      page_location: pending.source
+    });
+  } catch (_) { }
+})();
 
 // GA4 select_item на листингах. ViewContent отправляется один раз на PDP,
 // где выбранный вариант известен точно; карточка не создает второй Meta view.
@@ -2279,33 +2314,12 @@ document.addEventListener('click', function (e) {
       const priceNum = price ? parseFloat(price) : undefined;
 
       const eventId = safeGenerateAnalyticsEventId();
-      let controls;
-      // Allow Google to process the click before same-tab navigation tears down
-      // its queue. Modified clicks and other browsing contexts keep native behavior.
-      const gaId = document.documentElement.getAttribute('data-ga-id');
-      if (gaId && !window.__twcGtmFailed && window.__twcAnalyticsConsent !== false
-          && !e.defaultPrevented && e.button === 0
-          && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
-          && (!link.target || link.target === '_self') && !link.hasAttribute('download')) {
-        const destination = link.href;
-        if (destination && new URL(destination, window.location.href).origin === window.location.origin) {
-          e.preventDefault();
-          let navigated = false;
-          const navigate = function () {
-            if (navigated) return;
-            navigated = true;
-            window.location.assign(destination);
-          };
-          window.setTimeout(navigate, 250);
-          controls = { event_callback: navigate, event_timeout: 250 };
-        }
-      }
       // GA4 select_item — дополняет выбор в списке данными о позиции.
       try {
         const cards = Array.prototype.slice.call(document.querySelectorAll('.card.product'));
         const position = cards.indexOf(card);
         const listName = (document.documentElement.getAttribute('data-route-name') || 'catalog');
-        pushListingAnalyticsEvent('select_item', eventId, {
+        const ecommerce = {
             item_list_name: listName,
             items: [{
               item_id: offerId,
@@ -2317,7 +2331,10 @@ document.addEventListener('click', function (e) {
               quantity: 1,
               currency: 'UAH'
             }]
-        }, controls);
+        };
+        if (!stageListingSelection(e, link, eventId, ecommerce)) {
+          pushListingAnalyticsEvent('select_item', eventId, ecommerce);
+        }
       } catch (_) { }
     }
   } catch (_) { }
