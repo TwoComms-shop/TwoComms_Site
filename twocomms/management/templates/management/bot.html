@@ -10,7 +10,7 @@
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_memory_card.css' %}?v=memory-presentation-v1">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
-{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=b19e93a40020">{% endif %}
+{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=c1fb1d036cc4">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1880,13 +1880,13 @@ body.bot-drawer-open{overflow:hidden;}
 
 {% block extra_js %}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v14"></script>
-<script src="{% static 'management/ig_journey.js' %}?v=journey-business-consent-v18"></script>
+<script src="{% static 'management/ig_journey.js' %}?v=bbda591ea1da"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=commerce-scope-v1"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=commerce-scope-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
-{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=02ae44829da4"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=1cf2cd950754"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=gemini-public-evidence-v2"></script>{% endif %}
@@ -2494,6 +2494,7 @@ body.bot-drawer-open{overflow:hidden;}
         fulfillmentReviewController=window.IgFulfillmentReview.create(fulfillmentReviewRoot,{
           csrfToken:csrf,
           canOperate:{% if bot_can_operate %}true{% else %}false{% endif %},
+          onOpenProposal:(proposalId,state)=>{CheckoutProposals.select(proposalId,state);activate('orders',true);},
           url:clientId=>{
             const url='{% url "management_bot_fulfillment_review_api" 0 %}'.replace('/clients/0/','/clients/'+String(clientId)+'/');
             const params=new URLSearchParams(window.location.search),requestId=params.get('fulfillment_request');
@@ -3561,7 +3562,7 @@ body.bot-drawer-open{overflow:hidden;}
     function updateCounts(counts){syncProposalHeading();filterEls.forEach(button=>{const count=button.querySelector('[data-checkout-count]');if(count)count.textContent=String((counts||{})[button.dataset.checkoutState]||0);button.setAttribute('aria-selected',String(button.dataset.checkoutState===currentState));});}
     async function load({restoreFocus=''}={}){if(!listEl)return;listEl.replaceChildren(el('div','bot-empty','Завантаження пропозицій…'));try{const r=await fetch(listUrl+'?state='+encodeURIComponent(currentState),{headers:{'X-Requested-With':'XMLHttpRequest'}});const data=await r.json();if(!r.ok||!data.success)throw new Error();rows=data.items||[];updateCounts(data.counts);if(selected&&!rows.some(item=>String(item.public_id)===selected))selected='';render({focusId:restoreFocus});if(rows.length)await loadPreview(selected,{restoreFocus:Boolean(restoreFocus)});}catch(_){listEl.replaceChildren(el('div','bot-empty','Не вдалося завантажити пропозиції.'));}}
     filterEls.forEach(button=>button.addEventListener('click',()=>{currentState=button.dataset.checkoutState||'awaiting_payment';selected='';syncProposalHeading();load();}));
-    if(refreshEl)refreshEl.addEventListener('click',()=>load({restoreFocus:selected}));return {load:load};
+    if(refreshEl)refreshEl.addEventListener('click',()=>load({restoreFocus:selected}));return {load:load,select:(proposalId,state)=>{selected=String(proposalId);currentState=state==='paid'?'paid':['expired','revoked','cancelled','superseded'].includes(state)?'expired':'awaiting_payment';}};
   })();
 
   /* ============ Orders ============ */

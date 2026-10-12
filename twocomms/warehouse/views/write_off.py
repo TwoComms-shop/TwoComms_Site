@@ -179,7 +179,27 @@ def write_off_submit(request, token):
             order = Order.objects.select_for_update().get(pk=order.pk)
             if order_has_dtf_film(order):
                 return HttpResponse(DTF_GARMENT_WRITEOFF_ERROR, status=409, content_type="text/plain; charset=utf-8")
-            for item in order.items.all():
+            order_items = list(order.items.all())
+            garment_parent_ids = set()
+            for item in order_items:
+                prefix = f"item_{item.pk}_"
+                stock_id_raw = request.POST.get(prefix + "stock_id") or ""
+                try:
+                    garment_qty = int(request.POST.get(prefix + "qty") or "0")
+                except ValueError:
+                    garment_qty = 0
+                if stock_id_raw and stock_id_raw.isdigit() and garment_qty > 0:
+                    garment_parent_ids.add(int(stock_id_raw))
+            # The whole outer transaction must acquire garment parents in the
+            # same order as checkout reservations and absolute stock recounts.
+            # Locking in posted item order would precede the IG adapter's locks.
+            locked_garment_parents = {}
+            for stock_id in sorted(garment_parent_ids):
+                try:
+                    locked_garment_parents[stock_id] = StockItem.objects.select_for_update().get(pk=stock_id)
+                except StockItem.DoesNotExist:
+                    pass
+            for item in order_items:
                 prefix = f"item_{item.pk}_"
 
                 # --- Одяг ---
@@ -189,10 +209,7 @@ def write_off_submit(request, token):
                 except ValueError:
                     garment_qty = 0
                 if stock_id_raw and stock_id_raw.isdigit() and garment_qty > 0:
-                    try:
-                        stock_item = StockItem.objects.get(pk=int(stock_id_raw))
-                    except StockItem.DoesNotExist:
-                        stock_item = None
+                    stock_item = locked_garment_parents.get(int(stock_id_raw))
                     if stock_item is not None:
                         try:
                             adjust_stock_item(

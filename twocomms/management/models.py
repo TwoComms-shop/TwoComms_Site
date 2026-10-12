@@ -4978,3 +4978,4 @@ from .ig_fulfillment_review_models import *  # noqa: E402,F401,F403
 from .ig_human_reply_models import HumanReplyPart, HumanReplyPrivateDocument  # noqa: E402,F401
 from .ig_journey_models import (IgConversationRouteDecision, IgJourneyTraceSnapshot,
     IgJourneyTraceRefreshControl, IgJourneyTraceRefreshJob)  # noqa: E402,F401
+from .ig_fulfillment_stock_sync_models import IgFulfillmentStockSync  # noqa: E402,F401

@@ -1162,6 +1162,10 @@
       // Composite captions and invoice lifetime need their own vertical space.
       for(const node of nodes){const p=this.positions.get(node.id);if(p&&(node.semantic_key==='advertising_entry'||node.selection_progress||node.consent_progress||node.payment_progress||(node.timers||[]).some(t=>t.kind==='invoice_expiry')))this.mapHeight=Math.max(this.mapHeight,p.y+78);}
       this.placeEvents();
+      // Reserve the actual caption height of every visible row. A plain
+      // second-row stage also extends below its centre; counting composite
+      // stages alone lets its label overlap the legend after checkout.
+      for(const [id,p] of this.positions){const cell=this.cells.get(id);if(cell&&!cell.hidden)this.mapHeight=Math.max(this.mapHeight,p.y-22+cell.scrollHeight+8);}
       this.map.style.setProperty('--journey-touch-scale',String(this.modal?1/this.zoom:1));
       this.map.style.width=this.mapWidth+'px';this.map.style.height=this.mapHeight+'px';
       if(this.modal){this.map.style.transform='scale('+this.zoom+')';this.canvas.style.width=this.mapWidth*this.zoom+'px';this.canvas.style.height=this.mapHeight*this.zoom+'px';}

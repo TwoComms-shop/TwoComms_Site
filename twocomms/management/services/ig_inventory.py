@@ -99,7 +99,15 @@ def reserve_proposal_inventory(
     expiry = expires_at or (
         generation.expires_at if generation is not None else proposal.expires_at
     )
-    items = list(proposal.items.select_for_update().order_by("pk"))
+    from django.db import connection, OperationalError
+    try:
+        items = list(proposal.items.select_for_update(
+            nowait=connection.features.has_select_for_update_nowait,
+        ).order_by("pk"))
+    except OperationalError as exc:
+        if exc.args and exc.args[0] in {1205, 3572}:
+            raise InventoryReservationError("inventory_allocation_busy") from exc
+        raise
 
     groups = {}
     for item in items:
@@ -142,10 +150,33 @@ def reserve_proposal_inventory(
         group["quantity"] += int(item.quantity or 0)
 
     now = timezone.now()
-    for group in sorted(groups.values(), key=lambda value: value["allocation_key"]):
+    transferred_hold_ids = []
+    for group in sorted(groups.values(), key=lambda value: (
+        value["allocation"].source,
+        value["allocation"].stock_item_id or value["allocation"].color_variant_id or 0,
+    )):
         allocation = group["allocation"]
         required = group["quantity"]
         locked_target = _lock_allocation(allocation)
+        # A source-bound offer may already hold this exact basket before its
+        # first invoice generation exists. Transfer that finite hold under the
+        # same proposal/allocation locks; counting it twice rejects the last
+        # unit, while excluding every proposal row hides competing invoices.
+        transfer_quantity = 0
+        group_transfer_ids = []
+        if generation is not None:
+            hold = IgCheckoutInventoryReservation.objects.select_for_update().filter(
+                reservation_fingerprint=_fingerprint(proposal, group["allocation_key"]),
+                proposal=proposal, invoice_generation__isnull=True,
+                state=IgCheckoutInventoryReservation.State.ACTIVE, expires_at__gt=now,
+            ).first()
+            if hold is not None:
+                if (hold.allocation_key != group["allocation_key"] or hold.quantity != required
+                    or sorted(hold.line_ids or []) != sorted(item.pk for item in group["items"])):
+                    raise InventoryReservationError("inventory_proposal_hold_changed")
+                transfer_quantity = int(hold.quantity)
+                transferred_hold_ids.append(hold.pk)
+                group_transfer_ids.append(hold.pk)
         if allocation.source == "warehouse":
             from warehouse.services.inventory import protected_stock_quantity
 
@@ -158,36 +189,37 @@ def reserve_proposal_inventory(
                 exclude_generation_id=(
                     generation.pk if generation is not None else None
                 ),
+                lock=True,
             )
         else:
             variant = locked_target
             available = int(variant.stock or 0) if variant else 0
-            allocation_filter = {"color_variant_id": allocation.color_variant_id}
-            reserved = (
-                IgCheckoutInventoryReservation.objects.filter(
-                    **allocation_filter,
-                )
-                .filter(
-                    Q(
-                        state=IgCheckoutInventoryReservation.State.ACTIVE,
-                        expires_at__gt=now,
-                    )
-                    | Q(state=IgCheckoutInventoryReservation.State.PAID_COMMITTED)
-                )
-                .exclude(
-                    **(
-                        {"invoice_generation_id": generation.pk}
-                        if generation is not None
-                        else {"proposal_id": proposal.pk}
-                    )
-                )
-                .aggregate(total=Sum("quantity"))["total"]
-                or 0
+            reserved = _catalog_variant_protected_quantity(
+                color_variant_id=allocation.color_variant_id, at=now,
+                exclude_proposal_id=proposal.pk if generation is None else None,
+                exclude_generation_id=generation.pk if generation is not None else None,
+                lock=True,
             )
+        reserved = int(reserved) - transfer_quantity
+        if reserved < 0:
+            raise InventoryReservationError("inventory_proposal_hold_changed")
         if available <= 0:
             raise InventoryReservationError("insufficient_reserved_stock")
         if int(reserved) + required > available:
             raise InventoryReservationError("insufficient_reserved_stock")
+        if allocation.source == "catalog_variant":
+            from management.services.ig_inventory_size_capacity import (
+                SizeCapacityError, check_catalog_size_capacity,
+            )
+            try:
+                check_catalog_size_capacity(
+                    allocation.color_variant_id, group["items"], now=now,
+                    exclude_proposal_id=proposal.pk if generation is None else None,
+                    exclude_generation_id=generation.pk if generation is not None else None,
+                    transfer_reservation_ids=group_transfer_ids,
+                )
+            except SizeCapacityError as exc:
+                raise InventoryReservationError(exc.reason) from exc
 
     reservations = []
     for group in groups.values():
@@ -224,6 +256,11 @@ def reserve_proposal_inventory(
         ))
     if reservations:
         IgCheckoutInventoryReservation.objects.bulk_create(reservations)
+    if transferred_hold_ids:
+        IgCheckoutInventoryReservation.objects.filter(
+            pk__in=transferred_hold_ids, state=IgCheckoutInventoryReservation.State.ACTIVE,
+        ).update(state=IgCheckoutInventoryReservation.State.RELEASED,
+            release_reason="transferred_to_invoice_generation", updated_at=now)
     return reservations
 
 
@@ -317,6 +354,7 @@ def _catalog_variant_protected_quantity(
     at,
     exclude_proposal_id=None,
     exclude_generation_id=None,
+    lock=False,
 ):
     from management.models import IgCheckoutInventoryReservation
 
@@ -336,6 +374,18 @@ def _catalog_variant_protected_quantity(
         reservations = reservations.exclude(
             invoice_generation_id=exclude_generation_id
         )
+    if lock:
+        from django.db import connection, OperationalError
+        try:
+            # A proposal editor may hold its old reservations before it
+            # reaches the stock parent. Never wait on that reverse edge.
+            return sum(reservations.select_for_update(
+                nowait=connection.features.has_select_for_update_nowait,
+            ).order_by("pk").values_list("quantity", flat=True))
+        except OperationalError as exc:
+            if exc.args and exc.args[0] in {1205, 3572}:
+                raise InventoryReservationError("inventory_allocation_busy") from exc
+            raise
     return int(reservations.aggregate(total=Sum("quantity"))["total"] or 0)
 
 
@@ -382,6 +432,59 @@ def _reservation_target_key(reservation):
     return "catalog_variant", reservation.color_variant_id
 
 
+def _catalog_payment_size_plans(proposal, reservations, *, now, generation_id=None):
+    """Bind each finite size commitment to its actual complete item set.
+
+    A reservation's first item does not represent a mixed-size group. Old
+    single-item rows remain usable only when that item proves the full count.
+    A changed or incomplete allocation goes to resource review, never to a
+    guessed size write-off. Allocation parents have already been locked.
+    """
+    from management.services.ig_inventory_size_capacity import (
+        SizeCapacityError, check_catalog_size_capacity,
+    )
+
+    from django.db import connection
+    items = {row.pk: row for row in proposal.items.select_for_update(
+        nowait=connection.features.has_select_for_update_nowait,
+    ).order_by("pk")}
+    groups = {}
+    invalid = set()
+    used = set()
+    for row in reservations:
+        if row.allocation_source not in {"catalog_variant", ""} or not row.color_variant_id:
+            continue
+        identity = row.color_variant_id
+        ids = row.line_ids or [row.item_id]
+        valid = (isinstance(ids, list) and bool(ids)
+            and all(type(value) is int and value in items for value in ids)
+            and len(set(ids)) == len(ids) and not used.intersection(ids))
+        selected = [items[value] for value in ids] if valid else []
+        if (not valid or any(item.color_variant_id != identity for item in selected)
+            or sum(int(item.quantity) for item in selected) != int(row.quantity)):
+            invalid.add(identity)
+            continue
+        used.update(ids)
+        groups.setdefault(identity, []).extend(selected)
+    plans, reasons = {}, {identity: "inventory_size_allocation_changed" for identity in invalid}
+    for identity, selected in sorted(groups.items()):
+        if identity in invalid:
+            continue
+        try:
+            plans[identity] = check_catalog_size_capacity(identity, selected, now=now,
+                exclude_proposal_id=proposal.pk if generation_id is None else None,
+                exclude_generation_id=generation_id)
+        except SizeCapacityError as exc:
+            if exc.reason in {"catalog_size_item_busy", "catalog_size_reservation_busy"}:
+                # Payment owners catch ValueError as a real resource failure.
+                # Contention must roll back/retry their transaction, never
+                # terminalize a valid paid customer's protected allocation.
+                from django.db import OperationalError
+                raise OperationalError(1205, "Temporary catalogue allocation contention") from exc
+            reasons[identity] = "late_payment_size_stock_reallocated"
+    return plans, reasons
+
+
 def _payment_review_reason(
     reservation,
     *,
@@ -402,28 +505,36 @@ def _payment_review_reason(
     if reservation.expires_at and reservation.expires_at <= paid_at:
         return "late_payment_expired_active"
     required = int(required_quantity or reservation.quantity or 0)
-    if reservation.allocation_source == "warehouse":
-        from warehouse.services.inventory import protected_stock_quantity
+    try:
+        if reservation.allocation_source == "warehouse":
+            from warehouse.services.inventory import protected_stock_quantity
 
-        available = int(stock_item.quantity or 0) if stock_item is not None else 0
-        protected_elsewhere = protected_stock_quantity(
-            stock_item_id=reservation.stock_item_id,
-            at=now,
-            exclude_proposal_id=(
-                reservation.proposal_id if generation_id is None else None
-            ),
-            exclude_generation_id=generation_id,
-        )
-    else:
-        available = int(color_variant.stock or 0) if color_variant is not None else 0
-        protected_elsewhere = _catalog_variant_protected_quantity(
-            color_variant_id=reservation.color_variant_id,
-            at=now,
-            exclude_proposal_id=(
-                reservation.proposal_id if generation_id is None else None
-            ),
-            exclude_generation_id=generation_id,
-        )
+            available = int(stock_item.quantity or 0) if stock_item is not None else 0
+            protected_elsewhere = protected_stock_quantity(
+                stock_item_id=reservation.stock_item_id,
+                at=now,
+                exclude_proposal_id=(
+                    reservation.proposal_id if generation_id is None else None
+                ),
+                exclude_generation_id=generation_id,
+                lock=True,
+            )
+        else:
+            available = int(color_variant.stock or 0) if color_variant is not None else 0
+            protected_elsewhere = _catalog_variant_protected_quantity(
+                color_variant_id=reservation.color_variant_id,
+                at=now,
+                exclude_proposal_id=(
+                    reservation.proposal_id if generation_id is None else None
+                ),
+                exclude_generation_id=generation_id,
+                lock=True,
+            )
+    except InventoryReservationError as exc:
+        if exc.reason == "inventory_allocation_busy":
+            from django.db import OperationalError
+            raise OperationalError(1205, "Temporary paid allocation contention") from exc
+        raise
     if protected_elsewhere + required > available:
         return "late_payment_stock_reallocated"
     return ""
@@ -470,8 +581,13 @@ def commit_proposal_inventory(
         )
     consumed_by_variant = {}
     catalog_rows = []
+    size_plans, size_reasons = _catalog_payment_size_plans(
+        proposal, reservations, now=now, generation_id=generation_id,
+    )
     for reservation in reservations:
-        review_reason = _payment_review_reason(
+        size_reason = (size_reasons.get(reservation.color_variant_id, "")
+            if reservation.allocation_source in {"catalog_variant", ""} else "")
+        review_reason = size_reason or _payment_review_reason(
             reservation,
             stock_item=stock_items.get(reservation.stock_item_id),
             color_variant=variants.get(reservation.color_variant_id),
@@ -511,6 +627,14 @@ def commit_proposal_inventory(
             raise ValueError("reserved_stock_changed")
         variant.stock = int(variant.stock) - quantity
         variant.save(update_fields=["stock"])
+        from product_catalog.models import VariantSizeRule
+        from django.db.models import F
+        for rule_id, size_quantity in size_plans.get(variant_id, {}).items():
+            changed = VariantSizeRule.objects.filter(pk=rule_id,
+                variant_id=variant_id, stock__gte=size_quantity).update(
+                    stock=F("stock") - size_quantity, updated_at=now)
+            if changed != 1:
+                raise InventoryReservationError("reserved_size_stock_changed")
 
     updates = {
         "state": IgCheckoutInventoryReservation.State.FULFILLED,
@@ -581,8 +705,11 @@ def mark_overbooked_proposal_inventory(
             required_by_target.get(key, 0) + int(row.quantity or 0)
         )
     review_rows = []
+    _size_plans, size_reasons = _catalog_payment_size_plans(proposal, rows, now=now)
     for row in rows:
-        review_reason = _payment_review_reason(
+        size_reason = (size_reasons.get(row.color_variant_id, "")
+            if row.allocation_source in {"catalog_variant", ""} else "")
+        review_reason = size_reason or _payment_review_reason(
             row,
             stock_item=stock_items.get(row.stock_item_id),
             color_variant=variants.get(row.color_variant_id),
@@ -669,16 +796,22 @@ def fulfill_warehouse_reservation(
     from warehouse.models import MovementReason, StockItem
     from warehouse.services.inventory import adjust_stock_item
 
-    locked = IgCheckoutInventoryReservation.objects.select_for_update().get(
-        pk=reservation.pk,
-    )
+    identity = IgCheckoutInventoryReservation.objects.get(pk=reservation.pk)
+    if identity.allocation_source != "warehouse" or not identity.stock_item_id:
+        raise InventoryReservationError("not_warehouse_allocation")
+    # Allocation parents precede reservation rows in reservation/payment and
+    # recount transactions. Reversing that order deadlocks a paid write-off
+    # against a manager preparing another client's basket in the same pool.
+    stock_item = StockItem.objects.select_for_update().get(pk=identity.stock_item_id)
+    locked = IgCheckoutInventoryReservation.objects.select_for_update().get(pk=reservation.pk)
+    if locked.stock_item_id != stock_item.pk or locked.allocation_source != "warehouse":
+        raise InventoryReservationError("inventory_allocation_changed")
     if locked.state == IgCheckoutInventoryReservation.State.FULFILLED:
         return None
     if locked.state != IgCheckoutInventoryReservation.State.PAID_COMMITTED:
         raise InventoryReservationError("inventory_not_paid_committed")
     if locked.allocation_source != "warehouse" or not locked.stock_item_id:
         raise InventoryReservationError("not_warehouse_allocation")
-    stock_item = StockItem.objects.select_for_update().get(pk=locked.stock_item_id)
     quantity = int(locked.quantity or 0)
     if int(stock_item.quantity or 0) < quantity:
         locked.state = IgCheckoutInventoryReservation.State.OVERBOOKED_REVIEW
@@ -733,6 +866,13 @@ def fulfill_order_inventory_reservations(order, *, write_off_request=None, user=
                 if write_off_request.status == WriteOffRequest.STATUS_CANCELLED:
                     return 0
             stock_item_ct = ContentType.objects.get_for_model(StockItem)
+            candidate_rows = IgCheckoutInventoryReservation.objects.filter(
+                order=order, allocation_source="warehouse",
+                state=IgCheckoutInventoryReservation.State.PAID_COMMITTED,
+            )
+            parent_ids = sorted(set(candidate_rows.values_list("stock_item_id", flat=True)) - {None})
+            for identity in parent_ids:
+                StockItem.objects.select_for_update().get(pk=identity)
             reservations = list(
                 IgCheckoutInventoryReservation.objects.select_for_update().filter(
                     order=order,
@@ -740,6 +880,8 @@ def fulfill_order_inventory_reservations(order, *, write_off_request=None, user=
                     state=IgCheckoutInventoryReservation.State.PAID_COMMITTED,
                 ).order_by("pk")
             )
+            if any(row.stock_item_id not in parent_ids for row in reservations):
+                raise InventoryReservationError("inventory_allocation_changed")
             fulfilled = 0
             for reservation in reservations:
                 movement = None

@@ -1,0 +1,21 @@
+{
+  "synthetic": true,
+  "physical_variant_stock": 1,
+  "exact_size_stock": 1,
+  "sync_receipts": 1,
+  "proposal_status": "ready",
+  "quoted_total": "790.00",
+  "payment_attempt": null,
+  "access_tokens": 0,
+  "reservations": [
+    {
+      "state": "active",
+      "quantity": 1,
+      "invoice_generation_id": null,
+      "line_ids": [
+        1
+      ]
+    }
+  ],
+  "provider_probes": 0
+}

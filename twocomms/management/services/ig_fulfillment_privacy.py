@@ -11,6 +11,7 @@ def purge_fulfillment_data(client_ids, *, using="default"):
     from management.ig_fulfillment_review_models import (
         IgFulfillmentReviewDecision, IgFulfillmentReviewRequest,
     )
+    from management.ig_fulfillment_stock_sync_models import IgFulfillmentStockSync
     ids = sorted({int(value) for value in client_ids})
     if not ids:
         return
@@ -35,6 +36,7 @@ def purge_fulfillment_data(client_ids, *, using="default"):
         (IgRestockAnswer, f"invitation_id IN (SELECT id FROM {invitation_table} WHERE client_id IN ({placeholders}))"),
         (IgRestockReceipt, f"invitation_id IN (SELECT id FROM {invitation_table} WHERE client_id IN ({placeholders}))"),
         (IgRestockInvitation, f"client_id IN ({placeholders})"),
+        (IgFulfillmentStockSync, f"client_id IN ({placeholders})"),
         (IgFulfillmentReviewDecision, f"request_id IN (SELECT id FROM {request_table} WHERE client_id IN ({placeholders}))"),
         (IgFulfillmentReviewRequest, f"client_id IN ({placeholders})"),
     )

@@ -25,6 +25,7 @@ def protected_stock_quantity(
     exclude_proposal_id: Optional[int] = None,
     exclude_generation_id: Optional[int] = None,
     exclude_paid_order_id: Optional[int] = None,
+    lock: bool = False,
 ) -> int:
     """Return warehouse units protected by live or paid IG commitments.
 
@@ -57,6 +58,20 @@ def protected_stock_quantity(
             state=IgCheckoutInventoryReservation.State.PAID_COMMITTED,
             order_id=exclude_paid_order_id,
         )
+    if lock:
+        # Under the already locked allocation parent, use a current read.
+        # A plain aggregate in MariaDB REPEATABLE READ can miss the preceding
+        # transaction's new reservation after waiting for that parent lock.
+        from django.db import connection, OperationalError
+        try:
+            return sum(reservations.select_for_update(
+                nowait=connection.features.has_select_for_update_nowait,
+            ).order_by("pk").values_list("quantity", flat=True))
+        except OperationalError as exc:
+            if exc.args and exc.args[0] in {1205, 3572}:
+                from management.services.ig_inventory import InventoryReservationError
+                raise InventoryReservationError("inventory_allocation_busy") from exc
+            raise
     return int(reservations.aggregate(total=Sum("quantity"))["total"] or 0)
 
 
@@ -127,6 +142,7 @@ def adjust_stock_item(
         protected_quantity = protected_stock_quantity(
             stock_item_id=stock_item.pk,
             exclude_paid_order_id=getattr(order, "pk", None),
+            lock=True,
         )
         if new_qty < protected_quantity:
             raise ValueError(

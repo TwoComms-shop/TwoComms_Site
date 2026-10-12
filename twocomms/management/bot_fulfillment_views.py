@@ -23,6 +23,7 @@ def bot_fulfillment_review_api(request, client_id):
     from management.services.ig_fulfillment_reviews import (
         fulfillment_review_projection, apply_fulfillment_decision,
     )
+    from management.services.ig_fulfillment_stock_sync import projection, apply_stock_sync
     capabilities = [VIEW_IG_CONVERSATION_PII_PERMISSION]
     if request.method == "POST":
         capabilities.append(OPERATE_IG_BOT_PERMISSION)
@@ -38,7 +39,9 @@ def bot_fulfillment_review_api(request, client_id):
             selected = uuid.UUID(request.GET["request_id"]) if request.GET.get("request_id") else None
         except (ValueError, TypeError):
             return JsonResponse({"success": False, "code": "fulfillment_request_invalid"}, status=400)
-        return JsonResponse({"success": True, "review": fulfillment_review_projection(client_id, request_id=selected)})
+        review = fulfillment_review_projection(client_id, request_id=selected)
+        review["stock_sync"] = projection(client_id, request_id=selected)
+        return JsonResponse({"success": True, "review": review})
     try:
         if len(request.body) > 24 * 1024:
             raise ValueError("request too large")
@@ -51,15 +54,26 @@ def bot_fulfillment_review_api(request, client_id):
             return result
         payload = json.loads(request.body, object_pairs_hook=unique_fields,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError("invalid constant")))
-        keys = {"request_id", "expected_request_digest", "operation_id", "decisions_by_line"}
+        syncing = isinstance(payload, dict) and payload.get("action") == "stock_sync"
+        keys = ({"action", "request_id", "expected_decision_digest", "expected_preview_digest", "operation_id", "counts_by_pool"}
+            if syncing else {"request_id", "expected_request_digest", "operation_id", "decisions_by_line"})
         if not isinstance(payload, dict) or set(payload) != keys:
             raise ValueError("invalid fields")
+        if any(not isinstance(payload[name], str) or len(payload[name]) != 36
+               for name in ("request_id", "operation_id")):
+            raise ValueError("invalid identity")
         request_id, operation_id = uuid.UUID(payload["request_id"]), uuid.UUID(payload["operation_id"])
         if not IgFulfillmentReviewRequest.objects.filter(pk=request_id, client_id=client_id).exists():
             return JsonResponse({"success": False, "code": "fulfillment_request_missing"}, status=404)
-        result = apply_fulfillment_decision(request_id, actor=request.user,
-            expected_request_digest=payload["expected_request_digest"], operation_id=operation_id,
-            decisions_by_line=payload["decisions_by_line"])
+        if syncing:
+            result = apply_stock_sync(request_id, actor=request.user,
+                expected_decision_digest=payload["expected_decision_digest"],
+                expected_preview_digest=payload["expected_preview_digest"],
+                operation_id=operation_id, counts_by_pool=payload["counts_by_pool"])
+        else:
+            result = apply_fulfillment_decision(request_id, actor=request.user,
+                expected_request_digest=payload["expected_request_digest"], operation_id=operation_id,
+                decisions_by_line=payload["decisions_by_line"])
     except (ValueError, TypeError, UnicodeDecodeError, KeyError):
         return JsonResponse({"success": False, "code": "fulfillment_request_invalid"}, status=400)
     ready = bool(result.get("ready", result.get("ok")))

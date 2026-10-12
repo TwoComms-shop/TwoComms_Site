@@ -1,0 +1,15 @@
+........................................................................................../Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+................................Assisted attempt 68 provider identity/currency mismatch -> checking
+Assisted attempt 68 provider identity/currency mismatch -> checking
+.......................................................................................................Forbidden (CSRF cookie not set.): /bot/api/clients/1/fulfillment-review/
+...........................................Forbidden (CSRF cookie not set.): /bot/api/clients/1/fulfillment-review/
+...ig_bot event=gemini level=error detail=(0.0с) offline integration transport
+........................................ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+.....
+----------------------------------------------------------------------
+Ran 316 tests in 132.844s
+
+OK
+Found 316 test(s).
+System check identified no issues (0 silenced).

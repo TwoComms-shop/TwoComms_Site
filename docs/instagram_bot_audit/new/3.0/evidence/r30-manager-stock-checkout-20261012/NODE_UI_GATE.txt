@@ -1,0 +1,71 @@
+TAP version 13
+# Subtest: UNKNOWN refresh pins A even if GET returns newer B; retry preserves exact A operation and counts
+ok 1 - UNKNOWN refresh pins A even if GET returns newer B; retry preserves exact A operation and counts
+  ---
+  duration_ms: 9.307125
+  type: 'test'
+  ...
+# Subtest: verified stock_ready readback settles an UNKNOWN operation without inventing a proposal or reposting
+ok 2 - verified stock_ready readback settles an UNKNOWN operation without inventing a proposal or reposting
+  ---
+  duration_ms: 1.610625
+  type: 'test'
+  ...
+# Subtest: a verified receipt for newer B cannot settle the still UNKNOWN operation bound to A
+ok 3 - a verified receipt for newer B cannot settle the still UNKNOWN operation bound to A
+  ---
+  duration_ms: 2.237458
+  type: 'test'
+  ...
+# Subtest: a receipt for A with a different decision digest cannot settle or replace the pending operation
+ok 4 - a receipt for A with a different decision digest cannot settle or replace the pending operation
+  ---
+  duration_ms: 1.393792
+  type: 'test'
+  ...
+# Subtest: stale or unavailable readback retains the same UNKNOWN operation recovery action
+    # Subtest: stale
+    ok 1 - stale
+      ---
+      duration_ms: 1.423167
+      type: 'test'
+      ...
+    # Subtest: unavailable
+    ok 2 - unavailable
+      ---
+      duration_ms: 1.101208
+      type: 'test'
+      ...
+    1..2
+ok 5 - stale or unavailable readback retains the same UNKNOWN operation recovery action
+  ---
+  duration_ms: 2.732333
+  type: 'test'
+  ...
+# Subtest: 409 refresh keeps physical counts but requires fresh confirmation and the new preview digest
+ok 6 - 409 refresh keeps physical counts but requires fresh confirmation and the new preview digest
+  ---
+  duration_ms: 1.351166
+  type: 'test'
+  ...
+# Subtest: catalogue shared pool and exact size counts remain separate explicit quantities in the real POST
+ok 7 - catalogue shared pool and exact size counts remain separate explicit quantities in the real POST
+  ---
+  duration_ms: 1.483833
+  type: 'test'
+  ...
+# Subtest: PII viewer sees verified stock facts without editable stock controls or any POST
+ok 8 - PII viewer sees verified stock facts without editable stock controls or any POST
+  ---
+  duration_ms: 1.311583
+  type: 'test'
+  ...
+1..8
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 71.995834

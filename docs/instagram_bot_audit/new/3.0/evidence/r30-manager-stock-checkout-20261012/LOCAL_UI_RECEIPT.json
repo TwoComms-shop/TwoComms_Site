@@ -1,0 +1,68 @@
+{
+  "synthetic": true,
+  "providerProbes": 0,
+  "postSucceeded": true,
+  "proposalNavigation": true,
+  "reloadVerified": true,
+  "viewportChecks": [
+    {
+      "assets": [
+        "http://localhost:8767/static/management/css/ig_fulfillment_review.css?v=c1fb1d036cc4",
+        "http://localhost:8767/static/management/js/ig_fulfillment_review.js?v=1cf2cd950754"
+      ],
+      "button": {
+        "bottom": 553.921875,
+        "height": 51.59375,
+        "left": 29,
+        "right": 276,
+        "top": 502.328125,
+        "width": 247,
+        "x": 29,
+        "y": 502.328125
+      },
+      "inputs": [
+        {
+          "height": 46,
+          "value": "1"
+        },
+        {
+          "height": 46,
+          "value": "1"
+        }
+      ],
+      "overflow": false,
+      "page": 320,
+      "panel": 269,
+      "viewport": 320
+    },
+    {
+      "overflow": false,
+      "page": 390,
+      "panel": 339,
+      "viewport": 390
+    },
+    {
+      "page": 390,
+      "selectedTab": [
+        "Замовлення",
+        "Квоти",
+        "Переписка",
+        "Огляд",
+        "Очікують 1",
+        "Потрібна дія 0"
+      ],
+      "stage": "proposal_navigation",
+      "viewport": 390
+    },
+    {
+      "formCount": 0,
+      "overflow": false,
+      "page": 1816,
+      "panel": 335,
+      "stage": "reload",
+      "verifiedProposalVisible": true,
+      "viewport": 1816
+    }
+  ],
+  "journeyCaptionLegendOverlap": false
+}
