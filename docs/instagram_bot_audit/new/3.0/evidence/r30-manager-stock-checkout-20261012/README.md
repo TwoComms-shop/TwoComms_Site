@@ -21,6 +21,6 @@ Root owned integration, native DB, browser and releases. Scoped subagents suppli
 
 ## Production boundary
 
-Production delivery and runtime acceptance are recorded separately after canonical commit/push/SSH pull, migration 0231, static rebuild and owned daemon reload. [Pre-migration catalogue evidence](PRODUCTION_BEFORE.json) records 81 rows and its logical inventory digest; the engine change must preserve that digest. No production fixture, forced customer notification, provider health probe, backfill or fake order is permitted.
+✅ Code `58acb616fed101ac695fff568c871ff488f54ea9` is deployed. [Production acceptance](PRODUCTION_RELEASE_2026-10-12.md) and [authenticated UI](PRODUCTION_UI_RECEIPT.json) are recorded separately after canonical commit/push/SSH pull, migration 0231, static rebuild and owned daemon reload. [Pre-migration catalogue evidence](PRODUCTION_BEFORE.json) records 81 rows and its logical inventory digest; the engine change must preserve that digest. No production fixture, forced customer notification, provider health probe, backfill or fake order is permitted.
 
 Natural manager-action cohorts and complete programme passports remain open. Fresh CART-review reuse for standing restock, split execution/cost/consent, pre-selection deadline routing, native future marketing grants, immutable memory checkpoint recovery and P7 remain separate next work. The existing 90-day UGC reward policy stays unchanged.

@@ -1,0 +1,43 @@
+{
+  "authenticated": true,
+  "customerMutations": 0,
+  "applicationConsoleErrors": 0,
+  "checks": [
+    {
+      "assets": [
+        "https://management.twocomms.shop/static/management/css/ig_fulfillment_review.9013e6d1ea42.css?v=c1fb1d036cc4",
+        "https://management.twocomms.shop/static/management/js/ig_fulfillment_review.ad61afd8d316.js?v=1cf2cd950754"
+      ],
+      "currentRequestText": "Точні позиції, готовність і відправка — окремо.",
+      "mounted": true,
+      "page": 1816,
+      "sectionOverflow": false,
+      "sectionWidth": 335,
+      "viewport": 1816
+    },
+    {
+      "mounted": true,
+      "page": 320,
+      "sectionOverflow": false,
+      "sectionWidth": 269,
+      "viewport": 320
+    },
+    {
+      "mounted": true,
+      "page": 390,
+      "sectionOverflow": false,
+      "sectionWidth": 339,
+      "viewport": 390
+    },
+    {
+      "assets": [
+        "https://management.twocomms.shop/static/management/css/ig_fulfillment_review.9013e6d1ea42.css?v=c1fb1d036cc4",
+        "https://management.twocomms.shop/static/management/ig_journey.d0b6069d74e3.js?v=bbda591ea1da",
+        "https://management.twocomms.shop/static/management/js/ig_fulfillment_review.ad61afd8d316.js?v=1cf2cd950754"
+      ],
+      "journeyCaptionLegendOverlap": false,
+      "stage": "final_loaded_assets"
+    }
+  ],
+  "positiveStockAction": "verified locally; no production fixture"
+}
