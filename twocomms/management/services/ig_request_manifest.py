@@ -32,7 +32,7 @@ _VIEW_KEYS = {
     "memory_capture_digest", "publication_hash", "routing_policy", "facts_version",
     "state_view_version", "core_version",
     "reply_language",
-    "conversation_agreement", "receipt_observation", "ugc_review_benefit",
+    "conversation_agreement", "receipt_observation", "ugc_review_benefit", "payment_reminder_context",
 }
 _DIGEST_VIEW_KEYS = {"response_plan_digest", "memory_capture_digest", "publication_hash"}
 _METADATA_KEYS = {
@@ -41,7 +41,7 @@ _METADATA_KEYS = {
     "selected_block_ids", "omitted_blocks", "readiness_codes", "budgets",
     "view_versions", "media",
 }
-_OPTIONAL_METADATA_KEYS = {"memory_snapshot"}
+_OPTIONAL_METADATA_KEYS = {"memory_snapshot", "payment_reminder_snapshot"}
 _MEMORY_KEYS = {"version", "head_version", "capture_digest", "proof_digest", "summary_digest",
     "rendered_digest", "read_digest", "delta_rendered_digest", "source_message_ids",
     "delta_message_ids", "as_of", "reason", "selected", "omission_reason"}
@@ -99,6 +99,32 @@ _DISPATCH_KEYS = {
 
 def _invalid():
     raise RequestPolicyManifestError("policy_manifest_context_invalid", "request context shape or value is invalid")
+
+
+def _payment_reminder_snapshot(value):
+    """Finite capture metadata; arbitrary strings/capabilities never survive."""
+    from management.services.ig_payment_reminder_context import VERSION, STATE_LABELS, REASONS
+    keys = {"version", "status", "reason", "source_message_ids", "scheduled_for_epoch", "scope_digest", "capture_digest",
+        "as_of_epoch", "source_watermark_id", "source_watermark_epoch"}
+    raw = _object(value, keys, exact=True)
+    if raw["version"] != VERSION or raw["status"] not in STATE_LABELS or raw["reason"] not in REASONS:
+        _invalid()
+    ids = _ids(raw["source_message_ids"])
+    epoch = _count(raw["scheduled_for_epoch"])
+    as_of, watermark_id, watermark_epoch = (_count(raw[key]) for key in
+        ("as_of_epoch", "source_watermark_id", "source_watermark_epoch"))
+    if len(ids) > 4 or max(epoch, as_of, watermark_epoch) > 4102444800 or watermark_epoch > as_of:
+        _invalid()
+    if raw["status"] == "unknown":
+        if ids or epoch:
+            _invalid()
+    elif (not ids or not epoch or not as_of or not watermark_id or not watermark_epoch
+            or max(ids) > watermark_id or raw["reason"]):
+        _invalid()
+    return {"version": VERSION, "status": raw["status"], "reason": raw["reason"],
+        "source_message_ids": ids, "scheduled_for_epoch": epoch,
+        "as_of_epoch": as_of, "source_watermark_id": watermark_id, "source_watermark_epoch": watermark_epoch,
+        "scope_digest": _digest(raw["scope_digest"]), "capture_digest": _digest(raw["capture_digest"])}
 
 
 def _object(value, keys, *, exact=False):
@@ -187,6 +213,10 @@ def _metadata(value):
     if "memory_snapshot" in raw:
         result["memory_snapshot"] = _memory_snapshot(raw["memory_snapshot"])
         if result["memory_snapshot"].get("as_of") and result["memory_snapshot"]["as_of"]["client_id"] != result["client_id"]:
+            _invalid()
+    if "payment_reminder_snapshot" in raw:
+        result["payment_reminder_snapshot"] = _payment_reminder_snapshot(raw["payment_reminder_snapshot"])
+        if any(source_id < result["reset_floor"] for source_id in result["payment_reminder_snapshot"]["source_message_ids"]):
             _invalid()
     if set(result["selected_block_ids"]) & {item["block_id"] for item in safe_omitted}:
         _invalid()
@@ -305,6 +335,8 @@ def _hidden_context(context):
         safe.pop(key, None)
     for key in _DIGEST_VIEW_KEYS - {"publication_hash"}:
         safe.get("view_versions", {}).pop(key, None)
+    for key in ("scope_digest", "capture_digest"):
+        safe.get("payment_reminder_snapshot", {}).pop(key, None)
     return safe
 
 

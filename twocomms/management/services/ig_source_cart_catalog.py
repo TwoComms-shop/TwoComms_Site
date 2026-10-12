@@ -105,7 +105,7 @@ def _config_matches(row, *, fit, options, size, variant):
     return not _size_blocked(variant, size, fit)
 
 
-def resolve_source_cart_catalog(capture):
+def resolve_source_cart_catalog(capture, *, _catalog_readback=None):
     """Read one batched graph, fail closed on any budget or observation failure."""
     from django.db import connection, DatabaseError
     if (not isinstance(capture, dict) or capture.get("schema") != "source-selections.v1"
@@ -129,7 +129,7 @@ def resolve_source_cart_catalog(capture):
         return execute(sql, params, many, context)
     try:
         with connection.execute_wrapper(bounded):
-            result = _resolve(capture)
+            result = _resolve(capture, **({"_catalog_readback": _catalog_readback} if _catalog_readback is not None else {}))
         if rejection:
             raise SourceCartCatalogReadError(rejection)
         data = result.as_dict()
@@ -142,7 +142,43 @@ def resolve_source_cart_catalog(capture):
     return _result(capture=capture, gaps=({"reason": rejection or reason},), reads=reads)
 
 
-def _resolve(capture):
+def _prepared_catalog_rows(capture, readback, product_ids):
+    """Accept only the private prepared graph sealed by this source capture."""
+    from storefront.models import Product, ProductStatus
+    from productcolors.models import ProductColorVariant
+    from management.services.ig_catalog_pricing import PRODUCT_PRICING_LOOKUPS, VARIANT_PRICING_LOOKUPS
+    if (not isinstance(readback, dict) or readback.get("prepared") is not True
+            or readback.get("source_capture_digest") != capture.get("capture_digest")
+            or readback.get("scope") != capture.get("scope")
+            or any(readback.get(key) != capture.get(key) for key in ("session_id", "generation", "selection_revision"))):
+        raise SourceCartCatalogReadError("source_cart_catalog_readback_scope_changed")
+    products, variants = readback.get("products"), readback.get("variants")
+    if (not isinstance(products, (tuple, list)) or len(products) > MAX_LINES
+            or not isinstance(variants, (tuple, list)) or len(variants) > MAX_LINES * MAX_VARIANTS
+            or any(not isinstance(row, Product) or not _positive(row.pk) or row.status != ProductStatus.PUBLISHED for row in products)
+            or len({row.pk for row in products}) != len(products)):
+        raise SourceCartCatalogReadError("source_cart_catalog_readback_product_bound")
+    by_id = {row.pk: row for row in products}
+    if not product_ids.issubset(by_id):
+        raise SourceCartCatalogReadError("source_cart_catalog_readback_product_mismatch")
+    if (any(not isinstance(row, ProductColorVariant) or not _positive(row.pk)
+            or row.product_id not in by_id or row._state.fields_cache.get("product") is not by_id[row.product_id]
+            or "color" not in row._state.fields_cache for row in variants)
+            or len({row.pk for row in variants}) != len(variants)
+            or any(not {"category", "catalog", "size_grid"}.issubset(row._state.fields_cache) for row in products)):
+        raise SourceCartCatalogReadError("source_cart_catalog_readback_variant_mismatch")
+    for rows, lookups in ((products, PRODUCT_PRICING_LOOKUPS), (variants, VARIANT_PRICING_LOOKUPS)):
+        roots = {name.split("__", 1)[0] for name in lookups}
+        if any(not roots.issubset(set(row._state.fields_cache) | set(getattr(row, "_prefetched_objects_cache", {}))) for row in rows):
+            raise SourceCartCatalogReadError("source_cart_catalog_readback_unprepared")
+    selected = [row for row in products if row.pk in product_ids]
+    selected_variants = [row for row in variants if row.product_id in product_ids]
+    if len(selected_variants) > MAX_VARIANTS:
+        raise SourceCartCatalogReadError("source_cart_catalog_variant_bound")
+    return selected, selected_variants
+
+
+def _resolve(capture, *, _catalog_readback=None):
     from storefront.models import Product, ProductStatus
     from productcolors.models import ProductColorVariant
     from product_catalog.services import product_option_context
@@ -157,13 +193,17 @@ def _resolve(capture):
     product_ids.discard(None)
     if len(product_ids) > MAX_PRODUCTS or any(not _positive(value) for value in product_ids):
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_product_bound"},))
-    products = list(Product.objects.filter(pk__in=product_ids, status=ProductStatus.PUBLISHED)
-        .select_related("category", "catalog", "size_grid").order_by("pk")[:MAX_PRODUCTS + 1])
-    variants = list(ProductColorVariant.objects.filter(product_id__in=[row.pk for row in products])
-        .select_related("color").order_by("product_id", "order", "pk")[:MAX_VARIANTS + 1])
+    if _catalog_readback is not None:
+        products, variants = _prepared_catalog_rows(capture, _catalog_readback, product_ids)
+    else:
+        products = list(Product.objects.filter(pk__in=product_ids, status=ProductStatus.PUBLISHED)
+            .select_related("category", "catalog", "size_grid").order_by("pk")[:MAX_PRODUCTS + 1])
+        variants = list(ProductColorVariant.objects.filter(product_id__in=[row.pk for row in products])
+            .select_related("color").order_by("product_id", "order", "pk")[:MAX_VARIANTS + 1])
     if len(variants) > MAX_VARIANTS:
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_variant_bound"},))
-    prepare_pricing_context(products, variants)
+    if _catalog_readback is None:
+        prepare_pricing_context(products, variants)
     products_by_id = {row.pk: row for row in products}
     variants_by_id = {row.pk: row for row in variants}
     variant_groups = {product.pk: [row for row in variants if row.product_id == product.pk] for product in products}

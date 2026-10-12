@@ -345,6 +345,7 @@ IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_
 IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED = _env_bool(
     'IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED', True,
 )
+IG_PAYMENT_REMINDERS_ENABLED = _env_bool('IG_PAYMENT_REMINDERS_ENABLED', True)
 
 # Captured at request preparation. Environment changes require worker restart;
 # rollback modes keep the existing revision/outbox finalization lane intact.

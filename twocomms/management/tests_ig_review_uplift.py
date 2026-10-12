@@ -1,5 +1,6 @@
 """Native signed review uplift, delivery history, and checkout serialization."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 import os
@@ -24,6 +25,18 @@ from reviews.tests.test_purchase_review_incentive import _PurchaseReviewFixture
 from storefront.models import PromoCode, PromoCodeGuestUsage
 
 
+@contextmanager
+def _preshipment_order_factory(*, initial_status="new"):
+    """Construct the paid fixture before shipment; never rewind a live row."""
+    create = Order.objects.create
+    def initial_order(**values):
+        values.update(status=initial_status, tracking_number="", tracking_status_code=None,
+            tracking_provider_event_at=None, tracking_terminal_at=None)
+        return create(**values)
+    with patch.object(Order.objects, "create", side_effect=initial_order):
+        yield
+
+
 def _enable_test_business_consent(test):
     from management.models import InstagramBotSettings
 
@@ -36,6 +49,24 @@ def _enable_test_business_consent(test):
 
 
 class _ReviewUpliftFixture(_PurchaseReviewFixture, _MarketingConsentFixture):
+    def setUp(self, *, initial_order_status=None):
+        if initial_order_status is None:
+            return super().setUp()
+        with _preshipment_order_factory(initial_status=initial_order_status):
+            super().setUp()
+
+    def _complete_delivery_after_consent(self):
+        self.delivered_at = timezone.now()
+        self.order.status = "done"
+        self.order.tracking_number = "20450000000002"
+        self.order.tracking_status_code = 9
+        self.order.tracking_provider_event_at = self.delivered_at
+        self.order.tracking_terminal_at = self.delivered_at
+        self.order.save(update_fields=["status", "tracking_number", "tracking_status_code",
+            "tracking_provider_event_at", "tracking_terminal_at"])
+        self.evidence = self.consent_source(self.ig_client, text="Відмітила вас у сторіс",
+            attachments="https://cdn.example/story-proof.jpg")
+
     def _approved_without_worker(self):
         from management.ig_bot_models import IgUgcRewardLifecycleJob
 
@@ -90,6 +121,10 @@ class _ReviewUpliftFixture(_PurchaseReviewFixture, _MarketingConsentFixture):
     STORAGES={"default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
               "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}})
 class ReviewUpliftAuthorityTests(_ReviewUpliftFixture, TestCase):
+    def setUp(self):
+        initial_status = "new" if self._testMethodName == "test_v2_freezes_purchased_product_link_and_rechecks_reservation_at_dispatch" else None
+        super().setUp(initial_order_status=initial_status)
+
     def test_pending_review_has_no_uplift_authority(self):
         reward = self._award()
         expiry = reward.promo_code.valid_until
@@ -289,6 +324,7 @@ class ReviewUpliftAuthorityTests(_ReviewUpliftFixture, TestCase):
 
         _enable_test_business_consent(self)
         self.grant_business_consent(self.ig_client, self.order, self.assignment)
+        self._complete_delivery_after_consent()
         reward = self._award()
         metadata, text = post_purchase_invitation_snapshot(self.ig_client, self.order, "uk", assignment=self.assignment)
         self.assertEqual(metadata["version"], 2)
@@ -499,11 +535,10 @@ class _V2InvitationOwnerContract(_MarketingConsentFixture):
         from orders.models import OrderItem
         from storefront.models import Category, Product
 
-        ReviewOnlyOwnerContract.setUp(self)
-        self.delivered_at = timezone.now() - timedelta(hours=1)
-        self.order.tracking_provider_event_at = self.delivered_at
-        self.order.tracking_terminal_at = self.delivered_at
-        self.order.save(update_fields=["tracking_provider_event_at", "tracking_terminal_at"])
+        self._initializing_preshipment_fixture = True
+        with _preshipment_order_factory():
+            ReviewOnlyOwnerContract.setUp(self)
+        self._initializing_preshipment_fixture = False
         category = Category.objects.create(name="V2 purchased clothing", slug="v2-purchased-clothing")
         self.product = Product.objects.create(title="V2 purchased garment", slug="v2-purchased-garment",
             category=category, status="published", price=790)
@@ -515,9 +550,15 @@ class _V2InvitationOwnerContract(_MarketingConsentFixture):
         _enable_test_business_consent(self)
         assignment = link_order_to_client(self.order, client=self.customer, actor=self.actor)
         self.grant_business_consent(self.customer, self.order, assignment)
+        self._delivered(self.order)
+        self.delivered_at = self.order.tracking_terminal_at
+        self.order.tracking_provider_event_at = self.delivered_at
+        self.order.save(update_fields=["tracking_provider_event_at"])
 
     def _delivered(self, order):
         from management.tests_ig_post_purchase_review_only import ReviewOnlyOwnerContract
+        if getattr(self, "_initializing_preshipment_fixture", False):
+            return
         return ReviewOnlyOwnerContract._delivered(self, order)
 
     def _event(self):
@@ -552,7 +593,7 @@ class _V2InvitationOwnerContract(_MarketingConsentFixture):
         link_order_to_client(self.order, client=self.customer, actor=self.actor)
         evidence = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
             role="user", text="Відмітила вас у сторіс", attachments="https://cdn.example/v2-story-proof.jpg",
-            status="done", provider_created_at=self.delivered_at + timedelta(minutes=1))
+            status="done", provider_created_at=timezone.now())
         reward, created = award_ugc_reward(client=self.customer, order=self.order, actor=self.actor,
             evidence_message_id=evidence.pk, review_note="Verified native post-delivery mention")
         self.assertTrue(created)
@@ -643,7 +684,7 @@ class CanonicalV2PurchaseInvitationTests(_V2InvitationOwnerContract, TestCase):
     GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
 class AfterAwardReviewInvitationTests(_ReviewUpliftFixture, TestCase):
     def setUp(self):
-        super().setUp()
+        super().setUp(initial_order_status="new")
         self.ig_client.language = "uk"
         self.ig_client.save(update_fields=["language", "updated_at"])
         _enable_test_business_consent(self)
@@ -651,8 +692,9 @@ class AfterAwardReviewInvitationTests(_ReviewUpliftFixture, TestCase):
     def _reward_after_consent(self):
         self.consent_invitation, self.consent_answer = self.grant_business_consent(
             self.ig_client, self.order, self.assignment,
-            text="Дякую за отримане замовлення, хочу отримувати ваші новинки та пропозиції.")
+            text="Дякую за замовлення, хочу отримувати ваші новинки та пропозиції.")
         self.assertEqual(self.consent_invitation.locale, "uk")
+        self._complete_delivery_after_consent()
         # Current, admitted, owned English input outranks the Ukrainian profile
         # and the older invitation's locale when new reward copy is produced.
         self.evidence = self.consent_source(self.ig_client,
@@ -735,6 +777,7 @@ class AfterAwardReviewInvitationTests(_ReviewUpliftFixture, TestCase):
         self._assert_rating_uplifts_original_code(5)
 
     def test_no_business_consent_sends_owed_ten_only_without_marketing_links(self):
+        self._complete_delivery_after_consent()
         reward = self._award()
         delivery = reward.deliveries.get(generation=1)
         self.assertEqual(delivery.invitation_snapshot, {})

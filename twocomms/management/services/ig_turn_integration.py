@@ -98,6 +98,8 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
     from management.services.approved_public_facts import APPROVED_PUBLIC_FACTS_VERSION
     safe_versions["facts_version"] = APPROVED_PUBLIC_FACTS_VERSION
     safe_versions["ugc_review_benefit"] = REVIEW_REWARD_CONTEXT_VERSION
+    from management.services.ig_payment_reminder_context import SLOT as REMINDER_SLOT, VERSION as REMINDER_VERSION, payment_reminder_manifest
+    safe_versions["payment_reminder_context"] = REMINDER_VERSION
     sources = revision.bundle_snapshot["sources"]
     admitted = [str(part.source_part_id) for part in collection.parts]
     unavailable = [str(part["source_part_id"]) for source in sources
@@ -118,6 +120,7 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
                     "media_parts": int(budget.get("media_parts") or 0)},
         "view_versions": safe_versions,
         "memory_snapshot": metadata.get("memory_snapshot") or {},
+        "payment_reminder_snapshot": payment_reminder_manifest(state.as_dict()["slots"].get(REMINDER_SLOT) or {}),
         "media": {"admitted_part_ids": admitted, "omitted_part_ids": [],
                   "unavailable_part_ids": unavailable},
     }

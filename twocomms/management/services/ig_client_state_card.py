@@ -36,6 +36,11 @@ HEADER = (
     "and the nested payment truth before making payment claims. "
     "An agreement conflicting with an audited current requirement is historical context: "
     "do not treat its previous size as current or as order authority. "
+    "A payment.reminder business agreement applies only to its captured purchase and time. "
+    "An invitation awaits the customer's positive confirmation; accepted means scheduled, not sent. "
+    "Only a source-verified sent state proves delivery. Unknown is not confirmation. "
+    "Business agreement never extends the native messaging window or proves native future permission, "
+    "payment, refund, stock reservation or a price promise. "
     "Existing mandatory server blocks and execution guards govern actions.\n"
 )
 
@@ -333,18 +338,26 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                 continue
             field_scope = raw.get("scope") or {}
             field_reason = _scope_reason(field_scope, scope) or _source_reason(raw.get("source_refs") or [], watermark, scope.get("reset_floor"))
-            if key in {"conversation.agreement", "receipt.observation"}:
+            if key == "payment.reminder" and raw.get("omission_reason"):
+                field_reason = _reason(raw["omission_reason"])
+            if key in {"conversation.agreement", "receipt.observation", "payment.reminder"}:
                 field_reason = field_reason or _selection_binding_reason(raw.get("capture_scope"), boundary)
+            if key == "payment.reminder":
+                binding = raw.get("capture_scope") or {}
+                if any(name not in boundary or boundary[name] is None or binding.get(name) != boundary[name] for name in (
+                        "selection_session_id", "selection_generation", "selection_revision", "source_cart_capture_digest")):
+                    field_reason = field_reason or "payment_reminder_scope_changed"
             authority = raw.get("authority") if raw.get("authority") in AUTHORITIES else "none"
-            if key in {"conversation.agreement", "receipt.observation"} and authority != {
-                    "conversation.agreement": "conversation_agreement", "receipt.observation": "typed_analysis"}[key]:
+            if key in {"conversation.agreement", "receipt.observation", "payment.reminder"} and authority != {
+                    "conversation.agreement": "conversation_agreement", "receipt.observation": "typed_analysis",
+                    "payment.reminder": "conversation_agreement"}[key]:
                 field_reason = field_reason or "observation_authority_unknown"
             status = raw.get("status") if raw.get("status") in STATUSES else "unknown"
             if authority == "none" and not field_reason:
                 field_reason = "authority_unknown"
             if raw.get("omission_reason"):
                 field_reason = field_reason or _reason(raw["omission_reason"])
-            protected_observation = key in {"conversation.agreement", "receipt.observation"}
+            protected_observation = key in {"conversation.agreement", "receipt.observation", "payment.reminder"}
             slots[key] = _slot(None if field_reason and protected_observation else raw.get("value"), status="unknown" if field_reason else status,
                 authority="none" if field_reason and protected_observation else authority,
                 refs=[] if field_reason and protected_observation else raw.get("source_refs") or [], scope=field_scope,

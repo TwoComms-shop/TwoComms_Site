@@ -360,6 +360,11 @@ def _delete_direct_bot_records(
         # The earlier phase committed these owner fences. Scrub customer
         # extensions before deleting source proofs; economic evidence stays.
         owned_ids = [client.pk for client in clients]
+        from management.services.ig_payment_reminder_privacy import purge_payment_reminder_data
+
+        # Reminder rows protect their exact source/effect/task owners. Purge
+        # only after the committed privacy fence, before source deletion.
+        purge_payment_reminder_data(owned_ids)
         owned_frozen_sources = tuple(InstagramBotMessage.objects.filter(
             pk__in=frozen_message_ids, client_id__in=owned_ids,
         ).values_list("pk", flat=True)) if frozen_targets else ()
@@ -6355,6 +6360,8 @@ def bot_client_detail_api(request, client_id):
                     if f.reason == "revision_case:execution_debt"
                     else "Звірка ручної доставки"
                     if f.reason == "human_reply:delivery_unknown"
+                    else "Погоджене нагадування про оплату"
+                    if f.reason == "agreed_payment_reminder"
                     else ""
                 )
             ),

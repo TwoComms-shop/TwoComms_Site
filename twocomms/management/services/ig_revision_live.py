@@ -1225,8 +1225,13 @@ def _prepare_effects(revision, response, settings_row, *, response_plan=None):
 def _project_sent_history(revision_id):
     """Project canonical receipts locally; safe for finalization and exact echo."""
     from management.services.ig_revision_reply_projection import project_sent_reply
+    from management.services.ig_payment_reminders import record_delivery
 
-    return project_sent_reply(revision_id)
+    projected = project_sent_reply(revision_id)
+    # The same receipt hook is used by normal finalization and exact-echo
+    # recovery. The service requires the whole invitation with confirmed MIDs.
+    record_delivery(revision_id)
+    return projected
 
 
 def _revision_response_purpose_reason(revision):
@@ -1275,7 +1280,9 @@ def _drain_effects(revision, token, settings_row, access_token):
     _stop_revision_presence(dispatch=True)
     from management.services.ig_revision_delivery import drain_group
     from management.services.ig_revision_execution import finalize_sent_revision_effects
-    from management.services.ig_revision_transport import build_provider_part_callback
+    from management.services.ig_revision_transport import build_provider_part_callback, RevisionProviderTransport
+    from management.services.ig_revision_delivery import ProviderPartResult
+    from management.services.ig_payment_reminders import provider_boundary_for_revision, record_delivery
 
     effect = revision.delivery_effects.order_by("order_index").first()
     if effect is None:
@@ -1285,6 +1292,22 @@ def _drain_effects(revision, token, settings_row, access_token):
         expected_recipient=effect.recipient_igsid, access_token=access_token,
         response_gate=lambda _payload: _revision_response_purpose_reason(revision),
     )
+    original_transport = transport
+
+    def guarded_send(payload):
+        # Retain the canonical transport's shape/preflight and echo handling.
+        # The invitation's committed admission is rechecked immediately before
+        # each physical request; no database transaction spans the HTTP call.
+        with provider_boundary_for_revision(revision.pk) as allowed:
+            if not allowed:
+                return ProviderPartResult(
+                    provider_namespace=effect.provider_namespace,
+                    outcome="known_not_dispatched",
+                    explicit_rejection_code=allowed.reason or "payment_reminder_scope_changed",
+                )
+            return original_transport(payload)
+
+    transport = RevisionProviderTransport(original_transport.preflight, guarded_send)
     attempted = 0
     for group in dict.fromkeys(revision.delivery_effects.order_by("order_index").values_list("group", flat=True)):
         outcome = drain_group(
@@ -1295,6 +1318,8 @@ def _drain_effects(revision, token, settings_row, access_token):
         # Media and text have independent debt; UNKNOWN only stops siblings in
         # its own group. Every subsequent group still performs the full CAS.
     states = list(revision.delivery_effects.values_list("state", flat=True))
+    if states and all(state == IgRevisionDeliveryEffect.State.SENT for state in states):
+        record_delivery(revision.pk)
     if states and set(states).issubset({"cancelled", "superseded"}):
         reasons = tuple(dict.fromkeys(revision.delivery_effects.exclude(
             failure_code="",
@@ -1551,6 +1576,28 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             postback = postback_results[-1]
             return _execute_deterministic_input(revision, token, settings_row, postback.receipt, quick_replies=postback.quick_replies)
         revision.refresh_from_db()
+    if input_decision.origin == "generate" and not revision.generation_proposal_digest:
+        # Free text proposes a reminder time; only its signed, delivered
+        # invitation can later establish business agreement. Multiple sources
+        # and media remain on the complete ordinary response-plan path.
+        sources = revision.bundle_snapshot.get("sources") or []
+        if len(sources) == 1 and not sources[0].get("media_parts") and not sources[0].get("quick_reply_payload"):
+            from management.services.ig_payment_reminders import prepare_request
+
+            source = revision.sources.select_related("message").filter(
+                message_id=sources[0]["message_id"], message__client_id=revision.client_id,
+                message__role=InstagramBotMessage.Role.USER,
+            ).first()
+            if source is not None:
+                reminder = prepare_request(revision, source.message, settings_obj=settings_row)
+                if reminder.handled:
+                    receipt = {**input_decision.receipt, "origin": "payment_reminder_request",
+                        "source_message_id": source.message_id, "reply_text": reminder.reply_text,
+                        "invitation_id": str(reminder.invitation_id) if reminder.invitation_id else None,
+                        "reason": reminder.reason}
+                    return _execute_deterministic_input(
+                        revision, token, settings_row, receipt, quick_replies=reminder.quick_replies,
+                    )
     if not settings_row.ai_enabled or (
         input_decision.receipt["settings_permission_epoch"] != settings_row.reply_permission_epoch
         and not holding_recovery

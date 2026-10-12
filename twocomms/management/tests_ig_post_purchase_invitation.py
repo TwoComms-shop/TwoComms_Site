@@ -88,8 +88,10 @@ class PostPurchaseInvitationPolicyTests(SimpleTestCase):
 class LegacyPostPurchaseInvitationTests(_ConsentedInvitationFixture, TestCase):
     def setUp(self):
         from management import tests_ig_order_fulfillment as fixtures
+        from management.tests_ig_review_uplift import _preshipment_order_factory
 
-        fixtures.IgOrderFulfillmentTests.setUp(self)
+        with _preshipment_order_factory():
+            fixtures.IgOrderFulfillmentTests.setUp(self)
         self._setup_consent_transport()
 
     def _review_event(self, *, consent=True, frozen_combined=False):
@@ -97,13 +99,17 @@ class LegacyPostPurchaseInvitationTests(_ConsentedInvitationFixture, TestCase):
         from management.services.ig_order_assignments import link_order_to_client
         from management.services.ig_order_fulfillment import ensure_assignment_events
 
-        self.order.status = "done"
-        self.order.tracking_status_code = 9
-        self.order.tracking_terminal_at = timezone.now()
-        self.order.save(update_fields=["status", "tracking_status_code", "tracking_terminal_at"])
         assignment = link_order_to_client(self.order, client=self.ig_client, actor=self.manager)
         if consent:
             self.grant_business_consent(self.ig_client, self.order, assignment)
+        self.order.status = "done"
+        self.order.tracking_number = "20400000000000"
+        self.order.tracking_status_code = 9
+        self.order.tracking_terminal_at = timezone.now()
+        self.order.save(update_fields=["status", "tracking_number", "tracking_status_code", "tracking_terminal_at"])
+        # The consent owner was loaded before shipment and retains its own
+        # related Order instance; materialize from the committed delivery row.
+        assignment = type(assignment).objects.select_related("order", "client").get(pk=assignment.pk)
         if frozen_combined:
             create = IgOrderCustomerEvent.objects.get_or_create
 
@@ -308,6 +314,9 @@ class LegacyPostPurchaseInvitationTests(_ConsentedInvitationFixture, TestCase):
         from management.services.ig_order_assignments import link_order_to_client
         from management.services.ig_order_fulfillment import ensure_assignment_events, deliver_event
 
+        self.order.status = "ship"
+        self.order.tracking_number = "20400000000000"
+        self.order.save(update_fields=["status", "tracking_number"])
         assignment = link_order_to_client(self.order, client=self.ig_client, actor=self.manager)
         event = ensure_assignment_events(assignment)[0]
         with patch("management.services.ig_order_fulfillment.post_purchase_invitation_block_reason") as guard:
@@ -326,14 +335,14 @@ class CanonicalPostPurchaseInvitationTests(_ConsentedInvitationFixture, TestCase
     def _review_event(self):
         from management import tests_ig_lifecycle as fixtures
 
+        from management.services.ig_order_assignments import link_order_to_client
+        assignment = link_order_to_client(self.order, client=self.client)
+        self.grant_business_consent(self.client, self.order, assignment)
         self.order.status = "done"
         self.order.tracking_number = "20450000000009"
         self.order.tracking_status_code = 9
         self.order.tracking_terminal_at = timezone.now()
         self.order.save(update_fields=["status", "tracking_number", "tracking_status_code", "tracking_terminal_at"])
-        from management.services.ig_order_assignments import link_order_to_client
-        assignment = link_order_to_client(self.order, client=self.client)
-        self.grant_business_consent(self.client, self.order, assignment)
         return fixtures.InstagramLifecycleTests._event(self, "delivered_review_requested", {"status_code": "9"})
 
     def test_unknown_entitlement_cancels_before_provider_io_and_stays_terminal(self):

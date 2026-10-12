@@ -153,7 +153,7 @@ def _effective_revision(product):
     return revision
 
 
-def build_catalog_graph(*, product_ids=None) -> CatalogGraph:
+def build_catalog_graph(*, product_ids=None, _catalog_readback=None) -> CatalogGraph:
     product_filter = {"status": ProductStatus.PUBLISHED}
     if product_ids is not None:
         product_filter["pk__in"] = tuple(int(value) for value in product_ids)
@@ -173,6 +173,10 @@ def build_catalog_graph(*, product_ids=None) -> CatalogGraph:
         .order_by("product_id", "order", "pk")
     )
     prepare_pricing_context(products, variants)
+    if _catalog_readback is not None:
+        # Private transient ORM graph; never part of immutable CatalogGraph.
+        # The enclosing source capture seals its owner/digest only after fences.
+        _catalog_readback.update(products=tuple(products), variants=tuple(variants), prepared=True)
     variants_by_product: dict[int, list[ProductColorVariant]] = {}
     for variant in variants:
         variants_by_product.setdefault(variant.product_id, []).append(variant)

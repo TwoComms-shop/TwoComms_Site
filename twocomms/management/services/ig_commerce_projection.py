@@ -38,7 +38,8 @@ def _original_choice_request(source, capture):
         if original.line_operations or original.pending_line_clarification:
             from management.services.ig_catalog_graph import build_catalog_graph
             if "catalog_graph" not in capture:
-                capture["catalog_graph"] = build_catalog_graph(product_ids=capture.get("catalog_product_ids", ()))
+                capture["catalog_graph"] = build_catalog_graph(product_ids=capture.get("catalog_product_ids", ()),
+                    **({"_catalog_readback": capture["catalog_readback"]} if capture.get("catalog_readback") is not None else {}))
             original = parse_turn(source.text, parsed_catalog_graph=capture["catalog_graph"])
             from types import SimpleNamespace
             from management.services.ig_commerce_source_identity import resolve_source_product_request
@@ -734,9 +735,11 @@ class SelectionCaptureReadError(RuntimeError):
     """Finite observation failure; no partial cart is publication authority."""
 
 
-def capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None):
+def capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None, _catalog_readback=None):
     """Public read facade with a hard SQL budget and no writes/bootstrap."""
     from django.db import connection, DatabaseError
+    if _catalog_readback is not None:
+        _catalog_readback.clear()
     reads = 0
     def bounded(execute, sql, params, many, context):
         nonlocal reads
@@ -748,7 +751,8 @@ def capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None
         return execute(sql, params, many, context)
     try:
         with connection.execute_wrapper(bounded):
-            return _capture_current_selection_lines(client_id, now=now, _owner_snapshot=_owner_snapshot)
+            return _capture_current_selection_lines(client_id, now=now, _owner_snapshot=_owner_snapshot,
+                _catalog_readback=_catalog_readback)
     except SelectionCaptureReadError as exc:
         reason = str(exc)
     except (DatabaseError, AttributeError, TypeError, ValueError, KeyError, IndexError):
@@ -757,7 +761,7 @@ def capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None
         "lines": [], "coverage_complete": False}
 
 
-def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None):
+def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None, _catalog_readback=None):
     """Bounded canonical cart proof without bootstrap or active-index mutation.
 
     All current and copy-origin transitions share a hard 64-row preload. Scope
@@ -825,7 +829,8 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         "session": session, "snapshot": snapshot, "transitions": transitions,
         "row_lookup": {row.pk: row for row in rows}, "reset_floor": reset_floor,
         "namespace": namespace, "reset_id": scope["reset_id"], "order_id": scope["order_id"],
-        "parsed_sources": {}, "copy_cache": {}, "catalog_product_ids": product_ids}
+        "parsed_sources": {}, "copy_cache": {}, "catalog_product_ids": product_ids,
+        "catalog_readback": _catalog_readback}
     client = SimpleNamespace(pk=client_id)
     captured_lines = []
     omissions = []
@@ -864,6 +869,9 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         "coverage_complete": not omissions, "transition_limit": 64, "line_limit": 16, "query_limit": 64, "fence": fence}
     payload["capture_digest"] = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), default=str).encode()).hexdigest()
+    if _catalog_readback is not None and _catalog_readback.get("prepared") is True:
+        _catalog_readback.update(source_capture_digest=payload["capture_digest"], scope=deepcopy(scope),
+            session_id=session.pk, generation=session.generation, selection_revision=session.revision)
     return payload
 
 

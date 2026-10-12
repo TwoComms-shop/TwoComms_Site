@@ -98,7 +98,16 @@ def dispatch_postback(row: InstagramBotMessage) -> PostbackOutcome | None:
     нічого.
     """
     from management.services.ig_marketing_consent import PREFIX, handle_consent_reply
+    from management.services.ig_payment_reminders import PAYMENT_REMINDER_PREFIX, handle_reply
 
+    if str(getattr(row, "quick_reply_payload", "") or "").startswith(PAYMENT_REMINDER_PREFIX):
+        result = handle_reply(row)
+        if result.handled:
+            return PostbackOutcome(
+                action="payment_reminder_consent", reply_text=result.reply_text,
+                reason=result.reason, quick_replies=result.quick_replies,
+            )
+        return None
     if str(getattr(row, "quick_reply_payload", "") or "").startswith(PREFIX):
         return handle_consent_reply(row)
     parsed = parse_payload(getattr(row, "quick_reply_payload", "") or "")

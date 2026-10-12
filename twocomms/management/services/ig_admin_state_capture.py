@@ -230,9 +230,29 @@ def capture_payment_context(boundary, *, now=None):
     return result, payment_reason, fence
 
 
+def _current_readiness(cart, choices, *, _catalog_readback=None):
+    """Reuse canonical all-line capture and one prepared/batched catalog read."""
+    if isinstance(cart, dict) and cart.get("status") == "captured":
+        from management.services.ig_source_cart_catalog import resolve_source_cart_catalog
+        catalog = resolve_source_cart_catalog(cart, **({"_catalog_readback": _catalog_readback}
+            if _catalog_readback and _catalog_readback.get("source_capture_digest") else {})).as_dict()
+        active = cart.get("active_line_id")
+        if (catalog.get("source_capture_digest") == cart.get("capture_digest")
+                and isinstance(active, str) and any(row.get("line_id") == active for row in cart.get("lines") or [])):
+            readiness = (catalog.get("readiness_by_line") or {}).get(active)
+            if isinstance(readiness, dict) and readiness:
+                return deepcopy(readiness)
+        # A missing/incomplete catalog capture must not trigger independent
+        # per-product reads or borrow another position's readiness.
+        return {"applicability_known": False, "can_issue_link": False,
+            "missing": ["configuration"], "reason": "source_cart_catalog_unavailable"}
+    from management.services.ig_checkout_readiness import selection_readiness
+    return selection_readiness(product_id=choices.get("product_id"), selection={}, size=choices.get("size", ""),
+        fit=choices.get("fit_option_code", ""), color=choices.get("color", ""), quantity=choices.get("quantity", 1), strict=True)
+
+
 def _current_capture(client_id, expected_selection_revision, now):
     from management.services.ig_commerce_projection import capture_current_selection_lines
-    from management.services.ig_checkout_readiness import selection_readiness
     from management.services.ig_turn_intelligence import TurnContextError, validate_source_cart_capture
     from management.services.ig_turn_capture import validate_current_source_cart_sources
 
@@ -264,7 +284,8 @@ def _current_capture(client_id, expected_selection_revision, now):
         if key in line and line[key] != expected:
             raise AdminStateReadError("selection_line_scope_unknown")
     namespace = _namespace()
-    cart = capture_current_selection_lines(client_id, now=now, _owner_snapshot=first)
+    catalog_readback = {}
+    cart = capture_current_selection_lines(client_id, now=now, _owner_snapshot=first, _catalog_readback=catalog_readback)
     if cart.get("status") == "conflict":
         # A conflict found inside the all-position reader cannot be downgraded
         # into missing legacy data while the enclosing read continues.
@@ -337,13 +358,15 @@ def _current_capture(client_id, expected_selection_revision, now):
         "source_selection_binding": {key: boundary[key] for key in (*scope, "source_namespace", "reset_id", "erasure_epoch")},
         "source_cart": cart}
     choices = selection.get("values") or {}
-    readiness = selection_readiness(product_id=choices.get("product_id"), selection={}, size=choices.get("size", ""),
-        fit=choices.get("fit_option_code", ""), color=choices.get("color", ""), quantity=choices.get("quantity", 1), strict=True)
+    readiness = _current_readiness(cart, choices, _catalog_readback=catalog_readback)
     components["readiness"] = {**readiness, "scope": scope, "observed_at": now.isoformat()}
     payment_context, payment_reason, payment_fence = capture_payment_context(boundary, now=now)
     components.update({key: value for key, value in payment_context.items() if key != "omissions"})
     components["observation_omissions"] = payment_context.get("omissions") or []
     components["consent_state"] = {}  # No native purpose-grant producer exists.
+    from management.services.ig_payment_reminder_context import SLOT, capture_payment_reminder_context
+    components.setdefault("slots", {})[SLOT] = capture_payment_reminder_context(
+        client_id, boundary=boundary, captured_at=now, current_source_cart=cart)
     state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
     from management.services.ig_selection_corrections import build_size_correction_context
     size_slot = state.as_dict()["slots"].get("choice.size") or {}

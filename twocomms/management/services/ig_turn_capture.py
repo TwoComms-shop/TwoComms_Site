@@ -512,6 +512,10 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     # original observation/payment scopes inside; never relabel their proof.
     components.update({key: dict(scope=scope, capture=deepcopy(value))
         for key, value in payment_context.items() if key in {"slots", "payment_truth"}})
+    from management.services.ig_payment_reminder_context import SLOT, capture_payment_reminder_context
+    reminder_slot = capture_payment_reminder_context(client, boundary=boundary, captured_at=captured_at,
+        current_source_cart=source_cart)
+    components.setdefault("slots", dict(scope=scope, capture={}))["capture"][SLOT] = reminder_slot
     components["observation_omissions"] = dict(scope=scope, capture=deepcopy(payment_context.get("omissions") or []))
     omissions.extend({"block_id": "state:" + item["component"], "reason": item["reason"]}
         for item in payment_context.get("omissions") or [])

@@ -1,0 +1,5 @@
+System check identified no issues (0 silenced).
+No changes detected in app 'management'
+Scoped AST parsed: 27
+SQLite vendor trigger DDL install/remove: 9/9
+Native MariaDB physical triggers: 9/9

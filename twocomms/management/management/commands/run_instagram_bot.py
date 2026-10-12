@@ -1266,6 +1266,14 @@ def _reclaim_lease_guard() -> None:
         )
 
 
+def _drain_customer_followups(settings_obj):
+    """Use the existing daemon cadence for agreed-time and ordinary queues."""
+    from management.services.ig_payment_reminders import process_due_payment_reminders
+
+    process_due_payment_reminders(settings_obj)
+    bot_followups.process_due_followups(settings_obj)
+
+
 def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
     """Порядок цикла до ЭА.15 — сохранён целиком для отката по флагу."""
     _SERVICE_LANES.begin_cycle()
@@ -1288,7 +1296,7 @@ def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]
         bot.process_pending(settings_obj)
         if maintenance_status(path=MAINTENANCE_FILE)["active"]:
             return enabled, last_poll
-        bot_followups.process_due_followups(settings_obj)
+        _drain_customer_followups(settings_obj)
     now = time.time()
     if settings_obj.receive_via_poll and (now - last_poll) >= interval:
         poll_result = bot.poll_ingest(settings_obj)
@@ -1312,7 +1320,7 @@ def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]
             bot.process_pending(settings_obj)
             if maintenance_status(path=MAINTENANCE_FILE)["active"]:
                 return enabled, last_poll
-            bot_followups.process_due_followups(settings_obj)
+            _drain_customer_followups(settings_obj)
         last_poll = now
     _private_media_cleanup_tick()
     return enabled, last_poll
@@ -1343,7 +1351,7 @@ def _customer_lane(settings_obj, last_poll: float) -> tuple[bool, float, bool]:
             pulse.beat()
             if maintenance_status(path=MAINTENANCE_FILE)["active"]:
                 return enabled, last_poll, True
-            bot_followups.process_due_followups(settings_obj)
+            _drain_customer_followups(settings_obj)
             pulse.beat()
         now = time.time()
         if settings_obj.receive_via_poll and (now - last_poll) >= interval:
@@ -1372,7 +1380,7 @@ def _customer_lane(settings_obj, last_poll: float) -> tuple[bool, float, bool]:
                 pulse.beat()
                 if maintenance_status(path=MAINTENANCE_FILE)["active"]:
                     return enabled, last_poll, True
-                bot_followups.process_due_followups(settings_obj)
+                _drain_customer_followups(settings_obj)
                 pulse.beat()
             last_poll = now
     return enabled, last_poll, False
