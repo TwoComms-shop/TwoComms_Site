@@ -113,6 +113,15 @@ def _lines(cart, watermark, now):
         lines.append({"line_id": row["line_id"], "recipient_id": row.get("recipient_id", "self"),
             "label": _label(observed, row.get("index", 0)), "target": observed.get("target") or {},
             "preferences": preferences, "observation": observed, "inventory_digest": inventory_digest(observed)})
+    # Pending manager debt needs a configuration proof too. Inventory counts
+    # cannot stand in for the exact SKU/fit/options identity when no decision
+    # has yet been recorded. Capture all exact targets in one bounded batch.
+    from management.services.ig_restock_availability import observe_configurations
+    exact = [line for line in lines if line["target"]]
+    configurations = observe_configurations([line["target"] for line in exact], now=now)
+    for line, configuration in zip(exact, configurations):
+        line["configuration_digest"] = (configuration.get("configuration_digest", "")
+            if configuration.get("status") == "valid" and configuration.get("target") == line["target"] else "")
     return lines
 
 
@@ -661,11 +670,6 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
         payload["source_scope"]["source_cart_capture_digest"] = current_source_cart.get("capture_digest")
     payload.update(id=str(request.pk), created_at=request.created_at.isoformat())
     base.update(status="pending", request_digest=request.envelope_hmac, current_request=payload)
-    if payload.get("scope") == "cart" and current_source_cart is not None:
-        from management.services.ig_restock_context import capture_restock_interest
-        interest = capture_restock_interest(request, settings_obj, current_source_cart, now)
-        if interest:
-            base["restock_interest"] = interest
     decision = Decision.objects.filter(request=request, created_at__lte=now).order_by("-version").first()
     if decision:
         reason = _decision_reason(request, decision, now=now, _catalog_readback=_catalog_readback,
@@ -694,6 +698,14 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
             key: getattr(request.client, key) for key in owner_fields}:
         return {"version": 1, "captured_at": now.isoformat(), "status": "stale", "current_request": None,
             "request_digest": "", "decision": None, "reason": "owner_scope_changed"}
+    if payload.get("scope") == "cart" and current_source_cart is not None:
+        from management.services.ig_restock_context import capture_restock_interest
+        # Presentation consumes the existing verified decision, never runs the
+        # expensive fresh-send admission gate inside the bounded state reader.
+        interest = capture_restock_interest(request, settings_obj, current_source_cart, now,
+            reviewed_decision=decision if base["status"] == "reviewed" else None)
+        if interest:
+            base["restock_interest"] = interest
     # Native receipt is independent of manager approval and of a customer
     # reading the message. Do not leave the staff timeline permanently pending.
     base["customer_update"] = {"state": "absent", "native_receipt_confirmed": False, "sent_at": None}
@@ -772,6 +784,148 @@ def validated_update_history(task):
         "decision": {**deepcopy(decision.envelope), "id": str(decision.pk), "version": decision.version}}
 
 
+def _cart_restock_review(subscription, settings_obj, configuration, *, now, current_source_cart=None):
+    """Reuse an original CART review without changing either consent purpose.
+
+    Eligibility suppresses duplicate manager debt. Only a fresh AVAILABLE
+    decision produces admission proof; neither outcome authorizes delivery.
+    """
+    from management.ig_restock_subscription_models import IgRestockSubscription
+    from management.services.ig_restock_subscriptions import _subscription_reason, _invitation_manager_case
+    from management.services.ig_commerce_projection import capture_current_selection_lines
+    from management.bot_access import has_all_bot_capabilities, OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION
+    from django.utils.dateparse import parse_datetime
+
+    empty = {"eligible": False, "ready": False, "reason": "manager_review_stale",
+        "request": None, "decision": None, "proof": {}}
+    settings_obj = _settings(settings_obj)
+    def subscription_read():
+        return IgRestockSubscription.objects.filter(pk=subscription.pk, client_id=subscription.client_id).select_related(
+            "accepted_answer__invitation__client", "accepted_answer__invitation__revision",
+            "accepted_answer__invitation__request_source", "accepted_answer__receipt__effect", "accepted_answer__source").first()
+
+    actual = subscription_read()
+    if not settings_obj or not actual or _subscription_reason(actual, settings_obj, now=now):
+        return empty
+    accepted, inv = actual.accepted_answer, actual.accepted_answer.invitation
+    if (not isinstance(configuration, dict) or configuration.get("status") != "valid"
+        or configuration.get("target") != inv.target
+        or not _invitation_manager_case(inv, settings_obj=settings_obj, now=now)):
+        return empty
+    original_id = inv.envelope["manager_review"]["request_id"]
+    cart_query = Request.objects.filter(client_id=actual.client_id, source__isnull=False)
+    request = cart_query.select_related("client", "revision", "task").order_by("-created_at", "-source_id", "-pk").first()
+    if (not request or str(request.pk) != original_id or request.created_at > now
+        or not _verified(request, "request") or request.envelope.get("scope") != "cart"):
+        return empty
+    cart = current_source_cart if current_source_cart is not None else capture_current_selection_lines(actual.client_id, now=now)
+    if _current_reason(request, settings_obj, now=now, current_source_cart=cart):
+        return empty
+    line_id = inv.envelope["selection"]["line_id"]
+    matches = [line for line in request.envelope.get("lines", ()) if line.get("line_id") == line_id
+        and line.get("target") == inv.target
+        and line.get("recipient_id", "self") == inv.envelope["selection"].get("recipient_id", "self")]
+    if len(matches) != 1:
+        return empty
+    decision = Decision.objects.filter(request=request).select_related("actor").order_by("-version").first()
+    line = None
+    if decision is None:
+        if (now - request.created_at > FRESHNESS
+            or matches[0].get("configuration_digest") != configuration.get("configuration_digest")):
+            return empty
+    else:
+        if _decision_reason(request, decision, now=now, current_source_cart=cart):
+            return empty
+        try:
+            decided_at = parse_datetime(decision.envelope.get("decided_at", ""))
+        except (TypeError, ValueError):
+            return empty
+        if (not decided_at or timezone.is_naive(decided_at) or decided_at > now
+            or decided_at > decision.created_at or now - decided_at > FRESHNESS
+            or not decision.actor.is_active or not has_all_bot_capabilities(decision.actor,
+                OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION)):
+            return empty
+        answers = [row for row in decision.envelope.get("lines", ()) if row.get("line_id") == line_id]
+        if len(answers) != 1:
+            return empty
+        line = answers[0]
+        # WAIT/unavailable also requires the original exact configuration; a
+        # fresh timestamp cannot renew an obsolete SKU decision.
+        if line.get("configuration_digest") != configuration.get("configuration_digest"):
+            return empty
+
+    def standing_head():
+        standing = Request.objects.filter(client_id=actual.client_id, source__isnull=True,
+            envelope__subscription_id=str(actual.pk),
+            envelope__lines__0__configuration_digest=configuration["configuration_digest"]).order_by("-created_at", "-pk").first()
+        latest = Decision.objects.filter(request=standing).order_by("-version").first() if standing else None
+        identity = (standing.pk, standing.envelope_hmac, latest.pk if latest else None,
+            latest.envelope_hmac if latest else None) if standing else None
+        return standing, latest, identity
+
+    standing, standing_decision, standing_fence = standing_head()
+    if standing_decision:
+        try:
+            standing_clock = parse_datetime(standing_decision.envelope.get("decided_at", ""))
+        except (TypeError, ValueError):
+            return empty
+        if (not _verified(standing, "request") or not _verified(standing_decision, "decision")
+            or not standing_clock or timezone.is_naive(standing_clock)
+            or standing_decision.created_at > now or standing_clock > now
+            or standing_clock > standing_decision.created_at
+            or decision is None or standing_decision.created_at >= decision.created_at):
+            # An explicit newer standing decision owns its purpose. Never hide
+            # it behind the original CART availability, even if contradictory
+            # or future-dated. No older-row fallback repairs an invalid head.
+            return empty
+    final_request = cart_query.select_related("client").order_by("-created_at", "-source_id", "-pk").first()
+    final_decision = Decision.objects.filter(request=request).select_related("actor").order_by("-version").first()
+    if (not final_request or final_request.pk != request.pk or not _verified(final_request, "request")
+        or final_request.envelope_hmac != request.envelope_hmac
+        or ((final_decision.pk, final_decision.envelope_hmac) if final_decision else None)
+            != ((decision.pk, decision.envelope_hmac) if decision else None)
+        or (final_decision is not None and not _verified(final_decision, "decision"))
+        or standing_head()[2] != standing_fence):
+        return {**empty, "reason": "review_read_conflict"}
+    # Identity fences do not authenticate mutable sources, current selection,
+    # permission or catalog configuration. Re-read each owner before exporting
+    # even an informational reuse descriptor; admission also needs these gates.
+    final_settings = _settings(settings_obj)
+    final_subscription = subscription_read()
+    final_cart = capture_current_selection_lines(actual.client_id, now=now)
+    final_configuration = _configuration(inv.target, now=now)
+    if (not final_settings or not final_subscription
+        or final_subscription.accepted_answer_id != actual.accepted_answer_id
+        or _subscription_reason(final_subscription, final_settings, now=now)
+        or final_cart.get("capture_digest") != cart.get("capture_digest")
+        or _current_reason(final_request, final_settings, now=now, current_source_cart=final_cart)
+        or final_configuration.get("status") != "valid" or final_configuration.get("target") != inv.target
+        or final_configuration.get("configuration_digest") != configuration.get("configuration_digest")
+        or (final_decision is not None and (not final_decision.actor.is_active
+            or not has_all_bot_capabilities(final_decision.actor,
+                OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION)))):
+        return {**empty, "reason": "review_read_conflict"}
+    eligible = {"eligible": True, "ready": False, "reason": "manager_review_pending",
+        "request": request, "decision": decision, "proof": {}}
+    if line is None:
+        return eligible
+    if line.get("availability") != "available":
+        return {**eligible, "reason": "manager_review_unavailable"}
+    if (line.get("supply_basis") not in {"warehouse_checked", "accessible_unrecorded"}
+        or type(line.get("checked_quantity")) is not int
+        or line["checked_quantity"] < inv.target.get("quantity", 1000)):
+        return empty
+    proof = {"version": 1, "review_scope": "cart", "request_id": str(request.pk),
+        "request_digest": request.envelope_hmac, "decision_id": str(decision.pk),
+        "decision_version": decision.version, "decision_digest": decision.envelope_hmac,
+        "subscription_id": str(actual.pk), "target": deepcopy(inv.target), "line_id": line_id,
+        "inventory_digest": line["inventory_digest"], "configuration_digest": line["configuration_digest"],
+        "checked_quantity": line["checked_quantity"], "supply_basis": line["supply_basis"],
+        "invitation_id": str(inv.pk), "invitation_digest": inv.envelope_hmac,
+        "answer_id": str(accepted.pk), "answer_digest": accepted.envelope_hmac}
+    return {**eligible, "ready": True, "reason": "", "proof": proof}
+
+
 def ensure_restock_manager_review(subscription, availability, *, now=None):
     from management.models import IgClient
     from management.services.ig_restock_subscriptions import _subscription_reason
@@ -786,6 +940,15 @@ def ensure_restock_manager_review(subscription, availability, *, now=None):
     configuration = _configuration(inv.target, now=now)
     if configuration.get("status") != "valid" or configuration.get("target") != inv.target:
         return {"created": False, "reason": "configuration_unverified"}
+    reused = _cart_restock_review(subscription, settings_obj, configuration, now=now)
+    if reused.get("reason") == "review_read_conflict":
+        # An unstable read cannot manufacture new manager debt from the older
+        # observation. The next reconciliation obtains a new consistent frame.
+        return {"created": False, "reason": "review_read_conflict"}
+    if reused["eligible"]:
+        request = reused["request"]
+        return {"created": False, "reused": True, "review_scope": "cart", "reason": reused["reason"],
+            "request_id": str(request.pk), "request_digest": request.envelope_hmac, "task_id": request.task_id}
     existing = Request.objects.filter(client_id=subscription.client_id, source__isnull=True).select_related("client").order_by("-created_at")[:50]
     generation = "initial"
     for candidate in existing:
@@ -825,6 +988,13 @@ def restock_manager_admission(subscription, availability, *, now=None):
     configuration = _configuration(target, now=now)
     if configuration.get("status") != "valid" or configuration.get("target") != target:
         return {"ready": False, "reason": "manager_review_stale", "proof": {}}
+    if observed.get("target") != target:
+        return {"ready": False, "reason": "manager_review_stale", "proof": {}}
+    reused = _cart_restock_review(subscription, settings_obj, configuration, now=now)
+    if reused.get("reason") == "review_read_conflict":
+        return {"ready": False, "reason": "manager_review_stale", "proof": {}}
+    if reused["eligible"]:
+        return {"ready": reused["ready"], "reason": reused["reason"], "proof": reused["proof"]}
     request = next((row for row in requests if row.envelope.get("subscription_id") == str(subscription.pk)
         and row.envelope.get("lines", [{}])[0].get("configuration_digest") == configuration.get("configuration_digest")), None)
     if not request:

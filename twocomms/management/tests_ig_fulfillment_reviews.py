@@ -220,7 +220,10 @@ class NativeFulfillmentReviewTests(_RestockFixture, TestCase):
         _, subscription = self.accepted()
         from management.services.ig_restock_availability import observe_target
         observed = observe_target(subscription.accepted_answer.invitation.target, now=self.now).as_dict()
-        result = review.ensure_restock_manager_review(subscription, observed, now=self.now)
+        # Exercise the separate legacy standing owner explicitly. Fresh original
+        # CART reuse is covered causally in tests_ig_fulfillment_reuse.
+        with patch.object(review, "_cart_restock_review", return_value={"eligible": False}):
+            result = review.ensure_restock_manager_review(subscription, observed, now=self.now)
         self.assertTrue(result["created"], result)
         request = Request.objects.get(pk=result["request_id"])
         projection = review.fulfillment_review_projection(self.client_row.pk, request_id=request.pk, now=self.now)

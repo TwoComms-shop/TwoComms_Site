@@ -1,0 +1,30 @@
+{
+  "viewports": [
+    {
+      "descriptorOverflow": false,
+      "overflow": false,
+      "page": 1816,
+      "section": 335,
+      "text": "Перевірка поточного кошика\nНаявність підтверджено менеджером\n\nПеревірено: 12.10.2026, 12:00 (Київ)\n\nСповіщення підготовлено на основі цієї перевірки. Повторний запит менеджеру не створювався. Перед надсиланням ще раз перевіряємо актуальність.",
+      "viewport": 1816
+    },
+    {
+      "descriptorOverflow": false,
+      "overflow": false,
+      "page": 390,
+      "section": 339,
+      "viewport": 390
+    },
+    {
+      "descriptorOverflow": false,
+      "overflow": false,
+      "page": 320,
+      "section": 269,
+      "siblingOverlap": false,
+      "viewport": 320
+    }
+  ],
+  "consoleErrors": 0,
+  "syntheticOnly": true,
+  "providerCalls": 0
+}

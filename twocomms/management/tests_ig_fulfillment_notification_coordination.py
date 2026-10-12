@@ -54,11 +54,16 @@ class NativeAvailabilityCoordinationTests(_RestockFixture, TransactionTestCase):
             decided = self.decide(original, availability=availability, preparation=preparation)
             cart_task = IgFollowUpTask.objects.get(event_key=f"ig-fulfillment-update:{original.pk}:{decided['version']}")
         observed = observe_target(inv.target, now=self.now + timedelta(seconds=2)).as_dict()
-        review = reviews.ensure_restock_manager_review(subscription, observed, now=self.now + timedelta(seconds=2))
-        self.assertTrue(review.get("request_id"), review)
-        standing = Request.objects.get(pk=review["request_id"])
-        self.decide(standing)
-        result = restock.reconcile_subscriptions(now=self.now + timedelta(seconds=2))
+        # These tests deliberately retain two independently signed historical
+        # purposes. Native original-review reuse has its own causal suite.
+        with patch.object(reviews, "_cart_restock_review", return_value={"eligible": False}):
+            review = reviews.ensure_restock_manager_review(subscription, observed, now=self.now + timedelta(seconds=2))
+            self.assertTrue(review.get("request_id"), review)
+            standing = Request.objects.get(pk=review["request_id"])
+            self.assertEqual(standing.envelope["scope"], "restock")
+            self.assertNotEqual(standing.pk, original.pk)
+            self.decide(standing)
+            result = restock.reconcile_subscriptions(now=self.now + timedelta(seconds=2))
         self.assertEqual(result["created"], 1, result)
         event = Event.objects.get(subscription=subscription)
         return inv, subscription, original, cart_task, event

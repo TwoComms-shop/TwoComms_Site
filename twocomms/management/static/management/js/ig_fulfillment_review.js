@@ -60,6 +60,11 @@
   function textInput(label,maxLength) {
     const input=el('textarea');input.rows=2;input.maxLength=maxLength;input.setAttribute('aria-label',label);return input;
   }
+  function kyivDate(value) {
+    if(typeof value!=='string'||!value)return '';
+    const date=new Date(value);
+    return Number.isNaN(date.valueOf())?'':date.toLocaleString('uk-UA',{timeZone:'Europe/Kyiv',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})+' (Київ)';
+  }
   function timingLabel(value) {
     if(!value||!Number.isInteger(value.min_days)||!Number.isInteger(value.max_days))return 'Не визначено';
     const anchor=new Date(value.anchor_at);
@@ -223,7 +228,7 @@
       const head=el('div','ig-fr-head');const text=el('div');text.append(el('span','ig-fr-eyebrow','Наявність та строки'),el('h3','','Перевірка виконання'),el('p','ig-fr-muted','Точні позиції, готовність і відправка — окремо.'));
       head.append(text,button('Оновити',()=>load(true)));root.appendChild(head);
     }
-    function restockInterest(interest) {
+    function restockInterest(interest,current) {
       if(!interest||typeof interest!=='object'||Array.isArray(interest))return null;
       const labels={accepted:'Разову згоду підтверджено',revoked:'Згоду відкликано',expired:'Строк погодження минув',unverified:'Згоду не підтверджено'};
       const status=Object.prototype.hasOwnProperty.call(labels,interest.status)?interest.status:'unverified';
@@ -242,6 +247,17 @@
       if(notificationLabels[notification])aside.appendChild(el('p','ig-fr-muted',notificationLabels[notification]));
       const receipt=interest.notification_receipt;
       if(notification==='sent'&&receipt&&receipt.native_receipt_confirmed===true&&receipt.purpose==='fulfillment_manager_update')aside.appendChild(el('p','ig-fr-muted','Наявність уже повідомлено у відповіді менеджера. Повторне сповіщення не потрібне.'));
+      const reuse=interest.manager_review_reuse;
+      const checkedAt=reuse&&kyivDate(reuse.checked_at);
+      const sameRequest=current&&current.current_request&&current.current_request.scope==='cart'&&reuse&&reuse.request_id===current.request_id;
+      const currentCheck=sameRequest&&current.status==='reviewed'&&current.decision&&reuse.decision_id===current.decision.id&&current.decision.request_digest===current.request_digest;
+      if(status==='accepted'&&notification==='pending'&&currentCheck&&reuse.origin_scope==='cart'&&reuse.provenance==='availability_event'&&reuse.status==='available'&&typeof reuse.event_id==='string'&&reuse.event_id&&checkedAt&&typeof reuse.decision_id==='string'&&reuse.decision_id){
+        const check=el('section','ig-fr-interest-review');check.setAttribute('aria-label','Пов’язана перевірка менеджера');
+        check.append(el('span','ig-fr-interest-review-source','Перевірка поточного кошика'),el('h5','','Наявність підтверджено менеджером'),
+          el('p','ig-fr-muted','Перевірено: '+checkedAt),
+          el('p','ig-fr-muted','Сповіщення підготовлено на основі цієї перевірки. Повторний запит менеджеру не створювався. Перед надсиланням ще раз перевіряємо актуальність.'));
+        aside.appendChild(check);
+      }
       const refs=Array.isArray(interest.source_refs)?interest.source_refs:[];
       const sourceLabels=refs.map(ref=>{
         if(!ref||typeof ref!=='object')return '';
@@ -273,7 +289,7 @@
     }
     function draw(current) {
       root.replaceChildren();heading();
-      const interest=restockInterest(current&&current.restock_interest);if(interest)root.appendChild(interest);
+      const interest=restockInterest(current&&current.restock_interest,current);if(interest)root.appendChild(interest);
       const unavailable=!current||current.unavailable;
       if(unavailable){if(current&&current.stock_sync&&current.stock_sync.sync_id||stockUnknown&&stockPending)root.appendChild(stockSyncSection(Object.assign({},current||{},{request_id:current&&current.stock_sync&&current.stock_sync.request_id||stockPending&&stockPending.request_id})));root.append(el('p','ig-fr-muted',current&&current.status==='none'?'Активної перевірки наявності чи строків поки немає.':'Поточна перевірка недоступна. Оновіть картку після уточнення вибору.'),feedback);return;}
       const validDecision=current.status==='reviewed'&&current.decision&&current.decision.request_digest===current.request_digest;
@@ -285,7 +301,8 @@
       const deliveryConfirmed=update.state==='sent'&&update.native_receipt_confirmed===true;
       const deliveryCopy=deliveryConfirmed?'Надсилання підтверджено Instagram':({pending:'Відповідь очікує надсилання',unknown:'Результат надсилання невідомий · потрібна звірка',cancelled:'Надсилання скасовано',absent:'Підтвердження надсилання відсутнє'})[update.state]||'Підтвердження надсилання відсутнє';
       const timeline=el('ol','ig-fr-timeline');
-      [['Вимоги клієнта','З поточного запиту',true],['Перевірка менеджера',validDecision?'Рішення збережене':'Ще потрібна',Boolean(validDecision)],['Відповідь клієнту',deliveryCopy,deliveryConfirmed]].forEach(([title,copy,done])=>{const item=el('li',done?'is-done':'');item.append(el('b','',title),el('span','',copy));timeline.appendChild(item);});root.appendChild(timeline);
+      const decisionDate=validDecision&&kyivDate(current.decision.decided_at);
+      [['Вимоги клієнта','З поточного запиту',true],['Перевірка менеджера',validDecision?'Рішення збережене'+(decisionDate?' · '+decisionDate:''):'Ще потрібна',Boolean(validDecision)],['Відповідь клієнту',deliveryCopy,deliveryConfirmed]].forEach(([title,copy,done])=>{const item=el('li',done?'is-done':'');item.append(el('b','',title),el('span','',copy));timeline.appendChild(item);});root.appendChild(timeline);
       if(update.state==='unknown')root.appendChild(el('p','ig-fr-muted','Не надсилайте повторно без звірки результату попередньої спроби.'));
       if(deliveryConfirmed&&update.sent_at){const sentAt=new Date(update.sent_at);if(!Number.isNaN(sentAt.valueOf()))root.appendChild(el('p','ig-fr-muted','Час підтвердження Send API: '+sentAt.toLocaleString('uk-UA')));}
       const facts=el('div','ig-fr-requirements');

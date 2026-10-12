@@ -10,7 +10,7 @@
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_memory_card.css' %}?v=memory-presentation-v1">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
-{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=c1fb1d036cc4">{% endif %}
+{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=b6619c0f7a98">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1886,7 +1886,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
-{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=1cf2cd950754"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=d4d7d222914d"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=gemini-public-evidence-v2"></script>{% endif %}

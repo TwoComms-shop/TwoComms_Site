@@ -1,0 +1,113 @@
+TAP version 13
+# Subtest: a verified available reuse renders original check date, cart scope, and no duplicate action
+ok 1 - a verified available reuse renders original check date, cart scope, and no duplicate action
+  ---
+  duration_ms: 13.96125
+  type: 'test'
+  ...
+# Subtest: pending original checks do not claim recorded reuse or checked availability, and viewers have no form controls
+ok 2 - pending original checks do not claim recorded reuse or checked availability, and viewers have no form controls
+  ---
+  duration_ms: 1.457833
+  type: 'test'
+  ...
+# Subtest: wait and unavailable cannot turn an original decision into a sealed available-reuse claim
+ok 3 - wait and unavailable cannot turn an original decision into a sealed available-reuse claim
+  ---
+  duration_ms: 2.357583
+  type: 'test'
+  ...
+# Subtest: inactive, delivered, uncertain, and malformed descriptors cannot display reusable manager authority
+ok 4 - inactive, delivered, uncertain, and malformed descriptors cannot display reusable manager authority
+  ---
+  duration_ms: 8.384
+  type: 'test'
+  ...
+# Subtest: an original CART decision without a recorded availability event shows its date but no reuse claim
+ok 5 - an original CART decision without a recorded availability event shows its date but no reuse claim
+  ---
+  duration_ms: 0.982209
+  type: 'test'
+  ...
+# Subtest: fresh GET removal of reuse clears the readonly subsection without a POST or scope conversion
+ok 6 - fresh GET removal of reuse clears the readonly subsection without a POST or scope conversion
+  ---
+  duration_ms: 1.445
+  type: 'test'
+  ...
+# Subtest: stale outer projections or different original identities hide reusable authority despite an old nested descriptor
+ok 7 - stale outer projections or different original identities hide reusable authority despite an old nested descriptor
+  ---
+  duration_ms: 2.789083
+  type: 'test'
+  ...
+# Subtest: UNKNOWN refresh pins A even if GET returns newer B; retry preserves exact A operation and counts
+ok 8 - UNKNOWN refresh pins A even if GET returns newer B; retry preserves exact A operation and counts
+  ---
+  duration_ms: 9.281125
+  type: 'test'
+  ...
+# Subtest: verified stock_ready readback settles an UNKNOWN operation without inventing a proposal or reposting
+ok 9 - verified stock_ready readback settles an UNKNOWN operation without inventing a proposal or reposting
+  ---
+  duration_ms: 1.965542
+  type: 'test'
+  ...
+# Subtest: a verified receipt for newer B cannot settle the still UNKNOWN operation bound to A
+ok 10 - a verified receipt for newer B cannot settle the still UNKNOWN operation bound to A
+  ---
+  duration_ms: 1.7345
+  type: 'test'
+  ...
+# Subtest: a receipt for A with a different decision digest cannot settle or replace the pending operation
+ok 11 - a receipt for A with a different decision digest cannot settle or replace the pending operation
+  ---
+  duration_ms: 1.563583
+  type: 'test'
+  ...
+# Subtest: stale or unavailable readback retains the same UNKNOWN operation recovery action
+    # Subtest: stale
+    ok 1 - stale
+      ---
+      duration_ms: 1.962292
+      type: 'test'
+      ...
+    # Subtest: unavailable
+    ok 2 - unavailable
+      ---
+      duration_ms: 1.507583
+      type: 'test'
+      ...
+    1..2
+ok 12 - stale or unavailable readback retains the same UNKNOWN operation recovery action
+  ---
+  duration_ms: 3.753708
+  type: 'test'
+  ...
+# Subtest: 409 refresh keeps physical counts but requires fresh confirmation and the new preview digest
+ok 13 - 409 refresh keeps physical counts but requires fresh confirmation and the new preview digest
+  ---
+  duration_ms: 1.554334
+  type: 'test'
+  ...
+# Subtest: catalogue shared pool and exact size counts remain separate explicit quantities in the real POST
+ok 14 - catalogue shared pool and exact size counts remain separate explicit quantities in the real POST
+  ---
+  duration_ms: 1.242708
+  type: 'test'
+  ...
+# Subtest: PII viewer sees verified stock facts without editable stock controls or any POST
+ok 15 - PII viewer sees verified stock facts without editable stock controls or any POST
+  ---
+  duration_ms: 1.273666
+  type: 'test'
+  ...
+1..15
+# tests 17
+# suites 0
+# pass 17
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 71.798667

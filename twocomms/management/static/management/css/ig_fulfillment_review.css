@@ -49,6 +49,10 @@
 .ig-fr-interest-item{font-size:12px;font-weight:650;color:#eef0fa;}
 .ig-fr-interest-note{font-size:12px;color:#cfc4e6;}
 .ig-fr-interest-sources summary{padding:4px 0;color:#cbbce9;font-size:11px;cursor:pointer;}
+.ig-fr-interest-review{display:grid;gap:3px;margin-top:10px;padding:10px;border:1px solid #43405f;border-radius:9px;background:#151b2a;max-width:100%;overflow-wrap:anywhere;}
+.ig-fr-interest-review-source{font-size:10px;color:#b8c5df;}
+.ig-fr-interest-review h5{margin:0;font-size:12px;line-height:1.5;color:#e1d9fa;}
+.ig-fr-interest-review p{margin:2px 0;}
 .ig-fr-sync{margin:13px 0;border:1px solid #3c4d70;border-radius:12px;padding:12px;background:linear-gradient(145deg,#152035,#111624);overflow-wrap:anywhere;}
 .ig-fr-sync h4{margin:0 0 6px;font-size:13px;color:#e4eaff;}
 .ig-fr-sync-note{margin:9px 0!important;border-left:2px solid #8c80c0;padding-left:9px;color:#c8c7df;font-size:11px;}

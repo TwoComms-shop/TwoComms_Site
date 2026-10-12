@@ -64,12 +64,30 @@ def _cart_binding(task):
     return request, decision
 
 
-def _fresh_decision(request, decision, now):
+def _invited_available_target(request, decision, invitation):
+    """Match one subscribed line, without borrowing another cart line's answer."""
+    line_id = (invitation.envelope.get("manager_review") or {}).get("line_id")
+    lines = [line for line in request.envelope.get("lines", ()) if isinstance(line, dict)
+        and line.get("line_id") == line_id and line.get("target") == invitation.target]
+    answers = [line for line in decision.envelope.get("lines", ()) if isinstance(line, dict)
+        and line.get("line_id") == line_id]
+    if len(lines) != 1 or len(answers) != 1:
+        return None
+    answer = answers[0]
+    if (answer.get("availability") != "available" or type(answer.get("checked_quantity")) is not int
+        or answer["checked_quantity"] < invitation.target.get("quantity", 1000)
+        or answer.get("supply_basis") not in {"warehouse_checked", "accessible_unrecorded"}):
+        return None
+    return invitation.target
+
+
+def _fresh_decision(request, decision, now, *, invitation=None):
     decided = parse_datetime(str(decision.envelope.get("decided_at") or ""))
     latest = IgFulfillmentReviewDecision.objects.filter(request=request).order_by("-version").values_list("pk", flat=True).first()
     return bool(decided and timezone.is_aware(decided) and decided <= now + timedelta(minutes=1)
         and now < decided + reviews.FRESHNESS and latest == decision.pk
-        and decision.actor.is_active and _one_available(request, decision))
+        and decision.actor.is_active and (_invited_available_target(request, decision, invitation)
+            if invitation else _one_available(request, decision)))
 
 
 def _accepted(subscription, request, target, settings_obj):
@@ -121,6 +139,8 @@ def _cart_native_receipt(task, subscription, binding):
     request, decision = binding
     historical = reviews.validated_update_history(task)
     inv = subscription.accepted_answer.invitation
+    if not _invited_available_target(request, decision, inv):
+        return None
     text = render_manager_update(historical) if historical.get("ready") else ""
     if not text or text != task.message_text or not _history_matches(task, inv):
         return None
@@ -156,11 +176,43 @@ def _restock_binding(event, subscription):
     except (ValidationError, ValueError, TypeError):
         return None
     if (not reviews._verified(request, "request") or not reviews._verified(decision, "decision")
-        or request.envelope.get("scope") != "restock" or request.envelope.get("subscription_id") != str(subscription.pk)
-        or request.envelope.get("answer_hmac") != subscription.accepted_answer.envelope_hmac
         or proof.get("request_digest") != request.envelope_hmac or proof.get("decision_digest") != decision.envelope_hmac
         or proof.get("decision_version") != decision.version or decision.envelope.get("request_digest") != request.envelope_hmac
-        or proof.get("subscription_id") != str(subscription.pk) or proof.get("target") != inv.target
+        or proof.get("subscription_id") != str(subscription.pk) or proof.get("target") != inv.target):
+        return None
+    if request.envelope.get("scope") == "cart":
+        # This is historical event provenance, not fresh send admission. Keep
+        # the actual CART owner and native subscription proof; never manufacture
+        # a standing request or erase an already delivered MID on expiry.
+        answer = subscription.accepted_answer
+        binding = inv.envelope.get("manager_review") or {}
+        if (proof.get("version") != 1 or proof.get("review_scope") != "cart"
+            or not restock._verified(inv, "invitation") or not restock._verified(answer, "answer")
+            or answer.kind != "accept" or answer.invitation_id != inv.pk
+            or inv.client_id != subscription.client_id
+            or inv.target_digest != restock._digest(inv.target)
+            or not restock._invitation_manager_case(inv)
+            or binding.get("request_id") != str(request.pk) or binding.get("request_hmac") != request.envelope_hmac
+            or proof.get("line_id") != binding.get("line_id")
+            or proof.get("invitation_id") != str(inv.pk) or proof.get("invitation_digest") != inv.envelope_hmac
+            or proof.get("answer_id") != str(answer.pk) or proof.get("answer_digest") != answer.envelope_hmac):
+            return None
+        lines = [line for line in request.envelope.get("lines", ())
+            if isinstance(line, dict) and line.get("line_id") == proof["line_id"] and line.get("target") == inv.target]
+        decisions = [line for line in decision.envelope.get("lines", ())
+            if isinstance(line, dict) and line.get("line_id") == proof["line_id"]]
+        if len(lines) != 1 or len(decisions) != 1:
+            return None
+        line = decisions[0]
+        if (line.get("availability") != "available" or type(line.get("checked_quantity")) is not int
+            or line["checked_quantity"] < inv.target.get("quantity", 1000)
+            or line.get("supply_basis") not in {"warehouse_checked", "accessible_unrecorded"}
+            or any(proof.get(key) != line.get(key) for key in
+                ("inventory_digest", "configuration_digest", "checked_quantity", "supply_basis"))):
+            return None
+    elif (request.envelope.get("scope") != "restock" or proof.get("review_scope") not in {None, "restock"}
+        or request.envelope.get("subscription_id") != str(subscription.pk)
+        or request.envelope.get("answer_hmac") != subscription.accepted_answer.envelope_hmac
         or _one_available(request, decision) != inv.target):
         return None
     return task, request, decision
@@ -233,9 +285,9 @@ def restock_update_coordination(event, settings_obj, now=None):
     if not reviews._verified(request, "request") or frozen.get("request_hmac") != request.envelope_hmac:
         return _result(CORRUPT)
     lines = request.envelope.get("lines")
-    if request.envelope.get("scope") != "cart" or not isinstance(lines, list) or len(lines) != 1:
+    if request.envelope.get("scope") != "cart" or not isinstance(lines, list):
         return _result()
-    if (not _accepted(subscription, request, lines[0].get("target"), settings_obj)
+    if (not _accepted(subscription, request, inv.target, settings_obj)
         or not _restock_binding(event, subscription)):
         return _result(CORRUPT)
     decision = IgFulfillmentReviewDecision.objects.filter(request=request).order_by("-version").select_related("actor").first()
@@ -243,7 +295,7 @@ def restock_update_coordination(event, settings_obj, now=None):
         return _result()
     if not reviews._verified(decision, "decision"):
         return _result(CORRUPT)
-    target = _one_available(request, decision)
+    target = _invited_available_target(request, decision, inv)
     if not target:
         return _result()
     if target != inv.target:
@@ -262,7 +314,7 @@ def restock_update_coordination(event, settings_obj, now=None):
         if not receipt:
             return _result(CORRUPT)
         return _result(FULFILLED, receipt) if _after_accept(task, subscription) else _result()
-    if state == "pending" and _fresh_decision(request, decision, now):
+    if state == "pending" and _fresh_decision(request, decision, now, invitation=inv):
         current = reviews.validated_update_task(task, settings_obj, now=now)
         if current.get("ready"):
             return _result(HOLD)

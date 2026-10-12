@@ -93,7 +93,7 @@ def _delegated_receipt(subscription, invitation, event, request, now):
         return None
     if (not original or not reviews._verified(decision, "decision") or not reviews._verified(decision.request, "request")
         or decision.request.envelope_hmac != request.envelope_hmac or decision.envelope.get("request_digest") != request.envelope_hmac
-        or coordination._one_available(decision.request, decision) != invitation.target
+        or coordination._invited_available_target(decision.request, decision, invitation) != invitation.target
         or original.reason != reviews.UPDATE_REASON or original.kind != "fulfillment" or original.trigger != "event"
         or original.policy_version != reviews.PURPOSE
         or original.event_key != f"ig-fulfillment-update:{request.pk}:{decision.version}"
@@ -176,7 +176,56 @@ def _read_fence(subscription):
         _source_payload(source, ordinal=0), source.role, source.source, source.status, source.client_id, source.sender_id))
 
 
-def capture_restock_interest(request, settings_obj, cart, now):
+def _manager_review_reuse(subscription, request, decision):
+    """Verify loaded event provenance; the outer projection owns currentness."""
+    event = getattr(subscription, "availability_event", None)
+    if (not event or not decision or not restock._verified(event, "event")
+        or not reviews._verified(request, "request") or not reviews._verified(decision, "decision")
+        or decision.request_id != request.pk or decision.envelope.get("request_digest") != request.envelope_hmac
+        or request.envelope.get("scope") != "cart" or event.subscription_id != subscription.pk):
+        return None
+    answer = subscription.accepted_answer
+    invitation = answer.invitation
+    task = event.task
+    observation = event.envelope.get("availability") or {}
+    if (task.status != "pending" or task.provider_message_id or task.sent_at
+        or task.attempt_count or task.claim_token or task.claim_until is not None
+        or task.client_id != subscription.client_id or task.reason != restock.ORIGIN or task.kind != "qualification"
+        or task.trigger != "event" or task.policy_version != "restock-agreement.v1"
+        or task.event_key != event.event_key or event.event_key != f"{restock.ORIGIN}:{subscription.pk}"
+        or task.event_payload != {"origin": restock.ORIGIN, "purpose": restock.PURPOSE,
+            "subscription_id": str(subscription.pk), "event_id": str(event.pk)}
+        or event.envelope.get("answer_hmac") != answer.envelope_hmac
+        or event.envelope.get("target_digest") != invitation.target_digest
+        or observation.get("target") != invitation.target or observation.get("digest") != event.availability_digest):
+        return None
+    line_id = invitation.envelope["manager_review"]["line_id"]
+    lines = [line for line in request.envelope.get("lines", ()) if isinstance(line, dict)
+        and line.get("line_id") == line_id and line.get("target") == invitation.target]
+    answers = [line for line in decision.envelope.get("lines", ()) if isinstance(line, dict) and line.get("line_id") == line_id]
+    if len(lines) != 1 or len(answers) != 1:
+        return None
+    line = answers[0]
+    if (line.get("availability") != "available" or type(line.get("checked_quantity")) is not int
+        or line["checked_quantity"] < invitation.target.get("quantity", 1000)
+        or line.get("supply_basis") not in {"warehouse_checked", "accessible_unrecorded"}):
+        return None
+    expected = {"version": 1, "review_scope": "cart", "request_id": str(request.pk),
+        "request_digest": request.envelope_hmac, "decision_id": str(decision.pk),
+        "decision_version": decision.version, "decision_digest": decision.envelope_hmac,
+        "subscription_id": str(subscription.pk), "target": invitation.target, "line_id": line_id,
+        "inventory_digest": line.get("inventory_digest"), "configuration_digest": line.get("configuration_digest"),
+        "checked_quantity": line["checked_quantity"], "supply_basis": line["supply_basis"],
+        "invitation_id": str(invitation.pk), "invitation_digest": invitation.envelope_hmac,
+        "answer_id": str(answer.pk), "answer_digest": answer.envelope_hmac}
+    if event.envelope.get("manager_decision") != expected:
+        return None
+    return {"origin_scope": "cart", "request_id": str(request.pk), "decision_id": str(decision.pk),
+        "checked_at": decision.envelope.get("decided_at"), "status": "available",
+        "provenance": "availability_event", "event_id": str(event.pk)}
+
+
+def capture_restock_interest(request, settings_obj, cart, now, *, reviewed_decision=None):
     """The caller owns current request verification; this helper grants no effect."""
     if not request or not reviews._verified(request, "request") or request.envelope.get("scope") != "cart":
         return None
@@ -258,5 +307,10 @@ def capture_restock_interest(request, settings_obj, cart, now):
         status = "accepted"
     else:
         return failure()
-    return _summary(status, line, notification_state=notification, notification_receipt=notification_receipt,
+    summary = _summary(status, line, notification_state=notification, notification_receipt=notification_receipt,
         answer=answer, invitation=invitation, proofs=proofs)
+    if status == "accepted" and subscription.state == "active" and notification == "pending":
+        reuse = _manager_review_reuse(subscription, request, reviewed_decision)
+        if reuse:
+            summary["manager_review_reuse"] = reuse
+    return summary
