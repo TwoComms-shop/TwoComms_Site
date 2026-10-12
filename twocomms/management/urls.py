@@ -12,6 +12,7 @@ from . import bot_webhook
 from . import bot_views
 from . import bot_request_preview_views
 from . import bot_state_views
+from . import bot_fulfillment_views
 from . import bot_commerce_scope_views
 from . import bot_decision_trace_views
 from . import bot_quality_observation_views
@@ -108,6 +109,7 @@ urlpatterns = [
     path('bot/api/clients/<int:client_id>/decision-traces/', bot_decision_trace_views.bot_decision_trace_index_api, name='management_bot_decision_trace_index_api'),
     path('bot/api/clients/<int:client_id>/turn-revisions/<int:revision_id>/decision-trace/', bot_decision_trace_views.bot_decision_trace_api, name='management_bot_decision_trace_api'),
     path('bot/api/clients/<int:client_id>/state/', bot_state_views.bot_client_state_api, name='management_bot_client_state_api'),
+    path('bot/api/clients/<int:client_id>/fulfillment-review/', bot_fulfillment_views.bot_fulfillment_review_api, name='management_bot_fulfillment_review_api'),
     path('bot/api/clients/<int:client_id>/commerce-scope/', bot_commerce_scope_views.bot_client_commerce_scope_api, name='management_bot_client_commerce_scope_api'),
     path('bot/api/clients/<int:client_id>/state/size/', bot_state_views.bot_client_size_correction_api, name='management_bot_client_size_correction_api'),
     path('bot/api/clients/<int:client_id>/request-revisions/', bot_request_preview_views.bot_request_revision_index_api, name='management_bot_request_revision_index_api'),

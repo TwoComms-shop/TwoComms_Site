@@ -99,7 +99,16 @@ def dispatch_postback(row: InstagramBotMessage) -> PostbackOutcome | None:
     """
     from management.services.ig_marketing_consent import PREFIX, handle_consent_reply
     from management.services.ig_payment_reminders import PAYMENT_REMINDER_PREFIX, handle_reply
+    from management.services.ig_restock_subscriptions import RESTOCK_SUBSCRIPTION_PREFIX, handle_reply as handle_restock_reply
 
+    if str(getattr(row, "quick_reply_payload", "") or "").startswith(RESTOCK_SUBSCRIPTION_PREFIX):
+        result = handle_restock_reply(row)
+        if result.handled:
+            return PostbackOutcome(
+                action="restock_subscription", reply_text=result.reply_text,
+                reason=result.reason, quick_replies=result.quick_replies,
+            )
+        return None
     if str(getattr(row, "quick_reply_payload", "") or "").startswith(PAYMENT_REMINDER_PREFIX):
         result = handle_reply(row)
         if result.handled:

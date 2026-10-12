@@ -516,6 +516,9 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     reminder_slot = capture_payment_reminder_context(client, boundary=boundary, captured_at=captured_at,
         current_source_cart=source_cart)
     components.setdefault("slots", dict(scope=scope, capture={}))["capture"][SLOT] = reminder_slot
+    from management.services.ig_fulfillment_context import SLOT as FULFILLMENT_SLOT, capture_fulfillment_context
+    components["slots"]["capture"][FULFILLMENT_SLOT] = capture_fulfillment_context(
+        client, boundary=boundary, captured_at=captured_at, current_source_cart=source_cart)
     components["observation_omissions"] = dict(scope=scope, capture=deepcopy(payment_context.get("omissions") or []))
     omissions.extend({"block_id": "state:" + item["component"], "reason": item["reason"]}
         for item in payment_context.get("omissions") or [])

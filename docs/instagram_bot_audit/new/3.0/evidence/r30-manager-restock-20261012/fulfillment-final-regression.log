@@ -1,0 +1,48 @@
+/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+..............................ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+..........................................................manager_payment_truth_analysis_enqueue_failed review_id=51 client_id=85
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/services/ig_payment_review.py", line 3429, in _schedule_truth_analysis
+    schedule_client_truth_analysis(locked.client, trigger="manager_payment_decision")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: analysis queue unavailable
+.ss..........manager_payment_truth_analysis_enqueue_failed review_id=67 client_id=98
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/services/ig_payment_review.py", line 3429, in _schedule_truth_analysis
+    schedule_client_truth_analysis(locked.client, trigger="manager_payment_decision")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1241, in _execute_mock_call
+    raise effect
+RuntimeError: analysis queue unavailable
+...........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.............ig_bot event=gemini level=error detail=(0.0с) http_5xx
+............ig_bot event=gemini level=error detail=(0.1с) failed deterministic result validation
+.ig_bot event=gemini level=error detail=(0.0с) http_5xx
+........ig_bot event=gemini level=error detail=(0.0с) http_5xx
+.......................................................................................ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+ig_bot event=gemini level=error detail=(0.0с) offline fixture transport unavailable
+..........................................................
+----------------------------------------------------------------------
+Ran 820 tests in 339.168s
+
+OK (skipped=2)
+Found 820 test(s).
+System check identified no issues (0 silenced).
+Instagram missing commercial episodes reconciled; processed_deals=0, processed_reviews=0, processed_attributions=0; remaining deals=0, reviews=0, attributions=0
+Instagram missing commercial episodes reconciled; processed_deals=0, processed_reviews=0, processed_attributions=0; remaining deals=0, reviews=0, attributions=0

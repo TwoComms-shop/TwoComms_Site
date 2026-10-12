@@ -346,6 +346,8 @@ IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED = _env_bool(
     'IG_POST_PURCHASE_BUSINESS_CONSENT_ENABLED', True,
 )
 IG_PAYMENT_REMINDERS_ENABLED = _env_bool('IG_PAYMENT_REMINDERS_ENABLED', True)
+IG_RESTOCK_SUBSCRIPTIONS_ENABLED = _env_bool('IG_RESTOCK_SUBSCRIPTIONS_ENABLED', True)
+IG_FULFILLMENT_REVIEWS_ENABLED = _env_bool('IG_FULFILLMENT_REVIEWS_ENABLED', True)
 
 # Captured at request preparation. Environment changes require worker restart;
 # rollback modes keep the existing revision/outbox finalization lane intact.

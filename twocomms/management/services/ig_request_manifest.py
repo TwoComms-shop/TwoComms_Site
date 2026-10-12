@@ -33,6 +33,7 @@ _VIEW_KEYS = {
     "state_view_version", "core_version",
     "reply_language",
     "conversation_agreement", "receipt_observation", "ugc_review_benefit", "payment_reminder_context",
+    "fulfillment_review_context",
 }
 _DIGEST_VIEW_KEYS = {"response_plan_digest", "memory_capture_digest", "publication_hash"}
 _METADATA_KEYS = {
@@ -41,7 +42,7 @@ _METADATA_KEYS = {
     "selected_block_ids", "omitted_blocks", "readiness_codes", "budgets",
     "view_versions", "media",
 }
-_OPTIONAL_METADATA_KEYS = {"memory_snapshot", "payment_reminder_snapshot"}
+_OPTIONAL_METADATA_KEYS = {"memory_snapshot", "payment_reminder_snapshot", "fulfillment_review_snapshot"}
 _MEMORY_KEYS = {"version", "head_version", "capture_digest", "proof_digest", "summary_digest",
     "rendered_digest", "read_digest", "delta_rendered_digest", "source_message_ids",
     "delta_message_ids", "as_of", "reason", "selected", "omission_reason"}
@@ -218,6 +219,16 @@ def _metadata(value):
         result["payment_reminder_snapshot"] = _payment_reminder_snapshot(raw["payment_reminder_snapshot"])
         if any(source_id < result["reset_floor"] for source_id in result["payment_reminder_snapshot"]["source_message_ids"]):
             _invalid()
+    if "fulfillment_review_snapshot" in raw:
+        item = _object(raw["fulfillment_review_snapshot"], {"version", "status", "capture_digest", "source_message_ids", "decision_version"}, exact=True)
+        if item["version"] != "fulfillment-review-context.v1" or item["status"] not in {"none", "pending", "reviewed"}:
+            _invalid()
+        ids = _ids(item["source_message_ids"])
+        if len(ids) > 16 or any(identity < result["reset_floor"] for identity in ids):
+            _invalid()
+        result["fulfillment_review_snapshot"] = {"version": item["version"], "status": item["status"],
+            "capture_digest": _digest(item["capture_digest"]) if item["capture_digest"] else "",
+            "source_message_ids": ids, "decision_version": _count(item["decision_version"])}
     if set(result["selected_block_ids"]) & {item["block_id"] for item in safe_omitted}:
         _invalid()
     media_ids = [value for values in result["media"].values() for value in values]
@@ -337,6 +348,7 @@ def _hidden_context(context):
         safe.get("view_versions", {}).pop(key, None)
     for key in ("scope_digest", "capture_digest"):
         safe.get("payment_reminder_snapshot", {}).pop(key, None)
+    safe.get("fulfillment_review_snapshot", {}).pop("capture_digest", None)
     return safe
 
 

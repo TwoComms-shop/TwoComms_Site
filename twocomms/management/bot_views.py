@@ -365,6 +365,8 @@ def _delete_direct_bot_records(
         # Reminder rows protect their exact source/effect/task owners. Purge
         # only after the committed privacy fence, before source deletion.
         purge_payment_reminder_data(owned_ids)
+        from management.services.ig_fulfillment_privacy import purge_fulfillment_data
+        purge_fulfillment_data(owned_ids)
         owned_frozen_sources = tuple(InstagramBotMessage.objects.filter(
             pk__in=frozen_message_ids, client_id__in=owned_ids,
         ).values_list("pk", flat=True)) if frozen_targets else ()
@@ -6345,6 +6347,7 @@ def bot_client_detail_api(request, client_id):
                     or f.reason in {
                         "revision_case:execution_debt",
                         "human_reply:delivery_unknown",
+                        "fulfillment_review",
                     }
                 )
                 and f.manager_approval_status
@@ -6362,6 +6365,12 @@ def bot_client_detail_api(request, client_id):
                     if f.reason == "human_reply:delivery_unknown"
                     else "Погоджене нагадування про оплату"
                     if f.reason == "agreed_payment_reminder"
+                    else "Перевірка наявності та строків"
+                    if f.reason == "fulfillment_review"
+                    else "Результат перевірки для клієнта"
+                    if f.reason == "fulfillment_manager_update"
+                    else "Погоджене сповіщення про поповнення"
+                    if f.reason == "subscribed_restock"
                     else ""
                 )
             ),
@@ -6413,7 +6422,8 @@ def bot_client_detail_api(request, client_id):
                 )
                 if f.trigger == IgFollowUpTask.Trigger.EVENT
                 and f.event_key
-                and f.reason != HUMAN_REPLY_UNKNOWN_REASON
+                and f.reason not in {HUMAN_REPLY_UNKNOWN_REASON, "fulfillment_review",
+                    "fulfillment_manager_update", "subscribed_restock"}
                 and not continuation_exists
                 and f.status in {
                     IgFollowUpTask.Status.SENT,

@@ -1269,7 +1269,12 @@ def _reclaim_lease_guard() -> None:
 def _drain_customer_followups(settings_obj):
     """Use the existing daemon cadence for agreed-time and ordinary queues."""
     from management.services.ig_payment_reminders import process_due_payment_reminders
+    from management.services.ig_restock_subscriptions import reconcile_subscriptions, process_due_restock_notifications
+    from management.services.ig_fulfillment_delivery import process_due_fulfillment_updates
 
+    process_due_fulfillment_updates(settings_obj, limit=20)
+    reconcile_subscriptions(limit=50)
+    process_due_restock_notifications(settings_obj, limit=50)
     process_due_payment_reminders(settings_obj)
     bot_followups.process_due_followups(settings_obj)
 

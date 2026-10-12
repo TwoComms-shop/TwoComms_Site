@@ -724,6 +724,7 @@ def store_revision_generation_proposal(
     prize_programme=None,
     customer_route_capture: RevisionCustomerRouteCapture | None = None,
     source_cart_capture=None,
+    fulfillment_capture=None,
 ) -> RevisionProposalResult:
     """Persist one exact validated proposal before any business or send effect."""
     if connection.in_atomic_block:
@@ -839,6 +840,15 @@ def store_revision_generation_proposal(
                 "authority_digest": authority.authority_digest,
             },
         }
+        if fulfillment_capture is not None:
+            from management.services.ig_fulfillment_context import retained_fulfillment_frame, validate_retained_fulfillment
+            captured_fulfillment = retained_fulfillment_frame(fulfillment_capture)
+            if captured_fulfillment is None:
+                return RevisionProposalResult(reasons=("fulfillment_capture_invalid",))
+            reason = validate_retained_fulfillment(revision, captured_fulfillment, now=generated_at)
+            if reason:
+                return RevisionProposalResult(reasons=(reason,))
+            proposal["fulfillment_capture"] = captured_fulfillment
         if source_cart_capture is not None:
             from management.services.ig_response_plan import _provided_source_cart
             from management.services.ig_revision_cart_binding import stable_checkout_source_capture

@@ -109,14 +109,19 @@ class ReviewOnlyOwnerContract(_MarketingConsentFixture):
     canonical = False
 
     def setUp(self):
-        if self.canonical:
-            from management.tests_ig_lifecycle import InstagramLifecycleTests
-            InstagramLifecycleTests.setUp(self)
-            self.customer = self.client
-        else:
-            from management.tests_ig_order_fulfillment import IgOrderFulfillmentTests
-            IgOrderFulfillmentTests.setUp(self)
-            self.customer = self.ig_client
+        from management.tests_ig_review_uplift import _preshipment_order_factory
+
+        # Build a paid, unshipped order initially. Consent cannot be invited
+        # after delivery, and rewinding a delivered fixture would hide that.
+        with _preshipment_order_factory():
+            if self.canonical:
+                from management.tests_ig_lifecycle import InstagramLifecycleTests
+                InstagramLifecycleTests.setUp(self)
+                self.customer = self.client
+            else:
+                from management.tests_ig_order_fulfillment import IgOrderFulfillmentTests
+                IgOrderFulfillmentTests.setUp(self)
+                self.customer = self.ig_client
         self.customer.last_user_message_at = timezone.now()
         self.customer.save(update_fields=["last_user_message_at", "updated_at"])
         self.serial = 0
@@ -128,18 +133,22 @@ class ReviewOnlyOwnerContract(_MarketingConsentFixture):
         self.settings_row.ig_user_id = "1"
         self.settings_row.is_enabled = True
         self.settings_row.save(update_fields=["ig_user_id", "is_enabled", "updated_at"])
-        self._delivered(self.order)
 
     def _grant_consent(self):
         assignment = link_order_to_client(self.order, client=self.customer)
-        return self.grant_business_consent(self.customer, self.order, assignment)
+        granted = self.grant_business_consent(self.customer, self.order, assignment)
+        self._delivered(self.order)
+        self.order.refresh_from_db()
+        return granted
 
     def _delivered(self, order):
         order.status = "done"
         order.tracking_number = "20400000000009"
         order.tracking_status_code = 9
         order.tracking_terminal_at = timezone.now()
-        order.save(update_fields=["status", "tracking_number", "tracking_status_code", "tracking_terminal_at"])
+        order.tracking_provider_event_at = order.tracking_terminal_at
+        order.save(update_fields=["status", "tracking_number", "tracking_status_code", "tracking_terminal_at",
+            "tracking_provider_event_at"])
 
     def _consume(self, *, retained=False, empty_active=False):
         active, old = _identity_digest_candidates(self.customer)
@@ -152,7 +161,13 @@ class ReviewOnlyOwnerContract(_MarketingConsentFixture):
 
     def _event(self, *, order=None, insert_defaults=None):
         order = order or self.order
+        # Plain review cases deliberately never call the consent producer.
+        # Their shipment still moves forward before post-purchase eligibility.
+        if order.status != "done" or order.tracking_status_code != 9 or not order.tracking_terminal_at:
+            self._delivered(order)
+        order.refresh_from_db()
         assignment = link_order_to_client(order, client=self.customer)
+        assignment = type(assignment).objects.select_related("order", "client").get(pk=assignment.pk)
         model = IgLifecycleEvent if self.canonical else IgOrderCustomerEvent
         create = model.objects.get_or_create
 

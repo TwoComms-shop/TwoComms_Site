@@ -52,10 +52,13 @@ def _candidate(snapshot, client_id):
     from management.services.ig_message_templates import parse_payload
     from management.services.ig_marketing_consent import PREFIX
     from management.services.ig_payment_reminders import PAYMENT_REMINDER_PREFIX
+    from management.services.ig_restock_subscriptions import RESTOCK_SUBSCRIPTION_PREFIX
 
     raw = str(snapshot.get("quick_reply_payload") or snapshot.get("text") or "").strip()
     if not raw or len(raw) > 1000:
         return None
+    if str(snapshot.get("quick_reply_payload") or "").startswith(RESTOCK_SUBSCRIPTION_PREFIX):
+        return {"action": "restock_subscription", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(PAYMENT_REMINDER_PREFIX):
         return {"action": "payment_reminder_consent", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(PREFIX):
@@ -288,7 +291,18 @@ def apply_revision_postback(
             else:
                 language = str(client.language or "uk").casefold()
                 language = language if language in {"uk", "ru", "en"} else "uk"
-                if candidate["action"] == "payment_reminder_consent":
+                if candidate["action"] == "restock_subscription":
+                    from management.services.ig_restock_subscriptions import handle_reply
+
+                    consent = handle_reply(source.message, revision=revision, settings_obj=settings_row)
+                    if not consent.handled:
+                        raise _Rollback("postback_restock_subscription_not_handled")
+                    effect = {"consent_reason": consent.reason,
+                              "invitation_id": str(consent.invitation_id) if consent.invitation_id else None,
+                              "quick_replies": [{"title": button.title, "payload": button.payload}
+                                                for button in consent.quick_replies]}
+                    reply_text = consent.reply_text
+                elif candidate["action"] == "payment_reminder_consent":
                     from management.services.ig_payment_reminders import handle_reply
 
                     consent = handle_reply(source.message, revision=revision, settings_obj=settings_row)

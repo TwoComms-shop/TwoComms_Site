@@ -155,7 +155,7 @@ def adjust_stock_item(
     requested_stock_item.last_cost_price = stock_item.last_cost_price
     requested_stock_item.updated_at = stock_item.updated_at
 
-    return StockMovement.objects.create(
+    movement = StockMovement.objects.create(
         content_type=ContentType.objects.get_for_model(StockItem),
         object_id=stock_item.pk,
         delta=delta,
@@ -166,6 +166,17 @@ def adjust_stock_item(
         write_off_request=write_off_request,
         created_by=user,
     )
+    if delta > 0:
+        def observe_signed_restock_subscriptions(*, stock_item_id=stock_item.pk,
+                movement_id=movement.pk, occurred_at=movement.created_at):
+            from management.services.ig_restock_subscriptions import observe_inventory_event
+            observe_inventory_event(source={"kind": "warehouse_movement", "stock_item_id": stock_item_id,
+                "movement_id": movement_id, "occurred_at": occurred_at})
+
+        # Reverse write-offs may restore paid commitments later in the same
+        # transaction. The observer sees the fully committed protected stock.
+        transaction.on_commit(observe_signed_restock_subscriptions, robust=True)
+    return movement
 
 
 @transaction.atomic

@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from itertools import islice
 import re
 from typing import Iterable, Literal
+from zoneinfo import ZoneInfo
+
+from management.services.ig_fulfillment_requirements import _MONTHS
 
 
 REASON_CODES = (
@@ -41,6 +46,44 @@ class AuthorizedAction:
 
 
 @dataclass(frozen=True)
+class TimingAuthority:
+    """A source-backed timing fact; durations never grant another domain."""
+
+    domain: Literal["preparation", "dispatch", "carrier_estimate", "arrival_feasibility"]
+    claim: str = ""
+    min_days: int | None = None
+    max_days: int | None = None
+    unit: str = "calendar_days"
+    anchor: str = ""
+    anchor_at: str = ""
+    line_id: str = ""
+    line_label: str = ""
+    source_ref: str = ""
+    review_line_labels: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class AvailabilityAuthority:
+    """A manager decision about an exact requested configuration and count."""
+
+    line_id: str
+    line_label: str
+    product_id: int
+    color_variant_id: int
+    size: str
+    fit_code: str
+    quantity: int
+    availability: str
+    checked_quantity: int | None = None
+    supply_basis: str = ""
+    source_ref: str = ""
+    product_label: str = ""
+    color_label: str = ""
+    fit_label: str = ""
+    option_values: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class ReplyTruthContext:
     authorized_prices: tuple[Decimal, ...] = ()
     authorized_price_ranges: tuple[tuple[Decimal, Decimal], ...] = ()
@@ -71,6 +114,9 @@ class ReplyTruthContext:
     # Future recruitment-policy integration must supply explicit source-backed
     # authority. Missing policy, customer text and model controls leave unknown.
     recruitment_status: Literal["unknown", "open", "closed"] = "unknown"
+    timing_authorities: tuple[TimingAuthority, ...] = ()
+    fulfillment_review_status: Literal["", "pending", "reviewed"] = ""
+    availability_authorities: tuple[AvailabilityAuthority, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -240,7 +286,8 @@ _TRACKING_RE = re.compile(
 _TIMING_CONTEXT_RE = re.compile(
     r"достав\w*|відправ\w*|отправ\w*|виготов\w*|изготов\w*|вироб\w*|"
     r"підготов\w*|подготов\w*|готу\w*|готов\w*|prepar\w*|"
-    r"production|deliver\w*|ship\w*|dispatch\w*",
+    r"production|deliver\w*|ship\w*|dispatch\w*|"
+    r"отрима\w*|получи\w*|приб\w*|приед\w*|arriv\w*|receive\w*",
     re.I,
 )
 _TIMING_RE = re.compile(
@@ -249,9 +296,9 @@ _TIMING_RE = re.compile(
     r"(?:(?:робоч\w*|рабоч\w*|business)\s+)?"
     r"(?:хвилин\w*|минут\w*|minutes?|годин\w*|час\w*|hours?|"
     r"дн(?:і|ів|я)|день|дня|дней|days?|тижн\w*|недел\w*|weeks?)"
-    r"|(?:сьогодні|завтра|послезавтра|today|tomorrow)"
-    r"|(?:до|by|on)\s+(?:\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?"
-    r"|\d{1,2}\s+[^\W\d_]{3,16})"
+    r"|(?:сьогодні|сегодня|завтра|післязавтра|послезавтра|today|tomorrow|same[- ]day)"
+    r"|(?:до|к|by|on)\s+(?:\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?"
+    r"|\d{1,2}\s+[^\W\d_]{3,16}|\d{1,2}(?:-го)?(?=\s*(?:числ\w*|[.!?]?$)))"
     r")\b",
     re.I,
 )
@@ -280,9 +327,65 @@ _TIMING_GUARANTEE_RE = re.compile(
     re.I,
 )
 _CARRIER_DELIVERY_RE = re.compile(
-    r"достав\w*|перевізник\w*|перевозчик\w*|carrier\w*|transit|"
+    r"достав\w*|deliver\w*|перевізник\w*|перевозчик\w*|carrier\w*|transit|"
     r"arrival|arriv\w*|прибут\w*|нова\s+пошта|нов\w*\s+почт\w*|nova\s+poshta",
     re.I,
+)
+_PREPARATION_RE = re.compile(
+    r"підготов\w*|подготов\w*|виготов\w*|изготов\w*|вироб\w*|"
+    r"готу\w*|готов\w*|prepar\w*|production|manufactur\w*|\bready\b", re.I,
+)
+_DISPATCH_RE = re.compile(r"відправ\w*|отправ\w*|dispatch\w*|ship\w*", re.I)
+_ARRIVAL_RE = re.compile(
+    r"отрима\w*|получи\w*|прибут\w*|прибуд\w*|приед\w*|"
+    r"забере\w*|забра\w*|приде\w*|arriv\w*|receive\w*|reach\w*|pick\s*up|"
+    r"(?:буде|будет|will\s+be)\s+(?:у\s+вас|в\s+вас|with\s+you)", re.I,
+)
+_DEADLINE_FEASIBILITY_RE = re.compile(
+    r"\b(?:встигнемо|встигне\w*|успеем|успеет\w*|"
+    r"we(?:\s+will|['’]ll)\s+make\s+it|(?:will|can)\s+arrive\s+in\s+time|"
+    r"(?:will|can)\s+meet\s+(?:the\s+|your\s+)?deadline|"
+    r"(?:точно|гарантовано|гарантированно|definitely)\s+(?:вчасно|вовремя|on\s+time))\b", re.I,
+)
+_TIMING_CLAUSE_BOUNDARY_RE = re.compile(
+    r";|\s+(?:але|однак|но|однако|but|however)\s+", re.I,
+)
+_TIMING_HISTORY_RE = re.compile(
+    r"\b(?:раніше|раньше|ранее|previously|last\s+time|у\s+минул\w*|"
+    r"минулого\s+разу|в\s+прошл\w*)\b[^.!?;]{0,100}"
+    r"(?:каз\w*|сказ\w*|говор\w*|пис\w*|обіц\w*|обещ\w*|тривал\w*|"
+    r"занима\w*|said|told|wrote|promised|took)", re.I,
+)
+_TIMING_UNCERTAINTY_RE = re.compile(
+    r"(?:не\s+(?:(?:можемо|можу|можем|могу)\s+)?"
+    r"(?:гаранту\w*|гарантир\w*|обіця\w*|обещ\w*|встига\w*|встигнемо|успеем)|"
+    r"(?:cannot|can['’]?t|do\s+not|don['’]?t)\s+"
+    r"(?:guarantee|promise|confirm|make\s+it|meet\s+(?:the\s+)?deadline)|"
+    r"без\s+гаранті\w*|без\s+гаранти\w*|not\s+guaranteed)", re.I,
+)
+_CARRIER_ESTIMATE_QUALIFIER_RE = re.compile(
+    r"орієнтов\w*|ориентиров\w*|приблиз\w*|примерн\w*|"
+    r"estimate\w*|approximately|approx\.?|usually|typically|зазвичай|обычно", re.I,
+)
+_NUMERIC_DEADLINE_RE = re.compile(
+    r"\b(?:до|к|by|on)\s+(?:\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?"
+    r"|\d{1,2}\s+[^\W\d_]{3,16}|\d{1,2}(?:-го)?(?=\s*(?:числ\w*|[.!?]?$)))\b", re.I,
+)
+_TIMING_START_RE = re.compile(
+    r"\b(?:starting|starts?|beginning|begins?|counting|from|since|"
+    r"почина\w*|почне\w*|начина\w*|начне\w*|рахуючи|отсчитывая|від|з|с|от)"
+    r"\s+(?:(?:on|from|з|від|с|от)\s+)?(?P<date>"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}[.-]\d{1,2}(?:[.-]\d{2,4})?|"
+    r"\d{1,2}(?:(?:st|nd|rd|th)|-го)?\s+[^\W\d_]{3,16}(?:\s*,?\s*\d{4})?|"
+    r"[^\W\d_]{3,16}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,?\s*\d{4})?|"
+    r"сьогодні|сегодня|завтра|today|tomorrow|\d{1,2}(?:-го)?)\b", re.I,
+)
+_DEADLINE_PROMISE_RE = re.compile(
+    r"\b(?:буде|будет|будут|зробимо|сделаем|will\s+be|will\s+have)\b", re.I,
+)
+_TIMING_ENQUIRY_RE = re.compile(
+    r"(?:уточн\w*|перевір\w*|провер\w*|ask\w*|check\w*|confirm)"
+    r"[^.!?;]{0,60}(?:\bчи\b|\bли\b|\bwhether\b|\bif\b)", re.I,
 )
 _SELECTION_WORDS = (
     r"(?:обран(?:ий|а|е|і)|вибран(?:ий|а|е|і)|"
@@ -320,6 +423,30 @@ _AVAILABILITY_RE = re.compile(
 _CONFIGURATION_STOCK_RE = re.compile(
     r"\b(?:маємо|имеем|доступн\w*|наявн\w*|available)\b|in\s+stock|"
     r"\b(?:є|есть)\b|\bhave\b(?!\s+(?:chosen|selected|requested))", re.I,
+)
+_EXACT_STOCK_RE = re.compile(
+    r"\b(?:у|в)\s+(?:наявності|наличии)\b|\bнаявн(?:ий|а|е|і)\b|in\s+stock|"
+    r"(?:підтвердив|підтвердила|підтверджено|подтвердил|подтвердила|подтверждено)"
+    r"[^,;.!?]{0,60}\b(?:наявність|наявності|наличие|наличия)\b|"
+    r"\b(?:products?|items?|hoodies?|t[- ]?shirts?)\b[^,;.!?]{0,60}\bavailable\b|"
+    r"\bavailable\b[^,;.!?]{0,60}\b(?:products?|items?|hoodies?|t[- ]?shirts?)\b", re.I,
+)
+_STOCK_NONASSERTION_RE = re.compile(
+    r"\b(?:якщо|если|if|when|чи|ли|whether)\b[^,;.!?]*$|"
+    r"\b(?:після|после|after)\b[^,;.!?]{0,70}"
+    r"(?:підтвердж\w*|подтвержд\w*|confirm\w*|перевір\w*|провер\w*|check\w*)[^,;.!?]*$|"
+    r"\b(?:уточню|уточнимо|уточним|уточнить|перевірю|перевіримо|перевірити|"
+    r"проверю|проверим|проверить|check|checking|verify|verifying)\b[^,;.!?]*$", re.I,
+)
+_WHOLE_CART_STOCK_RE = re.compile(
+    r"усі\s+(?:обрані\s+|замовлені\s+)?(?:позиції|товари)|"
+    r"все\s+(?:выбранные\s+|заказанные\s+)?(?:позиции|товары)|"
+    r"all\s+(?:selected\s+|requested\s+|ordered\s+)?(?:items|lines)|"
+    r"(?:ціле|все)\s+замовлення|весь\s+заказ|whole\s+(?:order|cart)", re.I,
+)
+_STOCK_QUANTITY_RE = re.compile(
+    r"(?<!\d)(\d{1,3})\s*(?:шт\.?|одиниц\w*|единиц\w*|pieces?|units?|items?|"
+    r"футболк\w*|худі|худи|(?:t[- ]?)?shirts?|hoodies?)\b|[×x]\s*(\d{1,3})(?!\d)", re.I,
 )
 
 _NON_CONFIGURATION_VALUES = frozenset({
@@ -425,6 +552,8 @@ def _is_qualified_standard_dispatch_timing(
     timing: str,
     context: ReplyTruthContext,
 ) -> bool:
+    if context.fulfillment_review_status in {"pending", "reviewed"}:
+        return False
     configured = context.explicitly_qualified_standard_dispatch_days
     if (
         not isinstance(configured, tuple)
@@ -432,7 +561,8 @@ def _is_qualified_standard_dispatch_timing(
         or any(isinstance(value, bool) or not isinstance(value, int) for value in configured)
     ):
         return False
-    match = _STANDARD_TIMING_RANGE_RE.fullmatch(str(timing or "").strip())
+    duration = re.sub(r"^(?:within|in|до)\s+", "", str(timing or "").strip(), flags=re.I)
+    match = _STANDARD_TIMING_RANGE_RE.fullmatch(duration)
     if match is None or (int(match.group("low")), int(match.group("high"))) != configured:
         return False
     if (
@@ -443,6 +573,277 @@ def _is_qualified_standard_dispatch_timing(
     ):
         return False
     return bool(context.payment_confirmed or _AFTER_PAYMENT_RE.search(sentence))
+
+
+def _timing_domain(sentence: str) -> str:
+    if _ARRIVAL_RE.search(sentence) or _DEADLINE_FEASIBILITY_RE.search(sentence):
+        return "arrival_feasibility"
+    if _CARRIER_DELIVERY_RE.search(sentence):
+        return "carrier_estimate"
+    if _PREPARATION_RE.search(sentence):
+        return "preparation"
+    if _DISPATCH_RE.search(sentence):
+        return "dispatch"
+    return ""
+
+
+def _timing_scope(sentence: str, start: int) -> str:
+    """Keep a preceding preparation duration separate from a later arrival."""
+    clauses = list(re.finditer(r"[,;]", sentence[:start]))
+    begin = clauses[-1].end() if clauses else 0
+    tail = re.search(r"[,;]", sentence[start:])
+    end = start + tail.start() if tail else len(sentence)
+    local = sentence[begin:end]
+    return local if _timing_domain(local) else sentence[:end]
+
+
+def _timing_nonclaim(sentence: str, start: int) -> bool:
+    return bool(
+        _TIMING_HISTORY_RE.search(sentence[:start])
+        or any(match.start() <= start for match in _TIMING_UNCERTAINTY_RE.finditer(sentence))
+        or any(match.start() <= start for match in _TIMING_ENQUIRY_RE.finditer(sentence))
+        or _locally_negated(sentence, start)
+    )
+
+
+def _timing_start_matches(sentence: str, authority: TimingAuthority) -> bool:
+    """Explicit start dates must match the captured Kyiv day, never our clock."""
+    starts = list(islice(_TIMING_START_RE.finditer(sentence), 9))
+    if not starts:
+        return True
+    if len(starts) > 8:
+        return False
+    try:
+        anchor = datetime.fromisoformat(str(authority.anchor_at).replace("Z", "+00:00"))
+        if anchor.tzinfo is None or anchor.utcoffset() is None:
+            return False
+        anchored = anchor.astimezone(ZoneInfo("Europe/Kyiv")).date()
+    except (ValueError, TypeError, OverflowError):
+        # An existing exact source assertion can own its explicit date; a
+        # bare approved duration cannot supply a newly appended start date.
+        return bool(authority.claim and _normalize(authority.claim) == _normalize(sentence))
+    for match in starts:
+        value = match.group("date").casefold()
+        year = None
+        try:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                year, month, day = map(int, value.split("-"))
+            elif re.fullmatch(r"\d{1,2}[.-]\d{1,2}(?:[.-]\d{2,4})?", value):
+                parts = list(map(int, re.split(r"[.-]", value)))
+                day, month = parts[:2]
+                year = parts[2] if len(parts) == 3 else None
+                if year is not None and year < 1000:
+                    return False
+            else:
+                named = re.fullmatch(r"(\d{1,2})(?:(?:st|nd|rd|th)|-го)?\s+([^\W\d_]{3,16})(?:\s*,?\s*(\d{4}))?", value)
+                if named:
+                    day, name, raw_year = named.groups()
+                else:
+                    named = re.fullmatch(r"([^\W\d_]{3,16})\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?", value)
+                    if not named:
+                        return False
+                    name, day, raw_year = named.groups()
+                month = _MONTHS.get(name)
+                day, year = int(day), int(raw_year) if raw_year else None
+                if month is None:
+                    return False
+            # An omitted year makes only a month/day claim. Never resolve a
+            # relative day or incomplete bare day against the current date.
+            claimed = date(year if year is not None else anchored.year, month, day)
+            if claimed.month != anchored.month or claimed.day != anchored.day or year is not None and claimed.year != anchored.year:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return True
+
+
+def _typed_timing_allowed(
+    sentence: str, timing: str, domain: str, context: ReplyTruthContext, *, anchor_only=False,
+) -> bool:
+    named_lines = {
+        line_id for fact in context.timing_authorities if isinstance(fact, TimingAuthority)
+        for line_id, label in fact.review_line_labels
+        if label and _normalize(label) in _normalize(sentence)
+    }
+    for authority in context.timing_authorities:
+        if not isinstance(authority, TimingAuthority) or authority.domain != domain:
+            continue
+        if authority.line_id and (
+            not authority.line_label
+            or _normalize(authority.line_label) not in _normalize(sentence)
+        ):
+            continue
+        if authority.line_id and named_lines - {authority.line_id}:
+            # A combined assertion must be independently true for every named
+            # item; one reviewed line cannot confer authority on the others.
+            if any(not any(
+                isinstance(other, TimingAuthority) and other.line_id == line_id
+                and other.domain == domain
+                and (other.min_days, other.max_days, other.unit, other.anchor_at)
+                    == (authority.min_days, authority.max_days, authority.unit, authority.anchor_at)
+                for other in context.timing_authorities
+            ) for line_id in named_lines):
+                continue
+        if not _timing_start_matches(sentence, authority):
+            continue
+        if authority.claim:
+            # Feasibility requires the actual source-backed assertion. A bare
+            # duration can never authorize "we will make it" or an arrival.
+            if _normalize(authority.claim) == _normalize(sentence):
+                return domain != "carrier_estimate" or bool(
+                    _CARRIER_ESTIMATE_QUALIFIER_RE.search(sentence)
+                    and not _TIMING_GUARANTEE_RE.search(sentence)
+                )
+            if domain != "arrival_feasibility" and _normalize(authority.claim) == _normalize(timing):
+                if domain != "carrier_estimate" or _CARRIER_ESTIMATE_QUALIFIER_RE.search(sentence):
+                    return not bool(_TIMING_GUARANTEE_RE.search(sentence))
+        if domain == "arrival_feasibility" or _TIMING_GUARANTEE_RE.search(sentence):
+            continue
+        if anchor_only:
+            if authority.anchor_at and (domain != "carrier_estimate" or _CARRIER_ESTIMATE_QUALIFIER_RE.search(sentence)):
+                return True
+            continue
+        duration = re.sub(r"^(?:within|in|до)\s+", "", timing.strip(), flags=re.I)
+        match = _STANDARD_TIMING_RANGE_RE.fullmatch(duration)
+        if match is not None:
+            low, high = int(match.group("low")), int(match.group("high"))
+        else:
+            single = re.fullmatch(
+                r"(?:до\s+|within\s+|in\s+)?(\d{1,3})\s*"
+                r"(?:(?:робоч\w*|рабоч\w*|business)\s+)?"
+                r"(?:дн(?:і|ів|я)|день|дня|дней|days?)", timing.strip(), re.I,
+            )
+            if single is None:
+                continue
+            low = high = int(single.group(1))
+        if (low, high) != (authority.min_days, authority.max_days):
+            continue
+        business_days = bool(re.search(r"робоч\w*|рабоч\w*|business", timing, re.I))
+        if business_days != (authority.unit == "business_days"):
+            continue
+        if authority.unit not in {"calendar_days", "business_days", "days"}:
+            continue
+        if domain == "carrier_estimate" and not _CARRIER_ESTIMATE_QUALIFIER_RE.search(sentence):
+            continue
+        if _AFTER_PAYMENT_RE.search(sentence) and authority.anchor not in {"payment", "after_payment", "payment_confirmation", "after_payment_confirmation"}:
+            continue
+        return True
+    return False
+
+
+def _legacy_timing_allowed(sentence: str, timing: str, context: ReplyTruthContext) -> bool:
+    if context.fulfillment_review_status in {"pending", "reviewed"}:
+        return False
+    # Compatibility for established server timing inputs, with no promotion to
+    # arrival feasibility or bare deadline guarantees.
+    if _timing_domain(sentence) == "arrival_feasibility":
+        return False
+    return _normalize(timing) in {_normalize(value) for value in context.approved_timing_claims}
+
+
+def _subject_token(sentence: str, value: str) -> bool:
+    return bool(value and re.search(r"(?<!\w)" + re.escape(_normalize(value)) + r"(?!\w)", _normalize(sentence)))
+
+
+def _product_availability_claim(sentence: str) -> bool:
+    """Positive product stock only; availability checks are not stock facts."""
+    for pattern in (_AVAILABILITY_RE, _EXACT_STOCK_RE):
+        for match in pattern.finditer(sentence):
+            prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", sentence[:match.start()], flags=re.I)[-1]
+            if (
+                not _locally_negated(sentence, match.start())
+                and not _NEGATED_STATUS_RE.search(match.group(0))
+                and not _STOCK_NONASSERTION_RE.search(prefix)
+            ):
+                return True
+    return False
+
+
+def _availability_line_reference_matches(sentence: str, fact: AvailabilityAuthority) -> bool:
+    return bool(fact.line_id and re.search(
+        r"(?:позиція|позиция|поз\.?|line|item)\s*#?\s*" + re.escape(fact.line_id) + r"(?!\w)", sentence, re.I,
+    ))
+
+
+def _availability_scope_matches(sentence: str, fact: AvailabilityAuthority) -> bool:
+    if fact.line_label and _subject_token(sentence, fact.line_label):
+        return True
+    if _availability_line_reference_matches(sentence, fact):
+        return True
+    from management.services.ig_conversation_agreement import _configuration
+    given, _ = _configuration(sentence)
+    color, _ = _configuration(fact.color_label)
+    color_matches = _subject_token(sentence, fact.color_label) or bool(
+        color.get("color") and given.get("color") == color["color"])
+    return bool(
+        fact.product_label and fact.color_label
+        and _subject_token(sentence, fact.product_label)
+        and color_matches
+        and _subject_token(sentence, fact.size)
+    )
+
+
+def _availability_configuration_matches(sentence: str, fact: AvailabilityAuthority) -> bool:
+    # Check explicit labels and familiar free-form values, without allowing a
+    # matching product name to hide a different size, fit, color or quantity.
+    from management.services.ig_conversation_agreement import _configuration
+    stated, ambiguous = _configuration(sentence)
+    if ambiguous:
+        return False
+    for axis, expected in (("size", fact.size), ("fit", fact.fit_code), ("color", fact.color_label)):
+        if axis not in stated:
+            continue
+        normalized, _ = _configuration(expected)
+        if stated[axis] != normalized.get(axis, _normalize(expected)):
+            return False
+    for axis, pattern, expected in (("size", _SIZE_RE, fact.size), ("fit", _FIT_RE, fact.fit_code), ("color", _COLOR_RE, fact.color_label)):
+        for match in pattern.finditer(sentence):
+            value = _positive_configuration_value(sentence, match)
+            if not value or _locally_negated(sentence, match.start()):
+                continue
+            given, _ = _configuration(value)
+            wanted, _ = _configuration(expected)
+            if given.get(axis, _normalize(value)) != wanted.get(axis, _normalize(expected)):
+                return False
+    return all(int(first or second) == fact.quantity for first, second in _STOCK_QUANTITY_RE.findall(sentence))
+
+
+def _manager_availability_matches(sentence: str, context: ReplyTruthContext) -> tuple[AvailabilityAuthority, ...]:
+    if context.fulfillment_review_status != "reviewed":
+        return ()
+    facts = tuple(fact for fact in context.availability_authorities if isinstance(fact, AvailabilityAuthority))
+    if not facts:
+        return ()
+    named = facts if _WHOLE_CART_STOCK_RE.search(sentence) else tuple(
+        fact for fact in facts if _availability_scope_matches(sentence, fact))
+    if not named:
+        if len(facts) == 1 and not re.search(r"футболк\w*|худі|худи|t[- ]?shirt\w*|hoodie\w*|product\w*|товар\w*", sentence, re.I):
+            named = facts
+        else:
+            return ()
+    for fact in named:
+        if (
+            fact.availability != "available" or not fact.source_ref
+            or fact.supply_basis not in {"warehouse_checked", "accessible_unrecorded"}
+            or type(fact.checked_quantity) is not int or type(fact.quantity) is not int
+            or not 1 <= fact.quantity <= fact.checked_quantity <= 999
+            or not _availability_configuration_matches(sentence, fact)
+        ):
+            return ()
+    # Even a partial exact label is ambiguous when another requested line has
+    # the same product/color/size but a different fit or option combination.
+    if not _WHOLE_CART_STOCK_RE.search(sentence):
+        for fact in named:
+            for other in facts:
+                if other in named:
+                    continue
+                if (other.product_id, other.color_variant_id, other.size) == (fact.product_id, fact.color_variant_id, fact.size):
+                    if not _subject_token(sentence, fact.line_label) and not _availability_line_reference_matches(sentence, fact) and not (
+                        fact.fit_label and _subject_token(sentence, fact.fit_label)
+                        and fact.fit_code != other.fit_code
+                    ):
+                        return ()
+    return named
 
 
 def validate_reply_truth(
@@ -476,7 +877,6 @@ def validate_reply_truth(
     }
     discount_percents = {_decimal(value) for value in context.authorized_discount_percents}
     discount_amounts = {_decimal(value) for value in context.authorized_discount_amounts}
-    approved_timing = {_normalize(value) for value in context.approved_timing_claims}
 
     for sentence in _claim_sentences(reply_text, context.quoted_data):
         for recruitment_status in _recruitment_claims(sentence):
@@ -544,23 +944,55 @@ def validate_reply_truth(
             if tracking not in set(context.known_tracking_refs):
                 _add(reasons, "unverified_tracking")
 
-        if _TIMING_CONTEXT_RE.search(sentence):
-            for timing_match in _TIMING_RE.finditer(sentence):
-                if _locally_negated(sentence, timing_match.start()):
+        for timing_clause in _TIMING_CLAUSE_BOUNDARY_RE.split(sentence):
+            for start in _TIMING_START_RE.finditer(timing_clause):
+                scope = _timing_scope(timing_clause, start.start())
+                domain = _timing_domain(scope)
+                # A comma inside 'October 12, 2027' must not erase its year
+                # when the timing-domain helper isolates nearby clauses.
+                if start.group(0) not in scope:
+                    scope += " " + start.group(0)
+                if domain and not _timing_nonclaim(timing_clause, start.start()) and not _typed_timing_allowed(
+                    scope, "", domain, context, anchor_only=True):
+                    _add(reasons, "unverified_timing")
+            for feasibility in _DEADLINE_FEASIBILITY_RE.finditer(timing_clause):
+                if not _timing_nonclaim(timing_clause, feasibility.start()) and not _typed_timing_allowed(
+                    timing_clause, "", "arrival_feasibility", context,
+                ):
+                    _add(reasons, "unverified_timing")
+            if _timing_domain(timing_clause) in {"carrier_estimate", "arrival_feasibility"}:
+                for guarantee in _TIMING_GUARANTEE_RE.finditer(timing_clause):
+                    if not _timing_nonclaim(timing_clause, guarantee.start()) and not _typed_timing_allowed(
+                        timing_clause, "", "arrival_feasibility", context,
+                    ):
+                        _add(reasons, "unverified_timing")
+            if not _timing_domain(timing_clause) and _DEADLINE_PROMISE_RE.search(timing_clause):
+                for deadline in _NUMERIC_DEADLINE_RE.finditer(timing_clause):
+                    if not _timing_nonclaim(timing_clause, deadline.start()) and not _typed_timing_allowed(
+                        timing_clause, "", "arrival_feasibility", context,
+                    ):
+                        _add(reasons, "unverified_timing")
+            if not _timing_domain(timing_clause):
+                continue
+            for timing_match in _TIMING_RE.finditer(timing_clause):
+                if _timing_nonclaim(timing_clause, timing_match.start()):
                     continue
                 timing = timing_match.group(0)
-                if (
-                    _normalize(timing) not in approved_timing
-                    and not _is_qualified_standard_dispatch_timing(
-                        sentence,
-                        timing,
-                        context,
-                    )
+                scope = _timing_scope(timing_clause, timing_match.start())
+                domain = _timing_domain(scope)
+                if not (
+                    _typed_timing_allowed(scope, timing, domain, context)
+                    or _legacy_timing_allowed(scope, timing, context)
+                    or _is_qualified_standard_dispatch_timing(scope, timing, context)
                 ):
                     _add(reasons, "unverified_timing")
 
-        availability_claim = _has_positive_claim(_AVAILABILITY_RE, sentence)
-        if availability_claim and not context.allowed_sizes:
+        availability_claim = _product_availability_claim(sentence)
+        reviewed_stock_claim = availability_claim
+        manager_availability = _manager_availability_matches(sentence, context) if reviewed_stock_claim else ()
+        if context.fulfillment_review_status and reviewed_stock_claim and not manager_availability:
+            _add(reasons, "unverified_availability")
+        elif reviewed_stock_claim and not context.allowed_sizes and not manager_availability:
             _add(reasons, "unverified_availability")
         if context.agreement_choices and _AGREEMENT_ATTRIBUTION_RE.search(sentence):
             # Natural agreement acknowledgements also use bare values such as
@@ -583,7 +1015,7 @@ def validate_reply_truth(
                             expected.add(value[axis])
                 if stated[axis] not in expected:
                     _add(reasons, "configuration_mismatch")
-                if _has_positive_claim(_CONFIGURATION_STOCK_RE, sentence):
+                if _has_positive_claim(_CONFIGURATION_STOCK_RE, sentence) and not manager_availability:
                     _add(reasons, "unverified_availability")
         for axis, pattern, allowed, source_choices, audited_choices in (
             ("size", _SIZE_RE, context.allowed_sizes, context.source_chosen_sizes, context.audited_chosen_sizes),
@@ -609,6 +1041,15 @@ def validate_reply_truth(
                         break
                 clause = sentence[clause_start:clause_end]
                 effective = set(allowed_values)
+                clause_manager_availability = _manager_availability_matches(clause, context)
+                if clause_manager_availability:
+                    from management.services.ig_conversation_agreement import _configuration
+                    given, _ = _configuration(claimed)
+                    for fact in clause_manager_availability:
+                        expected = {"size": fact.size, "fit": fact.fit_code, "color": fact.color_label}[axis]
+                        wanted, _ = _configuration(expected)
+                        if given.get(axis, _normalize(claimed)) == wanted.get(axis, _normalize(expected)):
+                            effective.add(_normalize(claimed))
                 if (not _has_positive_claim(_AVAILABILITY_RE, clause)
                     and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
                     and _AGREEMENT_ATTRIBUTION_RE.search(sentence)):
@@ -629,9 +1070,11 @@ def validate_reply_truth(
 
 __all__ = [
     "AuthorizedAction",
+    "AvailabilityAuthority",
     "ProposedAction",
     "REASON_CODES",
     "ReplyTruthContext",
     "ReplyTruthResult",
+    "TimingAuthority",
     "validate_reply_truth",
 ]

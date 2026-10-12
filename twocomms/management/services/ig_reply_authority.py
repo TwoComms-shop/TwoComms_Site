@@ -6,7 +6,7 @@ proposed controls are never copied into ``authorized_actions``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from itertools import islice
 from typing import Iterable, Mapping
@@ -16,7 +16,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
-from management.services.ig_reply_truth import ReplyTruthContext
+from management.services.ig_reply_truth import AvailabilityAuthority, ReplyTruthContext, TimingAuthority
 
 
 MAX_CATALOG_QUOTES = 8
@@ -47,6 +47,8 @@ EVIDENCE_CODES = frozenset({
     "exact_catalog_quote",
     "explicit_server_timing",
     "source_proved_conversation_amounts",
+    "source_bound_fulfillment_pending",
+    "manager_reviewed_fulfillment_timing",
 })
 
 
@@ -485,6 +487,156 @@ def _conversation_facts(client):
     return tuple(result), tuple(choices)
 
 
+def fulfillment_timing_authorities(projection: Mapping[str, object]) -> tuple[str, tuple[TimingAuthority, ...]]:
+    """Adapt a verified current projection without granting carrier promises.
+
+    Callers must supply the verified projection from the frozen client state;
+    model controls, raw card fields and a stored snapshot are not authority.
+    """
+    if not isinstance(projection, Mapping) or type(projection.get("version")) is not int or projection.get("version") != 1:
+        return "", ()
+    request = projection.get("current_request", projection)
+    if not isinstance(request, Mapping) or request.get("scope") != "cart":
+        return "", ()
+    status = projection.get("status")
+    if not isinstance(status, str) or status not in {"pending", "reviewed", "stale"}:
+        return "", ()
+    if status != "reviewed":
+        return "pending", ()
+    decision = projection.get("decision")
+    lines = request.get("lines")
+    digest = projection.get("request_digest", projection.get("digest"))
+    if (
+        not isinstance(decision, Mapping) or not isinstance(lines, list)
+        or not isinstance(digest, str) or not digest
+        or decision.get("request_digest") != digest
+        or not isinstance(decision.get("lines"), list)
+    ):
+        return "pending", ()
+    requested = {
+        str(line.get("line_id")): line
+        for line in lines[:40] if isinstance(line, Mapping) and line.get("line_id")
+    }
+    reviewed = {
+        str(line.get("line_id")): line
+        for line in decision["lines"][:40] if isinstance(line, Mapping) and line.get("line_id")
+    }
+    if not requested or set(requested) != set(reviewed) or len(requested) != len(lines) or len(reviewed) != len(decision["lines"]):
+        return "pending", ()
+    line_labels = tuple((line_id, str(row.get("label") or "").strip()[:240])
+        for line_id, row in requested.items())
+    result: list[TimingAuthority] = []
+    for domain in ("preparation", "dispatch"):
+        domain_facts: list[TimingAuthority] = []
+        for line_id, row in reviewed.items():
+            timing = row.get(domain)
+            if row.get("availability") not in ("available", "wait") or not isinstance(timing, Mapping):
+                continue
+            low, high = timing.get("min_days"), timing.get("max_days")
+            raw_unit = timing.get("unit")
+            unit = {"calendar": "calendar_days", "business": "business_days"}.get(raw_unit) if isinstance(raw_unit, str) else None
+            anchor_at = timing.get("anchor_at")
+            if (type(low) is not int or type(high) is not int or not 0 <= low <= high <= 365
+                    or not unit or not isinstance(anchor_at, str) or not anchor_at):
+                continue
+            domain_facts.append(TimingAuthority(
+                domain=domain, min_days=low, max_days=high, unit=unit,
+                anchor_at=anchor_at, line_id=line_id,
+                line_label=str(requested[line_id].get("label") or "").strip()[:240],
+                source_ref=digest, review_line_labels=line_labels,
+            ))
+        result.extend(domain_facts)
+        # A fact about one item does not authorize a whole-order promise. Only
+        # a uniform full set can be spoken without an exact item label.
+        windows = {(fact.min_days, fact.max_days, fact.unit, fact.anchor_at) for fact in domain_facts}
+        if len(domain_facts) == len(requested) and len(windows) == 1:
+            fact = domain_facts[0]
+            result.append(TimingAuthority(
+                domain=domain, min_days=fact.min_days, max_days=fact.max_days,
+                unit=fact.unit, anchor_at=fact.anchor_at, source_ref=digest,
+                review_line_labels=line_labels,
+            ))
+    return "reviewed", tuple(result)
+
+
+def fulfillment_availability_authorities(projection) -> tuple[AvailabilityAuthority, ...]:
+    """Exact dialogue facts from a verified manager decision, never DB stock."""
+    status, _ = fulfillment_timing_authorities(projection)
+    if status != "reviewed":
+        return ()
+    request = projection.get("current_request", projection)
+    decision = projection["decision"]
+    digest = projection.get("request_digest", projection.get("digest"))
+    requested = {str(row["line_id"]): row for row in request["lines"]}
+    facts = []
+    for row in decision["lines"]:
+        source = requested[str(row["line_id"])]
+        target = source.get("target")
+        if not isinstance(target, Mapping) or set(target) != {
+            "product_id", "color_variant_id", "size", "fit_option_code", "option_values", "quantity",
+        }:
+            return ()
+        if any(type(target.get(key)) is not int or target[key] <= 0 for key in ("product_id", "color_variant_id")):
+            return ()
+        quantity, options = target.get("quantity"), target.get("option_values")
+        if (type(quantity) is not int or not 1 <= quantity <= 99
+                or not isinstance(target.get("size"), str) or not target["size"]
+                or not isinstance(target.get("fit_option_code"), str)
+                or not isinstance(options, Mapping)
+                or any(not isinstance(key, str) or not isinstance(value, str) for key, value in options.items())):
+            return ()
+        observation = source.get("observation")
+        labels = observation.get("labels") if isinstance(observation, Mapping) else {}
+        labels = labels if isinstance(labels, Mapping) else {}
+        checked = row.get("checked_quantity")
+        facts.append(AvailabilityAuthority(
+            line_id=str(row["line_id"]), line_label=str(source.get("label") or "")[:240],
+            product_id=target["product_id"], color_variant_id=target["color_variant_id"],
+            size=target["size"], fit_code=target["fit_option_code"], quantity=quantity,
+            option_values=tuple(sorted(options.items())), availability=str(row.get("availability") or ""),
+            checked_quantity=checked if type(checked) is int else None,
+            supply_basis=str(row.get("supply_basis") or ""), source_ref=digest,
+            product_label=str(labels.get("product") or "")[:160],
+            color_label=str(labels.get("color") or "")[:80],
+            fit_label=str(labels.get("fit") or "")[:80],
+        ))
+    return tuple(facts)
+
+
+def _captured_fulfillment_projection(captured_client_state):
+    payload = captured_client_state.as_dict() if hasattr(captured_client_state, "as_dict") else captured_client_state
+    if not isinstance(payload, Mapping) or payload.get("status") != "captured":
+        return None
+    diagnostics = payload.get("diagnostics")
+    if isinstance(diagnostics, Mapping) and diagnostics.get("fulfillment_timing_hold") is True:
+        # Capture proved an active exact purchase review but could not admit
+        # its timing facts. Unknown authority must not resurrect 1–3 dispatch.
+        return {"version": 1, "scope": "cart", "status": "pending"}
+    slots = payload.get("slots")
+    slot = slots.get("fulfillment.review") if isinstance(slots, Mapping) else None
+    if isinstance(slot, Mapping):
+        if slot.get("status") != "confirmed" or slot.get("omission_reason"):
+            return None
+        return slot.get("value")
+    return payload.get("fulfillment_review")
+
+
+def _fulfillment_timing_truth(captured_client_state) -> tuple[str, tuple[TimingAuthority, ...]]:
+    return fulfillment_timing_authorities(_captured_fulfillment_projection(captured_client_state))
+
+
+def apply_fulfillment_timing_context(context: ReplyTruthContext, captured_client_state) -> ReplyTruthContext:
+    """Overlay the same frozen review used by the prompt and response plan."""
+    status, facts = _fulfillment_timing_truth(captured_client_state)
+    if not status:
+        return context
+    independent = tuple(fact for fact in context.timing_authorities
+        if isinstance(fact, TimingAuthority) and fact.domain in {"carrier_estimate", "arrival_feasibility"})
+    return replace(context, timing_authorities=(*independent, *facts),
+        availability_authorities=fulfillment_availability_authorities(_captured_fulfillment_projection(captured_client_state)),
+        fulfillment_review_status=status, explicitly_qualified_standard_dispatch_days=None)
+
+
 def build_reply_truth_context(
     client,
     *,
@@ -492,6 +644,7 @@ def build_reply_truth_context(
     server_urls: Iterable[object] = (),
     catalog_quotes: Iterable[Mapping[str, object]] = (),
     server_timing_claims: Iterable[object] = (),
+    captured_client_state=None,
 ) -> ReplyTruthContext:
     """Return current-episode facts suitable for ``validate_reply_truth``.
 
@@ -630,6 +783,11 @@ def build_reply_truth_context(
     conversation_amounts, agreement_choices = _conversation_facts(client)
     if conversation_amounts:
         _append_unique(evidence, "source_proved_conversation_amounts")
+    fulfillment_status, timing_authorities = _fulfillment_timing_truth(captured_client_state)
+    if fulfillment_status == "pending":
+        _append_unique(evidence, "source_bound_fulfillment_pending")
+    elif fulfillment_status == "reviewed":
+        _append_unique(evidence, "manager_reviewed_fulfillment_timing")
 
     return AuthorityReplyTruthContext(
         authorized_prices=tuple(prices),
@@ -642,8 +800,11 @@ def build_reply_truth_context(
         shipment_state=shipment_state,
         known_tracking_refs=tracking_refs,
         approved_timing_claims=tuple(timing),
+        timing_authorities=timing_authorities,
+        availability_authorities=fulfillment_availability_authorities(_captured_fulfillment_projection(captured_client_state)),
+        fulfillment_review_status=fulfillment_status,
         explicitly_qualified_standard_dispatch_days=(
-            ORDINARY_DISPATCH_WINDOW_DAYS
+            ORDINARY_DISPATCH_WINDOW_DAYS if not fulfillment_status else None
         ),
         allowed_sizes=tuple(sizes),
         allowed_fits=tuple(fits),
@@ -661,4 +822,7 @@ __all__ = [
     "EVIDENCE_CODES",
     "READINESS_GAP_CODES",
     "build_reply_truth_context",
+    "fulfillment_timing_authorities",
+    "fulfillment_availability_authorities",
+    "apply_fulfillment_timing_context",
 ]

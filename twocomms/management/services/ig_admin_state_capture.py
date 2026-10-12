@@ -13,7 +13,10 @@ from management.services.ig_client_state_card import assemble_client_state, clie
 
 # Interactive reads count SELECTs only; transaction control consumes no read
 # budget. A catalog + exact-review fixture uses 48, leaving bounded headroom.
-MAX_READ_QUERIES = 64
+# The base source/cart capture retains its own 64-transition/16-line bounds.
+# A signed fulfilment case adds bounded source/decision verification; the whole
+# observation has a hard 96 SELECT ceiling, including that optional component.
+MAX_READ_QUERIES = 96
 MAX_SOURCE_REFS = 16
 # The canonical all-line producer preloads <=64 current/copy transitions total.
 # This permits one bounded final source query; it does not raise SELECT budget.
@@ -367,6 +370,9 @@ def _current_capture(client_id, expected_selection_revision, now):
     from management.services.ig_payment_reminder_context import SLOT, capture_payment_reminder_context
     components.setdefault("slots", {})[SLOT] = capture_payment_reminder_context(
         client_id, boundary=boundary, captured_at=now, current_source_cart=cart)
+    from management.services.ig_fulfillment_context import SLOT as FULFILLMENT_SLOT, capture_fulfillment_context
+    components["slots"][FULFILLMENT_SLOT] = capture_fulfillment_context(
+        client_id, boundary=boundary, captured_at=now, current_source_cart=cart, _catalog_readback=catalog_readback)
     state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
     from management.services.ig_selection_corrections import build_size_correction_context
     size_slot = state.as_dict()["slots"].get("choice.size") or {}

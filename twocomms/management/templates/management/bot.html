@@ -10,6 +10,7 @@
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_memory_card.css' %}?v=memory-presentation-v1">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
+{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=b19e93a40020">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1885,6 +1886,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=9446c8293c94"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=gemini-public-evidence-v2"></script>{% endif %}
@@ -1955,7 +1957,7 @@ body.bot-drawer-open{overflow:hidden;}
     gift:'На подарунок',self_purchase:'Для себе',ad_reply:'Відповідь з реклами',spam:'Спам',
     checkout_started:'Checkout started',paid:'Оплачено',discount_offer:'Пропозиція зі знижкою',delivery:'Питання про доставку'
   };
-  const followupKindLabels={payment:'Нагадування про оплату',payment_link:'Посилання на оплату',manager_task:'Завдання менеджеру',discount_offer:'Пропозиція зі знижкою',support:'Підтримка',reengagement:'Повернення до діалогу'};
+  const followupKindLabels={payment:'Нагадування про оплату',payment_link:'Посилання на оплату',manager_task:'Завдання менеджеру',fulfillment:'Перевірка виконання',qualification:'Уточнення',discount_offer:'Пропозиція зі знижкою',support:'Підтримка',reengagement:'Повернення до діалогу'};
   const followupStatusLabels={pending:'Очікує',processing:'Надсилається',ambiguous:'Потрібна перевірка',sent:'Надіслано',completed:'Завершено',cancelled:'Скасовано',skipped:'Пропущено',failed:'Помилка'};
   const followupReasonLabels={manual_pause:'Зупинено менеджером',hidden:'Клієнта приховано',lost:'Клієнта втрачено',global_reply_stopped:'Автовідповіді зупинено',opt_out:'Клієнт відмовився від повідомлень',manager_takeover:'Діалог веде менеджер',payment_link_delivery_review:'Потрібно вручну надіслати платіжне посилання',paid:'Оплату підтверджено',meta_window:'Вікно Meta завершено',quiet_hours:'Час тиші',expired:'Термін минув',superseded:'Замінено новішою дією'};
   const dealStatusLabels={draft:'Чернетка',quoted:'Ціну названо',awaiting_payment:'Очікує оплату',new:'Нова',pending:'Очікує',paid:'Оплачено',completed:'Завершена',order_created:'Замовлення створено',cancelled:'Скасована',failed:'Помилка'};
@@ -2483,6 +2485,25 @@ body.bot-drawer-open{overflow:hidden;}
     let sizeCorrectionController=null,sizeCorrectionClientId=null,sizeCorrectionRoot=null,sizeCorrectionDisclosure=null;
     let commerceScopeController=null,commerceScopeRoot=null,commerceScopeClientId=null,commerceScopeOrderId=null,commerceScopeEnvelope=null,commerceScopeRequest=0,commerceScopeAbort=null;
     let decisionTraceController=null,decisionTraceClientId=null,decisionTraceDisclosure=null;
+    let fulfillmentReviewController=null,fulfillmentReviewRoot=null;
+    function renderFulfillmentReview(id){
+      {% if bot_can_view_pii %}
+      if(!window.IgFulfillmentReview)return;
+      if(!fulfillmentReviewRoot){
+        fulfillmentReviewRoot=node('section','bot-context-block');
+        fulfillmentReviewController=window.IgFulfillmentReview.create(fulfillmentReviewRoot,{
+          csrfToken:csrf,
+          canOperate:{% if bot_can_operate %}true{% else %}false{% endif %},
+          url:clientId=>{
+            const url='{% url "management_bot_fulfillment_review_api" 0 %}'.replace('/clients/0/','/clients/'+String(clientId)+'/');
+            const params=new URLSearchParams(window.location.search),requestId=params.get('fulfillment_request');
+            return Number(params.get('client_id'))===Number(clientId)&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId||'')?url+'?request_id='+encodeURIComponent(requestId):url;
+          }
+        });
+      }
+      contextEl.appendChild(fulfillmentReviewRoot);fulfillmentReviewController.render(id);
+      {% endif %}
+    }
     function clearDecisionTrace(){
       if(decisionTraceController)decisionTraceController.clear();
       decisionTraceClientId=null;
@@ -2861,7 +2882,7 @@ body.bot-drawer-open{overflow:hidden;}
       const active=d.review&&d.review.active;if(active&&active.approval&&active.approval.state==='pending')return ['Підтвердити або відхилити оплату','Звірте чек, товари, обсяг платежу та суму.'];
       if(active&&active.approval&&active.approval.state==='needs_order_resolution')return ["Прив'язати замовлення",'Оберіть існуюче замовлення або відкрийте форму нового.'];
       if(d.automation&&d.automation.owner==='manager')return ['Продовжити діалог менеджеру','Бот аналізує переписку, але не відповідає.'];
-      return ['Стежити за наступним кроком','Нових обов’язкових дій зараз немає.'];
+      return ['Переглянути поточний контекст','Перевірте актуальні запити й підтвердження у картці клієнта.'];
     }
     function renderLinkedOrderStrip(d){
       const linkedOrders=((d.orders&&d.orders.items)||[]).filter(item=>item&&item.order&&item.order.id);
@@ -3222,7 +3243,7 @@ body.bot-drawer-open{overflow:hidden;}
       });
     }
     function renderContext(d,id){
-      const c=d.client;contextEl.replaceChildren();renderCommerceScope(id);const status=section(contextEl,'Стан клієнта');const grid=node('div','bot-context-grid');contextFact(grid,'Категорія',c.interaction_type_label||'Не визначено');contextFact(grid,'Намір',c.intent_label||c.intent||'—');contextFact(grid,'Режим діалогу',c.manager_takeover?'Менеджер':(d.automation&&d.automation.owner==='manager'?'Автовідповіді призупинено':'Бот'));contextFact(grid,'Стан виконання',fulfillmentLabel(d));contextFact(grid,'Оплата через Monobank',providerTruthLabel(d.payment||{}));contextFact(grid,'Перевірка менеджера',managerTruthLabelForClient(d.payment||{},c));status.appendChild(grid);
+      const c=d.client;contextEl.replaceChildren();renderCommerceScope(id);const status=section(contextEl,'Стан клієнта');const grid=node('div','bot-context-grid');contextFact(grid,'Категорія',c.interaction_type_label||'Не визначено');contextFact(grid,'Намір',c.intent_label||c.intent||'—');contextFact(grid,'Режим діалогу',c.manager_takeover?'Менеджер':(d.automation&&d.automation.owner==='manager'?'Автовідповіді призупинено':'Бот'));contextFact(grid,'Стан виконання',fulfillmentLabel(d));contextFact(grid,'Оплата через Monobank',providerTruthLabel(d.payment||{}));contextFact(grid,'Перевірка оплати менеджером',managerTruthLabelForClient(d.payment||{},c));status.appendChild(grid);
       const selection=c.source_selection_display;
       if(!window.IgCommerceScope&&selection&&Array.isArray(selection.items)&&selection.items.length){
         const choices=section(contextEl,'Вибір клієнта');const choiceGrid=node('div','bot-context-grid');
@@ -3236,6 +3257,7 @@ body.bot-drawer-open{overflow:hidden;}
       }
       const next=nextAction(d);const nextBlock=node('div','bot-context-next');nextBlock.style.marginTop='9px';nextBlock.append(node('span','','Наступна дія'),node('b','',next[0]),node('span','',next[1]));status.appendChild(nextBlock);const active=d.review&&d.review.active;if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-client-order-action is-pending');review.type='button';review.append(node('span','',active.approval.state==='needs_order_resolution'?"Потрібно прив'язати замовлення":'Потрібно підтвердити оплату'),node('span','',active.approval.state==='needs_order_resolution'?'Оберіть існуюче або створіть нове':'Звірте чек, товари та суму'));review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));status.appendChild(review);}
       renderCapturedState(contextEl,id);
+      renderFulfillmentReview(id);
       renderSizeCorrectionEditor(id);
       renderActualRequests(contextEl,id);
       renderDecisionTrace(id);
@@ -3375,6 +3397,7 @@ body.bot-drawer-open{overflow:hidden;}
     }
     OrderAssignmentDrawer.setRenderer(renderAssignmentDrawer);
     async function detail(id){
+      if(fulfillmentReviewController&&!fulfillmentReviewController.canLeave(id)){activeId=Number(fulfillmentReviewController.clientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));setGlobalFeedback('Завершіть або відкиньте перевірку виконання перед переходом до іншого клієнта.','error');return false;}
       if(sizeCorrectionController&&!sizeCorrectionController.canLeave(id)){activeId=Number(sizeCorrectionClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));sizeCorrectionDisclosure.open=true;setGlobalFeedback('Завершіть або відкиньте уточнення розміру перед переходом до іншого клієнта.','error');return false;}
       if(!canLeaveHumanDocuments(id)){activeId=Number(humanDocumentsClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));return false;}
       const requestedDetailId=Number(id);const requestGeneration=++detailRequestGeneration;if(detailAbortController)detailAbortController.abort();detailAbortController=new AbortController();const controller=detailAbortController;const preserveLastGood=renderedDetailId===requestedDetailId;
@@ -3812,7 +3835,7 @@ body.bot-drawer-open{overflow:hidden;}
       (payment.reported_payment_amounts||[]).forEach(row=>addFact(facts,row.source==='customer_claim'?'Клієнт заявив · не підтверджено':'Зазначено у чеку · потребує звірки',reportedMoneyLabel(row.amount,row.currency)));
       addFact(facts,'Підтверджено отримано',payment.confirmed_paid_amount&&Number(payment.confirmed_paid_amount)>0?money(payment.confirmed_paid_amount):'Ще не підтверджено');
       addFact(facts,'Залишок',payment.remaining_amount&&Number(payment.order_total)>0?money(payment.remaining_amount):'—');
-      addFact(facts,'Оплата через Monobank',providerTruthLabel(payment));addFact(facts,'Перевірка менеджера',managerTruthLabel(payment));addFact(facts,'Що підтверджено',verificationScopeLabel(payment.verification_scope));
+      addFact(facts,'Оплата через Monobank',providerTruthLabel(payment));addFact(facts,'Перевірка оплати менеджером',managerTruthLabel(payment));addFact(facts,'Що підтверджено',verificationScopeLabel(payment.verification_scope));
       addFact(facts,'Замовлення',item.order&&item.order.number?'№'+item.order.number:'Не прив’язано');
       addFact(facts,'Статус замовлення',(item.order&&item.order.status_label)||(item.fulfillment&&item.fulfillment.delivery_status_label)||'Ще не створено');
       addFact(facts,'ТТН',(item.order&&item.order.tracking_number)||'Ще немає');

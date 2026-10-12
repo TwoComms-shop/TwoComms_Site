@@ -1491,6 +1491,16 @@ def api_variant_save(request):
                 product_id, variant_id
             )
         )
+        def observe_signed_restock_subscriptions(*, product_id=product.pk, variant_id=variant.pk,
+                revision=inventory_revision, occurred_at=inventory_event_at):
+            from management.services.ig_restock_subscriptions import observe_inventory_event
+            observe_inventory_event(source={"kind": "catalog_edit", "product_id": product_id,
+                "variant_id": variant_id, "source_revision": revision, "occurred_at": occurred_at})
+
+        # Every edited size may cross a subscriber's quantity threshold; the
+        # signed owner rechecks real stock and this frozen revision after commit.
+        # Its failure must not invalidate a completed catalogue save.
+        transaction.on_commit(observe_signed_restock_subscriptions, robust=True)
         if restocked:
             transaction.on_commit(materialize_direct_restock)
 

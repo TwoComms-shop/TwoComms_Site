@@ -4077,6 +4077,29 @@ def management_bot_webhook(request, token):
         # not depend on the Instagram worker staying alive while a manager
         # decides. The durable follow-up remains unsendable until this branch
         # commits APPROVED.
+        if data.startswith('FR1:'):
+            if not admin_token or token != admin_token or not admin_chat_cfg:
+                _tg_answer_callback(bot_token, cb_id, 'Доступ не налаштовано')
+                return JsonResponse({'ok': True})
+            from management.bot_access import has_all_bot_capabilities, OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION
+            from management.services.ig_fulfillment_reviews import handle_fulfillment_callback
+            import uuid
+            sender = callback.get('from') if isinstance(callback.get('from'), dict) else {}
+            profile = UserProfile.objects.select_related('user').filter(
+                tg_manager_chat_id=str(sender.get('id') or ''), user__is_active=True,
+            ).first()
+            actor = profile.user if profile else None
+            if not actor or not has_all_bot_capabilities(actor, OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION):
+                _tg_answer_callback(bot_token, cb_id, 'Недостатньо прав')
+                return JsonResponse({'ok': True})
+            result = handle_fulfillment_callback(data, actor=actor, chat_id=chat_id,
+                message_id=message_id, operation_id=uuid.uuid5(uuid.NAMESPACE_URL, 'ig-fulfillment-callback:' + str(cb_id)))
+            message = ('Відкрийте перевірку в картці клієнта: там можна вказати кількість і точний строк.'
+                if result.get('reason') == 'manager_form_required' else
+                'Рішення збережено' if result.get('ready') else
+                'Перевірка змінилася або кнопка не належить цьому повідомленню. Оновіть картку.')
+            _tg_answer_callback(bot_token, cb_id, message)
+            return JsonResponse({'ok': True, 'ready': bool(result.get('ready'))})
         if data.startswith('igdisc:'):
             if not admin_token or token != admin_token or not admin_chat_cfg:
                 _tg_answer_callback(bot_token, cb_id, "Доступ не налаштовано")

@@ -75,7 +75,10 @@ class InstagramPaymentDecisionTests(TestCase):
                     [trigger_name],
                 )
             elif connection.vendor in {"mysql", "mariadb"}:
-                cursor.execute("SHOW TRIGGERS LIKE %s", ["ig_paydec_no_update"])
+                # SHOW TRIGGERS LIKE filters table names in MariaDB. Looking
+                # up a trigger name there silently skipped the native gate.
+                cursor.execute("SELECT 1 FROM information_schema.TRIGGERS "
+                    "WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME=%s", [trigger_name])
             else:
                 return
             if cursor.fetchone() is None:

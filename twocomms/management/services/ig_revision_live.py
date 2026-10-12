@@ -378,6 +378,7 @@ class RevisionGenerationBoundary:
             self.source_cart_reason = cart.reason
         self.baseline = self._baseline()
         self.authority = None
+        self.captured_client_state = (revision.generation_proposal or {}).get("fulfillment_capture")
         self.checkout_cart_binding = None
         self.last_reasons = ()
         self.repaired = False
@@ -427,10 +428,12 @@ class RevisionGenerationBoundary:
         return REVISION_PROVIDER_CONTROL_KINDS
 
     def truth_context(self, context):
+        from management.services.ig_reply_authority import apply_fulfillment_timing_context
+        context = apply_fulfillment_timing_context(context, getattr(self, "captured_client_state", None))
         return self.response_plan.truth_context(context)
 
     def validate_response_truth(self, response, context):
-        return _captured_reply_truth(self.response_plan, response, context, revision=self.revision)
+        return _captured_reply_truth(self.response_plan, response, self.truth_context(context), revision=self.revision)
 
     def check(self, authority=None):
         authority = authority or self.baseline
@@ -746,7 +749,7 @@ class RevisionGenerationBoundary:
         from management.services.ig_reply_authority import build_reply_truth_context
 
         client = IgClient.objects.get(pk=self.revision.client_id)
-        facts = asdict(build_reply_truth_context(client))
+        facts = asdict(build_reply_truth_context(client, captured_client_state=getattr(self, "captured_client_state", None)))
         repaired.setdefault("contents", []).append({
             "role": "user", "parts": [{"text": (
                 "[SERVER FACTS FOR THE SAME SEALED CUSTOMER BUNDLE]\n"
@@ -1040,6 +1043,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
     coverage_note += "\n" + intent_generation_guidance(build_turn_intent(revision.client, revision))
     if prepared_context is not None:
+        boundary.captured_client_state = prepared_context.state
         coverage_note += "\n" + prepared_context.context.turn_note
     else:
         from management.services.ig_revision_conversation_context import conversation_timing_guidance
@@ -1149,6 +1153,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         boundary.response_plan, response, revision=revision, checkout_cart_binding=boundary.checkout_cart_binding,
     )):
         return None, boundary, ("response_coverage_cas_failed",)
+    from management.services.ig_fulfillment_context import retained_fulfillment_frame
     stored = store_revision_generation_proposal(
         revision.pk, token, source_message_ids=[source["message_id"] for source in sources],
         settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
@@ -1160,6 +1165,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         prize_programme=boundary.programme,
         customer_route_capture=route_capture,
         source_cart_capture=boundary.response_plan.source_cart_capture if boundary.source_cart_fence else None,
+        fulfillment_capture=retained_fulfillment_frame(boundary.captured_client_state),
     )
     if not stored.stored:
         return None, boundary, stored.reasons
@@ -1209,6 +1215,11 @@ def _prepare_effects(revision, response, settings_row, *, response_plan=None):
     from management.services.ig_reply_authority import build_reply_truth_context
     context = (build_reply_truth_context(client, control=response.control) if response_plan.line_plans
         else bot._provider_reply_truth_context(client, response.control, reply))
+    from management.services.ig_reply_authority import apply_fulfillment_timing_context
+    context = apply_fulfillment_timing_context(context, (revision.generation_proposal or {}).get("fulfillment_capture"))
+    from management.services.ig_fulfillment_context import validate_retained_fulfillment
+    if reason := validate_retained_fulfillment(revision, (revision.generation_proposal or {}).get("fulfillment_capture")):
+        return (), (reason,)
     truth = _captured_reply_truth(response_plan, replace(response, reply_text=reply), context, revision=revision)
     if not truth.valid:
         return (), truth.reasons
@@ -1226,11 +1237,13 @@ def _project_sent_history(revision_id):
     """Project canonical receipts locally; safe for finalization and exact echo."""
     from management.services.ig_revision_reply_projection import project_sent_reply
     from management.services.ig_payment_reminders import record_delivery
+    from management.services.ig_restock_subscriptions import record_delivery as record_restock_delivery
 
     projected = project_sent_reply(revision_id)
     # The same receipt hook is used by normal finalization and exact-echo
     # recovery. The service requires the whole invitation with confirmed MIDs.
     record_delivery(revision_id)
+    record_restock_delivery(revision_id)
     return projected
 
 
@@ -1283,6 +1296,10 @@ def _drain_effects(revision, token, settings_row, access_token):
     from management.services.ig_revision_transport import build_provider_part_callback, RevisionProviderTransport
     from management.services.ig_revision_delivery import ProviderPartResult
     from management.services.ig_payment_reminders import provider_boundary_for_revision, record_delivery
+    from management.services.ig_restock_subscriptions import (
+        provider_boundary_for_revision as restock_provider_boundary,
+        record_delivery as record_restock_delivery,
+    )
 
     effect = revision.delivery_effects.order_by("order_index").first()
     if effect is None:
@@ -1305,7 +1322,19 @@ def _drain_effects(revision, token, settings_row, access_token):
                     outcome="known_not_dispatched",
                     explicit_rejection_code=allowed.reason or "payment_reminder_scope_changed",
                 )
-            return original_transport(payload)
+            with restock_provider_boundary(revision.pk) as restock_allowed:
+                if not restock_allowed:
+                    return ProviderPartResult(
+                        provider_namespace=effect.provider_namespace,
+                        outcome="known_not_dispatched",
+                        explicit_rejection_code=getattr(restock_allowed, "reason", "") or "restock_subscription_scope_changed",
+                    )
+                from management.services.ig_fulfillment_context import validate_retained_fulfillment
+                current = IgCustomerTurnRevision.objects.get(pk=revision.pk)
+                if reason := validate_retained_fulfillment(current, (current.generation_proposal or {}).get("fulfillment_capture")):
+                    return ProviderPartResult(provider_namespace=effect.provider_namespace,
+                        outcome="known_not_dispatched", explicit_rejection_code=reason)
+                return original_transport(payload)
 
     transport = RevisionProviderTransport(original_transport.preflight, guarded_send)
     attempted = 0
@@ -1320,6 +1349,7 @@ def _drain_effects(revision, token, settings_row, access_token):
     states = list(revision.delivery_effects.values_list("state", flat=True))
     if states and all(state == IgRevisionDeliveryEffect.State.SENT for state in states):
         record_delivery(revision.pk)
+        record_restock_delivery(revision.pk)
     if states and set(states).issubset({"cancelled", "superseded"}):
         reasons = tuple(dict.fromkeys(revision.delivery_effects.exclude(
             failure_code="",
@@ -1393,6 +1423,9 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     from management.services.ig_reply_authority import build_reply_truth_context
     context = (build_reply_truth_context(revision.client) if plan.line_plans
         else bot._provider_reply_truth_context(revision.client, {}, reply))
+    from management.services.ig_fulfillment_context import current_fulfillment_frame
+    from management.services.ig_reply_authority import apply_fulfillment_timing_context
+    context = apply_fulfillment_timing_context(context, current_fulfillment_frame(revision, plan.source_cart_capture))
     truth = _captured_reply_truth(plan, ValidatedResponse(reply_text=reply), context)
     if not truth.valid:
         return RevisionLiveResult(revision.pk, "blocked", truth.reasons)
@@ -1577,6 +1610,16 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             return _execute_deterministic_input(revision, token, settings_row, postback.receipt, quick_replies=postback.quick_replies)
         revision.refresh_from_db()
     if input_decision.origin == "generate" and not revision.generation_proposal_digest:
+        # A real source-bound case is persisted before any promise to check.
+        # Mixed questions stay on the ordinary complete response-plan path.
+        from management.services.ig_fulfillment_reviews import prepare_fulfillment_review
+        fulfillment = prepare_fulfillment_review(revision, settings_obj=settings_row)
+        if fulfillment.get("ready"):
+            revision.refresh_from_db()
+            input_decision.receipt["fulfillment_review"] = {
+                "request_id": fulfillment.get("request_id"),
+                "request_digest": fulfillment.get("request_digest"),
+            }
         # Free text proposes a reminder time; only its signed, delivered
         # invitation can later establish business agreement. Multiple sources
         # and media remain on the complete ordinary response-plan path.
@@ -1597,6 +1640,17 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
                         "reason": reminder.reason}
                     return _execute_deterministic_input(
                         revision, token, settings_row, receipt, quick_replies=reminder.quick_replies,
+                    )
+                from management.services.ig_restock_subscriptions import prepare_request as prepare_restock_request
+
+                restock = prepare_restock_request(revision, source.message, settings_obj=settings_row)
+                if restock.handled:
+                    receipt = {**input_decision.receipt, "origin": "restock_subscription_request",
+                        "source_message_id": source.message_id, "reply_text": restock.reply_text,
+                        "invitation_id": str(restock.invitation_id) if restock.invitation_id else None,
+                        "reason": restock.reason}
+                    return _execute_deterministic_input(
+                        revision, token, settings_row, receipt, quick_replies=restock.quick_replies,
                     )
     if not settings_row.ai_enabled or (
         input_decision.receipt["settings_permission_epoch"] != settings_row.reply_permission_epoch
