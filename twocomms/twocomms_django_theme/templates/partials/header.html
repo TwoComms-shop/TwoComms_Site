@@ -190,6 +190,9 @@
     <a href="{% url 'favorites' %}" class="bottom-nav-item{% if route_name == 'favorites' %} active{% endif %}">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 21-1.5-1.3C5.4 15.2 2 12.1 2 8.5 2 5.4 4.4 3 7.5 3c1.8 0 3.5.8 4.5 2.1C13 3.8 14.7 3 16.5 3 19.6 3 22 5.4 22 8.5c0 3.6-3.4 6.7-8.5 11.2L12 21Z"></path></svg><span class="bottom-nav-label">{% trans 'Обране' %}</span>
     </a>
+    <a href="{% url 'about' %}" class="bottom-nav-item{% if route_name == 'about' %} active{% endif %}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7h.01"></path></svg><span class="bottom-nav-label">{% trans 'Про нас' %}</span>
+    </a>
     <button id="user-toggle-mobile" type="button" class="bottom-nav-item{% if route_name == 'profile_setup' %} active{% endif %}" aria-controls="user-panel-mobile" aria-expanded="false">
       {% if request.user.is_authenticated and request.user.userprofile and request.user.userprofile.avatar %}
       <img src="{{ request.user.userprofile.avatar.url }}" alt="" aria-hidden="true" class="bottom-nav-avatar" width="22" height="22">
@@ -200,9 +203,6 @@
       {% endif %}
       <span class="bottom-nav-label">{% trans 'Профіль' %}</span>
     </button>
-    <a href="{% url 'about' %}" class="bottom-nav-item{% if route_name == 'about' %} active{% endif %}">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7h.01"></path></svg><span class="bottom-nav-label">{% trans 'Про нас' %}</span>
-    </a>
   </nav>
   {% endwith %}
 </div>
