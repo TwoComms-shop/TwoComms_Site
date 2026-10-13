@@ -1,0 +1,78 @@
+{
+  "desktop": {
+    "viewport": 1816,
+    "widgetClient": 293,
+    "widgetScroll": 293,
+    "loadedCssRules": 65
+  },
+  "mobile390": {
+    "widget": [
+      {
+        "rect": {
+          "bottom": 523.1015625,
+          "height": 124,
+          "left": 18,
+          "right": 357,
+          "top": 399.1015625,
+          "width": 339,
+          "x": 18,
+          "y": 399.1015625
+        },
+        "scroll": 337,
+        "width": 337
+      }
+    ],
+    "width": 390
+  },
+  "mobile320": {
+    "widget": [
+      {
+        "rect": {
+          "bottom": 535.6953125,
+          "height": 124,
+          "left": 18,
+          "right": 287,
+          "top": 411.6953125,
+          "width": 269,
+          "x": 18,
+          "y": 411.6953125
+        },
+        "scroll": 267,
+        "width": 267
+      }
+    ],
+    "width": 320
+  },
+  "assets": [
+    {
+      "kind": "stylesheet",
+      "url": "https://management.twocomms.shop/static/management/css/ig_assisted_commerce.4a6be4770b19.css?v=3a1c897d208a",
+      "sources": [
+        {
+          "kind": "resource",
+          "property": "link"
+        },
+        {
+          "kind": "attribute",
+          "nodeId": 624,
+          "property": "href"
+        }
+      ]
+    },
+    {
+      "kind": "script",
+      "url": "https://management.twocomms.shop/static/management/js/ig_assisted_commerce.4152e3123db3.js?v=1ea6d497f545",
+      "sources": [
+        {
+          "kind": "resource",
+          "property": "script"
+        },
+        {
+          "kind": "attribute",
+          "nodeId": 3465,
+          "property": "src"
+        }
+      ]
+    }
+  ]
+}

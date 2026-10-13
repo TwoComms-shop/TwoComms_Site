@@ -1,0 +1,19 @@
+{
+  "code_sha": "7ea9d1f31bf95b915d7b0953158bfe0ded00adf9",
+  "native_distinct_passed": 471,
+  "native_skips": 0,
+  "node_passed": 29,
+  "node_skips": 0,
+  "journey_pending_payment_script": "PASS",
+  "local_django_check": "PASS",
+  "migration_drift": "none",
+  "provider_io_in_runtime_verification": 0,
+  "production_test_customer_sends": 0,
+  "production_test_fixture_writes": 0,
+  "deployment": "canonical SSH main pull, management migration 0233, check, collectstatic, compress, application restart, supervisor reload",
+  "assets": {
+    "twocomms/management/static/management/css/ig_assisted_commerce.css": "3a1c897d208ac813f1f99af922ac04997d77ec37a852a21415e9aea541f2217e",
+    "twocomms/management/static/management/js/ig_assisted_commerce.js": "1ea6d497f54585999a8a74f0db0b6e935cf58d0073838325c0dab06a3bcfe44e",
+    "twocomms/twocomms_django_theme/static/css/instagram-checkout.css": "06ff10b27d9e7082c5015c3907177034b19b3919d1fc4e49b3844df2d55aaa14"
+  }
+}
