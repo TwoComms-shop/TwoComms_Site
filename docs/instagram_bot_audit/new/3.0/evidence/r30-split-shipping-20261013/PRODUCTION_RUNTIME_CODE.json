@@ -1,0 +1,496 @@
+{
+  "observed_at": "2026-10-13T17:08:48.661810+00:00",
+  "release_sha": "20f53cbee87893dafdf348e1c68a26b0414cf2f2",
+  "branch": "main",
+  "python": "3.14.8",
+  "django": "6.1",
+  "mariadb": "11.4.13-MariaDB-cll-lve",
+  "migration_status": {
+    "0230_restock_and_fulfillment_review": true,
+    "0231_fulfillment_stock_sync": true,
+    "0232_split_shipping": true
+  },
+  "migration_0230": true,
+  "migration_0231": true,
+  "migration_0232": true,
+  "catalogue_logical_rows": 81,
+  "catalogue_stock_digest": "3d0a0a693dfb4c387ae1113ec4495df8611de37d58cdf7a65325a189d8b1c3a6",
+  "expected_catalogue_logical_rows": 81,
+  "expected_catalogue_stock_digest": "3d0a0a693dfb4c387ae1113ec4495df8611de37d58cdf7a65325a189d8b1c3a6",
+  "catalogue_baseline_unchanged": true,
+  "fresh_review_reuse_events": 0,
+  "tables": {
+    "management_igrestockinvitation": "InnoDB",
+    "management_igfulfillmentstocksync": "InnoDB",
+    "management_igsplitshippingreceipt": "InnoDB",
+    "management_igsplitparcel": "InnoDB",
+    "management_igorderattribution": "InnoDB",
+    "warehouse_writeoffrequest": "InnoDB",
+    "management_igrestocksubscription": "InnoDB",
+    "management_igcheckoutproposal": "InnoDB",
+    "management_igsplitparceldispatch": "InnoDB",
+    "productcolors_productcolorvariant": "InnoDB",
+    "management_igclient": "InnoDB",
+    "warehouse_stockmovement": "InnoDB",
+    "management_igordershipment": "InnoDB",
+    "management_igrestockanswer": "InnoDB",
+    "management_igsplitorderplan": "InnoDB",
+    "management_igfulfillmentreviewrequest": "InnoDB",
+    "management_igsplitparceltracking": "InnoDB",
+    "management_igsplitshippingoffer": "InnoDB",
+    "management_igrestockavailabilityevent": "InnoDB",
+    "management_igrestockreceipt": "InnoDB",
+    "management_igfulfillmentreviewdecision": "InnoDB",
+    "management_igorderassignment": "InnoDB",
+    "orders_orderitem": "InnoDB",
+    "management_igfollowuptask": "InnoDB",
+    "management_igsplitshippingchoice": "InnoDB",
+    "orders_order": "InnoDB",
+    "warehouse_stockitem": "InnoDB",
+    "management_igcheckoutinventoryreservation": "InnoDB"
+  },
+  "table_scope_count": 28,
+  "split_table_count": 7,
+  "triggers": [
+    "ig_ful_ans_delete",
+    "ig_ful_ans_insert",
+    "ig_ful_ans_update",
+    "ig_ful_dec_delete",
+    "ig_ful_dec_insert",
+    "ig_ful_dec_update",
+    "ig_ful_evt_delete",
+    "ig_ful_evt_insert",
+    "ig_ful_evt_update",
+    "ig_ful_inv_delete",
+    "ig_ful_inv_insert",
+    "ig_ful_inv_update",
+    "ig_ful_rec_delete",
+    "ig_ful_rec_insert",
+    "ig_ful_rec_update",
+    "ig_ful_req_delete",
+    "ig_ful_req_insert",
+    "ig_ful_req_update",
+    "ig_ful_sub_delete",
+    "ig_ful_sub_insert",
+    "ig_ful_sub_update",
+    "ig_ful_sync_delete",
+    "ig_ful_sync_insert",
+    "ig_ful_sync_update",
+    "ig_split_choice_delete",
+    "ig_split_choice_insert",
+    "ig_split_choice_update",
+    "ig_split_dispatch_delete",
+    "ig_split_dispatch_insert",
+    "ig_split_dispatch_update",
+    "ig_split_offer_delete",
+    "ig_split_offer_insert",
+    "ig_split_offer_update",
+    "ig_split_parcel_delete",
+    "ig_split_parcel_insert",
+    "ig_split_parcel_update",
+    "ig_split_plan_delete",
+    "ig_split_plan_insert",
+    "ig_split_plan_update",
+    "ig_split_receipt_delete",
+    "ig_split_receipt_insert",
+    "ig_split_receipt_update",
+    "ig_split_tracking_delete",
+    "ig_split_tracking_insert",
+    "ig_split_tracking_update"
+  ],
+  "split_guard_count": 21,
+  "existing_fulfillment_guard_count": 24,
+  "trigger_metadata": [
+    {
+      "name": "ig_ful_ans_delete",
+      "table": "management_igrestockanswer",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "7ad32c2f6dbeadc6630c1d26523f97396c2b6ebc28826ccb3c523267acf9696c"
+    },
+    {
+      "name": "ig_ful_ans_insert",
+      "table": "management_igrestockanswer",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "af387de0274a4e42c6c3090247f10fac04e85a03d5b6a86e4541f736380e9f81"
+    },
+    {
+      "name": "ig_ful_ans_update",
+      "table": "management_igrestockanswer",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "87fe0e0ffe036f20c34a3c99663ebd03492d2c707089e089215ea98ee09a7bbb"
+    },
+    {
+      "name": "ig_ful_dec_delete",
+      "table": "management_igfulfillmentreviewdecision",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "57298f418bae8c28739cc8b1fe566e696f9d81b6e6e564c639e82ee350fa1554"
+    },
+    {
+      "name": "ig_ful_dec_insert",
+      "table": "management_igfulfillmentreviewdecision",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "96096fc6da402f797c9e18295bdcea73b86aabd657df48d680865c31f27b03b8"
+    },
+    {
+      "name": "ig_ful_dec_update",
+      "table": "management_igfulfillmentreviewdecision",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "87fe0e0ffe036f20c34a3c99663ebd03492d2c707089e089215ea98ee09a7bbb"
+    },
+    {
+      "name": "ig_ful_evt_delete",
+      "table": "management_igrestockavailabilityevent",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "bef87d5da133201c3f2bc9993bb2854b8f6b7f793be29b03ac6fb91af7e96484"
+    },
+    {
+      "name": "ig_ful_evt_insert",
+      "table": "management_igrestockavailabilityevent",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "25470a5415bb4cfe5f49a10b5f3c7cdac04ff6b9d66160f93c076b0ecedd7280"
+    },
+    {
+      "name": "ig_ful_evt_update",
+      "table": "management_igrestockavailabilityevent",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "87fe0e0ffe036f20c34a3c99663ebd03492d2c707089e089215ea98ee09a7bbb"
+    },
+    {
+      "name": "ig_ful_inv_delete",
+      "table": "management_igrestockinvitation",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "b2dcc307851b301351d5e48d5bac8a2e938c795e60d2a0e39b1ea132e2d58af3"
+    },
+    {
+      "name": "ig_ful_inv_insert",
+      "table": "management_igrestockinvitation",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "e0c1c060fa001fa125852769ec7261a3cec8c2c61a9bdcac0416e170444d50a3"
+    },
+    {
+      "name": "ig_ful_inv_update",
+      "table": "management_igrestockinvitation",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "87fe0e0ffe036f20c34a3c99663ebd03492d2c707089e089215ea98ee09a7bbb"
+    },
+    {
+      "name": "ig_ful_rec_delete",
+      "table": "management_igrestockreceipt",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "7ad32c2f6dbeadc6630c1d26523f97396c2b6ebc28826ccb3c523267acf9696c"
+    },
+    {
+      "name": "ig_ful_rec_insert",
+      "table": "management_igrestockreceipt",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "2701299e0763e90a9416479d83342776ed170a4c19c4cc71c6bea1213193ee27"
+    },
+    {
+      "name": "ig_ful_rec_update",
+      "table": "management_igrestockreceipt",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "87fe0e0ffe036f20c34a3c99663ebd03492d2c707089e089215ea98ee09a7bbb"
+    },
+    {
+      "name": "ig_ful_req_delete",
+      "table": "management_igfulfillmentreviewrequest",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "b2dcc307851b301351d5e48d5bac8a2e938c795e60d2a0e39b1ea132e2d58af3"
+    },
+    {
+      "name": "ig_ful_req_insert",
+      "table": "management_igfulfillmentreviewrequest",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "1f17b80b9d460007baac010fb2448bdbc8d1e34726404c62326df6ebd1530fe6"
+    },
+    {
+      "name": "ig_ful_req_update",
+      "table": "management_igfulfillmentreviewrequest",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "87fe0e0ffe036f20c34a3c99663ebd03492d2c707089e089215ea98ee09a7bbb"
+    },
+    {
+      "name": "ig_ful_sub_delete",
+      "table": "management_igrestocksubscription",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "b2dcc307851b301351d5e48d5bac8a2e938c795e60d2a0e39b1ea132e2d58af3"
+    },
+    {
+      "name": "ig_ful_sub_insert",
+      "table": "management_igrestocksubscription",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "717c171c3ada6ee091e9d771e2eebc4109966d924160a17c0e89a3480e1f90c9"
+    },
+    {
+      "name": "ig_ful_sub_update",
+      "table": "management_igrestocksubscription",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "ad10ed0a9ca17466e27b85b95f92f07187a133ebcef53842c419cb57a9e8037c"
+    },
+    {
+      "name": "ig_ful_sync_delete",
+      "table": "management_igfulfillmentstocksync",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "6b78c4b1b15e64d04704eec82a9d3d48fc690c39e145520149bad5c066592fe5"
+    },
+    {
+      "name": "ig_ful_sync_insert",
+      "table": "management_igfulfillmentstocksync",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "092258be5982b639c9c0276aa64bfbd717292f231856a8813ae81e4beb614c6c"
+    },
+    {
+      "name": "ig_ful_sync_update",
+      "table": "management_igfulfillmentstocksync",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "c85d7620e04e72f1425ec77c411d8dc28349cd18973c3c0dacf78411a3b8f802"
+    },
+    {
+      "name": "ig_split_choice_delete",
+      "table": "management_igsplitshippingchoice",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "be0da094d9544520c4bc3b4b045e55d2ba6aecd3bc8f921ac520d83e0b5e4951"
+    },
+    {
+      "name": "ig_split_choice_insert",
+      "table": "management_igsplitshippingchoice",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "7fba95c2a4a73ddef488be654b1eb722d6ab87b61016c630d8edebaa170ef125"
+    },
+    {
+      "name": "ig_split_choice_update",
+      "table": "management_igsplitshippingchoice",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "e1400d629b16c196c024138513441a77b7b86a572479814d0465a5bcfb889fca"
+    },
+    {
+      "name": "ig_split_dispatch_delete",
+      "table": "management_igsplitparceldispatch",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "97fe4021b16e68cfdcc2ab2aef309c46695746550c201f86b52275659bb63169"
+    },
+    {
+      "name": "ig_split_dispatch_insert",
+      "table": "management_igsplitparceldispatch",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "922cee6cb68f37f528fd7bf5df8cc079c237750838d762d3543f9fdb98668af6"
+    },
+    {
+      "name": "ig_split_dispatch_update",
+      "table": "management_igsplitparceldispatch",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "e1400d629b16c196c024138513441a77b7b86a572479814d0465a5bcfb889fca"
+    },
+    {
+      "name": "ig_split_offer_delete",
+      "table": "management_igsplitshippingoffer",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "be0da094d9544520c4bc3b4b045e55d2ba6aecd3bc8f921ac520d83e0b5e4951"
+    },
+    {
+      "name": "ig_split_offer_insert",
+      "table": "management_igsplitshippingoffer",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "8900a7e808e81a743ace9050858b2ac96532d138845c00d580e6f5964608b089"
+    },
+    {
+      "name": "ig_split_offer_update",
+      "table": "management_igsplitshippingoffer",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "e1400d629b16c196c024138513441a77b7b86a572479814d0465a5bcfb889fca"
+    },
+    {
+      "name": "ig_split_parcel_delete",
+      "table": "management_igsplitparcel",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "80af171b9173375fb8a2cb91f7dd02d6108720a624dac746defee5b9e920955f"
+    },
+    {
+      "name": "ig_split_parcel_insert",
+      "table": "management_igsplitparcel",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "a479dee8f65869018c37c2608ba3cfe1efed2c8f8e8d9361cc8ee1dfec3be443"
+    },
+    {
+      "name": "ig_split_parcel_update",
+      "table": "management_igsplitparcel",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "e1400d629b16c196c024138513441a77b7b86a572479814d0465a5bcfb889fca"
+    },
+    {
+      "name": "ig_split_plan_delete",
+      "table": "management_igsplitorderplan",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "be0da094d9544520c4bc3b4b045e55d2ba6aecd3bc8f921ac520d83e0b5e4951"
+    },
+    {
+      "name": "ig_split_plan_insert",
+      "table": "management_igsplitorderplan",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "7f1d9bcd183e731fa715f38acc741112c8a3ef35ed26fb1dec309bb12291abfb"
+    },
+    {
+      "name": "ig_split_plan_update",
+      "table": "management_igsplitorderplan",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "e1400d629b16c196c024138513441a77b7b86a572479814d0465a5bcfb889fca"
+    },
+    {
+      "name": "ig_split_receipt_delete",
+      "table": "management_igsplitshippingreceipt",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "d4520bca26250015625776057941dded61b4d6556aab798bf0077680b5259b0a"
+    },
+    {
+      "name": "ig_split_receipt_insert",
+      "table": "management_igsplitshippingreceipt",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "4c539eb5cefa9026c7c21d1beb22ef2e71b00cefa0c02ef14b0397b9c471ba96"
+    },
+    {
+      "name": "ig_split_receipt_update",
+      "table": "management_igsplitshippingreceipt",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "e1400d629b16c196c024138513441a77b7b86a572479814d0465a5bcfb889fca"
+    },
+    {
+      "name": "ig_split_tracking_delete",
+      "table": "management_igsplitparceltracking",
+      "event": "DELETE",
+      "timing": "BEFORE",
+      "statement_sha256": "97fe4021b16e68cfdcc2ab2aef309c46695746550c201f86b52275659bb63169"
+    },
+    {
+      "name": "ig_split_tracking_insert",
+      "table": "management_igsplitparceltracking",
+      "event": "INSERT",
+      "timing": "BEFORE",
+      "statement_sha256": "79821ed2f45fda0b9bd1e02e6d517b8f76fdb4d6c1d16a55b988e52341a34761"
+    },
+    {
+      "name": "ig_split_tracking_update",
+      "table": "management_igsplitparceltracking",
+      "event": "UPDATE",
+      "timing": "BEFORE",
+      "statement_sha256": "28e5704b3cb9f51cc37fd34c5af67ce61fe575f3269fd6e06b7f10c92994842f"
+    }
+  ],
+  "fulfilled_quantity_column": [
+    "fulfilled_quantity",
+    "int(10) unsigned",
+    "NO",
+    null
+  ],
+  "fulfilled_quantity_check": "`fulfilled_quantity` <= `quantity`",
+  "reservation_sanity": {
+    "invalid_bounds": 0,
+    "fulfilled_or_consumed_backfill_mismatch": 0,
+    "partial_fulfillment_rows": 0
+  },
+  "reservation_states": [],
+  "global_split_tracking_unique_indexes": [
+    "tracking_number"
+  ],
+  "natural_ledger_counts": {
+    "management_igfulfillmentreviewdecision": 0,
+    "management_igfulfillmentreviewrequest": 0,
+    "management_igfulfillmentstocksync": 0,
+    "management_igrestockanswer": 0,
+    "management_igrestockavailabilityevent": 0,
+    "management_igrestockinvitation": 0,
+    "management_igrestockreceipt": 0,
+    "management_igrestocksubscription": 0,
+    "management_igsplitorderplan": 0,
+    "management_igsplitparcel": 0,
+    "management_igsplitparceldispatch": 0,
+    "management_igsplitparceltracking": 0,
+    "management_igsplitshippingchoice": 0,
+    "management_igsplitshippingoffer": 0,
+    "management_igsplitshippingreceipt": 0
+  },
+  "owner_consistency": {
+    "offer_orphan_or_wrong_owner": 0,
+    "receipt_orphan_or_wrong_task_owner": 0,
+    "choice_orphan_or_wrong_owner": 0,
+    "plan_orphan_or_wrong_owner": 0,
+    "parcel_orphan": 0,
+    "dispatch_orphan_or_wrong_shipment": 0,
+    "tracking_orphan": 0
+  },
+  "current_owner_mismatches": 0,
+  "natural_task_states": [],
+  "natural_tracking_states": [],
+  "fulfillment_enabled": true,
+  "restock_enabled": true,
+  "process_pid": 2934447,
+  "process_identity_verified": true,
+  "process_online": true,
+  "main_healthy": true,
+  "workers_healthy": true,
+  "stalled": false,
+  "worker_stalled": false,
+  "supervisor": {
+    "available": true,
+    "status": "current",
+    "observed_at": 1791911216.554,
+    "last_ensure_seen_at": 1791911283.557,
+    "supervisor_release_sha": "20f53cbee87893dafdf348e1c68a26b0414cf2f2",
+    "child_release_sha": "20f53cbee87893dafdf348e1c68a26b0414cf2f2",
+    "restart_count": 0,
+    "child_pid": 2934447,
+    "child_pid_matches_expected": true
+  },
+  "maintenance_active": false,
+  "data_select_queries": 41,
+  "sql_verbs": [
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "START"
+  ],
+  "data_sql_read_only": true,
+  "provider_probes": 0,
+  "synthetic_customer_sends": 0
+}

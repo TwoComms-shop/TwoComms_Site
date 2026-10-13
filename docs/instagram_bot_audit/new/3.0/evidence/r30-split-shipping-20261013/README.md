@@ -1,6 +1,6 @@
 # Engineering37 · раздельные отправления
 
-Статус выпуска фиксируется отдельно в production receipt после реального pull и runtime-проверки. [Контракт и ограничения](CONTRACT.md).
+✅ Код `0527d2f925a7e928e8493d827f03fe462e784655` выпущен и проверен. [Production receipt](PRODUCTION_RELEASE_2026-10-13.md). [Контракт и ограничения](CONTRACT.md).
 
 ## Что проверяется
 
@@ -13,7 +13,7 @@
 
 ## Проверки
 
-**Финальный clean gate: 432/432 native MariaDB PASS, 0 skips, 280.382s; 116 новых causal методов; 19/19 UI-controller PASS, 0 skips.** [Raw native](NATIVE_FINAL_432_PASS.txt), [Node](NODE_PASS.txt), [checks](CHECKS_PASS.txt). После UI-дебага проверена вся затронутая совместимость; independent final review без новых P1/P2.
+**Основной clean gate (20f53cbee): 432/432 native MariaDB PASS, 0 skips, 280.382s; 117 новых causal методов; 19/19 UI-controller PASS, 0 skips.** [Raw native](NATIVE_FINAL_432_PASS.txt), [Node](NODE_PASS.txt), [checks](CHECKS_PASS.txt). После UI-дебага проверена вся затронутая совместимость; independent final review без новых P1/P2.
 
 `NATIVE_338_PASS.txt`: 338/338 PASS, 0 skips, 262.025s. 107 новых causal методов и 231 совместимый сценарий: stock sync, checkout/payment winner, inventory allocation/transfer, size/provenance, fulfillment truth, notifications, lifecycle, postbacks и review reuse.
 
@@ -36,3 +36,5 @@ WAIT — обсуждение условий, не готовый оплачив
 Настоящий login/CSRF/API POST: signed manager case→форма двух вариантов70UAH together/140UAH separate→сохранённый Offer. External transports заменены только в disposable sender/payment fixture; настоящий SENT proof, SS1 choice, full quote/finite reservation/paid winner и auto-bound план. Обе реальные формы dispatch сохраняют свои test-only ТТН и70UAH;71UAH при cap70 заблокированы. Первый carrier9/второй7 не дают completed/aftercare, второй9 даёт done и один aftercare event; money/scalar TTN/manifest unchanged. [Partial proof](UI_CARRIER_PARTIAL.json), [complete proof](UI_CARRIER_COMPLETE.json).
 
 320/390/1816px: document width равно viewport, overflow0 и непересекающиеся карточки посылок, application console errors0; source CSS96d442011f6f/JSd29a64b34db6 реально загружены. Скриншоты: [390](UI_PARCELS_390.jpg), [320](UI_PARCELS_320.jpg), [desktop](UI_PARCELS_DESKTOP.jpg). Editor320 отражает короткие подписи плательщиков. Проверочные данные только локальные.
+
+Финальное уточнение `0527d2f92`: уведомления сохраняют исходный порядок согласованных посылок, включая ключи p2→p1. После основного432 gate затронутые execution/notification/tracking сценарии повторно прошли **90/90 native PASS,0 skips,102.790s**; новая регрессия использует настоящие paid-plan/dispatch producers. [Raw focused](NATIVE_ORDINAL_90_PASS.txt). Наборы пересекаются;432+90 не означает522 уникальных теста.
