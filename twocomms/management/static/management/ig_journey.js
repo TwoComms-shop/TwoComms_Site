@@ -119,6 +119,16 @@
     const timer=timers.find(t=>invoiceCountdown(t,now)),countdown=invoiceCountdown(timer,now);
     const paid=progress.paid===true,expired=!paid&&Boolean(countdown?.expired),issued=Boolean(countdown);
     const discussion=progress.discussion===true;
+    if(progress.reconciliation===true)return {label:'Потрібна звірка оплати',tone:'warning',expired:false,counts_known:false,
+      items:[{label:'Джерела',state:'done'},{label:'Звірка',state:'next'},{label:'Оплачено',state:'todo'}]};
+    if(paid&&(progress.settlement_evidence_refs||[]).length)return {label:'Оплачено',tone:'success',expired:false,
+      items:[{label:'Оплату підтверджено',state:'done',note:'Є підтверджене джерело оплати цієї покупки.',evidence_refs:progress.settlement_evidence_refs}]};
+    if(!paid&&progress.prepaid===true)return {label:'Передоплату підтверджено',tone:'recorded',expired:false,counts_known:true,
+      items:[{label:'Підтвердження передоплати',state:'done',evidence_refs:progress.settlement_evidence_refs||[]},
+        {label:'Залишок оплати',state:'next',note:'Передоплата не підтверджує повну оплату.'},{label:'Оплачено повністю',state:'todo'}]};
+    if(!paid&&progress.claim===true)return {label:'Заяву про оплату зафіксовано',tone:'warning',expired:false,counts_known:false,
+      items:[{label:'Заява клієнта',state:'done',evidence_refs:progress.settlement_evidence_refs||[]},
+        {label:'Сума оплати',state:'todo',note:'Підтвердженої суми немає.'},{label:'Оплачено',state:'todo'}]};
     if(!paid&&progress.manager_review_pending===true){
       const receipt=progress.receipt_received===true;
       return {label:'Очікує перевірки менеджером',tone:'warning',expired,counts_known:receipt,
@@ -528,7 +538,14 @@
       if(new Set(members.map(n=>n.episode_id).filter(id=>id!=null)).size>1)return graph;
       const parent=members.find(n=>n.current)||members.find(n=>n.presentation_kind!=='possible')||members[0];
       const factual=n=>!['possible','interpretation'].includes(n.presentation_kind)&&n.state==='complete'&&((n.evidence_refs||[]).length||(n.facts||[]).some(f=>f.state==='complete'&&f.source));
-      const paid=members.some(n=>(n.structural_key||n.semantic_key)==='settlement'&&factual(n));
+      const settlements=members.filter(n=>!['possible','interpretation'].includes(n.presentation_kind)).flatMap(n=>{
+        const s=n.settlement_presentation,kind={'payment_review.current':'payment_review','intended_order.current':'order','episode.payment_snapshot':'episode'}[s?.source];
+        return s?.schema==='journey-settlement.v1'&&['paid','prepaid','claim','reconciliation'].includes(s.status)&&Number.isInteger(s.episode_id)&&s.episode_id>0&&s.episode_id===n.episode_id&&kind
+          &&(s.evidence_refs||[]).some(ref=>ref.kind===kind&&Number.isInteger(ref.id)&&ref.id>0)
+          &&(s.status==='reconciliation'||s.source!=='episode.payment_snapshot')?[s]:[];
+      });
+      const reconciliation=settlements.some(s=>s.status==='reconciliation');
+      const paid=!reconciliation&&(settlements.length?settlements.some(s=>s.status==='paid'):members.some(n=>(n.structural_key||n.semantic_key)==='settlement'&&factual(n)));
       const pending=members.filter(n=>!['possible','interpretation'].includes(n.presentation_kind)
         &&n.waiting?.kind==='manager_review'&&(n.waiting.evidence_refs||[]).some(ref=>ref.kind==='payment_review'&&Number.isInteger(ref.id)&&ref.id>0
           &&(n.facts||[]).some(f=>f.source==='payment_review.current'&&f.state==='open'
@@ -536,14 +553,15 @@
       const reviewIds=new Set(pending.flatMap(n=>(n.waiting.evidence_refs||[]).filter(ref=>ref.kind==='payment_review'&&Number.isInteger(ref.id)&&ref.id>0).map(ref=>ref.id)));
       const waiting=reviewIds.size===1?pending[0]?.waiting:null;
       const receiptRefs=(Array.isArray(waiting?.receipt_evidence_refs)?waiting.receipt_evidence_refs:[]).filter(ref=>['message','source_message'].includes(ref.kind)&&Number.isInteger(ref.id)&&ref.id>0);
-      const progress={paid,current:members.some(n=>n.current),discussion:members.some(n=>n.presentation_kind==='interpretation'),
+      const progress={paid,reconciliation,prepaid:!paid&&settlements.some(s=>s.status==='prepaid'),claim:!paid&&settlements.some(s=>s.status==='claim'),
+        settlement_evidence_refs:settlements.flatMap(s=>s.evidence_refs||[]),current:members.some(n=>n.current),discussion:members.some(n=>n.presentation_kind==='interpretation'),
         manager_review_pending:Boolean(waiting),review_evidence_refs:waiting?.evidence_refs||[],
         receipt_received:waiting?.receipt_received===true&&receiptRefs.length>0,receipt_evidence_refs:receiptRefs};
       graph=Journey.prototype.collapseComposition.call(this,graph,parent,members.filter(n=>n!==parent));
       if(!parent.composite_nodes)parent.composite_nodes=[{...parent}];
       parent.label='Оплата';parent.short_label='Оплата';parent.structural_key='awaiting_payment';
       parent.payment_progress={...progress,...paymentView(progress,parent.timers||[],this.serverTime)};
-      parent.summary=!paid&&waiting?'Очікує перевірки менеджером; зарахування оплати ще не підтверджено.':'Посилання → очікування → оплата. Якщо строк минув без підтвердження — допомога з оплатою нижче.';
+      parent.summary=reconciliation?'Потрібна звірка джерел оплати.':paid?'Оплату підтверджено джерелом цієї покупки.':progress.prepaid?'Передоплату підтверджено; повна оплата перевіряється окремо.':progress.claim?'Зафіксовано заяву клієнта; сума оплати не підтверджена.':waiting?'Очікує перевірки менеджером; зарахування оплати ще не підтверджено.':'Посилання → очікування → оплата. Якщо строк минув без підтвердження — допомога з оплатою нижче.';
       parent.evidence_refs=members.flatMap(n=>n.evidence_refs||[]);
       return graph;
     }
@@ -1100,7 +1118,7 @@
     }
     bindPan(){
       const points=new Map();let drag=null,pinch=null;
-      this.viewport.addEventListener('pointerdown',event=>{if(event.target.closest('button'))return;points.set(event.pointerId,{x:event.clientX,y:event.clientY});this.viewport.setPointerCapture(event.pointerId);if(points.size===1)drag={x:event.clientX,y:event.clientY,left:this.viewport.scrollLeft,top:this.viewport.scrollTop};if(points.size===2){const [a,b]=[...points.values()];pinch={distance:Math.hypot(a.x-b.x,a.y-b.y),zoom:this.zoom};drag=null;}});
+      this.viewport.addEventListener('pointerdown',event=>{if(event.target.closest('button'))return;this.autoFit=false;points.set(event.pointerId,{x:event.clientX,y:event.clientY});this.viewport.setPointerCapture(event.pointerId);if(points.size===1)drag={x:event.clientX,y:event.clientY,left:this.viewport.scrollLeft,top:this.viewport.scrollTop};if(points.size===2){const [a,b]=[...points.values()];pinch={distance:Math.hypot(a.x-b.x,a.y-b.y),zoom:this.zoom};drag=null;}});
       this.viewport.addEventListener('pointermove',event=>{if(!points.has(event.pointerId))return;points.set(event.pointerId,{x:event.clientX,y:event.clientY});if(points.size===2&&pinch){const [a,b]=[...points.values()];if(pinch.distance>0)this.setZoom(pinch.zoom*Math.hypot(a.x-b.x,a.y-b.y)/pinch.distance);}else if(drag){this.viewport.scrollLeft=drag.left-(event.clientX-drag.x);this.viewport.scrollTop=drag.top-(event.clientY-drag.y);}});
       const end=event=>{points.delete(event.pointerId);drag=null;pinch=null;};this.viewport.addEventListener('pointerup',end);this.viewport.addEventListener('pointercancel',end);
     }
@@ -1108,14 +1126,25 @@
       if(!this.modal)return;this.closePanel(false);this.modalResize.disconnect();this.inlineKey.append(this.play);this.root.insertBefore(this.orderOutcomes,this.error);this.root.insertBefore(this.map,this.inlineKey);this.root.insertBefore(this.discussionDetails,this.note);this.root.insertBefore(this.objections,this.discussionDetails);this.map.style.transform='';this.map.style.left='';this.map.style.top='';this.autoFit=false;this.modal.close();this.modal.remove();this.modal=null;document.body.style.overflow=this.oldBodyOverflow;this.zoom=1;this.update(this.snapshot,{force:true});this.queueLayout();this.expand.focus({preventScroll:true});
     }
     setZoom(value){
-      if(!this.modal)return;this.autoFit=false;const next=Math.max(.1,Math.min(2.2,value));const cx=(this.viewport.scrollLeft+this.viewport.clientWidth/2)/this.zoom,cy=(this.viewport.scrollTop+this.viewport.clientHeight/2)/this.zoom;this.zoom=next;this.map.style.transform='scale('+next+')';this.map.style.left='0px';this.map.style.top='0px';this.canvas.style.width=this.mapWidth*next+'px';this.canvas.style.height=this.mapHeight*next+'px';this.zoomLabel.textContent=Math.round(next*100)+'%';this.viewport.scrollLeft=cx*next-this.viewport.clientWidth/2;this.viewport.scrollTop=cy*next-this.viewport.clientHeight/2;
+      if(!this.modal)return;this.autoFit=false;const next=Math.max(.1,Math.min(2.2,value));const cx=(this.viewport.scrollLeft+this.viewport.clientWidth/2)/this.zoom,cy=(this.viewport.scrollTop+this.viewport.clientHeight/2)/this.zoom;this.zoom=next;this.map.style.transform='scale('+next+')';this.map.style.left=Math.max(0,(this.viewport.clientWidth-this.mapWidth*next)/2)+'px';this.map.style.top=Math.max(0,(this.viewport.clientHeight-this.mapHeight*next)/2)+'px';this.canvas.style.width=this.mapWidth*next+'px';this.canvas.style.height=this.mapHeight*next+'px';this.zoomLabel.textContent=Math.round(next*100)+'%';this.viewport.scrollLeft=cx*next-this.viewport.clientWidth/2;this.viewport.scrollTop=cy*next-this.viewport.clientHeight/2;
     }
     fitMap(){
       if(!this.modal||!this.mapWidth||!this.mapHeight)return;
-      this.setZoom(Math.min(1,(this.viewport.clientWidth-24)/this.mapWidth,(this.viewport.clientHeight-24)/this.mapHeight));
+      this.setZoom(Math.min(this.mapMode==='actual'?1.4:1,(this.viewport.clientWidth-24)/this.mapWidth,(this.viewport.clientHeight-24)/this.mapHeight));
       this.map.style.left=Math.max(12,(this.viewport.clientWidth-this.mapWidth*this.zoom)/2)+'px';
       this.map.style.top=Math.max(12,(this.viewport.clientHeight-this.mapHeight*this.zoom)/2)+'px';
       this.viewport.scrollTop=0;this.viewport.scrollLeft=0;this.autoFit=true;
+    }
+    compactActualGeometry(geometry,width){
+      const positions=new Map(),groups=[...new Set([...geometry.positions.values()].map(p=>Math.floor(p.col/2)))].sort((a,b)=>a-b);
+      const mapWidth=Math.max(240,Math.min(360,width-24));let rowOffset=0;
+      for(const group of groups){
+        const entries=[...geometry.positions].filter(([,p])=>Math.floor(p.col/2)===group);
+        const rows=[...new Set(entries.map(([,p])=>p.row))].sort((a,b)=>a-b);
+        for(const [id,p]of entries){const col=p.col%2,row=rowOffset+rows.indexOf(p.row);positions.set(id,{...p,col,row,x:mapWidth/2*(col+.5),y:42+row*104});}
+        rowOffset+=rows.length;
+      }
+      return {positions,width:mapWidth,height:64+rowOffset*104};
     }
     centerCurrent(){if(!this.modal)return;const pos=this.positions.get(this.currentId)||this.positions.values().next().value;if(!pos)return;this.setZoom(1);this.viewport.scrollLeft=Math.max(0,pos.x-this.viewport.clientWidth/2);this.viewport.scrollTop=Math.max(0,pos.y-this.viewport.clientHeight/2);}
     renderAccessibleList(){
@@ -1147,7 +1176,8 @@
         nodes.forEach(node=>{const slot=this.inlineSlots.get(node.id),x=step*(slot.col+.5),y=30+loopSpace+slot.row*rowHeight;this.positions.set(node.id,{x,y,...slot});const cell=this.cells.get(node.id);cell.style.left=x+'px';cell.style.top=y+'px';cell.style.width=Math.max(44,step-12)+'px';});
         this.mapWidth=width;this.mapHeight=(nodes.some(n=>this.inlineSlots.get(n.id).row)?142:68)+loopSpace;
       }else if(!narrow&&window.TwcJourneyGeometry){
-        const geometry=window.TwcJourneyGeometry.layout({nodes,edges:this.edges.filter(e=>this.visibleIds.includes(e.from_node_id)&&this.visibleIds.includes(e.to_node_id)),width,full:Boolean(this.modal)});
+        let geometry=window.TwcJourneyGeometry.layout({nodes,edges:this.edges.filter(e=>this.visibleIds.includes(e.from_node_id)&&this.visibleIds.includes(e.to_node_id)),width:this.modal?0:width,full:Boolean(this.modal)});
+        if(this.modal&&this.mapMode==='actual'&&width<600)geometry=this.compactActualGeometry(geometry,width);
         this.positions=geometry.positions;this.mapWidth=geometry.width;this.mapHeight=geometry.height;
         const rankCount=new Set([...this.positions.values()].map(p=>p.col)).size;
         const cellWidth=this.modal?100:Math.max(44,(width-32)/Math.max(1,rankCount)-12);

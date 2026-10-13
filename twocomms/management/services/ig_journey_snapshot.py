@@ -861,6 +861,9 @@ def _guide_graph_nodes(nodes, milestones, focus, *, history_truncated=False):
             result[-1]["waiting"] = node["waiting"]
         if node.get("fulfillment_progress"):
             result[-1]["fulfillment_progress"] = node["fulfillment_progress"]
+        if node.get("settlement_presentation"):
+            result[-1]["settlement_presentation"] = node["settlement_presentation"]
+            result[-1]["episode_id"] = node["settlement_presentation"]["episode_id"]
         events = milestone.get("events", [])
         if events:
             dates = sorted(event["occurred_at"] for event in events if event["occurred_at"])
@@ -881,7 +884,7 @@ def _graph(episode, nodes, history, focus):
     interpretations = _graph_interpretation(episode["client_id"], episode["id"])
     episode_ref = _ref("episode", episode["id"])
     graph_nodes.append(_graph_node(
-        f"episode:{episode['id']}", f"Покупка {episode['sequence']}",
+        f"episode:{episode['id']}", _selector(episode)["label"],
         state=GRAPH_EPISODE_STATE.get(episode["state"], "partial"),
         summary="Цикл покупки", facts=[{"id": "episode:repeat_kind", "label": "Тип циклу",
         "value": str(REPEAT_KIND_LABELS.get(episode["repeat_kind"], "Не вказано")),
@@ -906,7 +909,7 @@ def _graph(episode, nodes, history, focus):
             for identifier, value in ((source_id, states["from"]), (target_id, states["to"])):
                 if not any(item["id"] == identifier for item in graph_nodes):
                     graph_nodes.append(_graph_node(
-                        identifier, str(EPISODE_STATE_LABELS[value]), state=GRAPH_EPISODE_STATE[value],
+                        identifier, "Цикл розпочато" if value == "active" else str(EPISODE_STATE_LABELS[value]), state=GRAPH_EPISODE_STATE[value],
                         summary="Зафіксований стан циклу", evidence_refs=ref, rank=rank, lane=3,
                     ))
             edges.append({"id": f"lifecycle:{event['id']}", "from_node_id": source_id, "to_node_id": target_id,
@@ -1154,6 +1157,16 @@ def _bound_records(episode, nodes, *, now=None):
     payment_conflicted = bool(payment_snapshot.get("needs_reconciliation") or payment_snapshot.get("provider_truth") in {
         "partially_refunded", "refunded", "reversed", "failed", "cancelled",
     })
+    def settlement_presentation(status, source, ref):
+        # Presentation of this exact purchase's business fact; this never
+        # changes provider truth or authorizes fulfillment effects.
+        nodes["payment"]["settlement_presentation"] = {
+            "schema": "journey-settlement.v1", "episode_id": episode["id"],
+            "status": "reconciliation" if payment_conflicted else status,
+            "source": source, "evidence_refs": [ref],
+        }
+    if payment_conflicted:
+        settlement_presentation("reconciliation", "episode.payment_snapshot", _ref("episode", episode["id"]))
 
     if episode["primary_payment_review_id"]:
         review = IgPaymentConfirmationReview.objects.filter(
@@ -1174,7 +1187,7 @@ def _bound_records(episode, nodes, *, now=None):
                 decision = IgPaymentReviewDecision.objects.filter(
                     review_id=review["id"], client_id=episode["client_id"],
                 ).order_by("-id").values("id", "decision", "confirmed_amount", "currency",
-                    "verification_source", "verification_scope", "actor_source", "actor_external_id").first()
+                    "verification_source", "verification_scope", "actor_source", "actor_external_id", "order_total_amount").first()
                 manager_verified = bool(decision and decision["decision"] == "manager_verified" and decision["verification_source"] == "manager" and (
                     decision["actor_source"] in {"management_user", "telegram_user"} and str(decision["actor_external_id"] or "").strip()
                 ))
@@ -1182,15 +1195,26 @@ def _bound_records(episode, nodes, *, now=None):
                     and decision["confirmed_amount"] is not None and decision["confirmed_amount"] > 0)
                 if measured_payment:
                     prepayment = decision["verification_scope"] == "prepayment"
+                    totals = [_money(decision["order_total_amount"]), _money(payment_snapshot.get("order_total"))]
+                    known_total = next((Decimal(value) for value in totals if value and Decimal(value) > 0), None)
+                    remaining = Decimal(_money(payment_snapshot.get("remaining_amount")) or "0")
+                    short_full_payment = bool(not prepayment and (
+                        (known_total is not None and known_total > decision["confirmed_amount"])
+                        or remaining > 0))
+                    payment_conflicted = payment_conflicted or short_full_payment
+                    settlement_presentation("prepaid" if prepayment else "paid", "payment_review.current", _ref("payment_review", review["id"]))
                     if not payment_conflicted:
                         nodes["payment"].pop("waiting", None)
                         nodes["payment"]["summary"] = ("Передоплату підтверджено менеджером" if prepayment
                             else "Оплату підтверджено менеджером")
+                    elif short_full_payment:
+                        nodes["payment"]["summary"] = "Потрібна звірка оплати"
                     _fact(nodes["payment"], "manager_confirmed_amount", "Суму підтверджено менеджером",
                         _amount_label(str(decision["confirmed_amount"]), decision), source="payment_review.current",
                         ref=_ref("payment_review", review["id"]), captured_at=_iso(review["updated_at"]),
-                        state="partial" if prepayment else "complete", tone="success")
+                        state="partial" if prepayment or payment_conflicted else "complete", tone="success")
                 elif manager_verified and decision["verification_scope"] == "payment_claim" and not payment_conflicted:
+                    settlement_presentation("claim", "payment_review.current", _ref("payment_review", review["id"]))
                     nodes["payment"]["summary"] = "Заяву клієнта про оплату зафіксовано; сума не підтверджена"
             if review["status"] == "pending":
                 nodes["payment"]["summary"] = "Очікує перевірки менеджером"
@@ -1243,9 +1267,12 @@ def _bound_records(episode, nodes, *, now=None):
                   state="complete" if order.payment_status == "paid" else "partial",
                   tone="success" if order.payment_status == "paid" else "neutral")
             if order.payment_status == "paid" and not payment_conflicted:
+                settlement_presentation("paid", "intended_order.current", ref)
                 nodes["payment"].pop("waiting", None)
                 nodes["payment"]["summary"] = "Оплату підтверджено у прив’язаному замовленні"
                 return_focus = "fulfillment"
+            elif order.payment_status in {"prepaid", "partial"} and not payment_conflicted and nodes["payment"].get("settlement_presentation", {}).get("status") != "paid":
+                settlement_presentation("prepaid", "intended_order.current", ref)
             if delivered:
                 nodes["fulfillment"]["state"] = "complete"
                 nodes["fulfillment"]["summary"] = "Отримання підтверджено перевізником"

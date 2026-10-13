@@ -59,6 +59,37 @@ const paid=composed(pending(),[{id:'paid',semantic_key:'settlement',episode_id:1
 assert.equal(paid.payment_progress.paid,true);
 assert.equal(paid.payment_progress.label,'Оплачено');
 assert.equal(paid.payment_progress.items[2].state,'done');
+function settled(status='paid',overrides={}){
+  return pending({waiting:undefined,settlement_presentation:{schema:'journey-settlement.v1',episode_id:195,
+    status,source:'payment_review.current',evidence_refs:[reviewRef]},...overrides});
+}
+const canonicalPaid=composed(settled());
+assert.equal(canonicalPaid.state,'partial'); // Whole guide readiness stays conservative.
+assert.equal(canonicalPaid.payment_progress.paid,true);
+assert.equal(canonicalPaid.payment_progress.label,'Оплачено');
+assert.equal(canonicalPaid.payment_progress.items.length,1); // Do not fabricate an invoice/link.
+assert.equal(canonicalPaid.payment_progress.items[0].state,'done');
+assert.equal(canonicalPaid.payment_progress.items[0].evidence_refs[0].id,32);
+assert.ok(!canonicalPaid.summary.includes('Очікує'));
+const prepaid=composed(settled('prepaid',{state:'complete'}));
+assert.equal(prepaid.payment_progress.paid,false);
+assert.equal(prepaid.payment_progress.label,'Передоплату підтверджено');
+assert.equal(prepaid.payment_progress.items.at(-1).state,'todo');
+const claim=composed(settled('claim',{state:'complete'}));
+assert.equal(claim.payment_progress.paid,false);
+assert.equal(claim.payment_progress.counts_known,false);
+assert.equal(claim.payment_progress.label,'Заяву про оплату зафіксовано');
+const reconciled=composed(settled('reconciliation'),[{id:'old-paid',semantic_key:'settlement',
+  episode_id:195,state:'complete',evidence_refs:[{kind:'payment_projection',id:7}]}]);
+assert.equal(reconciled.payment_progress.paid,false);
+assert.equal(reconciled.payment_progress.label,'Потрібна звірка оплати');
+for(const override of [{presentation_kind:'interpretation'},{presentation_kind:'possible'},
+  {settlement_presentation:{schema:'journey-settlement.v1',episode_id:99,status:'paid',source:'payment_review.current',evidence_refs:[reviewRef]}},
+  {settlement_presentation:{schema:'journey-settlement.v1',episode_id:195,status:'paid',source:'receipt_observation.current',evidence_refs:[messageRef]}},
+  {settlement_presentation:{schema:'journey-settlement.v1',episode_id:195,status:'paid',source:'payment_review.current',evidence_refs:[]}}]){
+  assert.equal(composed(settled('paid',override)).payment_progress.paid,false);
+}
+console.log('Scoped canonical settlement, partial/payment-claim guards, reconciliation and foreign marker regressions passed.');
 const expired={kind:'invoice_expiry',status:'expired',started_at:'2026-10-06T10:00:00Z',
   due_at:'2026-10-06T11:00:00Z',evidence_refs:[{kind:'invoice',id:1}]};
 assert.equal(paymentView({},[expired],journey.serverTime).label,'Строк минув · оплату не підтверджено');

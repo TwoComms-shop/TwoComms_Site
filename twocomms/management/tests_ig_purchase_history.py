@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from management.models import IgClient, IgCommercialEpisode, IgDeal, IgPaymentConfirmationReview, IgPaymentReviewDecision
+from management.models import IgClient, IgCommercialEpisode, IgCommercialEpisodeEvent, IgDeal, IgPaymentConfirmationReview, IgPaymentReviewDecision
 from management.services.ig_analysis_v2 import _prior_purchase_count, normalize_analysis_v2
 from management.services.ig_journey_snapshot import build_journey_snapshot
 from orders.models import Order
@@ -54,6 +54,10 @@ class PurchaseHistoryTests(TestCase):
         amount = next(fact for fact in payment["facts"] if fact["id"] == "payment:manager_confirmed_amount")
         self.assertEqual(amount["value"], "970.00 UAH")
         self.assertEqual(amount["source"], "payment_review.current")
+        graph_payment = next(node for node in snapshot["graph"]["nodes"] if node["id"] == "guide:payment")
+        self.assertEqual(graph_payment["settlement_presentation"]["status"], "paid")
+        self.assertEqual(graph_payment["settlement_presentation"]["episode_id"], self.first.pk)
+        self.assertEqual(graph_payment["settlement_presentation"]["evidence_refs"], [{"kind": "order", "id": self.order.pk}])
         self.assertEqual(IgCommercialEpisode.objects.filter(client=self.buyer).count(), 3)
         self.assertEqual(list(IgCommercialEpisode.objects.filter(client=self.buyer).order_by("sequence").values_list("sequence", flat=True)), [1, 2, 3])
         aliased = build_journey_snapshot(self.buyer, view_episode_id=self.duplicates[-1].pk)
@@ -154,6 +158,7 @@ class PurchaseHistoryTests(TestCase):
             payment_snapshot={"needs_reconciliation": True})
         payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
         self.assertIn("waiting", payment)
+        self.assertEqual(payment["settlement_presentation"]["status"], "reconciliation")
 
     def test_confirmed_payment_claim_does_not_assert_full_payment(self):
         review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
@@ -164,6 +169,7 @@ class PurchaseHistoryTests(TestCase):
         self.episode(4, primary_payment_review=review)
         payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
         self.assertIn("сума не підтверджена", payment["summary"])
+        self.assertEqual(payment["settlement_presentation"]["status"], "claim")
         self.assertNotEqual(payment["summary"], "Оплату підтверджено менеджером")
         self.assertFalse(any(fact["id"] == "payment:manager_confirmed_amount" for fact in payment["facts"]))
 
@@ -176,9 +182,60 @@ class PurchaseHistoryTests(TestCase):
         self.episode(4, primary_payment_review=review)
         payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
         self.assertEqual(payment["summary"], "Передоплату підтверджено менеджером")
+        self.assertEqual(payment["settlement_presentation"]["status"], "prepaid")
         amount = next(fact for fact in payment["facts"] if fact["id"] == "payment:manager_confirmed_amount")
         self.assertEqual(amount["state"], "partial")
         self.assertEqual(amount["value"], "200.00 UAH")
+
+    def test_full_scope_below_known_total_requires_reconciliation(self):
+        review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
+            dedupe_key="purchase-history:short-full", status="confirmed")
+        IgPaymentReviewDecision.objects.create(review=review, client=self.buyer,
+            decision="manager_verified", verification_source="manager", verification_scope="full_payment",
+            confirmed_amount="200.00", order_total_amount="970.00", currency="UAH",
+            actor_source="management_user", actor_external_id="123")
+        self.episode(4, primary_payment_review=review)
+        payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
+        self.assertEqual(payment["settlement_presentation"]["status"], "reconciliation")
+        self.assertEqual(payment["summary"], "Потрібна звірка оплати")
+
+    def test_full_scope_with_unknown_total_and_positive_remaining_is_not_paid(self):
+        review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
+            dedupe_key="purchase-history:unknown-full", status="confirmed")
+        IgPaymentReviewDecision.objects.create(review=review, client=self.buyer,
+            decision="manager_verified", verification_source="manager", verification_scope="full_payment",
+            confirmed_amount="200.00", currency="UAH", actor_source="management_user", actor_external_id="123")
+        self.episode(4, primary_payment_review=review, payment_snapshot={"remaining_amount": "770.00"})
+        payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
+        self.assertEqual(payment["settlement_presentation"]["status"], "reconciliation")
+
+    def test_full_known_total_with_positive_remaining_still_requires_reconciliation(self):
+        review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
+            dedupe_key="purchase-history:known-full-remaining", status="confirmed")
+        IgPaymentReviewDecision.objects.create(review=review, client=self.buyer,
+            decision="manager_verified", verification_source="manager", verification_scope="full_payment",
+            confirmed_amount="970.00", order_total_amount="970.00", currency="UAH",
+            actor_source="management_user", actor_external_id="123")
+        self.episode(4, primary_payment_review=review, payment_snapshot={"remaining_amount": "30.00"})
+        payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
+        self.assertEqual(payment["settlement_presentation"]["status"], "reconciliation")
+
+    def test_refunded_snapshot_cannot_present_paid_order_as_settled(self):
+        self.first.payment_snapshot = {"provider_source": "monobank_projection", "projection_id": 7,
+            "provider_truth": "refunded"}
+        self.first.save(update_fields=["payment_snapshot"])
+        payment = next(node for node in build_journey_snapshot(self.buyer)["nodes"] if node["id"] == "payment")
+        self.assertEqual(payment["settlement_presentation"]["status"], "reconciliation")
+        self.assertIn("Повернено", payment["summary"])
+
+    def test_historical_active_lifecycle_is_a_past_event_caption(self):
+        IgCommercialEpisodeEvent.objects.create(episode=self.first, dedupe_key="purchase-history:lifecycle",
+            event_type="order_bound", from_state="active", to_state="order_created", source="order_resolution",
+            evidence={"order_id": self.order.pk})
+        snapshot = build_journey_snapshot(self.buyer)
+        node = next(node for node in snapshot["graph"]["nodes"] if node["id"] == f"episode_state:{self.first.pk}:active")
+        self.assertEqual(node["label"], "Цикл розпочато")
+        self.assertTrue(snapshot["is_history"])
 
     def test_conflicting_order_supersession_is_not_hidden(self):
         other_order = Order.objects.create(order_number="PURCHASE-HISTORY-CONFLICT", full_name="Test", phone="0", total_sum="20")
