@@ -297,7 +297,7 @@ assert.equal(managerTruthLabelForClient({scope:'pending_review',manager_truth:''
         self.assertTrue(snapshot["is_history"])
 
     def test_conflicting_order_supersession_is_not_hidden(self):
-        other_order = Order.objects.create(order_number="PURCHASE-HISTORY-CONFLICT", full_name="Test", phone="0", total_sum="20")
+        other_order = Order.objects.create(order_number="PURCH-HIST-CONFLICT", full_name="Test", phone="0", total_sum="20")
         review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
             dedupe_key="purchase-history:conflict", status="superseded", order=other_order,
             superseded_by=self.canonical, evidence={"claim_anchor": "a" * 64})

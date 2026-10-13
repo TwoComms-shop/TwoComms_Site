@@ -35,7 +35,7 @@ class CheckoutConfigurationError(ValueError):
 
 @dataclass(frozen=True)
 class ValidatedCheckoutItem:
-    product: object
+    product: object | None
     color_variant: object | None
     quantity: int
     size: str
@@ -53,8 +53,19 @@ class ValidatedCheckoutItem:
     evidence_message_ids: tuple[int, ...]
     price_parts: tuple = ()
     bundle_pricing: dict = field(default_factory=dict)
+    assisted_line: dict = field(default_factory=dict)
+    photo_asset_id: str | None = None
+    photo_digest: str = ''
 
     def digest_payload(self):
+        if self.product is None:
+            from management.services.ig_revision_cart_binding import union_configuration, ASSISTED_SCHEMA
+            row = assisted_item_snapshot(self)
+            configured = union_configuration(row, schema=ASSISTED_SCHEMA)
+            if configured is None:
+                raise CheckoutConfigurationError('assisted_custom_configuration_invalid')
+            return {**configured, 'catalog_unit_price': str(self.catalog_unit_price),
+                'catalog_line_total': str(self.catalog_line_total)}
         payload = {
             "product_id": self.product.pk,
             "color_variant_id": self.color_variant.pk if self.color_variant else None,
@@ -80,6 +91,7 @@ class ValidatedQuote:
     pay_type: str
     evidence_message_ids: tuple[int, ...]
     digest: str
+    assisted_commerce: dict = field(default_factory=dict)
 
 
 def _money(value, *, code="invalid_amount"):
@@ -228,6 +240,7 @@ def validate_checkout_items(
     requested_payment_amount=None,
     allow_promo=False,
     source_cart_binding=None,
+    verified_assisted_decision=None,
 ):
     from product_catalog.services import effective_cart_unit_price, variant_allows_purchase
     from product_catalog.size_grid_services import (
@@ -246,6 +259,18 @@ def validate_checkout_items(
     if len(item_specs) > MAX_CHECKOUT_ITEMS:
         raise CheckoutConfigurationError("too_many_items")
     source_lines = None
+    if verified_assisted_decision is not None:
+        from management.services.ig_assisted_commerce import VerifiedAssistedDecision
+        cap = verified_assisted_decision
+        if type(cap) is not VerifiedAssistedDecision or cap.client_id != client.pk:
+            raise CheckoutConfigurationError('assisted_decision_requires_native_producer')
+        catalog_lines = [line for line in cap.lines if line.item_kind == 'catalog_apparel']
+        if len(catalog_lines) != len(item_specs) or len(cap.ready_lines) != len(cap.lines):
+            raise CheckoutConfigurationError('assisted_full_ready_required')
+        for approved, item in zip(catalog_lines, item_specs, strict=True):
+            if item != assisted_catalog_spec(approved):
+                raise CheckoutConfigurationError('assisted_catalog_configuration_changed')
+        source_lines = [{'recipient_id': line.recipient_id} for line in catalog_lines]
     if source_cart_binding is not None:
         from management.services.ig_revision_cart_binding import validate_quote_source_positions
         source = validate_quote_source_positions(binding=source_cart_binding,
@@ -610,7 +635,103 @@ def validate_checkout_items(
     )
 
 
+def assisted_catalog_spec(line):
+    return {'product_id': line.product_id, 'color_variant_id': line.color_variant_id,
+        'qty': line.quantity, 'size': line.size, 'fit_option_code': line.fit_code,
+        'option_values': line.as_dict()['option_values']}
+
+
+def assisted_item_snapshot(item):
+    """Explicit custom facts/proof; no generic-option authority channel."""
+    return {'product_id': None, 'color_variant_id': None, 'is_custom': True,
+        'title': item.product_title, 'color_name_custom': item.color_label,
+        'size': item.size, 'fit_option_code': item.fit_code, 'fit_option_label': item.fit_label,
+        'option_values': item.option_values, 'option_labels': item.option_labels,
+        'qty': item.quantity, 'unit_price': str(item.catalog_unit_price),
+        'line_total': str(item.catalog_line_total), 'currency': 'UAH',
+        'photo_asset_id': item.photo_asset_id, 'photo_digest': item.photo_digest,
+        'assisted_line': dict(item.assisted_line)}
+
+
+def build_assisted_quote(*, client, verified_decision):
+    """Re-read native approval, price catalogue subset ordinarily, quote all READY."""
+    from management.services.ig_assisted_commerce import revalidate_verified_assisted_decision
+    cap = revalidate_verified_assisted_decision(verified_decision, client=client)
+    if cap.proof_scope != 'unconsumed':
+        raise CheckoutConfigurationError('assisted_existing_execution_requires_native_verifier')
+    return _build_assisted_quote(client=client, cap=cap)
+
+
+def rebuild_assisted_quote_from_execution(*, client, verified_execution):
+    """Readonly existing quote rebuild after the native Execution owner rechecks."""
+    from management.services.ig_assisted_checkout import revalidate_verified_assisted_execution
+    cap = revalidate_verified_assisted_execution(verified_execution, client=client)
+    if cap.proof_scope != 'execution':
+        raise CheckoutConfigurationError('assisted_execution_quote_scope_invalid')
+    return _build_assisted_quote(client=client, cap=cap)
+
+
+def _build_assisted_quote(*, client, cap):
+    from management.services.ig_revision_cart_binding import assisted_quote_evidence
+    if not cap.lines or len(cap.lines) > MAX_CHECKOUT_ITEMS or len(cap.ready_lines) != len(cap.lines):
+        raise CheckoutConfigurationError('assisted_full_ready_required')
+    if cap.currency != 'UAH' or sum(line.quantity for line in cap.lines) > MAX_CHECKOUT_QUANTITY:
+        raise CheckoutConfigurationError('assisted_cart_bounds')
+    catalog_lines = [line for line in cap.lines if line.item_kind == 'catalog_apparel']
+    catalog_quote = None
+    if catalog_lines:
+        catalog_quote = validate_checkout_items(client=client,
+            item_specs=[assisted_catalog_spec(line) for line in catalog_lines],
+            verified_assisted_decision=cap)
+    catalog_rows = iter(catalog_quote.items if catalog_quote else ())
+    normalized = []
+    for line in cap.lines:
+        identity = {'line_id': line.line_id, 'recipient_id': line.recipient_id,
+            'original_index': line.original_index, 'decision_id': str(cap.decision_id),
+            'decision_digest': cap.decision_digest, 'line_digest': line.line_digest}
+        if line.item_kind == 'catalog_apparel':
+            item = next(catalog_rows)
+            if (item.product.pk != line.product_id
+                or (item.color_variant.pk if item.color_variant else None) != line.color_variant_id
+                or item.product_title != line.title or item.color_label != line.color
+                or item.size != line.size or item.fit_code != line.fit_code
+                or item.option_values != line.as_dict()['option_values']):
+                raise CheckoutConfigurationError('assisted_catalog_facts_changed')
+            if (item.quantity != line.quantity or item.catalog_line_total != line.ready_total
+                or item.catalog_unit_price != line.unit_price):
+                raise CheckoutConfigurationError('assisted_catalog_price_changed')
+            normalized.append(replace(item, assisted_line=identity))
+            continue
+        if line.item_kind != 'custom_apparel' or line.product_id is not None or line.color_variant_id is not None:
+            raise CheckoutConfigurationError('assisted_custom_identity_invalid')
+        if (not isinstance(line.unit_price, Decimal) or not line.unit_price.is_finite()
+            or not Decimal('0') < line.unit_price <= MAX_CHECKOUT_VALUE
+            or line.unit_price != line.unit_price.quantize(Decimal('.01'))):
+            raise CheckoutConfigurationError('assisted_custom_price_invalid')
+        item = ValidatedCheckoutItem(product=None, color_variant=None, quantity=line.quantity,
+            size=line.size, fit_code=line.fit_code, fit_label=line.fit_code,
+            option_values={}, option_labels={}, catalog_unit_price=line.unit_price,
+            catalog_line_total=line.ready_total, product_title=line.title, sku='', image_url='',
+            color_code='', color_label=line.color, evidence_message_ids=(), assisted_line=identity,
+            photo_asset_id=str(line.image_id) if line.image_id else None, photo_digest=line.image_digest)
+        item.digest_payload()  # Complete bounded model-compatible custom facts before effects.
+        normalized.append(item)
+    total = sum((item.catalog_line_total for item in normalized), Decimal('0.00'))
+    if not total.is_finite() or not Decimal('0') < total <= MAX_CHECKOUT_VALUE or total != cap.approved_total:
+        raise CheckoutConfigurationError('assisted_approved_total_changed')
+    evidence = assisted_quote_evidence(cap)
+    digest = hashlib.sha256(json.dumps({'schema': 'ig-assisted-quote.v1',
+        'items': [item.digest_payload() for item in normalized], 'assisted_commerce': evidence,
+        'quoted_total': str(total), 'pay_type': 'online_full', 'allow_promo': False},
+        sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    return ValidatedQuote(tuple(normalized), total, Decimal('0.00'), total, total,
+        'online_full', (), digest, evidence)
+
+
 def _deal_item_snapshot(item):
+    if item.product is None:
+        return {**assisted_item_snapshot(item), 'price_source': 'manager_custom',
+            'price_evidence_message_ids': []}
     return {
         "product_id": item.product.pk,
         "color_variant_id": item.color_variant.pk if item.color_variant else None,
@@ -628,6 +749,7 @@ def _deal_item_snapshot(item):
             "catalog_with_order_discount" if item.evidence_message_ids else "catalog"
         ),
         "price_evidence_message_ids": list(item.evidence_message_ids),
+        **({'assisted_line': dict(item.assisted_line)} if item.assisted_line else {}),
     }
 
 
@@ -645,6 +767,8 @@ def _revision_snapshot(quote, *, source_cart_binding=None, source_cart_capture=N
         from copy import deepcopy
         snapshot["source_cart_binding"] = deepcopy(source_cart_binding)
         snapshot["source_cart_capture"] = deepcopy(source_cart_capture)
+    if quote.assisted_commerce:
+        snapshot['assisted_commerce'] = dict(quote.assisted_commerce)
     return snapshot
 
 
@@ -656,6 +780,11 @@ def _same_revision_source_cart(proposal, binding, capture):
         return False
     if binding is None:
         return "source_cart_binding" not in snapshot and "source_cart_capture" not in snapshot
+    from management.services.ig_revision_cart_binding import ASSISTED_SCHEMA, validate_assisted_cart_binding
+    if isinstance(binding, dict) and binding.get('schema') == ASSISTED_SCHEMA:
+        checked = validate_assisted_cart_binding(binding, episode_id=proposal.commercial_episode_id)
+        return bool(checked.ok and snapshot.get('source_cart_binding') == checked.binding
+            and snapshot.get('source_cart_capture') == capture)
     from management.services.ig_revision_cart_binding import same_checkout_source_capture
     if not same_checkout_source_capture(snapshot.get("source_cart_capture"), capture):
         return False
@@ -758,7 +887,7 @@ def _replace_proposal_items(*, proposal, quote):
             quoted_unit_price=item.catalog_unit_price,
             quoted_line_total=item.catalog_line_total,
             price_source=(
-                "catalog_with_order_discount"
+                "manager_custom" if item.product is None else "catalog_with_order_discount"
                 if quote.negotiated_discount > 0
                 else "catalog"
             ),
@@ -766,6 +895,40 @@ def _replace_proposal_items(*, proposal, quote):
             position=position,
         ))
     IgCheckoutProposalItem.objects.bulk_create(rows)
+
+
+def assert_untouched_legacy_assisted_proposal(*, client, proposal, deal, episode_id):
+    """Read-only admission shared by native approval and its locked upgrade.
+
+    Callers hold the canonical client/deal/proposal transaction locks. Historical
+    invoice generations and detached attempts count even when fast pointers are
+    empty; an issued payment graph must retain its original policy and terms.
+    """
+    from management.models import IgCheckoutProposal, IgDeal
+    from orders.models import PaymentAttempt
+
+    if (
+        proposal.client_id != client.pk or deal.client_id != client.pk
+        or proposal.deal_id != deal.pk or deal.active_checkout_proposal_id != proposal.pk
+        or episode_id is None or client.current_commercial_episode_id != episode_id
+        or proposal.commercial_episode_id != episode_id
+        or proposal.assisted_checkout_v2
+        or proposal.payment_policy != IgCheckoutProposal.PaymentPolicy.LEGACY
+        or proposal.status not in {IgCheckoutProposal.Status.READY, IgCheckoutProposal.Status.VIEWED}
+        or proposal.is_expired or proposal.details_locked_at is not None
+        or proposal.payment_attempt_id or proposal.current_invoice_generation_id
+        or proposal.winner_invoice_generation_id or proposal.paid_at is not None
+        or proposal.invoice_cancelled_at is not None or proposal.provider_cancellation_event_id
+        or proposal.superseded_by_id or deal.invoice_id or deal.invoice_url
+        or deal.order_id or deal.paid_at is not None or deal.paid_amount > 0
+        or deal.status in {IgDeal.Status.PAID, IgDeal.Status.ORDER_CREATED}
+        or deal.payment_truth in {IgDeal.PaymentTruth.CONFIRMED,
+            IgDeal.PaymentTruth.PARTIALLY_REFUNDED, IgDeal.PaymentTruth.REFUNDED,
+            IgDeal.PaymentTruth.REVERSED}
+        or proposal.invoice_generations.exists()
+        or PaymentAttempt.objects.filter(cart_snapshot__proposal_id=str(proposal.public_id)).exists()
+    ):
+        raise CheckoutConfigurationError('assisted_legacy_proposal_not_untouched')
 
 
 @transaction.atomic
@@ -783,6 +946,7 @@ def create_or_update_proposal(
     source_cart_binding=None,
     source_cart_capture=None,
     checkout_owner_scope=None,
+    verified_assisted_decision=None,
 ):
     from management.models import (
         IgCheckoutProposal,
@@ -799,6 +963,16 @@ def create_or_update_proposal(
     from orders.checkout_series import assisted_checkout_v2_new_proposal_enabled
 
     new_v2_canary = assisted_checkout_v2_new_proposal_enabled(locked_client.pk)
+    assisted = verified_assisted_decision is not None
+    if assisted:
+        from management.services.ig_assisted_commerce import revalidate_verified_assisted_decision
+        from management.services.ig_revision_cart_binding import (
+            build_assisted_cart_binding, validate_assisted_cart_binding,
+        )
+        verified_assisted_decision = revalidate_verified_assisted_decision(
+            verified_assisted_decision, client=locked_client)
+        if verified_assisted_decision.proof_scope != 'unconsumed':
+            raise CheckoutConfigurationError('assisted_existing_execution_cannot_create_proposal')
     custom_print_requested = bool(
         any(
             isinstance(row, dict)
@@ -806,7 +980,7 @@ def create_or_update_proposal(
             for row in item_specs or ()
         )
     )
-    quote = validate_checkout_items(
+    quote = build_assisted_quote(client=locked_client, verified_decision=verified_assisted_decision) if assisted else validate_checkout_items(
         client=locked_client,
         item_specs=item_specs,
         evidence=evidence,
@@ -821,7 +995,22 @@ def create_or_update_proposal(
         source_cart_binding=source_cart_binding,
     )
     bound_cart = source_cart_binding is not None or source_cart_capture is not None or checkout_owner_scope is not None
-    if bound_cart:
+    if assisted:
+        expected_binding = build_assisted_cart_binding(verified_decision=verified_assisted_decision,
+            quoted_items=[_deal_item_snapshot(item) for item in quote.items],
+            bound_episode_id=(source_cart_binding or {}).get('bound_episode_id'))
+        if source_cart_binding is not None and source_cart_binding != expected_binding:
+            raise CheckoutConfigurationError('assisted_cart_binding_changed')
+        source_cart_binding = expected_binding
+        source_cart_capture = verified_assisted_decision.full_capture
+        checked = validate_assisted_cart_binding(source_cart_binding)
+        if not checked.ok or (source_cart_capture['scope']['episode_id'] is not None
+                and source_cart_capture['scope']['episode_id'] != locked_client.current_commercial_episode_id):
+            raise CheckoutConfigurationError('assisted_cart_owner_changed')
+        if allow_promo or negotiated_total is not None or requested_payment_amount is not None:
+            raise CheckoutConfigurationError('assisted_terms_override_forbidden')
+        bound_cart = True
+    elif bound_cart:
         # Reconstruct all selectors from the canonical capture while the client
         # is locked. This is not an optional caller-authenticated cart payload.
         from management.services.ig_revision_checkout import checkout_authority_control, _quote_items, lock_checkout_cart_sources
@@ -939,9 +1128,13 @@ def create_or_update_proposal(
                 # An unbound legacy retry/edit cannot remove proven line and
                 # recipient ownership from an already bound current offer.
                 raise CheckoutConfigurationError("checkout_cart_binding_missing")
-    activate_v2 = bool(
+    activate_v2 = bool(assisted or (
         proposal.assisted_checkout_v2 if proposal is not None else new_v2_canary
-    )
+    ))
+    upgrade_legacy_assisted = bool(assisted and proposal is not None and not proposal.assisted_checkout_v2)
+    if upgrade_legacy_assisted:
+        assert_untouched_legacy_assisted_proposal(client=locked_client, proposal=proposal,
+            deal=deal, episode_id=current_episode_id)
     if proposal is not None and not activate_v2 and new_v2_canary:
         # Canary assignment applies only to a newly-created proposal. An
         # existing legacy proposal retains its exact original payment inputs.
@@ -974,13 +1167,15 @@ def create_or_update_proposal(
             client=locked_client,
             evidence_message_ids=quote.evidence_message_ids,
             custom_print_full_only=(
+                assisted
+                or
                 custom_print_requested
                 or bool(getattr(proposal, "custom_print_full_only", False))
             ),
         )
     if activate_v2 and payment_policy is not None:
         from storefront.services.brigade_commerce import products_require_full_payment
-        if products_require_full_payment([item.product for item in quote.items]):
+        if products_require_full_payment([item.product for item in quote.items if item.product is not None]):
             payment_policy = replace(payment_policy, policy=IgCheckoutProposal.PaymentPolicy.FULL_ONLY)
     terminal_fresh_deal = False
     if proposal is not None:
@@ -1030,7 +1225,7 @@ def create_or_update_proposal(
             deal.active_checkout_proposal = None
             deal.save(update_fields=["active_checkout_proposal", "updated_at"])
             proposal = None
-        elif (proposal.items_digest == quote.digest and proposal.allow_promo == bool(allow_promo)
+        elif (not upgrade_legacy_assisted and proposal.items_digest == quote.digest and proposal.allow_promo == bool(allow_promo)
               and _same_revision_source_cart(proposal, source_cart_binding, source_cart_capture)):
             policy_fields = []
             if activate_v2 and payment_policy is not None:
@@ -1104,6 +1299,9 @@ def create_or_update_proposal(
         # and the existing proven local-terminal fresh-deal repair.
         locked_client.current_commercial_episode = episode
         locked_client.save(update_fields=["current_commercial_episode", "updated_at"])
+    if assisted:
+        from management.services.ig_revision_cart_binding import rebind_assisted_cart_episode
+        source_cart_binding = rebind_assisted_cart_episode(source_cart_binding, episode.pk)
     if proposal is None:
         proposal_values = {}
         if activate_v2 and payment_policy is not None:
@@ -1151,6 +1349,11 @@ def create_or_update_proposal(
         proposal.commercial_episode = episode
         proposal.locale = locale_code
         if activate_v2 and payment_policy is not None:
+            if upgrade_legacy_assisted:
+                from management.services.ig_checkout_policy import PROPOSAL_TTL_SECONDS
+
+                proposal.assisted_checkout_v2 = True
+                proposal.expires_at = timezone.now() + timedelta(seconds=PROPOSAL_TTL_SECONDS)
             proposal.payment_policy = payment_policy.policy
             proposal.payment_policy_evidence_message_id = (
                 payment_policy.evidence_message_id
@@ -1166,6 +1369,7 @@ def create_or_update_proposal(
             "revision", "catalog_total", "negotiated_discount", "quoted_total",
             "requested_payment_amount", "pay_type", "allow_promo", "items_digest",
             "commercial_episode", "locale", "updated_at",
+            *(["assisted_checkout_v2", "expires_at"] if upgrade_legacy_assisted else []),
             *(
                 [
                     "payment_policy",

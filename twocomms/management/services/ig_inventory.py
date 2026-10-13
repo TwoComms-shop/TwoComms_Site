@@ -110,7 +110,22 @@ def reserve_proposal_inventory(
         raise
 
     groups = {}
+    custom_rows = {}
+    if any(item.product_id is None for item in items):
+        from management.services.ig_checkout_payment import _assisted_proposal_validation, _assisted_custom_rows
+        from management.services.ig_checkout_payment import CheckoutPaymentError
+        try:
+            assisted = _assisted_proposal_validation(proposal, fresh=True)
+            custom_rows = _assisted_custom_rows(assisted)
+        except CheckoutPaymentError as exc:
+            raise InventoryReservationError(exc.code) from exc
     for item in items:
+        if item.product_id is None:
+            if item.pk not in custom_rows:
+                raise InventoryReservationError("assisted_custom_resource_missing")
+            # Finite physical approval is consumed by its OneToOne execution.
+            # It is not a catalogue policy or a fabricated stock reservation.
+            continue
         policy = ProductInventoryPolicy.objects.filter(product_id=item.product_id).first()
         if policy is None:
             if require_policy:

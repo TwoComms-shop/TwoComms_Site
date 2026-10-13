@@ -321,6 +321,25 @@ def _request_payload(request: CommerceTurnRequest) -> dict:
     return _jsonable(request)
 
 
+def full_cart_purchase_line_ids(before, after, request):
+    """Replayable exact current-basket scope; no field/recipient/qty edits."""
+    lines = before.get("lines")
+    if (request.full_cart_purchase_requested is not True or request.purchase_requested is not True
+        or not isinstance(lines, list) or not 2 <= len(lines) <= MAX_SELECTION_LINES
+        or before.get("pending_clarification") or after.get("pending_clarification")
+        or any(not isinstance(line, dict) or not isinstance(line.get("line_id"), str) or not line["line_id"] for line in lines)
+        or len({line["line_id"] for line in lines}) != len(lines)
+        or lines != after.get("lines") or before.get("active_index") != after.get("active_index")):
+        return None
+    expected = deepcopy(before)
+    expected["query_constraints"] = {**(before.get("query_constraints") or {}), "purchase_requested": True}
+    for key in ("revision", "last_provider_message_id"):
+        expected[key] = after.get(key)
+    if _jsonable(expected) != _jsonable(after):
+        return None
+    return [line["line_id"] for line in lines]
+
+
 def _event_key(message: InstagramBotMessage) -> tuple[datetime, str]:
     event_at = message.provider_created_at or message.created_at
     if event_at is None:
@@ -651,6 +670,30 @@ def apply_turn(
         return prior
     from management.services.ig_commerce_turns import parse_turn
     source_request = parse_turn(source.text)
+    if request.full_cart_purchase_requested:
+        supplied, original = _request_payload(request), _request_payload(source_request)
+        binding = dict(request.source_binding)
+        supplied.pop("source_binding", None)
+        original.pop("source_binding", None)
+        owned_full_source = (source.role == "user" and source.source == "webhook"
+            and source.sender_id == locked_client.igsid and source.status != "failed"
+            and not locked_client.privacy_erasure_started_at and bool(source.provider_namespace))
+        if supplied.get("pending_clarification") == "which_product" and not original.get("pending_clarification"):
+            context_session = (
+                IgCommerceSelectionSession.objects.select_for_update().filter(client=locked_client,
+                    commercial_episode_id=locked_client.current_commercial_episode_id, state="open", open_slot=1)
+                .order_by("-generation").first()
+            )
+            if (owned_full_source and context_session and context_session.pending_clarification
+                and binding.get("producer") == "revision-inbound-commerce-v1"
+                and binding.get("source_message_id") == source.pk
+                and binding.get("source_digest") == hashlib.sha256(source.text.encode()).hexdigest()
+                and binding.get("product_resolution") in {"unresolved", "ambiguous"}):
+                # Native identity resolution keeps a real existing question.
+                # It cannot promote that unresolved cart to whole-cart proof.
+                supplied["pending_clarification"] = original["pending_clarification"]
+        if not owned_full_source or not source_request.full_cart_purchase_requested or supplied != original:
+            raise CommerceRevisionConflict("full_cart_purchase_source_unverified")
     from management.services.ig_commerce_turns import is_neutral_commerce_source
     if is_neutral_commerce_source(source.text):
         requested, original_payload = _request_payload(request), _request_payload(source_request)
@@ -1007,6 +1050,10 @@ def apply_turn(
 
     after["revision"] = current_revision + 1
     after["last_provider_message_id"] = event_id
+    full_cart_ids = full_cart_purchase_line_ids(before, after, request)
+    if full_cart_ids:
+        action = "full_cart_purchase_requested"
+        reasons.append("source_bound_full_current_cart_purchase")
     if reply_payload is None and reply_builder is not None:
         reply_payload = reply_builder(
             request,
@@ -1049,6 +1096,7 @@ def apply_turn(
                 "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest(),
                 "episode_id": session.commercial_episode_id,
                 "line_id": str((_active_line(after) or {}).get("line_id") or ""),
+                **({"full_cart_purchase_requested": True, "line_ids": full_cart_ids} if full_cart_ids else {}),
                 "binding": dict(request.source_binding),
             },
             **({"line_source_facts": {"schema": "line-source-facts.v1",

@@ -5,6 +5,7 @@ import hmac
 import secrets
 from urllib.parse import urlencode
 
+from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
@@ -55,6 +56,7 @@ CHECKOUT_COPY = {
         "fit_label": "Фасон",
         "size_label": "Розмір",
         "quantity_label": "Кількість",
+        "assisted_terms_confirmation": "Підтверджую назву, параметри, кількість і ціну погоджених позицій у цьому замовленні.",
         "catalog_total": "Вартість товарів",
         "discount": "Узгоджена знижка",
         "total": "До сплати",
@@ -174,6 +176,7 @@ CHECKOUT_COPY = {
         "fit_label": "Фасон",
         "size_label": "Размер",
         "quantity_label": "Количество",
+        "assisted_terms_confirmation": "Подтверждаю название, параметры, количество и цену согласованных позиций в этом заказе.",
         "catalog_total": "Стоимость товаров",
         "discount": "Согласованная скидка",
         "total": "К оплате",
@@ -293,6 +296,7 @@ CHECKOUT_COPY = {
         "fit_label": "Fit",
         "size_label": "Size",
         "quantity_label": "Quantity",
+        "assisted_terms_confirmation": "I confirm the name, options, quantity and price of the agreed items in this order.",
         "catalog_total": "Items total",
         "discount": "Agreed discount",
         "total": "Total to pay",
@@ -394,6 +398,7 @@ CHECKOUT_COPY = {
 
 CHECKOUT_ERROR_COPY = {
     "uk": {
+        "assisted_terms_accepted": "Підтвердіть погоджені назву, параметри, кількість і ціну товарів перед оплатою.",
         "expired": "Термін дії пропозиції завершився.",
         "unavailable": "Цю пропозицію більше не можна оплатити.",
         "in_progress": "Платіж уже створюється. Зачекайте кілька секунд.",
@@ -413,6 +418,7 @@ CHECKOUT_ERROR_COPY = {
         "empty_items": "У пропозиції немає товарів.",
     },
     "ru": {
+        "assisted_terms_accepted": "Подтвердите согласованные название, параметры, количество и цену товаров перед оплатой.",
         "expired": "Срок действия предложения истек.",
         "unavailable": "Это предложение больше нельзя оплатить.",
         "in_progress": "Платеж уже создается. Подождите несколько секунд.",
@@ -432,6 +438,7 @@ CHECKOUT_ERROR_COPY = {
         "empty_items": "В предложении нет товаров.",
     },
     "en": {
+        "assisted_terms_accepted": "Confirm the agreed item names, options, quantities and prices before payment.",
         "expired": "This offer has expired.",
         "unavailable": "This offer can no longer be paid.",
         "in_progress": "A payment is already being created. Please wait a few seconds.",
@@ -728,13 +735,52 @@ def _item_context(item, frozen=None):
         "line_total": _money(item.quoted_line_total),
         "price_parts": (frozen or {}).get("price_parts") or [],
         "bundle_pricing": (frozen or {}).get("bundle_pricing") or {},
+        "is_assisted": False,
+        "is_custom": False,
     }
+
+
+def _hosted_assisted_rows(proposal, revision):
+    snapshot = revision.snapshot if revision is not None and isinstance(revision.snapshot, dict) else {}
+    if "assisted_commerce" not in snapshot:
+        return {"is_assisted": False, "ready": True, "custom_rows": []}
+    if proposal.client.privacy_erasure_started_at is not None or proposal.client.hidden_at is not None:
+        return {"is_assisted": True, "ready": False, "reason": "client_unavailable", "custom_rows": []}
+    from management.services.ig_assisted_checkout import validate_assisted_proposal
+    result = validate_assisted_proposal(proposal, fresh=False)
+    return {"is_assisted": True, **result}
+
+
+def _hosted_item_context(item, frozen, proposal, assisted):
+    value = _item_context(item, frozen)
+    value["is_assisted"] = assisted["is_assisted"]
+    if not assisted["is_assisted"]:
+        return value
+    rows = [row for row in assisted.get("custom_rows", []) if row.get("proposal_item_id") == item.pk]
+    if not rows:
+        return value
+    row = rows[0]
+    labels = row.get("option_labels") or {}
+    options = row.get("option_values") or {}
+    value.update(is_custom=True, title=row["title"], color_label=row["color_name_custom"],
+        color_code="", fit_label=row.get("fit_option_label") or "", size=row["size"],
+        # validate_assisted_proposal already matched these native Decimals to
+        # the signed approved amounts and frozen JSON row. Render the typed
+        # quote fields, as the ordinary catalog branch does.
+        quantity=row["qty"], unit_price=_money(item.quoted_unit_price), line_total=_money(item.quoted_line_total),
+        option_values=options, option_labels=labels,
+        option_facts=[{"code": str(code), "value": str(option), "label": str(labels.get(code) or option)}
+            for code, option in options.items() if code != "fit"],
+        image_url=reverse("ig_checkout_item_image", kwargs={"proposal_id": proposal.public_id, "item_id": item.pk})
+            if row.get("photo_asset_id") and row.get("photo_digest") else "")
+    return value
 
 
 def _proposal_context(proposal, *, request, grant_id="", form_error="", form_error_field="", form_values=None):
     from management.models import IgCheckoutRevision
     revision = IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by('-id').first()
     frozen_items = (revision.snapshot or {}).get('items') or [] if revision else []
+    assisted = _hosted_assisted_rows(proposal, revision)
     language = _checkout_language(request, proposal)
     copy = dict(CHECKOUT_COPY[language])
     approved_policy = approved_policy_copy(language)
@@ -743,6 +789,8 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         copy["price_dialog_body"] = copy["price_dialog_body_v2"]
     generation = _checkout_generation(proposal)
     state = _checkout_state(proposal, generation)
+    if assisted["is_assisted"] and assisted.get("ready") is not True:
+        state = "unavailable"
     attempt = (
         generation.payment_attempt
         if generation is not None and generation.payment_attempt_id
@@ -863,6 +911,8 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         "state_title": copy[f"state_{state}_title"],
         "state_body": state_body,
         "brigade_full_payment_only": brigade_full_only,
+        "has_assisted_terms": assisted["is_assisted"] and assisted.get("ready") is True,
+        "has_assisted_custom": assisted.get("ready") is True and bool(assisted.get("custom_rows")),
         "customer_name": (
             ""
             if state in locked_retry_states
@@ -885,8 +935,9 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
             "expires_at_iso": proposal.expires_at.isoformat(),
             "created_at_iso": proposal.created_at.isoformat(),
         },
-        "items": [_item_context(item, frozen_items[index] if index < len(frozen_items) else {})
-                  for index, item in enumerate(proposal.items.order_by('position', 'id'))],
+        "items": [_hosted_item_context(item, frozen_items[index] if index < len(frozen_items) else {}, proposal, assisted)
+                  for index, item in enumerate(proposal.items.order_by('position', 'id'))]
+                  if assisted.get("ready") is True else [],
         "expires_explanation": (
             copy["expires_explanation_v2"]
             if proposal.assisted_checkout_v2
@@ -1002,6 +1053,7 @@ def ig_checkout_proposal(request, proposal_id):
             "deal",
             "current_invoice_generation",
             "current_invoice_generation__payment_attempt",
+            "assisted_commerce_execution",
         ).prefetch_related("items"),
         public_id=proposal_id,
     )
@@ -1021,6 +1073,15 @@ def ig_checkout_proposal(request, proposal_id):
             )
 
         try:
+            from management.models import IgCheckoutRevision
+            quote_revision = (IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by("-pk").first()
+                if getattr(proposal, "assisted_commerce_execution", None) is not None else None)
+            assisted = _hosted_assisted_rows(proposal, quote_revision)
+            if assisted["is_assisted"] and assisted.get("ready") is not True:
+                raise CheckoutPaymentError("unavailable", CHECKOUT_ERROR_COPY[_checkout_language(request, proposal)]["unavailable"])
+            # The generation owner requires the exact checkbox before any new
+            # invoice effect, and verifies a frozen native acknowledgement on
+            # safe reissue. This view localizes its field error below.
             _attempt, invoice_url, _reused = create_invoice(
                 proposal,
                 request=request,
@@ -1060,6 +1121,35 @@ def ig_checkout_proposal(request, proposal_id):
         return _private_headers(redirect(invoice_url))
     context = _proposal_context(proposal, request=request, grant_id=grant.get("grant_id", ""))
     return _private_headers(render(request, "pages/ig_checkout.html", context))
+
+
+@require_GET
+@never_cache
+def ig_checkout_item_image(request, proposal_id, item_id):
+    from management.services.ig_assisted_commerce import AssistedDecisionError
+    from management.services.ig_assisted_commerce_media import serve_proposal_asset
+    proposal = get_object_or_404(IgCheckoutProposal, public_id=proposal_id)
+    grant, _token = _load_grant(request, proposal)
+    item = get_object_or_404(proposal.items, pk=item_id)
+    try:
+        return _private_headers(serve_proposal_asset(proposal, item, grant))
+    except (AssistedDecisionError, ValueError, OSError):
+        raise Http404("image unavailable")
+
+
+@login_required
+@require_GET
+@never_cache
+def account_assisted_order_item_image(request, order_id, item_id):
+    from orders.models import Order, OrderItem
+    from management.services.ig_assisted_commerce import AssistedDecisionError
+    from management.services.ig_assisted_commerce_media import serve_order_asset
+    order = get_object_or_404(Order, pk=order_id, user=request.user)
+    item = get_object_or_404(OrderItem, pk=item_id, order=order)
+    try:
+        return _private_headers(serve_order_asset(order, item, account_user=request.user))
+    except (AssistedDecisionError, ValueError, OSError):
+        raise Http404("image unavailable")
 
 
 @require_GET

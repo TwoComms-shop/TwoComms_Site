@@ -11,7 +11,14 @@
   <title>TwoComms · {{ copy.page_title }}</title>
   <link rel="preload" href="{% static 'fonts/Inter-Regular.woff2' %}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{% static 'fonts/Inter-Bold.woff2' %}" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="{% static 'css/instagram-checkout.css' %}?v=20260801c4">
+  <link rel="stylesheet" href="{% static 'css/instagram-checkout.css' %}?v=06ff10b27d9e">
+  {% if has_assisted_terms %}
+  <style>
+    .ig-assisted-terms{display:flex;align-items:flex-start;gap:11px;min-height:44px;margin:4px 0 14px;padding:13px;border:1px solid #726042;border-radius:10px;background:#211d17;color:#eee6d7;font-size:13px;line-height:1.55;cursor:pointer;}
+    .ig-assisted-terms input{flex:0 0 20px;width:20px;height:20px;min-height:20px;margin:2px 0 0;accent-color:#efaa4c;}.ig-assisted-terms span{min-width:0;overflow-wrap:anywhere;}.ig-assisted-terms input:focus-visible{outline:2px solid #efaa4c;outline-offset:4px;}.ig-assisted-terms.is-invalid{border-color:#e68181;}
+    .ig-item--assisted .ig-facts dt,.ig-item--assisted .ig-facts dd,.ig-item--assisted .ig-item__heading strong,.ig-item--assisted .ig-item__unit-price{font-size:12px;}.ig-assisted-kind{display:inline-block;color:#d8b986;font-size:12px;font-weight:500;line-height:1.4;}.ig-assisted-fallback{gap:6px;line-height:1.25;}.ig-assisted-fallback svg{width:36px;height:40px;justify-self:center;}
+  </style>
+  {% endif %}
 </head>
 <body>
   <svg class="ig-icon-sprite" aria-hidden="true" focusable="false">
@@ -121,23 +128,32 @@
         </div>
         <div class="ig-products" aria-label="{{ copy.order_label }}">
           {% for item in items %}
-            <article class="ig-item">
+            <article class="ig-item{% if item.is_assisted %} ig-item--assisted{% endif %}">
               <div class="ig-item__media{% if not item.image_url %} is-fallback{% endif %}" data-product-media>
                 {% if item.image_url %}
                   <img src="{{ item.image_url }}" alt="{{ item.title }} · {{ item.color_label }}" width="640" height="800" loading="{% if forloop.first %}eager{% else %}lazy{% endif %}" decoding="async" data-product-image>
                 {% endif %}
-                <span class="ig-item__fallback" aria-hidden="true">TWO<br>COMMS</span>
+                {% if item.is_assisted %}
+                  <span class="ig-item__fallback ig-assisted-fallback" aria-hidden="true"><svg viewBox="0 0 680.3 737" width="36" height="40" focusable="false"><image href="{% static 'img/logo.svg' %}" width="680.3" height="737"></image></svg><span>TWOCOMMS</span></span>
+                {% else %}
+                  <span class="ig-item__fallback" aria-hidden="true">TWO<br>COMMS</span>
+                {% endif %}
               </div>
               <div class="ig-item__body">
                 <div class="ig-item__heading">
                   <h3>{{ item.title }}</h3>
+                  {% if item.is_custom %}<span class="ig-assisted-kind">{% if html_lang == 'ru' %}Индивидуальный товар{% elif html_lang == 'en' %}Custom item{% else %}Індивідуальний товар{% endif %}</span>{% endif %}
                   <strong>{{ item.line_total }} {{ proposal.currency }}</strong>
                   {% if item.quantity > 1 %}<span class="ig-item__unit-price">{{ item.quantity }} × {{ item.unit_price }} {{ proposal.currency }}</span>{% endif %}
                 </div>
                 <dl class="ig-facts">
-                  {% if item.color_label %}<div data-product-fact><dt>{{ copy.color_label }}</dt><dd><span class="ig-swatch" style="--swatch: {{ item.color_code|default:'#171717' }}" aria-hidden="true"></span>{{ item.color_label }}</dd></div>{% endif %}
+                  {% if item.color_label %}<div data-product-fact><dt>{{ copy.color_label }}</dt><dd>{% if not item.is_custom %}<span class="ig-swatch" style="--swatch: {{ item.color_code|default:'#171717' }}" aria-hidden="true"></span>{% endif %}{{ item.color_label }}</dd></div>{% endif %}
                   {% if item.fit_label %}<div data-product-fact><dt>{{ copy.fit_label }}</dt><dd>{{ item.fit_label }}</dd></div>{% endif %}
-                  {% for option in item.option_facts %}<div data-product-fact><dt>{{ option.code }}</dt><dd>{{ option.label }}</dd></div>{% endfor %}
+                  {% if item.is_assisted %}
+                    {% for option in item.option_facts %}{% if option.display_name %}<div data-product-fact><dt>{{ option.display_name }}</dt><dd>{{ option.label }}</dd></div>{% endif %}{% endfor %}
+                  {% else %}
+                    {% for option in item.option_facts %}<div data-product-fact><dt>{{ option.code }}</dt><dd>{{ option.label }}</dd></div>{% endfor %}
+                  {% endif %}
                   {% if item.size %}<div data-product-fact><dt>{{ copy.size_label }}</dt><dd>{{ item.size }}</dd></div>{% endif %}
                   <div data-product-fact><dt>{{ copy.quantity_label }}</dt><dd>{{ item.quantity }}</dd></div>
                 </dl>
@@ -176,6 +192,12 @@
           <form class="ig-form" method="post" action="{{ proposal_url }}" id="ig-checkout-delivery-form" novalidate data-np-form="instagram" data-np-city-search-url="{{ np_city_search_url }}" data-np-warehouse-search-url="{{ np_warehouse_search_url }}" data-locale="{{ html_lang }}">
             {% csrf_token %}
             <div class="ig-form-error" id="ig-form-error" role="alert" tabindex="-1" data-form-error data-validation-summary{% if not form_error %} hidden{% endif %}>{{ form_error }}</div>
+            {% if has_assisted_terms %}
+              <label class="ig-assisted-terms{% if form_error_field == 'assisted_terms_accepted' %} is-invalid{% endif %}" for="ig-assisted-terms-accepted">
+                <input id="ig-assisted-terms-accepted" name="assisted_terms_accepted" type="checkbox" value="1" required{% if form_values.assisted_terms_accepted %} checked{% endif %}{% if form_error_field == 'assisted_terms_accepted' %} aria-invalid="true" aria-describedby="ig-form-error"{% endif %}>
+                <span>{{ copy.assisted_terms_confirmation }}</span>
+              </label>
+            {% endif %}
 
             <div class="ig-field">
               <label for="ig-full-name"><svg data-field-icon aria-hidden="true"><use href="#ig-icon-user"></use></svg><span>{{ copy.full_name }}</span><span class="ig-field__complete" data-field-complete aria-hidden="true"><svg><use href="#ig-icon-check"></use></svg></span></label>
@@ -299,6 +321,11 @@
       </section>
     </div>
 
+    <section class="ig-consent" aria-label="{{ copy.analytics_consent_label }}" data-analytics-consent hidden>
+      <p>{{ copy.analytics_consent_text }}</p>
+      <div><button type="button" class="ig-consent__accept" data-analytics-consent-accept>{{ copy.analytics_accept }}</button><button type="button" class="ig-consent__reject" data-analytics-consent-reject>{{ copy.analytics_reject }}</button></div>
+    </section>
+
     <footer class="ig-footer">
       <a href="{{ returns_url }}" target="_blank" rel="noopener noreferrer">{{ copy.returns }}</a><span aria-hidden="true">·</span>
       <a href="{{ delivery_url }}" target="_blank" rel="noopener noreferrer">{{ copy.delivery }}</a><span aria-hidden="true">·</span>
@@ -344,10 +371,6 @@
       </form>
     </dialog>
 
-    <section class="ig-consent" aria-label="{{ copy.analytics_consent_label }}" data-analytics-consent hidden>
-      <p>{{ copy.analytics_consent_text }}</p>
-      <div><button type="button" class="ig-consent__accept" data-analytics-consent-accept>{{ copy.analytics_accept }}</button><button type="button" class="ig-consent__reject" data-analytics-consent-reject>{{ copy.analytics_reject }}</button></div>
-    </section>
     <form class="ig-csrf" aria-hidden="true">{% csrf_token %}</form>
   </main>
 

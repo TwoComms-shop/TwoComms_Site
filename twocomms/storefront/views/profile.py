@@ -23,6 +23,7 @@ from django.utils.translation import gettext as _
 from accounts.models import UserProfile, FavoriteProduct, UserPoints, PointsHistory
 from accounts.payment import normalize_pay_type
 from orders.models import Order
+from orders.services.customer_order_presentation import prepare_order_item_presentation
 from orders.nova_poshta_checkout import NovaPoshtaSelectionError, resolve_optional_delivery_selection
 from orders.nova_poshta_data import apply_nova_poshta_refs
 from orders.nova_poshta_documents import normalize_checkout_phone
@@ -381,6 +382,8 @@ def order_history(request):
 
     if status_filter:
         orders = orders.filter(status=status_filter)
+
+    orders = prepare_order_item_presentation(orders, audience='account', actor=request.user)
 
     return render(
         request,

@@ -430,7 +430,11 @@
             </div>
             {% for it in o.items.all %}
               <div class="myo-good">
-                {% if it.color_variant and it.color_variant.images.exists %}
+                {% if it.assisted_image_url %}
+                  <img src="{{ it.assisted_image_url }}" alt="{{ it.title }}" class="myo-good__img" loading="lazy" decoding="async">
+                {% elif it.is_custom %}
+                  <div class="myo-good__img myo-good__ph" aria-label="TwoComms"><img src="{% static 'img/logo.svg' %}" alt="" width="24" height="26" style="width:24px;height:26px;object-fit:contain;"></div>
+                {% elif it.color_variant and it.color_variant.images.exists %}
                   <img src="{{ it.color_variant.images.first.image.url }}" alt="{{ it.title }}" class="myo-good__img">
                 {% elif it.product.main_image %}
                   <img src="{{ it.product.main_image.url }}" alt="{{ it.title }}" class="myo-good__img">
@@ -441,14 +445,15 @@
                   <div class="myo-good__title">{{ it.title }}</div>
                   <div class="myo-good__specs">
                     {% if it.size %}<span class="myo-chip">{% trans 'Розмір' %}: {{ it.size }}</span>{% endif %}
-                    <span class="myo-chip">{{ it.qty }} {% trans 'шт' %}</span>
+                    {% if it.is_dtf_film %}<span class="myo-chip">{{ it.film_length_display }} {% trans 'м' %}</span>{% else %}<span class="myo-chip">{{ it.qty }} {% trans 'шт' %}</span>{% endif %}
                     {% if it.fit_label %}<span class="myo-chip">{{ it.fit_label }}</span>{% endif %}
                     {% if it.color_variant %}
                     <span class="myo-chip">
                       <span class="order-item-swatch myo-swatch" data-primary="{{ it.color_variant.color.primary_hex }}" data-secondary="{{ it.color_variant.color.secondary_hex|default:'' }}"></span>
                       {{ it.color_variant.color.name|translate_color }}
                     </span>
-                    {% endif %}
+                    {% elif it.color_name_custom %}<span class="myo-chip">{{ it.color_name_custom }}</span>{% endif %}
+                    {% for label in it.generic_option_labels %}<span class="myo-chip">{{ label }}</span>{% endfor %}
                   </div>
                 </div>
                 <div class="myo-good__price">

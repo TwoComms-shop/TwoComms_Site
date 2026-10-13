@@ -14,6 +14,10 @@ def purge_fulfillment_data(client_ids, *, using="default"):
     from management.ig_fulfillment_stock_sync_models import IgFulfillmentStockSync
     from management.ig_split_shipping_models import (IgSplitShippingOffer, IgSplitShippingReceipt,
         IgSplitShippingChoice, IgSplitOrderPlan, IgSplitParcel, IgSplitParcelDispatch, IgSplitParcelTracking)
+    from management.ig_assisted_commerce_models import (IgAssistedCommerceImage,
+        IgAssistedCommerceExecution, IgAssistedCommerceDecision, IgAssistedCommerceRequest,
+        IgAssistedCommerceStockSync)
+    from management.services.ig_assisted_commerce_media import delete_asset_bytes
     ids = sorted({int(value) for value in client_ids})
     if not ids:
         return
@@ -25,6 +29,12 @@ def purge_fulfillment_data(client_ids, *, using="default"):
     ).order_by("pk").values_list("pk", flat=True))
     if fenced != ids:
         raise ValueError("Fulfilment erasure requires every exact persisted owner fence")
+    # Bytes precede every assisted metadata deletion. A filesystem failure
+    # aborts this atomic phase and keeps all owned pointers for an idempotent
+    # retry, including pointers whose bytes were already removed this time.
+    for image in IgAssistedCommerceImage.objects.using(using).select_for_update().filter(
+            client_id__in=ids).order_by("client_id", "pk"):
+        delete_asset_bytes(image)
     invitation_table = connection.ops.quote_name(IgRestockInvitation._meta.db_table)
     request_table = connection.ops.quote_name(IgFulfillmentReviewRequest._meta.db_table)
     answer_table = connection.ops.quote_name(IgRestockAnswer._meta.db_table)
@@ -37,6 +47,11 @@ def purge_fulfillment_data(client_ids, *, using="default"):
     # Normal ORM collectors must never bypass immutable evidence guards. Raw
     # deletions here still execute the database's owner/privacy triggers.
     steps = (
+        (IgAssistedCommerceImage, f"client_id IN ({placeholders})"),
+        (IgAssistedCommerceExecution, f"client_id IN ({placeholders})"),
+        (IgAssistedCommerceStockSync, f"client_id IN ({placeholders})"),
+        (IgAssistedCommerceDecision, f"client_id IN ({placeholders})"),
+        (IgAssistedCommerceRequest, f"client_id IN ({placeholders})"),
         (IgSplitParcelTracking, f"parcel_id IN ({split_parcels})"),
         (IgSplitParcelDispatch, f"parcel_id IN ({split_parcels})"),
         (IgSplitParcel, f"plan_id IN (SELECT id FROM {split_plan_table} WHERE client_id IN ({placeholders}))"),

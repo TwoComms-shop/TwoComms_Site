@@ -300,6 +300,10 @@ def _captured_reply_truth(plan, response, context, *, revision=None):
 
     if plan.plan_gap:
         return ReplyTruthResult(False, (plan.plan_gap,))
+    from management.services.ig_assisted_commerce_context import AssistedCommerceContext
+    assisted = getattr(revision, "_assisted_commerce_context", None) if revision is not None else None
+    if isinstance(assisted, AssistedCommerceContext):
+        return assisted.validate_reply(response, context)
     if plan.configuration.get("reorder_observations"):
         context = replace(context, payment_confirmed=False, order_created=False,
             shipment_state="unknown", known_tracking_refs=(), approved_timing_claims=(),
@@ -334,6 +338,10 @@ def _revision_response_coverage(plan, response, *, revision, local=False, checko
         # unanswered retail questions.
         response = replace(response, controls=())
     coverage = plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+    from management.services.ig_assisted_commerce_context import AssistedCommerceContext
+    assisted = getattr(revision, "_assisted_commerce_context", None)
+    if isinstance(assisted, AssistedCommerceContext) and not revision_service_complaint(revision):
+        coverage = assisted.coverage(plan, response, revision, coverage)
     from management.services.ig_product_inquiries import product_inquiries_for_revision
     disposition = product_inquiries_for_revision(revision, response_plan=plan)
     if disposition.get("status") == "manager_required":
@@ -373,6 +381,17 @@ class RevisionGenerationBoundary:
         from management.services.ig_response_plan import capture_response_plan
         client = IgClient.objects.get(pk=revision.client_id)
         self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=source_cart_capture)
+        from management.services.ig_assisted_commerce_context import capture_assisted_context
+        reference = (revision.generation_proposal or {}).get("assisted_offer_reference")
+        self.assisted_context, self.assisted_reason = capture_assisted_context(
+            client, revision, self.response_plan, reference=reference)
+        if self.assisted_context is not None:
+            revision._assisted_commerce_context = self.assisted_context
+            current_capture = self.assisted_context.verified.current_capture
+            if current_capture.get("capture_digest") != self.response_plan.source_cart_capture.get("capture_digest"):
+                self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=current_capture)
+        elif hasattr(revision, "_assisted_commerce_context"):
+            del revision._assisted_commerce_context
         from management.services.ig_product_inquiries import product_inquiries_for_revision
         self.product_inquiries = product_inquiries_for_revision(revision, response_plan=self.response_plan)
         self.source_cart_fence = None
@@ -413,7 +432,10 @@ class RevisionGenerationBoundary:
         from management.services.ig_commerce_projection import source_preferences_for
         if self.source_cart_fence or source_preferences_for(client):
             claims.append(CLAIM_SOURCE_PREFERENCES)
-        if client.current_product_id:
+        if self.assisted_context is not None:
+            from management.services.ig_revision_authority import CLAIM_ASSISTED_COMMERCE
+            claims.append(CLAIM_ASSISTED_COMMERCE)
+        elif client.current_product_id:
             catalog = build_revision_authority_bindings(client, claims=(CLAIM_CATALOG_CONFIGURATION,), settings_obj=self.settings)
             if catalog.ready:
                 claims.append(CLAIM_CATALOG_CONFIGURATION)
@@ -426,7 +448,8 @@ class RevisionGenerationBoundary:
                 claims.append(CLAIM_CURRENT_OFFER)
         return build_revision_authority_bindings(
             client, claims=claims, settings_obj=self.settings,
-            control={"source_cart_fence": self.source_cart_fence} if self.source_cart_fence else None,
+            control={**({"source_cart_fence": self.source_cart_fence} if self.source_cart_fence else {}),
+                     **({"assisted_context": self.assisted_context} if self.assisted_context is not None else {})},
         )
 
     @property
@@ -501,9 +524,13 @@ class RevisionGenerationBoundary:
         )
         if "items" in control and not checkout_requested and not case_reason:
             return RevisionAuthorityBindingSet(False, ("revision_cart_selection_unsupported",))
-        if not case_reason and ((preference_keys and not preference_acknowledgement) or "price_quoted" in control or checkout_requested):
+        if self.assisted_context is not None and preference_keys and not preference_acknowledgement:
+            return RevisionAuthorityBindingSet(False, ("assisted_configuration_requires_hosted_adoption",))
+        if not case_reason and self.assisted_context is None and ((preference_keys and not preference_acknowledgement) or "price_quoted" in control or checkout_requested):
             claims.append(CLAIM_CATALOG_CONFIGURATION)
         authority_control = dict(control)
+        if self.assisted_context is not None:
+            authority_control["assisted_context"] = self.assisted_context
         if self.source_cart_fence:
             authority_control["source_cart_fence"] = self.source_cart_fence
         if checkout_requested:
@@ -518,6 +545,7 @@ class RevisionGenerationBoundary:
                 sealed_sources=self.revision.bundle_snapshot["sources"],
                 source_cart_capture=self.response_plan.source_cart_capture or None,
                 source_cart_revision_id=self.revision.pk,
+                assisted_context=self.assisted_context,
             )
             if reasons:
                 return RevisionAuthorityBindingSet(False, reasons)
@@ -533,7 +561,7 @@ class RevisionGenerationBoundary:
         if not admitted.ready:
             return admitted
         if checkout_requested:
-            actions.append("checkout_proposal_create")
+            actions.append("assisted_checkout_proposal_create" if self.assisted_context is not None else "checkout_proposal_create")
         elif preference_keys and not preference_acknowledgement and not case_reason:
             actions.append("client_configuration_update")
         if case_reason:
@@ -707,7 +735,13 @@ class RevisionGenerationBoundary:
             if intent_reason:
                 self.last_reasons = (intent_reason,)
                 return ValidationDecision(False, self.last_reasons)
-        plan_reason = self.response_plan.validate(response) if not intent.get("service_complaint") else ""
+        validation_plan = self.response_plan
+        if (self.assisted_context is not None and (response.control.get("paylink") or response.control.get("payment"))
+            and self.assisted_context.purchase_ready(self.revision, self.response_plan.source_cart_capture)):
+            # A native offer proves checkout eligibility, while every other
+            # source-choice/selector/payment constraint remains on the old plan.
+            validation_plan = replace(validation_plan, authority={**validation_plan.authority, "audited_size_configuration_matches": True})
+        plan_reason = validation_plan.validate(response) if not intent.get("service_complaint") else ""
         if plan_reason:
             self.last_reasons = (plan_reason,)
             return ValidationDecision(False, self.last_reasons)
@@ -1043,6 +1077,8 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     )
     from management.services.ig_product_inquiries import inquiry_prompt
     coverage_note += "\n" + inquiry_prompt(boundary.product_inquiries)
+    if boundary.assisted_context is not None:
+        coverage_note += "\n" + boundary.assisted_context.prompt_guidance()
     from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
     complaint_intent = build_turn_intent(revision.client, revision)
     if complaint_intent.get("service_complaint"):
@@ -1282,8 +1318,19 @@ def _revision_response_purpose_reason(revision):
         return "service_complaint_manager_reply_owned"
     if revision_has_newer_source(current):
         return "pending_inbound"
-    text = "\n".join(str((row.payload.get("message") or {}).get("text") or "")
-        for row in current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
+    text_effects = tuple(current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
+    text = "\n".join(str((row.payload.get("message") or {}).get("text") or "") for row in text_effects)
+    from management.services.ig_assisted_commerce_context import CLAIM, capture_assisted_context
+    references = [row.get("selector", {}).get("assisted_reference") for effect in text_effects
+                  for row in effect.fact_bindings if row.get("claim") == CLAIM]
+    reference = references[0] if references else (current.generation_proposal or {}).get("assisted_offer_reference")
+    if reference is not None:
+        if any(item != reference for item in references):
+            return "assisted_outbox_reference_conflict"
+        context, reason = capture_assisted_context(current.client, current, reference=reference)
+        if context is None:
+            return reason or "assisted_offer_unavailable"
+        current._assisted_commerce_context = context
     if current.delivery_effects.filter(purpose="technical_holding").exists():
         from management.services.ig_revision_holding import holding_receipt_valid
         if not holding_receipt_valid(current, text=text):
@@ -1824,7 +1871,8 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     readiness = boundary.check(authority)
     if not readiness.ready:
         return RevisionLiveResult(revision_id, "blocked", readiness.reasons)
-    checkout_requested = "checkout_proposal_create" in authority.allowed_actions
+    assisted_checkout_requested = "assisted_checkout_proposal_create" in authority.allowed_actions
+    checkout_requested = "checkout_proposal_create" in authority.allowed_actions or assisted_checkout_requested
     if checkout_requested:
         effects, checkout_reply, reasons = _prepare_visible_content(revision, response, settings_row)
     else:
@@ -1840,6 +1888,18 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     if checkout_requested:
         from management.services.ig_revision_checkout import authorize_revision_checkout, prepare_revision_checkout
 
+        if assisted_checkout_requested:
+            from management.services.ig_revision_checkout import prepare_revision_assisted_checkout
+            checkout = prepare_revision_assisted_checkout(
+                revision.pk, token, source_message_id=int(revision.bundle_snapshot["sources"][-1]["message_id"]),
+                settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
+                publication=publication, generation_proposal_digest=revision.generation_proposal_digest,
+                authority=authority, reply_text=checkout_reply, noncheckout_effects=effects,
+                source_cart_capture=boundary.response_plan.source_cart_capture)
+            if not checkout.planned:
+                return RevisionLiveResult(revision_id, "blocked", checkout.reasons)
+            return _drain_effects(revision, token, settings_row, access_token)
+
         checkout_source = next((
             source for source in reversed(revision.bundle_snapshot["sources"])
             if source.get("role") == "user" and not authorize_revision_checkout(
@@ -1847,6 +1907,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
                 sealed_sources=revision.bundle_snapshot["sources"],
                 source_cart_capture=boundary.response_plan.source_cart_capture or None,
                 source_cart_revision_id=revision.pk,
+                assisted_context=boundary.assisted_context,
             )[1]
         ), None)
         if checkout_source is None:

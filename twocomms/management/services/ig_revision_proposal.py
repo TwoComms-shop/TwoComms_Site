@@ -840,6 +840,11 @@ def store_revision_generation_proposal(
                 "authority_digest": authority.authority_digest,
             },
         }
+        assisted = [row for row in safe_facts if row.get("claim") == "assisted_commerce_offer"]
+        if assisted:
+            if len(assisted) != 1 or not isinstance((assisted[0].get("selector") or {}).get("assisted_reference"), dict):
+                return RevisionProposalResult(reasons=("assisted_offer_reference_invalid",))
+            proposal["assisted_offer_reference"] = deepcopy(assisted[0]["selector"]["assisted_reference"])
         if fulfillment_capture is not None:
             from management.services.ig_fulfillment_context import retained_fulfillment_frame, validate_retained_fulfillment
             captured_fulfillment = retained_fulfillment_frame(fulfillment_capture)

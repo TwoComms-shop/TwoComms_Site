@@ -50,6 +50,7 @@ from orders.nova_poshta_documents import (
     get_payment_status_label,
 )
 from orders.delivery_display import get_order_nova_poshta_point
+from orders.services.customer_order_presentation import prepare_order_item_presentation
 from ..models import (
     OfflineStore,
     PageView,
@@ -472,7 +473,8 @@ def _build_orders_context(request):
         'instagram_commercial_episode',
         'instagram_commercial_episode__client',
     ).prefetch_related(
-        Prefetch('items', queryset=OrderItem.objects.select_related('product')),
+        Prefetch('items', queryset=OrderItem.objects.select_related(
+            'product', 'color_variant__color').prefetch_related('color_variant__images')),
         'custom_print_leads',
         'ig_deals__client',
         Prefetch(
@@ -484,6 +486,7 @@ def _build_orders_context(request):
         ),
     )
     orders = list(selected_page_qs)
+    prepare_order_item_presentation(orders, audience='staff', actor=getattr(request, 'user', None))
     orders_page.object_list = orders
     for order in orders:
         snapshot = build_order_payment_snapshot(order)

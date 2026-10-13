@@ -140,6 +140,7 @@ class CommerceTurnRequest:
     info_topics: tuple[str, ...] = ()
     checkout_requested: bool = False
     purchase_requested: bool = False
+    full_cart_purchase_requested: bool = False
     source_binding: Mapping[str, object] = field(default_factory=dict)
     recipient_id: str = ""
     reset_requested: bool = False

@@ -166,6 +166,53 @@ def _size_protection(pool, reusable_ids, now, *, lock=False):
     return totals, _primitive({"items": items, "rules": rules})
 
 
+def _capture_inventory_pools(lines, now, *, reusable_ids=(), lock=False):
+    """Shared exact inventory facts; callers independently prove every line.
+
+    No review/decision/source authority is constructed here. Whole-pool paid
+    and live holds and exact size coverage use the existing protected capture.
+    """
+    reusable_ids = set(reusable_ids)
+    pools, captures = {}, []
+    for line in lines:
+        target = line.get("target") or {}
+        if type(target.get("quantity")) is not int or not 1 <= target["quantity"] <= 99:
+            raise StockSyncError("target_incomplete")
+        allocation = _allocation(target, lock=lock)
+        captures.append({"line_id": line["line_id"], "target": target, "configuration_digest": line["configuration_digest"],
+            "allocation": allocation})
+        pool = pools.get(allocation["pool_id"])
+        if pool is None:
+            protected, reservation_rows = _reservations(allocation["source"], allocation["identity"], now, lock=lock)
+            reused = sum(row["quantity"] for row in reservation_rows if row["id"] in reusable_ids)
+            pool = {"pool_id": allocation["pool_id"], "source": allocation["source"], "identity": allocation["identity"],
+                "before_total": allocation["total"], "protected_total": protected, "protected": protected - reused,
+                "reused_quantity": reused, "reused_reservation_ids": sorted(row["id"] for row in reservation_rows if row["id"] in reusable_ids),
+                "required": 0, "line_ids": [],
+                "labels": [], "size_counts": {}, "reservations": reservation_rows}
+            if allocation["source"] == "catalog_variant":
+                size_protected, scope = _size_protection(pool, reusable_ids, now, lock=lock)
+                pool["size_protected"] = size_protected
+                pool["protected_size_scope"] = scope
+            pools[allocation["pool_id"]] = pool
+        pool["required"] += target["quantity"]
+        pool["line_ids"].append(line["line_id"])
+        pool["labels"].append(str(line.get("label") or "")[:160])
+        if allocation["source"] == "catalog_variant":
+            key = str(allocation["size_rule_id"])
+            size_pool = pool["size_counts"].setdefault(key, {"rule_id": allocation["size_rule_id"],
+                "size": target["size"], "fit": target["fit_option_code"], "before_total": allocation["size_total"],
+                "protected": pool["size_protected"].get(key, 0), "required": 0, "line_ids": []})
+            size_pool["required"] += target["quantity"]
+            size_pool["line_ids"].append(line["line_id"])
+    for pool in pools.values():
+        pool["minimum_total"] = pool["protected"] + pool["required"]
+        pool["total_free"] = max(0, pool["before_total"] - pool["protected"])
+        for size_pool in pool["size_counts"].values():
+            size_pool["minimum_total"] = size_pool["protected"] + size_pool["required"]
+    return captures, sorted(pools.values(), key=lambda row: (row["source"] == "warehouse", row["identity"]))
+
+
 def _capture(request, now, *, lock=False):
     from django.contrib.auth import get_user_model
     from management.bot_access import has_all_bot_capabilities, OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION
@@ -204,46 +251,9 @@ def _capture(request, now, *, lock=False):
         raise StockSyncError("all_lines_require_available")
     from management.services.ig_fulfillment_checkout import owned_stock_sync_reservation_ids
     reusable_ids = set(owned_stock_sync_reservation_ids(request, decision, cart, now))
-    pools, captures = {}, []
-    for line in lines:
-        answer = by_id[line["line_id"]]
-        if answer.get("availability") != "available" or answer.get("supply_basis") not in {"accessible_unrecorded", "warehouse_checked"}:
-            raise StockSyncError("all_lines_require_available")
-        target = line.get("target") or {}
-        if type(target.get("quantity")) is not int or not 1 <= target["quantity"] <= 99:
-            raise StockSyncError("target_incomplete")
-        allocation = _allocation(target, lock=lock)
-        captures.append({"line_id": line["line_id"], "target": target, "configuration_digest": answer["configuration_digest"],
-            "allocation": allocation})
-        pool = pools.get(allocation["pool_id"])
-        if pool is None:
-            protected, reservation_rows = _reservations(allocation["source"], allocation["identity"], now, lock=lock)
-            reused = sum(row["quantity"] for row in reservation_rows if row["id"] in reusable_ids)
-            pool = {"pool_id": allocation["pool_id"], "source": allocation["source"], "identity": allocation["identity"],
-                "before_total": allocation["total"], "protected_total": protected, "protected": protected - reused,
-                "reused_quantity": reused, "reused_reservation_ids": sorted(row["id"] for row in reservation_rows if row["id"] in reusable_ids),
-                "required": 0, "line_ids": [],
-                "labels": [], "size_counts": {}, "reservations": reservation_rows}
-            if allocation["source"] == "catalog_variant":
-                size_protected, scope = _size_protection(pool, reusable_ids, now, lock=lock)
-                pool["size_protected"] = size_protected
-                pool["protected_size_scope"] = scope
-            pools[allocation["pool_id"]] = pool
-        pool["required"] += target["quantity"]
-        pool["line_ids"].append(line["line_id"])
-        pool["labels"].append(str(line.get("label") or "")[:160])
-        if allocation["source"] == "catalog_variant":
-            key = str(allocation["size_rule_id"])
-            size_pool = pool["size_counts"].setdefault(key, {"rule_id": allocation["size_rule_id"],
-                "size": target["size"], "fit": target["fit_option_code"], "before_total": allocation["size_total"],
-                "protected": pool["size_protected"].get(key, 0), "required": 0, "line_ids": []})
-            size_pool["required"] += target["quantity"]
-            size_pool["line_ids"].append(line["line_id"])
-    for pool in pools.values():
-        pool["minimum_total"] = pool["protected"] + pool["required"]
-        pool["total_free"] = max(0, pool["before_total"] - pool["protected"])
-        for size_pool in pool["size_counts"].values():
-            size_pool["minimum_total"] = size_pool["protected"] + size_pool["required"]
+    captures, pool_rows = _capture_inventory_pools([{**line, "configuration_digest": by_id[line["line_id"]]["configuration_digest"]}
+        for line in lines], now, reusable_ids=reusable_ids, lock=lock)
+    pools = {pool["pool_id"]: pool for pool in pool_rows}
     # A checked physical AVAILABLE decision can disagree with the actual
     # accounting pool too. Only the explicit absolute recount below grants
     # capacity; the decision's checked quantity is never an inventory write.

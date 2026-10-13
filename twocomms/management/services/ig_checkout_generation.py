@@ -19,6 +19,7 @@ from management.services.ig_checkout_payment import (
     _capture_attempt_tracking,
     _enqueue_invoice_created_alert_best_effort,
     _invoice_payload,
+    _prelock_assisted_proposal,
     _revalidate_frozen_proposal,
     _send_add_payment_info_if_missing,
     _snapshot,
@@ -36,6 +37,7 @@ from management.services.ig_inventory import (
     reserve_proposal_inventory,
 )
 from orders.checkout_series import (
+    _validated_checkout_series_identity,
     assisted_checkout_v2_mode,
     build_checkout_series_identity,
 )
@@ -145,15 +147,19 @@ def _lock_generation_graph(attempt_id):
 
     locator = (
         IgCheckoutInvoiceGeneration.objects.filter(payment_attempt_id=attempt_id)
-        .values("pk", "proposal_id", "proposal__deal_id")
+        .values("pk", "proposal_id", "proposal__deal_id", "proposal__assisted_commerce_execution__id")
         .first()
     )
     if locator is None:
         return None
+    if locator["proposal__assisted_commerce_execution__id"] is not None:
+        from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
+        lock_assisted_checkout_owner(locator["proposal_id"])
     deal = IgDeal.objects.select_for_update().get(pk=locator["proposal__deal_id"])
     proposal = IgCheckoutProposal.objects.select_for_update().select_related(
         "client", "commercial_episode"
     ).get(pk=locator["proposal_id"], deal_id=deal.pk)
+    proposal._ig_assisted_execution_id = locator["proposal__assisted_commerce_execution__id"]
     locked_generations = list(
         IgCheckoutInvoiceGeneration.objects.select_for_update()
         .filter(proposal_id=proposal.pk)
@@ -690,10 +696,13 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
         IgDeal,
     )
 
+    assisted_owner = _prelock_assisted_proposal(proposal)
     deal = IgDeal.objects.select_for_update().get(pk=proposal.deal_id)
     locked = IgCheckoutProposal.objects.select_for_update().select_related(
         "client", "commercial_episode"
     ).get(pk=proposal.pk, deal_id=deal.pk)
+    if assisted_owner is not None:
+        locked._ig_assisted_execution_id = assisted_owner.pk
     from storefront.services.brigade_commerce import brigade_payment_error
     from management.services.ig_checkout_payment import _proposal_brigade_policy
     brigade_full_only, _eligible = _proposal_brigade_policy(locked)
@@ -913,14 +922,44 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
             pk=recipient_source_attempt.user_id
         ).first()
 
-    # Disabling rollout stops creation of new provider generations while all
-    # callbacks/reconciliation for existing rows continue to work below.
-    if assisted_checkout_v2_mode() != "enforced":
+    # Full manager-assisted commerce has its own finite native Execution.
+    # Model flags, snapshot markers and form values never bypass rollout.
+    assisted = _revalidate_frozen_proposal(locked)
+    fresh_execution = None
+    if assisted is not None:
+        from management.services.ig_assisted_checkout import VerifiedAssistedExecution
+        fresh_execution = assisted.get("verified_execution")
+        proof = assisted.get("proof") or {}
+        if (type(fresh_execution) is not VerifiedAssistedExecution
+                or fresh_execution.proposal_id != locked.pk
+                or fresh_execution.client_id != locked.client_id
+                or proof.get("execution_id") != str(fresh_execution.execution_id)
+                or proof.get("execution_digest") != fresh_execution.execution_digest):
+            raise CheckoutPaymentError("unavailable", "Погоджене замовлення потребує перевірки менеджера.")
+    if assisted_checkout_v2_mode() != "enforced" and fresh_execution is None:
         raise CheckoutPaymentError(
             "unavailable", "Створення нового рахунку тимчасово призупинено."
         )
 
-    _revalidate_frozen_proposal(locked)
+    terms_ack = None
+    if assisted is not None:
+        if recipient_source_attempt is not None:
+            from management.services.ig_assisted_checkout import validate_assisted_attempt
+            original = validate_assisted_attempt(recipient_source_attempt, now=now)
+            if (original.get("ready") is not True or original.get("is_assisted") is not True
+                    or original.get("proof") != assisted["proof"]):
+                raise CheckoutPaymentError("assisted_terms_accepted",
+                    "Підтвердіть погоджені умови товарів перед оплатою.", field="assisted_terms_accepted")
+            terms_ack = dict(recipient_source_attempt.cart_snapshot["assisted_terms_ack"])
+        else:
+            if (payload.get("assisted_terms_accepted") != "1" or not isinstance(grant_id, str)
+                    or not 1 <= len(grant_id) <= 64):
+                raise CheckoutPaymentError("assisted_terms_accepted",
+                    "Підтвердіть погоджені умови товарів перед оплатою.", field="assisted_terms_accepted")
+            from management.services.ig_assisted_commerce import _digest
+            terms_ack = {"version": 1, "accepted": True, "accepted_at": now.isoformat(),
+                "proposal_id": str(locked.public_id), "proposal_revision": locked.revision,
+                "execution_proof_digest": _digest(assisted["proof"]), "grant_id": grant_id}
     try:
         payment_choice = payment_choice_for_post(
             locked,
@@ -963,7 +1002,9 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
         .aggregate(value=Max("generation"))["value"]
         or 0
     ) + 1
-    identity = build_checkout_series_identity(
+    identity_builder = (_validated_checkout_series_identity if fresh_execution is not None
+        else build_checkout_series_identity)
+    identity = identity_builder(
         locked.public_id,
         generation=generation_number,
     )
@@ -1022,6 +1063,7 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
         status=PaymentAttempt.Status.PROCESSING,
         cart_snapshot={
             **_snapshot(locked),
+            **({"assisted_terms_ack": terms_ack} if terms_ack is not None else {}),
             "checkout_generation_id": generation.pk,
             "checkout_series_key": identity.series_key,
         },
@@ -1129,6 +1171,12 @@ def _persist_provider_dispatch_evidence(attempt_id, invoice_payload):
             "provider_ambiguous",
             "Generation is no longer current before provider dispatch.",
         )
+    # The persisted full execution is rechecked at the last local boundary,
+    # after preparation and immediately before the ordinary provider request.
+    from management.services.ig_checkout_payment import _assisted_proposal_validation
+    if getattr(proposal, "_ig_assisted_execution_id", None):
+        _assisted_proposal_validation(proposal, fresh=True)
+        _snapshot(proposal)
     encoded = json.dumps(
         invoice_payload,
         ensure_ascii=True,
@@ -1492,7 +1540,13 @@ def create_or_reuse_generation_invoice(
         promo_discount=values["promo_discount"],
     )
     invoice_payload["validity"] = int(PROVIDER_VALIDITY_SECONDS)
-    _persist_provider_dispatch_evidence(attempt.pk, invoice_payload)
+    try:
+        _persist_provider_dispatch_evidence(attempt.pk, invoice_payload)
+    except CheckoutPaymentError:
+        # No request crossed the provider boundary. Keep this known local
+        # rejection in the existing terminal path, never ambiguous replay.
+        _persist_provider_failure(attempt.pk, ambiguous=False, reason="assisted_pre_dispatch_rejected")
+        raise
     try:
         from storefront.views.monobank import _monobank_api_request
 
@@ -2138,6 +2192,15 @@ def apply_verified_generation_payment(
                 reason=obsolete_reason,
             )
             return None, False
+
+        if getattr(proposal, "_ig_assisted_execution_id", None) is not None or "assisted_execution" in (attempt.cart_snapshot or {}):
+            from management.services.ig_assisted_checkout import validate_assisted_attempt
+            assisted = validate_assisted_attempt(attempt, now=now)
+            if not isinstance(assisted, dict) or assisted.get("ready") is not True:
+                _mark_resource_review(deal, proposal, generation, attempt, payload=payload,
+                    source=source, now=now,
+                    reason=(assisted or {}).get("reason") or "assisted_original_proof_invalid")
+                return None, False
 
         if not proposal.winner_invoice_generation_id:
             generation.winner_slot = 1

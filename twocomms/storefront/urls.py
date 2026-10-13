@@ -90,6 +90,7 @@ def admin_panel_view(request, *args, **kwargs):
 urlpatterns = [
     path('offer/a/<str:token>/', _module_view('storefront.views.ig_checkout', 'ig_checkout_token_entry'), name='ig_checkout_token_entry'),
     path('offer/<uuid:proposal_id>/', _module_view('storefront.views.ig_checkout', 'ig_checkout_proposal'), name='ig_checkout_proposal'),
+    path('offer/<uuid:proposal_id>/items/<int:item_id>/image/', _module_view('storefront.views.ig_checkout', 'ig_checkout_item_image'), name='ig_checkout_item_image'),
     path('offer/<uuid:proposal_id>/status/', _module_view('storefront.views.ig_checkout', 'ig_checkout_status'), name='ig_checkout_status'),
     path('offer/<uuid:proposal_id>/share/', _module_view('storefront.views.ig_checkout', 'ig_checkout_share_token'), name='ig_checkout_share_token'),
     # Legacy support URLs kept as permanent aliases to the canonical localized pages.
@@ -447,6 +448,7 @@ urlpatterns = [
         name='telegram_order_payment_snapshot',
     ),
     path('my/orders/', views.my_orders, name='my_orders'),
+    path('my/orders/<int:order_id>/items/<int:item_id>/image/', _module_view('storefront.views.ig_checkout', 'account_assisted_order_item_image'), name='account_assisted_order_item_image'),
     path('orders/update-payment-method/', views.update_payment_method, name='update_payment_method'),
     path('orders/confirm-payment/', views.confirm_payment, name='confirm_payment'),
 

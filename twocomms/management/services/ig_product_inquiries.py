@@ -187,6 +187,24 @@ class ProductInquiryCapture:
         return result
 
 
+def _resolved_assisted_inquiries(revision, result):
+    from management.services.ig_assisted_commerce_context import AssistedCommerceContext
+    context = getattr(revision, "_assisted_commerce_context", None)
+    if (not isinstance(context, AssistedCommerceContext) or context.revision_id != revision.pk
+        or context.revision_digest != revision.snapshot_digest):
+        return result
+    remaining = [row for row in result.get("inquiries", ()) if not context.resolves_inquiry(row)]
+    if len(remaining) == len(result.get("inquiries", ())):
+        return result
+    resolved = {**deepcopy(result), "inquiries": remaining,
+        "assisted_resolution": context.reference,
+        "status": "manager_required" if remaining else "none",
+        "reason": "product_configuration_review" if any(row["axis"] != "information" for row in remaining)
+                  else "product_information_review" if remaining else ""}
+    resolved["digest"] = _digest({key: value for key, value in resolved.items() if key not in {"digest", "snapshot_digest"}})
+    return resolved
+
+
 def product_inquiries_for_revision(revision, *, response_plan=None):
     """Reuse captured catalog state, never query a newer product/conversation."""
     sources = (revision.bundle_snapshot or {}).get("sources") or []
@@ -219,10 +237,10 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
         result = capability.recompute(revision) or {"status": "none", "reason": "", "gap": "product_inquiry_capture_invalid"}
         revision._product_inquiries = result
         revision._product_inquiry_capture = capability
-        return result
+        return _resolved_assisted_inquiries(revision, result)
     cached = getattr(revision, "_product_inquiries", None)
     if cached and cached.get("snapshot_digest") == revision.snapshot_digest and cached.get("source_refs") == source_refs(sources):
-        return deepcopy(cached)
+        return _resolved_assisted_inquiries(revision, deepcopy(cached))
     coverage = (revision.action_receipts or {}).get("response_coverage") or {}
     stored = coverage.get("product_inquiries") or {}
     material = {key: value for key, value in stored.items() if key not in {"digest", "snapshot_digest"}}
@@ -232,19 +250,19 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
         and stored.get("schema") == VERSION and stored.get("digest") == _digest(material)
         and stored.get("snapshot_digest") == revision.snapshot_digest and stored.get("source_refs") == source_refs(sources)
         and (not original or stored.get("cart_identity") == cart_identity(original))):
-        return deepcopy(stored)
+        return _resolved_assisted_inquiries(revision, deepcopy(stored))
     holding = (revision.action_receipts or {}).get("technical_holding") or {}
     stored = holding.get("product_inquiries") or {}
     material = {key: value for key, value in stored.items() if key not in {"digest", "snapshot_digest"}}
     if (holding.get("snapshot_digest") == revision.snapshot_digest
         and stored.get("schema") == VERSION and stored.get("digest") == _digest(material)
         and stored.get("snapshot_digest") == revision.snapshot_digest and stored.get("source_refs") == source_refs(sources)):
-        return deepcopy(stored)
+        return _resolved_assisted_inquiries(revision, deepcopy(stored))
     # Source-only questions remain recognizable without a selection. This
     # cannot invent supported sizes, product identity or catalogue authority.
     result = capture_product_inquiries(sources, profile_language=revision.client.language)
     result["snapshot_digest"] = revision.snapshot_digest
-    return result
+    return _resolved_assisted_inquiries(revision, result)
 
 
 def inquiry_prompt(disposition):

@@ -406,9 +406,24 @@ def checkout_authority_control(client, control, *, source_cart_capture=None, sou
     return {"items": _quote_items(quote)}, ()
 
 
-def authorize_revision_checkout(client, control, source_text, *, sealed_sources=(), source_cart_capture=None, source_cart_revision_id=None):
+def authorize_revision_checkout(client, control, source_text, *, sealed_sources=(), source_cart_capture=None, source_cart_revision_id=None, assisted_context=None):
     """Use the real purchase gate with sealed customer text, never model prose."""
     from management.services.instagram_bot import payment_link_allowed
+    if assisted_context is not None:
+        from management.services.ig_assisted_commerce_context import AssistedCommerceContext
+        from management.models import IgCustomerTurnRevision
+        if not isinstance(assisted_context, AssistedCommerceContext) or assisted_context.verified.client_id != client.pk:
+            return {}, ("assisted_checkout_context_invalid",)
+        revision = IgCustomerTurnRevision.objects.filter(pk=source_cart_revision_id, client=client).first()
+        if (not revision or revision.snapshot_digest != assisted_context.revision_digest
+            or not assisted_context.purchase_ready(revision, source_cart_capture or {})):
+            return {}, ("checkout_purchase_authority_missing",)
+        if any(key in control for key in ("items", "item", "product", "color_variant_id", "option", "price", "price_quoted")):
+            return {}, ("assisted_checkout_terms_override_forbidden",)
+        request, reasons = _payment_request(control)
+        if reasons or request != "full":
+            return {}, reasons or ("assisted_checkout_payment_policy_unavailable",)
+        return {"assisted_context": assisted_context, "assisted_reference": assisted_context.reference}, ()
 
     normalized, reasons = checkout_authority_control(client, control, source_cart_capture=source_cart_capture,
         source_cart_revision_id=source_cart_revision_id)
@@ -705,3 +720,160 @@ def prepare_revision_checkout(
         return RevisionCheckoutResult(reasons=(str(exc),))
     except Exception:
         return RevisionCheckoutResult(reasons=("checkout_preparation_failed",))
+
+
+def prepare_revision_assisted_checkout(
+    revision_id, revision_token, *, source_message_id, settings_id,
+    settings_permission_epoch, publication, generation_proposal_digest,
+    authority, noncheckout_effects=(), reply_text, source_cart_capture=None, now=None,
+):
+    """Use the one native assisted quote producer, then the existing outbox."""
+    import uuid
+    from management.services.ig_assisted_commerce_context import ACTION as assisted_action, CLAIM, capture_assisted_context
+    from management.services.ig_assisted_checkout import prepare_assisted_checkout
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+    from management.services.ig_response_cart_fence import capture_source_cart_authority
+    from management.services.ig_revision_authority import CLAIM_SOURCE_PREFERENCES
+    from management.services.ig_reply_authority import build_reply_truth_context
+
+    if connection.in_atomic_block:
+        return RevisionCheckoutResult(reasons=("caller_transaction_active",))
+    if not isinstance(authority, RevisionAuthorityBindingSet) or not authority.ready or assisted_action not in authority.allowed_actions:
+        return RevisionCheckoutResult(reasons=("assisted_checkout_action_not_authorized",))
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return RevisionCheckoutResult(reasons=("revision_missing",))
+    now = now or timezone.now()
+    try:
+        with commercial_episode_client_lock(identity["client_id"]), transaction.atomic():
+            client = IgClient.objects.select_for_update().get(pk=identity["client_id"])
+            revision = IgCustomerTurnRevision.objects.select_for_update().select_related("client").get(pk=revision_id, client=client)
+            settings_obj = InstagramBotSettings.objects.select_for_update().select_related("active_instruction_publication").get(pk=settings_id)
+            proposal = revision.generation_proposal
+            if (not generation_proposal_digest or revision.generation_proposal_digest != generation_proposal_digest
+                or not isinstance(proposal, Mapping) or _digest(proposal) != generation_proposal_digest):
+                raise _Rollback("generation_proposal_mismatch")
+            captured = (proposal.get("policy_manifest") or {}).get("instruction_publication") or {}
+            if any(captured.get(key) != value for key, value in (("id", publication.publication_id),
+                ("version", publication.version), ("hash", publication.snapshot_hash))):
+                raise _Rollback("generation_publication_mismatch")
+            supplied = _authority_projection(authority)
+            if supplied != proposal.get("authority") or assisted_action not in supplied.get("allowed_actions", ()):
+                raise _Rollback("generation_proposal_authority_mismatch")
+            refs = [row.get("selector", {}).get("assisted_reference") for row in authority.fact_bindings if row.get("claim") == CLAIM]
+            if len(refs) != 1 or refs[0] != proposal.get("assisted_offer_reference"):
+                raise _Rollback("assisted_generation_reference_mismatch")
+            snapshot = next((row for row in revision.bundle_snapshot.get("sources", ()) if row.get("message_id") == source_message_id), None)
+            if (not snapshot or snapshot.get("role") != "user"
+                or source_message_id not in {row.get("message_id") for row in proposal.get("sources", ())}
+                or not revision.sources.filter(message_id=source_message_id, message__client_id=client.pk).exists()):
+                raise _Rollback("source_not_in_revision")
+            response = _response(proposal)
+            _composition(revision, response, reply_text)
+            prior = tuple(noncheckout_effects)
+            if prior:  # Custom photos require their own native asset capability.
+                raise _Rollback("assisted_checkout_catalog_media_unsupported")
+            generation = proposal.get("generation") or {}
+            request_id = str(generation.get("request_id") or "")
+            if not request_id:
+                raise _Rollback("generation_request_missing")
+            plan_identity = _digest({"boundary": assisted_action, "generation_proposal_digest": generation_proposal_digest,
+                "source_message_id": source_message_id, "authority": supplied, "reply_text": reply_text, "noncheckout_effects": prior})
+            existing = tuple(revision.delivery_effects.order_by("order_index", "id"))
+            if existing:
+                if any(row.authority_context_digest != plan_identity or row.generation_request_id != request_id
+                    or row.source_message_id != source_message_id or row.plan_digest != existing[0].plan_digest for row in existing):
+                    raise _Rollback("checkout_plan_conflict")
+                first = existing[0]
+                if (first.settings_id_snapshot != settings_id or first.settings_permission_epoch != settings_permission_epoch
+                    or first.publication_id != publication.publication_id or first.publication_version != publication.version
+                    or first.publication_hash != publication.snapshot_hash):
+                    raise _Rollback("checkout_plan_publication_mismatch")
+                checked = pre_winner_readiness(revision.pk, revision_token, settings_id=settings_id,
+                    settings_permission_epoch=settings_permission_epoch, publication=publication,
+                    fact_bindings=first.fact_bindings, offer_bindings=first.offer_bindings,
+                    fact_checker=check_fact_bindings, offer_checker=check_offer_bindings, now=now)
+                if not checked.ready:
+                    raise _Rollback("readiness:" + ",".join(checked.reasons))
+                offers = [row for row in first.offer_bindings if row.get("claim") == CLAIM_CURRENT_OFFER]
+                if len(offers) != 1:
+                    raise _Rollback("checkout_plan_offer_missing")
+                return RevisionCheckoutResult(True, False, existing, offers[0]["subjects"]["proposal_id"])
+            # This check still uses PRE-owner generation facts. The coordinator
+            # commits its quote and POST-owner facts in this same transaction.
+            checked = pre_winner_readiness(revision.pk, revision_token, settings_id=settings_id,
+                settings_permission_epoch=settings_permission_epoch, publication=publication,
+                fact_bindings=authority.fact_bindings, offer_bindings=authority.offer_bindings,
+                fact_checker=check_fact_bindings, offer_checker=check_offer_bindings, now=now)
+            if not checked.ready:
+                raise _Rollback("readiness:" + ",".join(checked.reasons))
+            context, reason = capture_assisted_context(client, revision, reference=refs[0], now=now)
+            if context is None:
+                raise _Rollback(reason)
+            capture = source_cart_capture or proposal.get("source_cart_capture") or {}
+            _controls, reasons = authorize_revision_checkout(client, response.control, snapshot.get("text", ""),
+                sealed_sources=revision.bundle_snapshot["sources"], source_cart_capture=capture,
+                source_cart_revision_id=revision.pk, assisted_context=context)
+            if reasons:
+                raise _Rollback(",".join(reasons))
+            business_before = capture_checkout_business_facts(client)
+            watermark = client.deals.aggregate(value=Max("pk"))["value"] or 0
+            result = prepare_assisted_checkout(client.pk, actor=None, request_id=refs[0]["request_id"],
+                decision_id=refs[0]["decision_id"], expected_request_digest=refs[0]["request_digest"],
+                expected_decision_digest=refs[0]["decision_digest"],
+                operation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"ig-assisted-revision:{revision.pk}:{generation_proposal_digest}"),
+                revision_id=revision.pk, settings_id=settings_id)
+            if not result.get("ready") or not result.get("token"):
+                raise _Rollback(result.get("reason") or "assisted_checkout_token_missing")
+            checkout, url = result["proposal"], result["checkout_url"]
+            token = IgCheckoutAccessToken.objects.get(proposal=checkout, token_digest=IgCheckoutAccessToken.digest(result["token"]))
+            client.refresh_from_db()
+            context, reason = capture_assisted_context(client, revision, reference=refs[0], now=now)
+            if context is None:
+                raise _Rollback(reason)
+            fence = capture_source_cart_authority(client, result["current_capture"], revision=revision)
+            if not fence.ready:
+                raise _Rollback(fence.reason)
+            business_after = capture_checkout_business_facts(client)
+            facts = []
+            for old in authority.fact_bindings:
+                selector = old["selector"]
+                owned = old["claim"] in {CLAIM, CLAIM_SOURCE_PREFERENCES}
+                if old["claim"] == CLAIM:
+                    selector = {"assisted_context": context}
+                elif old["claim"] == CLAIM_SOURCE_PREFERENCES:
+                    selector = {"source_cart_fence": fence.binding}
+                fresh = build_revision_authority_bindings(client, claims=(old["claim"],), control=selector, settings_obj=settings_obj)
+                if not fresh.ready or not fresh.fact_bindings:
+                    raise _Rollback("checkout_post_fact_unavailable")
+                current = fresh.fact_bindings[0]
+                if (current["authority_digest"] != old["authority_digest"] and not owned
+                    and not owned_checkout_business_rebind(old, current, before=business_before.get(old["claim"]),
+                        after=business_after.get(old["claim"]), checkout=checkout, prior_deal_watermark=watermark)):
+                    raise _Rollback("checkout_post_fact_unavailable")
+                facts.extend(fresh.fact_bindings)
+            offer = build_revision_authority_bindings(client, claims=(CLAIM_CURRENT_OFFER,),
+                control={"checkout_access_token_id": token.pk}, settings_obj=settings_obj)
+            if not offer.ready or offer.offer_bindings[0]["subjects"]["proposal_id"] != checkout.pk:
+                raise _Rollback("checkout_post_offer_unavailable")
+            text = reply_text.rstrip() + "\n\n" + url
+            from management.services.ig_response_control import ValidatedResponse
+            truth = context.validate_reply(ValidatedResponse(reply_text=text, controls=response.controls),
+                build_reply_truth_context(client, control=response.control, server_urls=(url,)))
+            if not truth.valid:
+                raise _Rollback("checkout_final_truth:" + ",".join(truth.reasons))
+            prepared = prepare_text_effects(client.igsid, text, provider_namespace=snapshot["source_namespace"])
+            if prepared.error:
+                raise _Rollback("checkout_text:" + prepared.error)
+            planned = plan_revision_effects(revision.pk, revision_token, source_message_id=source_message_id,
+                settings_id=settings_id, settings_permission_epoch=settings_permission_epoch, publication=publication,
+                authority_context_digest=plan_identity, effects=prepared.effects, fact_bindings=facts,
+                offer_bindings=offer.offer_bindings, fact_checker=check_fact_bindings, offer_checker=check_offer_bindings,
+                generation_request_id=request_id, generation_model=generation.get("actual_model", ""), now=now)
+            if not planned.effects or planned.reasons:
+                raise _Rollback("checkout_plan:" + ",".join(planned.reasons))
+            return RevisionCheckoutResult(True, planned.created, planned.effects, checkout.pk)
+    except (CheckoutConfigurationError, _Rollback) as exc:
+        return RevisionCheckoutResult(reasons=(str(exc),))
+    except Exception:
+        return RevisionCheckoutResult(reasons=("assisted_checkout_preparation_failed",))

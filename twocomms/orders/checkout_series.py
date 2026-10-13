@@ -98,14 +98,28 @@ def build_checkout_series_identity(
 ) -> CheckoutSeriesIdentity:
     """Build a deterministic schema identity; this function performs no I/O."""
     _require_enabled()
+    return _validated_checkout_series_identity(proposal_public_id, generation=generation)
+
+
+def _validated_checkout_series_identity(proposal_public_id, *, generation: int) -> CheckoutSeriesIdentity:
+    """Pure identity derivation after the caller's native commerce authority gate.
+
+    This private helper grants no checkout permission. Ordinary callers retain
+    the public rollout gate; the generation owner also uses it after validating
+    a fresh producer-issued assisted Execution.
+    """
     if type(generation) is not int or generation < 1:
         raise ValueError("generation must be a positive integer")
-    series_key = stable_checkout_series_key(proposal_public_id)
+    try:
+        proposal_id = str(uuid.UUID(str(proposal_public_id)))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("proposal_public_id must be a UUID") from exc
+    series_key = _sha256(f"{SERIES_KEY_VERSION}:{proposal_id}")
     return CheckoutSeriesIdentity(
         series_key=series_key,
         generation=generation,
         # Every generation of one proposal must converge on one DB duplicate-
         # order barrier. Runtime application of this key is intentionally out
         # of scope until the winner service is independently reviewed.
-        order_idempotency_key=stable_order_idempotency_key(series_key),
+        order_idempotency_key=existing_series_order_idempotency_key(series_key),
     )

@@ -52,6 +52,55 @@ class CheckoutPaymentError(ValueError):
 
 _STALE_INVOICE_LEASE = object()
 
+CUSTOM_CART_KEYS = ("is_custom", "currency", "title", "color_name_custom", "photo_asset_id", "photo_digest", "assisted_line")
+
+
+def _prelock_assisted_proposal(proposal):
+    """Use an existing relation cache, otherwise only the typed candidate flag."""
+    cache = getattr(getattr(proposal, "_state", None), "fields_cache", {})
+    if "assisted_commerce_execution" in cache:
+        candidate = cache["assisted_commerce_execution"] is not None
+    else:
+        candidate = bool(getattr(proposal, "custom_print_full_only", False))
+    if not candidate:
+        return None
+    from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
+    execution = lock_assisted_checkout_owner(proposal.pk)
+    if execution is not None:
+        proposal._ig_assisted_execution_id = execution.pk
+    return execution
+
+
+def _assisted_proposal_validation(proposal, *, fresh, now=None, revision=None):
+    """A persisted native execution owns this branch; nullable products do not."""
+    if revision is None:
+        from management.models import IgCheckoutRevision
+        revision = IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by("-id").first()
+    snapshot = revision.snapshot if revision is not None and isinstance(revision.snapshot, dict) else {}
+    if "assisted_commerce" not in snapshot and not getattr(proposal, "_ig_assisted_execution_id", None):
+        return None
+    from management.services.ig_assisted_checkout import validate_assisted_proposal
+    result = validate_assisted_proposal(proposal, now=now, fresh=fresh)
+    if not isinstance(result, dict) or result.get("ready") is not True:
+        raise CheckoutPaymentError((result or {}).get("reason") or "assisted_execution_invalid",
+            "Погоджені умови змінилися. Потрібне підтвердження менеджера.")
+    return result
+
+
+def _assisted_custom_rows(validation):
+    rows = validation.get("custom_rows") if validation is not None else []
+    if not isinstance(rows, list):
+        raise CheckoutPaymentError("assisted_rows_invalid", "Погоджені позиції недоступні.")
+    result = {}
+    for row in rows:
+        if (not isinstance(row, dict) or type(row.get("proposal_item_id")) is not int
+                or row["proposal_item_id"] <= 0 or row["proposal_item_id"] in result
+                or row.get("is_custom") is not True or row.get("product_id") is not None
+                or row.get("color_variant_id") is not None):
+            raise CheckoutPaymentError("assisted_rows_invalid", "Погоджені позиції недоступні.")
+        result[row["proposal_item_id"]] = row
+    return result
+
 
 def _verified_payment_at(attempt, *, fallback=None):
     """Return provider payment time from the frozen successful observation."""
@@ -188,6 +237,9 @@ def _proposal_brigade_policy(proposal):
     eligible = Decimal("0.00")
     frozen_items = _frozen_proposal_items(proposal)
     for index, item in enumerate(proposal.items.select_related("product__category").order_by('position', 'id')):
+        if item.product_id is None:
+            # A custom line has no implicit promotional eligibility.
+            continue
         if item.product_id and get_product_brigade_policy(item.product)["is_brigade"]:
             full_only = True
         else:
@@ -330,6 +382,10 @@ def _snapshot(proposal):
     revision_snapshot = revision.snapshot if revision is not None else {}
     frozen = revision_snapshot.get("items", []) if isinstance(revision_snapshot, dict) else []
     ordered_items = list(proposal.items.order_by("position", "id"))
+    assisted = _assisted_proposal_validation(proposal, fresh=False, revision=revision)
+    custom_rows = _assisted_custom_rows(assisted)
+    if assisted is not None and set(custom_rows) != {item.pk for item in ordered_items if item.product_id is None}:
+        raise CheckoutPaymentError("assisted_rows_changed", "Погоджені позиції змінилися.")
     original_rows = [{
         "proposal_item_id": item.pk, "position": item.position,
         "product_id": item.product_id, "qty": item.quantity,
@@ -337,6 +393,11 @@ def _snapshot(proposal):
         "color_variant_id": item.color_variant_id, "option_values": item.option_values or {},
         "unit_price": str(item.quoted_unit_price), "line_total": str(item.quoted_line_total),
     } for item in ordered_items]
+    for item, row in zip(ordered_items, original_rows):
+        if item.pk in custom_rows:
+            custom = custom_rows[item.pk]
+            row.update({key: custom[key] for key in CUSTOM_CART_KEYS})
+            row.update(fit_option_label=item.fit_label or "", option_labels=item.option_labels or {})
     owner = {"proposal_id": str(proposal.public_id), "proposal_pk": proposal.pk,
         "revision_id": revision.pk if revision else None, "revision": proposal.revision,
         "client_id": proposal.client_id, "deal_id": proposal.deal_id,
@@ -355,7 +416,8 @@ def _snapshot(proposal):
         raise CheckoutPaymentError(exc.reason, "Походження кошика змінилося. Оновіть пропозицію.") from exc
     items = []
     for index, item in enumerate(ordered_items):
-        if not item.product_id:
+        custom = custom_rows.get(item.pk)
+        if not item.product_id and custom is None:
             raise CheckoutPaymentError("item_unavailable", "Один из товаров больше недоступен.")
         base = {
             "product_id": item.product_id,
@@ -372,6 +434,19 @@ def _snapshot(proposal):
             "proposal_item_id": item.pk,
         }
         frozen_item = frozen[index] if index < len(frozen) else {}
+        if custom is not None:
+            actual = {"product_id": item.product_id, "color_variant_id": item.color_variant_id,
+                "title": item.product_title, "color_name_custom": item.color_label,
+                "size": item.size or "", "fit_option_code": item.fit_code or "",
+                "fit_option_label": item.fit_label or "", "option_values": item.option_values or {},
+                "option_labels": item.option_labels or {}, "qty": item.quantity}
+            if (any(actual[key] != custom.get(key) for key in actual)
+                    or Decimal(str(custom.get("unit_price"))) != item.quoted_unit_price
+                    or Decimal(str(custom.get("line_total"))) != item.quoted_line_total
+                    or frozen_item.get("price_parts") or frozen_item.get("bundle_pricing")):
+                raise CheckoutPaymentError("assisted_rows_changed", "Погоджені позиції змінилися.")
+            base.update({key: custom[key] for key in CUSTOM_CART_KEYS})
+            base["promo_eligible"] = False
         parts = frozen_item.get("price_parts") or []
         if parts:
             try:
@@ -407,6 +482,8 @@ def _snapshot(proposal):
         "sale_source": "Instagram",
         "proposal_id": str(proposal.public_id),
         "source_cart_provenance": provenance,
+        **({"assisted_execution": assisted["proof"], "assisted_commerce": revision_snapshot["assisted_commerce"]}
+            if assisted is not None else {}),
     }
 
 
@@ -427,6 +504,13 @@ def _revalidate_frozen_proposal(proposal):
     # bot-created proposals always have a revision and are fully revalidated.
     if revision is None:
         return
+
+    assisted = _assisted_proposal_validation(proposal, fresh=True, revision=revision)
+    if assisted is not None:
+        # The native adapter checks the pinned full quote and current catalogue
+        # rows; serialization independently checks persisted row/provenance parity.
+        _snapshot(proposal)
+        return assisted
 
     if isinstance(revision.snapshot, dict) and "source_cart_binding" in revision.snapshot:
         # Structural parity precedes catalog validation and all recipient/
@@ -574,10 +658,13 @@ def _lock_attempt_proposal_graph(attempt_id, *, proposal_related=()):
 
     generation_locator = (
         IgCheckoutInvoiceGeneration.objects.filter(payment_attempt_id=attempt_id)
-        .values("pk", "proposal_id", "proposal__deal_id")
+        .values("pk", "proposal_id", "proposal__deal_id", "proposal__assisted_commerce_execution__id")
         .first()
     )
     if generation_locator is not None:
+        if generation_locator["proposal__assisted_commerce_execution__id"] is not None:
+            from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
+            lock_assisted_checkout_owner(generation_locator["proposal_id"])
         deal = IgDeal.objects.select_for_update().get(
             pk=generation_locator["proposal__deal_id"]
         )
@@ -591,6 +678,7 @@ def _lock_attempt_proposal_graph(attempt_id, *, proposal_related=()):
             pk=generation_locator["proposal_id"],
             deal_id=deal.pk,
         )
+        proposal._ig_assisted_execution_id = generation_locator["proposal__assisted_commerce_execution__id"]
         # The generation row is intentionally locked between Proposal and
         # PaymentAttempt even though the legacy return signature stays stable.
         generation = IgCheckoutInvoiceGeneration.objects.select_for_update().get(
@@ -604,12 +692,15 @@ def _lock_attempt_proposal_graph(attempt_id, *, proposal_related=()):
 
     locator = (
         IgCheckoutProposal.objects.filter(payment_attempt_id=attempt_id)
-        .values("pk", "deal_id")
+        .values("pk", "deal_id", "assisted_commerce_execution__id")
         .first()
     )
     if locator is None:
         attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt_id)
         return attempt, None, None
+    if locator["assisted_commerce_execution__id"] is not None:
+        from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
+        lock_assisted_checkout_owner(locator["pk"])
     deal = IgDeal.objects.select_for_update().get(pk=locator["deal_id"])
     proposal_query = IgCheckoutProposal.objects.select_for_update()
     safe_related = tuple(
@@ -624,6 +715,7 @@ def _lock_attempt_proposal_graph(attempt_id, *, proposal_related=()):
     ).first()
     attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt_id)
     if proposal is not None:
+        proposal._ig_assisted_execution_id = locator["assisted_commerce_execution__id"]
         # Avoid a later implicit query through the OneToOne descriptor and make
         # every caller use the already locked attempt instance.
         proposal._state.fields_cache["payment_attempt"] = attempt
@@ -636,6 +728,8 @@ def lock_proposal_details(proposal, *, payload, request, grant_id=""):
     from management.models import IgCheckoutProposal
 
     from management.models import IgDeal
+
+    _prelock_assisted_proposal(proposal)
 
     deal = IgDeal.objects.select_for_update().get(pk=proposal.deal_id)
     locked = IgCheckoutProposal.objects.select_for_update().select_related(
@@ -1793,4 +1887,10 @@ def bind_verified_payment(attempt_id, order):
         sync_episode_payment(deal=deal)
     except Exception:
         logger.warning("Failed to refresh IG episode payment for deal %s", deal.pk, exc_info=True)
+    if "assisted_execution" in (attempt.cart_snapshot or {}):
+        from management.services.ig_assisted_checkout import attach_assisted_order
+        attached = attach_assisted_order(attempt, order, now=now)
+        if not isinstance(attached, dict) or attached.get("ready") is not True:
+            raise CheckoutPaymentError((attached or {}).get("reason") or "assisted_order_attach_failed",
+                "Оплату зафіксовано; потрібна перевірка прив’язки замовлення.")
     return event

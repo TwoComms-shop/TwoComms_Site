@@ -8,6 +8,7 @@ import re
 import secrets
 import stat
 import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,7 @@ DELETE_CLAIM_SECONDS = 300
 DELETE_RETRY_SECONDS = 60
 USE_LEASE_MAX_SECONDS = 300
 DEADLINE_CURSOR_KEY = "ig_private_media_deadline_cursor:v1"
+ASSISTED_IMAGE_DEADLINE_CURSOR_KEY = "ig_assisted_image_deadline_cursor:v1"
 _debug_root: Path | None = None
 
 
@@ -686,6 +688,73 @@ def reconcile_private_media_deadlines(*, limit=100, can_work=None):
     return changed
 
 
+def purge_due_assisted_images(*, now=None, limit=100, can_work=None):
+    """Erase one bounded page under the same client barrier as payment/media.
+
+    A canonical paid Order/photo proof preserves business bytes; the persisted
+    privacy fence overrides that retention. The cursor only distributes work
+    past retained photos and never grants ownership or deletion authority.
+    """
+    from django.db.models import Q
+    from management.models import IgClient
+    from management.ig_assisted_commerce_models import IgAssistedCommerceImage as Image
+    from management.services import ig_assisted_commerce as commerce
+    from management.services.ig_assisted_commerce_media import delete_asset_bytes, has_business_retention
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+
+    if can_work is not None and not can_work():
+        return 0
+    now = now or timezone.now()
+    raw_cursor = cache.get(ASSISTED_IMAGE_DEADLINE_CURSOR_KEY, "")
+    try:
+        cursor = uuid.UUID(str(raw_cursor)) if raw_cursor else None
+    except (TypeError, ValueError, AttributeError):
+        cursor = None
+    scope = Image.objects.filter(Q(delete_after__lte=now)
+        | Q(client__privacy_erasure_started_at__isnull=False)).exclude(state=Image.State.DELETED)
+    page_size = max(1, min(int(limit or 0), 500))
+    page = scope.filter(pk__gt=cursor) if cursor else scope
+    identities = list(page.order_by("pk").values_list("pk", "client_id")[:page_size])
+    if not identities and cursor:
+        identities = list(scope.order_by("pk").values_list("pk", "client_id")[:page_size])
+    deleted = 0
+    last_inspected = None
+    for identity, client_id in identities:
+        if can_work is not None and not can_work():
+            break
+        with commercial_episode_client_lock(client_id), transaction.atomic():
+            client = IgClient.objects.select_for_update().filter(pk=client_id).first()
+            image = Image.objects.select_for_update().filter(pk=identity, client_id=client_id).first()
+            if can_work is not None and not can_work():
+                break
+            last_inspected = identity
+            if not client or not image or image.state == Image.State.DELETED or not commerce._verified(image, "image"):
+                continue
+            if not client.privacy_erasure_started_at:
+                if image.delete_after > now or has_business_retention(image):
+                    continue
+            if image.state == Image.State.ACTIVE:
+                image.state = Image.State.DELETE_PENDING
+                image.save(update_fields=["state"])
+            if image.state in {Image.State.DELETE_PENDING, Image.State.DELETE_FAILED}:
+                image.state, image.failure_code = Image.State.DELETING, ""
+                image.save(update_fields=["state", "failure_code"])
+            if image.state != Image.State.DELETING:
+                continue
+            try:
+                delete_asset_bytes(image)
+            except (OSError, ValueError, ImproperlyConfigured, commerce.AssistedDecisionError) as exc:
+                image.state, image.failure_code = Image.State.DELETE_FAILED, type(exc).__name__[:64]
+                image.save(update_fields=["state", "failure_code"])
+                continue
+            image.state, image.erased_at, image.failure_code = Image.State.DELETED, now, ""
+            image.save(update_fields=["state", "erased_at", "failure_code"])
+            deleted += 1
+    if last_inspected is not None and cache.get(ASSISTED_IMAGE_DEADLINE_CURSOR_KEY, "") == raw_cursor:
+        cache.set(ASSISTED_IMAGE_DEADLINE_CURSOR_KEY, str(last_inspected), timeout=7 * 24 * 3600)
+    return deleted
+
+
 def purge_due(*, now=None, limit: int = 100, can_work=None) -> int:
     from management.models import InstagramBotMessage
 
@@ -713,7 +782,7 @@ def purge_due(*, now=None, limit: int = 100, can_work=None) -> int:
             break
         if claim and delete_claimed_blob(claim, now=now):
             deleted += 1
-    return deleted
+    return deleted + purge_due_assisted_images(now=now, limit=limit, can_work=can_work)
 
 
 def delete_immediately(message_ids, *, now=None) -> int:

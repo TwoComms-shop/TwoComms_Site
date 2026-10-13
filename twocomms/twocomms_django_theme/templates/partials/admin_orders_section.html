@@ -955,7 +955,13 @@
             <div class="oadm-items__list">
               {% for item in o.items.all %}
                 <div class="oadm-item{% if forloop.counter > 3 %} oadm-items__more{% endif %}">
-                  {% with img=item.product_image %}
+                  {% if item.assisted_image_url %}
+                    <img src="{{ item.assisted_image_url }}" alt="{{ item.title }}" class="oadm-item__img" loading="lazy" decoding="async">
+                  {% elif item.is_custom %}
+                    <div class="oadm-item__img oadm-item__ph" aria-label="TwoComms">
+                      <img src="{% static 'img/logo.svg' %}" alt="" width="26" height="28" style="width:26px;height:28px;object-fit:contain;">
+                    </div>
+                  {% else %}{% with img=item.product_image %}
                     {% if img %}
                       <img src="{{ img.url }}" alt="{{ item.title }}" class="oadm-item__img">
                     {% else %}
@@ -963,7 +969,7 @@
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
                       </div>
                     {% endif %}
-                  {% endwith %}
+                  {% endwith %}{% endif %}
                   <div class="oadm-item__main">
                     <div class="oadm-item__title">{{ item.title }}{% if item.is_dtf_film %} <span class="oadm-spec" style="color:#fcd34d;background:rgba(251,191,36,.14);">DTF-плівка</span>{% elif item.is_custom %} <span class="oadm-spec" style="color:#fcd34d;background:rgba(251,191,36,.14);">поза каталогом</span>{% endif %}</div>
                     <div class="oadm-item__specs">

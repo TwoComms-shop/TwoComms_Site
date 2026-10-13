@@ -350,7 +350,22 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             expected_snapshot = _source_snapshot(transition.previous_snapshot)
             revision = transition.from_revision
             continue
-        if before_line == after_line and ((decision.result_payload or {}).get("source_facts") or {}).get("line_id") not in (None, "", line["line_id"]):
+        source_facts = ((decision.result_payload or {}).get("source_facts") or {}) if decision is not None else {}
+        full_cart_ids = None
+        if source_facts.get("full_cart_purchase_requested") is True:
+            from management.services.ig_commerce_state import full_cart_purchase_line_ids
+            original_full_cart = _original_choice_request(source, copy_capture)
+            full_cart_ids = full_cart_purchase_line_ids(transition.previous_snapshot,
+                transition.next_snapshot, original_full_cart)
+            if (not owned or decision.session_id != session.pk or decision.transition_id != transition.pk
+                or not decision.accepted or decision.is_stale or not full_cart_ids
+                or source_facts.get("line_ids") != full_cart_ids
+                or source_facts.get("values") != {"purchase_requested": True}
+                or (decision.request_payload or {}).get("full_cart_purchase_requested") is not True
+                or (decision.request_payload or {}).get("purchase_requested") is not True):
+                return {}
+        if (before_line == after_line and source_facts.get("line_id") not in (None, "", line["line_id"])
+            and not (full_cart_ids and line["line_id"] in full_cart_ids)):
             expected_snapshot = _source_snapshot(transition.previous_snapshot)
             revision = transition.from_revision
             continue
@@ -406,14 +421,16 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             and (not facts or (facts.get("source_message_id") == source.pk
                               and facts.get("source_digest") == source_digest
                               and facts.get("episode_id") == current_episode
-                              and (source_line == line["line_id"] or preline_constraints)))
+                              and (source_line == line["line_id"] or preline_constraints
+                                  or full_cart_ids and line["line_id"] in full_cart_ids)))
         )
         bound_facts = (
             facts.get("values") or {}
             if facts.get("source_message_id") == source.pk
             and facts.get("source_digest") == source_digest
             and facts.get("episode_id") == current_episode
-            and (source_line == line["line_id"] or preline_constraints) else {}
+            and (source_line == line["line_id"] or preline_constraints
+                or full_cart_ids and line["line_id"] in full_cart_ids) else {}
         )
         for key, value in values.items():
             action_proof = False

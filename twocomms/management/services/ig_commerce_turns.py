@@ -169,6 +169,25 @@ def _source_purchase(text: str) -> bool:
     return False
 
 
+def _source_full_cart_purchase(text: str) -> bool:
+    """Explicit current-cart adoption, never a question, report or bare buy."""
+    current = re.sub(r"\s+", " ", _current_source_text(text)).strip(" .!,")
+    if not current or "?" in current:
+        return False
+    return bool(re.fullmatch(
+        r"(?:(?:так|да|yes)[, ]+)?(?:"
+        r"(?:хочу|хочемо)\s+(?:купити|замовити|оформити)\s+(?:всі|усі)\s+(?:товари|позиції)\s+(?:в|у|з)\s+(?:(?:цього|поточного)\s+)?(?:кошику|кошика|корзині)"
+        r"|(?:хочу|хотим)\s+(?:купить|заказать|оформить)\s+все\s+(?:товары|позиции)\s+(?:в|из)\s+(?:(?:этой|текущей)\s+)?(?:корзине|корзины)"
+        r"|(?:i\s+want\s+to|we\s+want\s+to|i(?:['’]d|\s+would)\s+like\s+to)\s+(?:buy|order)\s+all\s+(?:items|products)\s+(?:in|from)\s+(?:the\s+)?(?:(?:current|my|this)\s+)?cart"
+        r"|(?:беру|купую|замовляю)\s+(?:всі|усі)\s+(?:товари|позиції)"
+        r"|(?:оформіть|оформлюйте|замовте)\s+весь\s+(?:(?:цей|поточний)\s+)?кошик"
+        r"|(?:беру|покупаю|заказываю)\s+все\s+(?:товары|позиции)"
+        r"|(?:оформите|оформляйте|закажите)\s+всю\s+(?:(?:эту|текущую)\s+)?корзину"
+        r"|(?:buy|order)\s+all\s+(?:items|products)\s+(?:in|from)\s+(?:the\s+)?(?:(?:current|my|this)\s+)?cart"
+        r"|(?:buy|order)\s+(?:the\s+)?whole\s+(?:(?:current|my|this)\s+)?cart"
+        r")", current, re.I))
+
+
 def _withdrawn_size(text: str) -> str:
     text = _preference_source_text(text)
     rejected = set()
@@ -742,6 +761,7 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
     historical = _historical_selectors(raw, line_operations)
     pending_line = pending_line or historical.pop("pending_line_clarification", "")
 
+    full_cart_purchase = _source_full_cart_purchase(raw)
     return CommerceTurnRequest(
         exact_product_id=exact_product_id,
         garment_type=garment_type,
@@ -755,7 +775,8 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
         pending_clarification=pending,
         info_topics=tuple(info_topics),
         checkout_requested=checkout_requested,
-        purchase_requested=_source_purchase(raw) or new_purchase_requested,
+        purchase_requested=_source_purchase(raw) or new_purchase_requested or full_cart_purchase,
+        full_cart_purchase_requested=full_cart_purchase,
         recipient_id=recipient,
         reset_requested=reset_requested,
         support_requested=bool(re.search(r"(?:помог|вопрос|support|help)", lowered)),

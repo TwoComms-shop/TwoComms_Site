@@ -4980,3 +4980,6 @@ from .ig_journey_models import (IgConversationRouteDecision, IgJourneyTraceSnaps
     IgJourneyTraceRefreshControl, IgJourneyTraceRefreshJob)  # noqa: E402,F401
 from .ig_fulfillment_stock_sync_models import IgFulfillmentStockSync  # noqa: E402,F401
 from .ig_split_shipping_models import *  # noqa: E402,F401,F403
+from .ig_assisted_commerce_models import (IgAssistedCommerceRequest,
+    IgAssistedCommerceDecision, IgAssistedCommerceExecution,
+    IgAssistedCommerceImage, IgAssistedCommerceStockSync)  # noqa: E402,F401

@@ -848,6 +848,90 @@ button.ig-state:active {
   box-shadow: 0 0 0 3px rgb(243 164 61 / 8%);
 }
 
+.ig-field[data-payment-choice] {
+  width: 100%;
+  min-inline-size: 0;
+  margin: 4px 0;
+  padding: 0;
+  border: 0;
+  gap: 8px;
+}
+
+.ig-field[data-payment-choice] legend {
+  max-width: 100%;
+  margin-bottom: 9px;
+  padding: 0;
+  color: var(--ig-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.ig-field[data-payment-choice] label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) max-content;
+  gap: 6px 10px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 12px;
+  border: 1px solid var(--ig-line);
+  border-radius: 9px;
+  background: var(--ig-field);
+  color: #dfd8cd;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.ig-field[data-payment-choice] label:has(input:checked) {
+  border-color: rgb(243 164 61 / 52%);
+  background: linear-gradient(110deg, rgb(243 164 61 / 9%), var(--ig-field));
+}
+
+.ig-field[data-payment-choice] input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  box-shadow: none;
+  accent-color: var(--ig-gold);
+  appearance: auto;
+  cursor: pointer;
+}
+
+.ig-field[data-payment-choice] input[type="radio"]:focus-visible {
+  outline: 2px solid var(--ig-gold);
+  outline-offset: 4px;
+}
+
+.ig-field[data-payment-choice] label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ig-field[data-payment-choice] label > strong {
+  color: var(--ig-text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 420px) {
+  .ig-field[data-payment-choice] label {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .ig-field[data-payment-choice] label > strong {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
 .ig-field.is-complete input {
   border-color: rgb(69 202 140 / 28%);
   background: linear-gradient(90deg, rgb(69 202 140 / 4%), var(--ig-field) 36%);
@@ -1328,18 +1412,17 @@ button.ig-state:active {
 }
 
 .ig-consent {
-  position: fixed;
-  z-index: 80;
-  right: 12px;
-  bottom: calc(118px + env(safe-area-inset-bottom));
-  left: 12px;
+  position: static;
+  width: min(100%, 640px);
+  min-width: 0;
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 12px;
+  margin: 24px auto 0;
+  padding: 14px;
   border: 1px solid var(--ig-line);
   border-radius: 8px;
   background: var(--ig-panel-2);
-  box-shadow: 0 18px 45px rgb(0 0 0 / 45%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
 }
 
 .ig-consent[hidden] {
@@ -1348,9 +1431,11 @@ button.ig-state:active {
 
 .ig-consent p {
   margin: 0;
+  min-width: 0;
   color: var(--ig-muted);
-  font-size: 9px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .ig-consent > div {
@@ -1360,11 +1445,21 @@ button.ig-state:active {
 }
 
 .ig-consent button {
+  min-width: 0;
   min-height: 44px;
+  padding: 10px;
   border: 1px solid var(--ig-line);
   border-radius: 6px;
-  font-size: 9px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.ig-consent button:focus-visible {
+  outline: 2px solid var(--ig-gold);
+  outline-offset: 3px;
 }
 
 .ig-consent__accept {
@@ -1494,6 +1589,61 @@ button.ig-state:active {
   }
 }
 
+@media (max-width: 600px) {
+  .ig-topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
+    gap: 4px 6px;
+    padding-top: 5px;
+  }
+
+  .ig-brand {
+    min-width: 0;
+    grid-column: 1;
+    grid-row: 1;
+    white-space: nowrap;
+  }
+
+  .ig-top-actions {
+    display: contents;
+  }
+
+  .ig-top-actions [data-header-share] {
+    display: grid;
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ig-top-actions [data-checkout-exit] {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .ig-language-switcher {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+    padding-bottom: 10px;
+  }
+
+  .ig-language-switcher__links {
+    max-width: 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .ig-language-switcher__link {
+    min-width: 44px;
+    font-size: 12px;
+  }
+
+  .ig-language-switcher__link > span:last-child {
+    display: inline;
+  }
+}
+
 @media (min-width: 720px) {
   .ig-page {
     padding-inline: 28px;
@@ -1518,11 +1668,6 @@ button.ig-state:active {
     grid-template-columns: 106px minmax(0, 1fr);
   }
 
-  .ig-consent {
-    width: min(420px, calc(100% - 32px));
-    right: 16px;
-    left: auto;
-  }
 }
 
 @media (min-width: 960px) {
@@ -1568,9 +1713,6 @@ button.ig-state:active {
     margin-top: 32px;
   }
 
-  .ig-consent {
-    bottom: max(16px, env(safe-area-inset-bottom));
-  }
 
   .ig-sheet-dialog {
     margin: auto;

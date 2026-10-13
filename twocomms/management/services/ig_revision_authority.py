@@ -35,8 +35,10 @@ CLAIM_CURRENT_OFFER = "current_offer"
 CLAIM_PAYMENT = "payment"
 CLAIM_ORDER = "order"
 CLAIM_SHIPMENT = "shipment"
+CLAIM_ASSISTED_COMMERCE = "assisted_commerce_offer"
 
 FACT_CLAIMS = frozenset({
+    CLAIM_ASSISTED_COMMERCE,
     CLAIM_SOURCE_PREFERENCES,
     CLAIM_CATALOG_ASSET_REFERENCES,
     CLAIM_CATALOG_CONFIGURATION,
@@ -55,6 +57,7 @@ SUPPORTED_CLAIMS = FACT_CLAIMS | OFFER_CLAIMS
 ACTION_REQUIRED_CLAIMS = {
     "client_configuration_update": frozenset({CLAIM_CATALOG_CONFIGURATION}),
     "checkout_proposal_create": frozenset({CLAIM_CATALOG_CONFIGURATION}),
+    "assisted_checkout_proposal_create": frozenset({CLAIM_ASSISTED_COMMERCE, CLAIM_SOURCE_PREFERENCES}),
     "follow_decision_prepare": frozenset({CLAIM_PUBLIC_POLICY_INPUTS}),
     "manager_escalation_intent": frozenset({CLAIM_PUBLIC_POLICY_INPUTS}),
     "order_fulfillment": frozenset({
@@ -807,6 +810,29 @@ def _source_cart_preferences_binding(client, control, episode):
     ), ""
 
 
+def _assisted_commerce_binding(client, control, episode):
+    from management.services.ig_assisted_commerce_context import AssistedCommerceContext, capture_assisted_context
+    context = control.get("assisted_context")
+    if not isinstance(context, AssistedCommerceContext):
+        from management.models import IgCustomerTurnRevision
+        reference = control.get("assisted_reference")
+        if not isinstance(reference, dict):
+            return None, "assisted_reference_missing"
+        revision = IgCustomerTurnRevision.objects.select_related("client").filter(
+            pk=reference.get("revision_id"), client=client).first()
+        if not revision or revision.snapshot_digest != reference.get("revision_digest"):
+            return None, "assisted_source_revision_changed"
+        context, reason = capture_assisted_context(client, revision, reference=reference)
+        if context is None:
+            return None, reason
+    if context.verified.client_id != client.pk:
+        return None, "assisted_offer_owner_changed"
+    selector = {"assisted_reference": context.reference}
+    return _base_binding(CLAIM_ASSISTED_COMMERCE, client, episode, selector, context.projection,
+        assisted_request_id=str(context.verified.request_id), assisted_decision_id=str(context.verified.decision_id),
+        source_revision_id=context.revision_id), ""
+
+
 def build_revision_authority_bindings(
     client,
     *,
@@ -848,7 +874,9 @@ def build_revision_authority_bindings(
     offers: list[dict] = []
     reasons: list[str] = []
     for claim in requested:
-        if claim == CLAIM_SOURCE_PREFERENCES:
+        if claim == CLAIM_ASSISTED_COMMERCE:
+            binding, reason = _assisted_commerce_binding(fresh, safe_control, episode)
+        elif claim == CLAIM_SOURCE_PREFERENCES:
             if "source_cart_fence" in safe_control:
                 binding, reason = _source_cart_preferences_binding(fresh, safe_control, episode)
             else:
@@ -933,6 +961,10 @@ def _check_bindings(
         selector = expected.get("selector")
         if not isinstance(selector, Mapping):
             return False
+        if claim == CLAIM_ASSISTED_COMMERCE:
+            reference = selector.get("assisted_reference") or {}
+            if reference.get("revision_id") != revision.pk or reference.get("revision_digest") != revision.snapshot_digest:
+                return False
         if claim == CLAIM_SOURCE_PREFERENCES and "source_cart_fence" in selector:
             from management.services.ig_response_cart_fence import check_source_cart_authority
 
@@ -984,6 +1016,7 @@ __all__ = [
     "CLAIM_PAYMENT",
     "CLAIM_PUBLIC_POLICY_INPUTS",
     "CLAIM_SHIPMENT",
+    "CLAIM_ASSISTED_COMMERCE",
     "RevisionAuthorityBindingSet",
     "build_revision_authority_bindings",
     "check_fact_bindings",

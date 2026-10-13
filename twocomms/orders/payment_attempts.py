@@ -18,6 +18,52 @@ class PaymentAttemptConversionError(Exception):
         self.marker = str(marker or "")[:64]
 
 
+def _verified_assisted_cart(attempt, snapshot, cart_items):
+    """Only the original persisted native execution can admit nullable products."""
+    marked = ("assisted_execution" in snapshot or "assisted_commerce" in snapshot
+        or any(isinstance(row, dict) and (row.get("is_custom") is True or row.get("product_id") is None)
+            for row in cart_items))
+    if not marked and not attempt.checkout_series_key:
+        return None, {}
+    from management.services.ig_assisted_checkout import validate_assisted_attempt
+    verified = validate_assisted_attempt(attempt, now=timezone.now())
+    if not isinstance(verified, dict) or verified.get("ready") is not True:
+        raise PaymentAttemptConversionError((verified or {}).get("reason") or "assisted_original_proof_invalid",
+            marker="assisted_original_proof_invalid")
+    if verified.get("is_assisted") is False:
+        return None, {}
+    if snapshot.get("custom_print_lead_ids") or "custom_print_creation" in snapshot:
+        raise PaymentAttemptConversionError("assisted_custom_print_attachment_unowned", marker="assisted_original_proof_invalid")
+    rows = verified.get("custom_rows")
+    if not isinstance(rows, list):
+        raise PaymentAttemptConversionError("assisted_rows_invalid", marker="assisted_original_proof_invalid")
+    by_id = {}
+    for row in rows:
+        if (not isinstance(row, dict) or type(row.get("proposal_item_id")) is not int
+                or row["proposal_item_id"] <= 0 or row["proposal_item_id"] in by_id
+                or row.get("is_custom") is not True or row.get("product_id") is not None
+                or row.get("color_variant_id") is not None):
+            raise PaymentAttemptConversionError("assisted_rows_invalid", marker="assisted_original_proof_invalid")
+        by_id[row["proposal_item_id"]] = row
+    keys = ("product_id", "color_variant_id", "is_custom", "currency", "title", "color_name_custom",
+        "size", "fit_option_code", "fit_option_label", "option_values", "option_labels", "qty", "unit_price",
+        "line_total", "photo_asset_id", "photo_digest", "assisted_line", "proposal_item_id")
+    seen = set()
+    for row in cart_items:
+        custom = by_id.get(row.get("proposal_item_id"))
+        if row.get("product_id") is None or row.get("is_custom") is True:
+            if (custom is None or row.get("proposal_item_id") in seen
+                    or type(row.get("qty")) is not int or row["qty"] <= 0
+                    or any(row.get(key) != custom.get(key) for key in keys)):
+                raise PaymentAttemptConversionError("assisted_custom_row_changed", marker="assisted_original_proof_invalid")
+            seen.add(row["proposal_item_id"])
+        elif custom is not None:
+            raise PaymentAttemptConversionError("assisted_kind_changed", marker="assisted_original_proof_invalid")
+    if seen != set(by_id):
+        raise PaymentAttemptConversionError("assisted_custom_coverage_changed", marker="assisted_original_proof_invalid")
+    return verified, by_id
+
+
 def _paid_amount_from_payload(attempt, payload):
     raw = None
     if isinstance(payload, dict):
@@ -71,6 +117,7 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
         _append_history(attempt, status, payload, source)
         snapshot = attempt.cart_snapshot if isinstance(attempt.cart_snapshot, dict) else {}
         cart_items = snapshot.get('cart') or []
+        assisted, custom_rows = _verified_assisted_cart(attempt, snapshot, cart_items)
         is_instagram_proposal = snapshot.get('checkout_surface') == 'instagram_proposal'
         source_provenance = None
         if is_instagram_proposal or 'source_cart_provenance' in snapshot or 'source_cart_binding' in snapshot:
@@ -124,6 +171,8 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
                 checkout_idempotency_key=checkout_idempotency_key
             ).first()
             if existing_order is not None:
+                if assisted is not None and (existing_order.payment_payload or {}).get('assisted_execution') != assisted['proof']:
+                    raise PaymentAttemptConversionError('assisted_existing_order_changed', marker='assisted_original_proof_invalid')
                 if source_provenance and source_provenance['status'] == 'bound':
                     stored = (existing_order.payment_payload or {}).get('source_cart_provenance')
                     if not isinstance(stored, dict):
@@ -181,6 +230,7 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
             utm_content=(attempt.tracking_payload or {}).get('utm_content', ''),
             utm_term=(attempt.tracking_payload or {}).get('utm_term', ''),
             payment_payload={
+                **({'assisted_execution': assisted['proof']} if assisted is not None else {}),
                 **({'source_cart_provenance': source_provenance} if source_provenance else {}),
                 'attempt_id': attempt.pk,
                 'attempt_reference': attempt.reference,
@@ -208,13 +258,16 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
 
         items = []
         for item in cart_items:
-            product = products[int(item['product_id'])]
+            custom = custom_rows.get(item.get('proposal_item_id'))
+            product = None if custom is not None else products[int(item['product_id'])]
             variant = variants.get(int(item['color_variant_id'])) if item.get('color_variant_id') else None
             items.append(OrderItem(
                 order=order,
                 product=product,
                 color_variant=variant,
-                title=item.get('title') or product.title,
+                title=item['title'] if custom is not None else item.get('title') or product.title,
+                is_custom=custom is not None,
+                color_name_custom=item['color_name_custom'] if custom is not None else '',
                 size=item.get('size', ''),
                 fit_option_code=item.get('fit_option_code', ''),
                 fit_option_label=item.get('fit_option_label', ''),
@@ -225,6 +278,13 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
                 line_total=Decimal(str(item.get('line_total') or 0)),
             ))
         items = OrderItem.objects.bulk_create(items)
+        custom_metadata = {item.pk: {key: frozen[key] for key in
+            ('currency', 'photo_asset_id', 'photo_digest', 'assisted_line')}
+            for item, frozen in zip(items, cart_items) if item.is_custom}
+        if custom_metadata:
+            order.payment_payload = {**order.payment_payload, 'assisted_custom_items': [
+                {'order_item_id': identity, **metadata} for identity, metadata in custom_metadata.items()]}
+            order.save(update_fields=['payment_payload'])
         if source_provenance and source_provenance['status'] == 'bound':
             try:
                 order_provenance = bind_order_items(
@@ -234,6 +294,9 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
                         'qty': item.qty, 'size': item.size, 'fit_option_code': item.fit_option_code,
                         'color_variant_id': item.color_variant_id, 'option_values': item.option_values,
                         'unit_price': str(item.unit_price), 'line_total': str(item.line_total),
+                        **({'is_custom': True, 'title': item.title, 'color_name_custom': item.color_name_custom,
+                            'fit_option_label': item.fit_option_label, 'option_labels': item.option_labels,
+                            **custom_metadata[item.pk]} if item.is_custom else {}),
                     } for item in items],
                 )
             except CartProvenanceError as exc:

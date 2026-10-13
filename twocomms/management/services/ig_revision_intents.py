@@ -273,10 +273,14 @@ def manager_case_reason(revision, response=None):
 
     texts = [str(row.get("text") or "") for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
     control = response.control if response is not None else {}
-    if any(is_explicit_custom_print_request(text) for text in texts) or (
+    from management.services.ig_assisted_commerce_context import AssistedCommerceContext
+    assisted = getattr(revision, "_assisted_commerce_context", None)
+    current_assisted = (isinstance(assisted, AssistedCommerceContext) and assisted.revision_id == revision.pk
+        and assisted.revision_digest == revision.snapshot_digest)
+    if not current_assisted and (any(is_explicit_custom_print_request(text) for text in texts) or (
         (control.get("paylink") or control.get("payment"))
         and "custom" in str(revision.client.intent or "").casefold()
-    ):
+    )):
         return "custom_print"
     if any(extract_collaboration_brief(text) for text in texts) or _collaboration_route_present(revision):
         return "collaboration_review"
@@ -305,6 +309,11 @@ def product_review_receipt_reason(revision, *, task=None, notification=None):
     receipt = (revision.action_receipts or {}).get(MANAGER_RECEIPT) or {}
     reason = receipt.get("case_kind")
     current = product_inquiries_for_revision(revision)
+    if current.get("status") == "none" and current.get("assisted_resolution"):
+        from management.services.ig_assisted_commerce_context import AssistedCommerceContext
+        assisted = getattr(revision, "_assisted_commerce_context", None)
+        if isinstance(assisted, AssistedCommerceContext) and assisted.reference == current["assisted_resolution"]:
+            return ""
     if current.get("status") != "manager_required" and reason not in REVIEW_REASONS:
         return ""
     if reason not in REVIEW_REASONS:
