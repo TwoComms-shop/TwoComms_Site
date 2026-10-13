@@ -2165,9 +2165,11 @@ def _order_creation_workspace_payload(review) -> dict:
 
 
 def _client_payment_workspace(client) -> dict:
-    """Use the current owned episode, never another sale's latest decision."""
+    """Use owned current work, or explicitly display completed purchase history."""
     from management.ig_bot_models import IgCommercialEpisode, IgPaymentConfirmationReview
-    from management.services.ig_commercial_episodes import payment_truth_snapshot
+    from management.services.ig_commercial_episodes import (
+        payment_truth_snapshot, terminal_episode_for_passive_observation,
+    )
 
     episodes = IgCommercialEpisode.objects.filter(client_id=client.pk).select_related(
         "deal", "primary_payment_review", "intended_order",
@@ -2179,7 +2181,13 @@ def _client_payment_workspace(client) -> dict:
         review = IgPaymentConfirmationReview.objects.filter(
             client_id=client.pk, status=IgPaymentConfirmationReview.Status.PENDING,
         ).select_related("deal", "order").order_by("-id").first()
-    payload = payment_truth_snapshot(episode=episode, review=review, allow_deal_review_fallback=False)
+    completed = terminal_episode_for_passive_observation(client) if episode is None and review is None else None
+    if completed and (
+        (completed.primary_payment_review_id and completed.primary_payment_review.client_id != client.pk)
+        or (completed.deal_id and completed.deal.client_id != client.pk)
+    ):
+        completed = None
+    payload = payment_truth_snapshot(episode=episode or completed, review=review, allow_deal_review_fallback=False)
     decision_id = payload.get("manager_decision_id")
     from management.ig_bot_models import IgPaymentReviewDecision
     decision = IgPaymentReviewDecision.objects.filter(pk=decision_id, client_id=client.pk).select_related("actor").first() if decision_id else None
@@ -2187,7 +2195,7 @@ def _client_payment_workspace(client) -> dict:
         "verification_source": payload.get("manager_source", ""),
         "verification_scope": payload.get("manager_scope", ""),
         "manager_decision": _payment_review_decision_payload(decision),
-        "scope": "current_episode" if episode else "pending_review" if review else "none",
+        "scope": "current_episode" if episode else "pending_review" if review else "completed_episode" if completed else "none",
     })
     return payload
 

@@ -2292,6 +2292,12 @@ body.bot-drawer-open{overflow:hidden;}
     return 'Не перевірено менеджером';
   }
   function managerTruthLabelForClient(payment,client){
+    if(payment&&payment.scope==='completed_episode'){
+      if(payment.manager_truth==='manager_verified'&&payment.authoritative_for_fulfillment&&!payment.needs_reconciliation){
+        return payment.verification_scope==='prepayment'?'Передоплату завершеного замовлення підтверджено менеджером':'Оплату завершеного замовлення підтверджено менеджером';
+      }
+      return 'Завершене замовлення: '+managerTruthLabel(payment);
+    }
     const history=(client&&client.purchase_history)||{};
     const archiveOnly=Boolean(history.confirmed&&!(client&&client.commercially_confirmed));
     if(archiveOnly&&payment&&payment.manager_truth==='manager_verified') return 'Архівну покупку підтверджено';
@@ -2924,7 +2930,7 @@ body.bot-drawer-open{overflow:hidden;}
     function section(root,title,count){const section=node('section','bot-context-section');const head=node('div','bot-context-title');head.append(node('span','',title));if(count!==undefined)head.append(node('span','',String(count)));section.appendChild(head);root.appendChild(section);return section;}
     function contextFact(root,label,value){const fact=node('div','bot-context-fact');fact.append(node('b','',value||'—'),node('span','',label));root.appendChild(fact);}
     function fulfillmentLabel(d){
-      const fulfillment=d.fulfillment||{};if(fulfillment.order_id)return (fulfillment.order_status_label||'Замовлення прив’язано')+(fulfillment.tracking_number?' · ТТН '+fulfillment.tracking_number:'');
+      const fulfillment=d.fulfillment||{};if(fulfillment.order_id)return (fulfillment.current_episode_source==='completed_episode'?'Історія замовлень · ':'')+(fulfillment.order_status_label||'Замовлення прив’язано')+(fulfillment.tracking_number?' · ТТН '+fulfillment.tracking_number:'');
       const orders=((d.orders&&d.orders.items)||[]).filter(item=>item&&item.order&&item.order.id);if(orders.length){const latest=orders[0].order||{};return 'Історія замовлень · '+(latest.status_label||'Замовлення прив’язано')+(latest.tracking_number?' · ТТН '+latest.tracking_number:'');}
       if(d.fulfillment&&d.fulfillment.has_validated_refs)return 'Доставка перевірена';
       return (d.fulfillment&&d.fulfillment.delivery_status_label)||'Замовлення ще не готове';
@@ -2940,7 +2946,7 @@ body.bot-drawer-open{overflow:hidden;}
       if(!linkedOrders.length)return null;
       const item=linkedOrders[0];const order=item.order||{};const strip=node('div','bot-linked-order-strip');const copy=node('div','bot-linked-order-copy');
       const managerVerified=Boolean(item.payment&&item.payment.authoritative_for_fulfillment&&item.payment.manager_truth==='manager_verified');
-      const currentOrder=Number((d.payment||{}).order_id||0)===Number(order.id);const paymentLabel=(currentOrder?'Поточне замовлення · ':'Історія замовлень · ')+(managerVerified?'Оплату підтверджено менеджером':(item.payment&&item.payment.needs_reconciliation?'Потрібна звірка оплати':(order.payment_status_label||providerTruthLabel(item.payment||{}))));
+      const currentOrder=(d.payment||{}).scope==='current_episode'&&Number((d.payment||{}).order_id||0)===Number(order.id);const paymentLabel=(currentOrder?'Поточне замовлення · ':'Історія замовлень · ')+(managerVerified?'Оплату підтверджено менеджером':(item.payment&&item.payment.needs_reconciliation?'Потрібна звірка оплати':(order.payment_status_label||providerTruthLabel(item.payment||{}))));
       copy.append(node('b','',paymentLabel+' · №'+(order.number||order.id)+' · '+(order.amount||'—')+' грн'),node('span','',[order.status_label||'Замовлення прив’язано',order.tracking_number?('ТТН '+order.tracking_number):'',(item.origin||{}).creation_mode_label||'Instagram'].filter(Boolean).join(' · ')));
       strip.appendChild(copy);const url=safeHttpUrl(order.url||item.order_url||item.workspace_url);if(url){const link=node('a','bot-order-action','Відкрити замовлення');link.href=url;link.target='_blank';link.rel='noopener noreferrer';strip.appendChild(link);}return strip;
     }

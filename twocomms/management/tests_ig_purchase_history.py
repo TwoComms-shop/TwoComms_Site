@@ -1,5 +1,8 @@
 """Technical review episodes cannot manufacture repeat purchases."""
 from decimal import Decimal
+from pathlib import Path
+import shutil
+import subprocess
 from unittest.mock import patch
 
 from django.db import connection
@@ -70,6 +73,62 @@ class PurchaseHistoryTests(TestCase):
             truth_state={}, analyzed_at=timezone.now())
         self.assertEqual(result.result_values["prior_purchase_count"], 0)
         self.assertEqual(result.result_values["ltv_signal"], "first_purchase")
+
+    def test_context_shows_completed_payment_without_reopening_current_scope(self):
+        from management.bot_views import _client_payment_workspace
+
+        with CaptureQueriesContext(connection) as queries:
+            payment = _client_payment_workspace(self.buyer)
+        self.assertTrue(all(query["sql"].lstrip().upper().startswith("SELECT") for query in queries))
+        self.assertEqual(payment["scope"], "completed_episode")
+        self.assertEqual(payment["review_id"], self.canonical.pk)
+        self.assertEqual(payment["manager_confirmed_amount"], "970.00")
+        self.assertFalse(payment["current"])
+        self.buyer.refresh_from_db()
+        self.assertIsNone(self.buyer.current_commercial_episode_id)
+
+    def test_context_never_inherits_completed_payment_into_new_work(self):
+        from management.bot_views import _client_payment_workspace
+
+        new_review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
+            dedupe_key="purchase-history:context-new", status="pending", evidence={"claim_anchor": "b" * 64})
+        payment = _client_payment_workspace(self.buyer)
+        self.assertEqual(payment["scope"], "pending_review")
+        self.assertEqual(payment["review_id"], new_review.pk)
+        self.assertFalse(payment["authoritative_for_fulfillment"])
+        episode = self.episode(4, primary_payment_review=new_review)
+        payment = _client_payment_workspace(self.buyer)
+        self.assertEqual(payment["scope"], "current_episode")
+        self.assertEqual(payment["episode_id"], episode.pk)
+        self.assertFalse(payment["authoritative_for_fulfillment"])
+
+    def test_completed_context_rejects_foreign_confirmation(self):
+        from management.bot_views import _client_payment_workspace
+
+        other = IgClient.objects.create(igsid="purchase-history-context-foreign")
+        review = IgPaymentConfirmationReview.objects.create(client=other,
+            dedupe_key="purchase-history:foreign-context", status="confirmed")
+        self.first.primary_payment_review = review
+        self.first.save(update_fields=["primary_payment_review"])
+        payment = _client_payment_workspace(self.buyer)
+        self.assertEqual(payment["scope"], "none")
+        self.assertFalse(payment["authoritative_for_fulfillment"])
+
+    def test_manager_context_formatter_keeps_history_prepayment_and_current_work_distinct(self):
+        template = (Path(__file__).parent / "templates/management/bot.html").read_text()
+        source = template[template.index("  function managerTruthLabel(payment)"):
+                          template.index("  function verificationScopeLabel(scope)")]
+        program = source + r'''
+const assert=require('node:assert/strict');
+const completed={scope:'completed_episode',manager_truth:'manager_verified',authoritative_for_fulfillment:true,verification_scope:'full_payment'};
+assert.match(managerTruthLabelForClient(completed,{}),/завершеного замовлення/);
+assert.match(managerTruthLabelForClient({...completed,verification_scope:'prepayment'},{}),/Передоплату/);
+assert.match(managerTruthLabelForClient({...completed,authoritative_for_fulfillment:false,needs_reconciliation:true},{}),/потребує звірки/);
+assert.equal(managerTruthLabelForClient({scope:'current_episode',manager_truth:''},{}),'Не перевірено менеджером');
+assert.equal(managerTruthLabelForClient({scope:'pending_review',manager_truth:''},{}),'Не перевірено менеджером');
+'''
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_later_distinct_pending_purchase_stays_current_and_unpaid(self):
         review = IgPaymentConfirmationReview.objects.create(client=self.buyer,
