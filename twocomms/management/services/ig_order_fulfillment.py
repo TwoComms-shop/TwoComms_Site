@@ -229,7 +229,7 @@ def _event_specs(assignment, *, now):
         if not verified.get("ready"):
             return
         if order.status not in {"done", "cancelled"}:
-            parcels = sorted(verified["parcels"], key=lambda row: row.key)
+            parcels = verified["parcels"]
             positions = {row.pk: index for index, row in enumerate(parcels, 1)}
             for dispatch in verified["dispatches"]:
                 index, total = positions[dispatch.parcel_id], len(parcels)

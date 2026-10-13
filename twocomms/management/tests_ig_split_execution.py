@@ -261,6 +261,45 @@ class NativeSplitExecutionTests(_SplitExecutionFixture, TransactionTestCase):
         self.assertTrue(result["ready"], result)
         self.assertEqual(Dispatch.objects.count(), 1)
 
+    def test_native_dispatch_notifications_keep_signed_manifest_order_for_nonlexical_keys(self):
+        from management.models import IgOrderAssignment
+        from management.services.ig_order_fulfillment import _event_specs
+
+        original_options = self.options
+
+        def nonlexical_options(*args, **kwargs):
+            options = original_options(*args, **kwargs)
+            options["separate"]["parcels"][0]["key"] = "p2"
+            options["separate"]["parcels"][1]["key"] = "p1"
+            return options
+
+        # Change the manager's input before the real offer/card/native answer;
+        # the receipt, paid winner, manifest and inventory proofs remain real.
+        with patch.object(self, "options", side_effect=nonlexical_options):
+            data = self._paid_split_plan()
+        parcels = data["parcels"]
+        self.assertEqual([row.key for row in parcels], ["p2", "p1"])
+        terms = data["choice"].offer.envelope["options"]["separate"]["parcels"]
+        self.assertEqual([row["key"] for row in terms], ["p2", "p1"])
+        for index, parcel in enumerate(parcels):
+            self.assertEqual({item["line_id"] for item in parcel.envelope["items"]}, set(terms[index]["line_ids"]))
+            self.assertTrue(self._dispatch(parcel, at=self.now + timedelta(seconds=5 + index))["ready"])
+
+        assignment = IgOrderAssignment.objects.select_related("order", "client").get(order=data["order"])
+        with patch("management.services.instagram_bot._provider_http") as provider:
+            verified = execution.verified_tracking_plan(assignment.order, now=self.now + timedelta(seconds=10))
+            self.assertTrue(verified["ready"], verified)
+            self.assertEqual([row.key for row in verified["parcels"]], ["p2", "p1"])
+            specs = list(_event_specs(assignment, now=self.now + timedelta(seconds=10)))
+        provider.assert_not_called()
+        self.assertEqual([row["payload"]["parcel_position"] for row in specs], [1, 2])
+        dispatches = {row.parcel_id: row for row in verified["dispatches"]}
+        for ordinal, (spec, parcel) in enumerate(zip(specs, parcels), 1):
+            self.assertEqual(spec["payload"]["split_dispatch_id"], str(dispatches[parcel.pk].pk))
+            self.assertEqual(spec["payload"]["tracking_number"], dispatches[parcel.pk].tracking_number)
+            self.assertEqual(spec["payload"]["parcel_count"], 2)
+            self.assertIn(f"посилки {ordinal} з 2", spec["message"])
+
     def test_only_full_native_dispatch_coverage_promotes_order_once_without_changing_money_or_scalar_ttn(self):
         data = self._paid_split_plan()
         order = data["order"]
