@@ -114,3 +114,35 @@ test('stops repinning once the operator scrolls away from the bottom', () => {
   while (frames.length) frames.shift()();
   assert.equal(messages.scrollTop, 0);
 });
+
+test('follows a late private-preview insertion until the operator starts reading history', () => {
+  const messages = new FakeMessages(new FakeImage());
+  const frames = [];
+  let mutationCallback;
+  let disconnected = false;
+  class FakeMutationObserver {
+    constructor(callback) { mutationCallback = callback; }
+    observe() {}
+    disconnect() { disconnected = true; }
+  }
+  pinToBottom(messages, {
+    force: true,
+    MutationObserver: FakeMutationObserver,
+    requestAnimationFrame: callback => { frames.push(callback); return frames.length; },
+    cancelAnimationFrame: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+  });
+  while (frames.length) frames.shift()();
+  messages.scrollHeight = 420;
+  mutationCallback();
+  while (frames.length) frames.shift()();
+  assert.equal(messages.scrollTop, 420);
+  messages.scrollTop = 0;
+  messages.dispatch('scroll');
+  assert.equal(disconnected, true);
+  messages.scrollHeight = 640;
+  mutationCallback();
+  while (frames.length) frames.shift()();
+  assert.equal(messages.scrollTop, 0);
+});

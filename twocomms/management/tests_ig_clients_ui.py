@@ -2566,7 +2566,7 @@ class ClientsPageRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(
             response,
-            '/static/management/bot_conversation_scroll.js?v=conversation-scroll-v2',
+            '/static/management/bot_conversation_scroll.js?v=conversation-scroll-v3',
         )
         scripts = [
             script.strip()

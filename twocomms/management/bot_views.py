@@ -1049,7 +1049,7 @@ def bot_dashboard(request):
             # STATIC_ROOT and the script is non-critical to the page shell.
             "bot_conversation_scroll_url": (
                 f"{str(getattr(settings, 'STATIC_URL', '/static/')).rstrip('/')}/"
-                "management/bot_conversation_scroll.js?v=conversation-scroll-v2"
+                "management/bot_conversation_scroll.js?v=conversation-scroll-v3"
             ),
             "settings": settings_obj,
             "status": _reviewer_safe_status(request),

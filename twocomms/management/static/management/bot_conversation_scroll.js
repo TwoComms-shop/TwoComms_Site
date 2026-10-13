@@ -15,6 +15,7 @@
     const scheduleTimeout = options.setTimeout || setTimeout;
     const cancelTimeout = options.clearTimeout || clearTimeout;
     const ResizeObserverCtor = options.ResizeObserver || (typeof ResizeObserver === "function" ? ResizeObserver : null);
+    const MutationObserverCtor = options.MutationObserver || (typeof MutationObserver === "function" ? MutationObserver : null);
     const nearBottom = function () {
       return isDocumentScrolled(messages)
         ? documentNearBottom()
@@ -25,6 +26,7 @@
     let frame = 0;
     let timer = 0;
     let observer = null;
+    let mutations = null;
     let done = false;
     const onScroll = function () {
       if (!ignoreScroll && !nearBottom()) {
@@ -38,6 +40,7 @@
       if (frame) cancelRaf(frame);
       if (timer) cancelTimeout(timer);
       if (observer) observer.disconnect();
+      if (mutations) mutations.disconnect();
       messages.removeEventListener("scroll", onScroll);
     };
     const scrollNow = function () {
@@ -62,6 +65,15 @@
       });
     };
     messages.addEventListener("scroll", onScroll, { passive: true });
+    // Private previews are inserted asynchronously after the first render.
+    // Their new nodes must keep the tail pinned until the reader scrolls away.
+    if (MutationObserverCtor) {
+      mutations = new MutationObserverCtor(function () {
+        if (observer) Array.from(messages.querySelectorAll("img")).forEach(function (image) { observer.observe(image); });
+        schedule();
+      });
+      mutations.observe(messages, { childList: true, subtree: true });
+    }
     if (ResizeObserverCtor) {
       observer = new ResizeObserverCtor(schedule);
       observer.observe(messages);

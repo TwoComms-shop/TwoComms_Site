@@ -68,3 +68,5 @@
 @media(max-width:880px){.bot-conversation-overview{max-height:38%;flex-shrink:1;min-height:36px}.bot-conversation-overview .bot-reply-debt .bot-order-action{min-height:32px}.bot-chat-summary>summary{background:#0a0f17}}
 
 @media(max-width:880px){.bot-chat-tools [data-older-messages]{width:auto;flex:0 0 auto}.bot-chat-tools .bot-chat-latest{width:auto}}
+
+@media(max-width:880px){.bot-conversation-overview .bot-reply-debt .bot-order-action{width:auto;flex:0 0 auto}}
