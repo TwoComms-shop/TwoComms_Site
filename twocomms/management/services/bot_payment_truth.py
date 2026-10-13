@@ -293,7 +293,7 @@ def confirmed_purchase_units(client) -> list[dict]:
 
     def unit(key) -> dict:
         return units.setdefault(
-            key, {"order_id": None, "amount": None, "sources": []}
+            key, {"purchase_key": key, "order_id": None, "amount": None, "sources": []}
         )
 
     # (1) Provider-confirmed deals — the strictest evidence there is.

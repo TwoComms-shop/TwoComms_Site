@@ -23,6 +23,7 @@ from management.services.ig_conversation_routes import conversation_route_reset_
 
 
 EPISODE_LIMIT = 20
+PURCHASE_HISTORY_LIMIT = 1000
 EVENT_LIMIT = 50
 LINE_LIMIT = 10
 ROUTE_DECISION_LIMIT = 24
@@ -192,7 +193,9 @@ def _fact(node, key, label, value, *, source, ref=None, state="partial", tone="n
 def _selector(episode):
     return {
         "id": episode["id"], "sequence": episode["sequence"],
-        "label": f"Покупка {episode['sequence']}",
+        "purchase_number": episode.get("purchase_number"),
+        "label": (f"Покупка {episode['purchase_number']}" if episode.get("purchase_number")
+                  else f"Епізод {episode['sequence']}"),
         "state": episode["state"], "repeat_kind": episode["repeat_kind"],
         "current": episode["open_slot"] == 1,
         "opened_at": _iso(episode["opened_at"]), "closed_at": _iso(episode["closed_at"]),
@@ -212,6 +215,59 @@ def _visible_purchase_history(episode):
         return True
     amount = _money(price.get("negotiated_total"))
     return amount is not None and Decimal(amount) > 0
+
+
+def _purchase_history_projection(queryset, client_id):
+    """Number presentation groups without changing durable episode sequences.
+
+    Identity/visibility metadata spans at most 1000 recent technical rows;
+    selected snapshots and event histories remain bounded. Explicit owned
+    review supersession is an audit relation, never a date/amount heuristic.
+    """
+    rows = list(queryset.order_by("-sequence", "-id").values(
+        "id", "sequence", "open_slot", "state", "intended_order_id",
+        "primary_payment_review_id", "product_snapshot", "price_snapshot",
+        "payment_snapshot", "picker_has_commerce", "outcome", "deal_id", "repeat_evidence_message_ids",
+    )[:PURCHASE_HISTORY_LIMIT])
+    rows.reverse()
+    review_ids = {row["primary_payment_review_id"] for row in rows if row["primary_payment_review_id"]}
+    reviews = {}
+    if review_ids:
+        from management.models import IgPaymentConfirmationReview
+
+        reviews = {review.pk: review for review in IgPaymentConfirmationReview.objects.filter(
+            client_id=client_id,
+        ).only("id", "client_id", "status", "order_id", "superseded_by_id").order_by("-id")[:PURCHASE_HISTORY_LIMIT]}
+    by_review = {row["primary_payment_review_id"]: row for row in rows if row["primary_payment_review_id"]}
+    by_order = {row["intended_order_id"]: row for row in rows if row["intended_order_id"]}
+    aliases = {}
+    for row in rows:
+        review = reviews.get(row["primary_payment_review_id"])
+        seen = set()
+        while review is not None and review.status == "superseded" and review.superseded_by_id and review.pk not in seen:
+            seen.add(review.pk)
+            canonical = reviews.get(review.superseded_by_id)
+            if canonical is None or (review.order_id and canonical.order_id and review.order_id != canonical.order_id):
+                break
+            review = canonical
+        if not seen or review is None or review.status == "superseded":
+            continue
+        target = by_review.get(review.pk) or by_order.get(review.order_id)
+        independent_commerce = bool(row["deal_id"] or row["repeat_evidence_message_ids"] or row["product_snapshot"])
+        exact_same_order = bool(target and row["intended_order_id"]
+            and row["intended_order_id"] == target["intended_order_id"])
+        if independent_commerce and row["outcome"] != "superseded_duplicate_payment_review" and not exact_same_order:
+            continue
+        if target and target["id"] != row["id"] and not (
+            row["intended_order_id"] and target["intended_order_id"]
+            and row["intended_order_id"] != target["intended_order_id"]
+        ):
+            aliases[row["id"]] = target["id"]
+    visible = [row for row in rows if row["id"] not in aliases and _visible_purchase_history(row)]
+    numbers = {row["id"]: number for number, row in enumerate(visible, 1)}
+    for row in rows:
+        row["purchase_number"] = numbers.get(aliases.get(row["id"], row["id"]))
+    return rows, visible, aliases
 
 
 def _event(row, kind):
@@ -1094,6 +1150,10 @@ def _bound_records(episode, nodes, *, now=None):
     from management.models import IgPaymentConfirmationReview
     from orders.models import Order
     from orders.fulfillment_truth import nova_poshta_delivery_confirmed_at
+    payment_snapshot = _mapping(episode["payment_snapshot"])
+    payment_conflicted = bool(payment_snapshot.get("needs_reconciliation") or payment_snapshot.get("provider_truth") in {
+        "partially_refunded", "refunded", "reversed", "failed", "cancelled",
+    })
 
     if episode["primary_payment_review_id"]:
         review = IgPaymentConfirmationReview.objects.filter(
@@ -1108,6 +1168,30 @@ def _bound_records(episode, nodes, *, now=None):
             _fact(nodes["payment"], "review", "Перевірка менеджером", str(labels.get(review["status"], "Невідомо")),
                   source="payment_review.current", ref=_ref("payment_review", review["id"]), captured_at=_iso(review["updated_at"]),
                   state=state, tone=tone)
+            if review["status"] == "confirmed":
+                from management.models import IgPaymentReviewDecision
+
+                decision = IgPaymentReviewDecision.objects.filter(
+                    review_id=review["id"], client_id=episode["client_id"],
+                ).order_by("-id").values("id", "decision", "confirmed_amount", "currency",
+                    "verification_source", "verification_scope", "actor_source", "actor_external_id").first()
+                manager_verified = bool(decision and decision["decision"] == "manager_verified" and decision["verification_source"] == "manager" and (
+                    decision["actor_source"] in {"management_user", "telegram_user"} and str(decision["actor_external_id"] or "").strip()
+                ))
+                measured_payment = bool(manager_verified and decision["verification_scope"] in {"full_payment", "prepayment"}
+                    and decision["confirmed_amount"] is not None and decision["confirmed_amount"] > 0)
+                if measured_payment:
+                    prepayment = decision["verification_scope"] == "prepayment"
+                    if not payment_conflicted:
+                        nodes["payment"].pop("waiting", None)
+                        nodes["payment"]["summary"] = ("Передоплату підтверджено менеджером" if prepayment
+                            else "Оплату підтверджено менеджером")
+                    _fact(nodes["payment"], "manager_confirmed_amount", "Суму підтверджено менеджером",
+                        _amount_label(str(decision["confirmed_amount"]), decision), source="payment_review.current",
+                        ref=_ref("payment_review", review["id"]), captured_at=_iso(review["updated_at"]),
+                        state="partial" if prepayment else "complete", tone="success")
+                elif manager_verified and decision["verification_scope"] == "payment_claim" and not payment_conflicted:
+                    nodes["payment"]["summary"] = "Заяву клієнта про оплату зафіксовано; сума не підтверджена"
             if review["status"] == "pending":
                 nodes["payment"]["summary"] = "Очікує перевірки менеджером"
                 nodes["payment"]["waiting"] = {
@@ -1158,6 +1242,10 @@ def _bound_records(episode, nodes, *, now=None):
                   source="intended_order.current", ref=ref, captured_at=_iso(order.updated),
                   state="complete" if order.payment_status == "paid" else "partial",
                   tone="success" if order.payment_status == "paid" else "neutral")
+            if order.payment_status == "paid" and not payment_conflicted:
+                nodes["payment"].pop("waiting", None)
+                nodes["payment"]["summary"] = "Оплату підтверджено у прив’язаному замовленні"
+                return_focus = "fulfillment"
             if delivered:
                 nodes["fulfillment"]["state"] = "complete"
                 nodes["fulfillment"]["summary"] = "Отримання підтверджено перевізником"
@@ -1184,22 +1272,45 @@ def build_journey_snapshot(client, *, view_episode_id=None, source_selection=Non
     )
     queryset = IgCommercialEpisode.objects.filter(client_id=client_id).annotate(
         picker_has_commerce=Exists(commercial_steps), source_selection_exists=Exists(source_sessions))
-    total = queryset.count()
-    recent = list(queryset.order_by("-sequence", "-id").values(*EPISODE_FIELDS, "picker_has_commerce", "source_selection_exists")[:EPISODE_LIMIT])
-    current = next((row for row in recent if row["open_slot"] == 1), None)
+    metadata, visible, aliases = _purchase_history_projection(queryset, client_id)
+    total = len(metadata) if len(metadata) < PURCHASE_HISTORY_LIMIT else queryset.count()
+    if total > len(metadata):
+        # Omitted history may contain merged/empty groups; its global rank is
+        # unknown. Preserve the technical sequence without inventing a number.
+        for row in metadata:
+            row["purchase_number"] = None
+    numbers = {row["id"]: row["purchase_number"] for row in metadata}
+    visible_ids = [row["id"] for row in visible[-EPISODE_LIMIT:]]
+    recent = list(queryset.filter(pk__in=visible_ids).order_by("-sequence", "-id").values(
+        *EPISODE_FIELDS, "picker_has_commerce", "source_selection_exists")) if visible_ids else []
+    for row in recent:
+        row["purchase_number"] = numbers[row["id"]]
+    current = next((row for row in recent if row["open_slot"] == 1 and row["state"] in {"active", "order_created"}), None)
     if current is None:
-        current = queryset.filter(open_slot=1).values(*EPISODE_FIELDS, "source_selection_exists").first()
+        current = queryset.filter(open_slot=1, state__in=("active", "order_created")).exclude(
+            pk__in=aliases).values(*EPISODE_FIELDS, "source_selection_exists").first()
+        if current:
+            current["purchase_number"] = numbers.get(current["id"])
     if view_episode_id is not None:
         requested = _positive_id(view_episode_id)
         if requested is None:
             raise InvalidJourneyEpisode("Недоступний цикл покупки")
+        requested = aliases.get(requested, requested)
         episode = next((row for row in recent if row["id"] == requested), None)
         if episode is None:
             episode = queryset.filter(pk=requested).values(*EPISODE_FIELDS, "source_selection_exists").first()
         if episode is None:
             raise InvalidJourneyEpisode("Недоступний цикл покупки")
+        episode["purchase_number"] = numbers.get(episode["id"])
     else:
-        episode = current
+        episode = current or next((row for row in recent if row["state"] == "fulfilled"
+            and row["intended_order_id"]), None)
+        if episode is None:
+            fallback = next((row for row in reversed(visible) if row["state"] == "fulfilled"
+                and row["intended_order_id"]), None)
+            if fallback:
+                episode = queryset.filter(pk=fallback["id"]).values(*EPISODE_FIELDS, "source_selection_exists").first()
+                episode["purchase_number"] = fallback["purchase_number"]
     is_history = bool(episode and (not current or episode["id"] != current["id"]))
     nodes = {key: {
         "id": key, "label": label, "state": "open", "current": False,
@@ -1415,10 +1526,13 @@ def build_journey_snapshot(client, *, view_episode_id=None, source_selection=Non
         "schema_version": 1, "client_id": client_id,
         "current_episode_id": current["id"] if current else None,
         "viewed_episode_id": episode["id"] if episode else None,
+        "resolved_from_episode_id": _positive_id(view_episode_id) if _positive_id(view_episode_id) in aliases else None,
         "is_history": is_history,
-        "episodes": {"items": [_selector(row) for row in recent if _visible_purchase_history(row)],
-                     "total": total, "has_more": total > len(recent),
-                     "hidden_empty_archives": sum(not _visible_purchase_history(row) for row in recent)},
+        "episodes": {"items": [_selector(row) for row in recent],
+                     "total": total, "visible_total": len(visible), "has_more": len(visible) > len(recent),
+                     "hidden_duplicate_episodes": len(aliases),
+                     "purchase_group_coverage": "bounded_history" if total > len(metadata) else "complete",
+                     "hidden_empty_archives": sum(row["id"] not in aliases and not _visible_purchase_history(row) for row in metadata)},
         "viewed_episode": _selector(episode) if episode else None,
         "route_kind": "unknown", "focus": display_focus,
         "nodes": list(nodes.values()), "history": history,

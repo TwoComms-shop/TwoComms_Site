@@ -431,6 +431,42 @@ def _provider_funnel_proposals(analysis_v2: dict, by_id: dict[int, dict]):
     return proposals
 
 
+def _prior_purchase_count(client) -> int:
+    """Count confirmed purchases preceding this cycle, not its own settlement."""
+    from management.models import IgCommercialEpisode
+    from management.services.bot_payment_truth import confirmed_purchase_units
+
+    units = confirmed_purchase_units(client)
+    episodes = IgCommercialEpisode.objects.filter(client_id=client.pk).exclude(
+        primary_payment_review__status="superseded",
+    ).select_related(
+        "primary_payment_review", "deal",
+    )
+    episode = episodes.filter(pk=getattr(client, "current_commercial_episode_id", None),
+        open_slot=1, state__in=("active", "order_created")).first()
+    episode = episode or episodes.filter(open_slot=1, state__in=("active", "order_created")).first()
+    if episode is None:
+        episode = episodes.filter(state="fulfilled", intended_order_id__isnull=False).order_by("-sequence", "-id").first()
+    own_order_id = None
+    own_keys = set()
+    if episode:
+        own_order_id = episode.intended_order_id
+        if episode.primary_payment_review_id:
+            own_keys.add(("review", episode.primary_payment_review_id))
+        if episode.deal_id:
+            own_keys.add(("deal", episode.deal_id))
+        if not own_order_id and episode.primary_payment_review_id:
+            review = episode.primary_payment_review
+            if review.client_id == client.pk and review.status != "superseded":
+                own_order_id = review.order_id
+        if not own_order_id and episode.deal_id:
+            own_order_id = episode.deal.order_id
+    if own_order_id:
+        own_keys.add(("order", own_order_id))
+    return sum(1 for unit in units if tuple(unit.get("purchase_key") or ()) not in own_keys
+        and not (own_order_id and unit["order_id"] == own_order_id))
+
+
 def normalize_analysis_v2(
     *,
     parsed: dict,
@@ -560,7 +596,7 @@ def normalize_analysis_v2(
     else:
         repeat_confidence = _decimal_01(repeat.get("confidence"), nullable=True)
 
-    prior_purchase_count = max(0, int(getattr(client, "purchases_count", 0) or 0))
+    prior_purchase_count = _prior_purchase_count(client)
     if prior_purchase_count > 0:
         ltv_signal = IgConversationAnalysisResult.LtvSignal.REPEAT_CUSTOMER
     elif repeat_kind:

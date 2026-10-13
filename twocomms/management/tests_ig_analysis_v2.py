@@ -225,8 +225,10 @@ class AnalysisV2RuntimeTests(TestCase):
         self.assertEqual(result.analysis_latency_ms, 345)
         self.assertEqual(result.result_digest, v2.result_digest_for_instance(result))
         self.assertNotEqual(result.state_correlation, self.raw_fingerprint)
-        self.assertEqual(result.prior_purchase_count, 2)
-        self.assertEqual(result.ltv_signal, result.LtvSignal.REPEAT_CUSTOMER)
+        # A persisted count without any payment/order sources is not evidence
+        # that this negotiation follows a completed purchase.
+        self.assertEqual(result.prior_purchase_count, 0)
+        self.assertEqual(result.ltv_signal, result.LtvSignal.REACTIVATION)
         serialized = json.dumps({
             "evidence": result.evidence_manifest,
             "conflicts": result.conflict_codes,

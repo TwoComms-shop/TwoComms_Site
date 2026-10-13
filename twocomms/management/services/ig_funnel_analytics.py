@@ -133,6 +133,9 @@ def _record_step_event_locked(
 
 
 def _ensure_episode_locked(client):
+    # The shared materializer returns completed commerce for passive aftercare
+    # when no new customer purchase source owns a new open cycle. Recording a
+    # conversation/manager event must not itself create another purchase.
     return ensure_open_episode_for_locked_client(
         client,
         materialization_prefix="ig-funnel",

@@ -666,6 +666,22 @@ def apply_turn(
         raise CommerceRevisionConflict("line_source_unverified")
     if line_mode:
         request = line_original
+    from management.models import IgCommercialEpisode
+    from management.services.ig_commercial_episodes import terminal_episode_for_passive_observation
+
+    terminal = (terminal_episode_for_passive_observation(locked_client)
+                if not IgCommercialEpisode.objects.filter(client_id=locked_client.pk, open_slot=1).exists()
+                else None)
+    terminal_new_purchase = bool(
+        terminal and terminal.closed_at
+        and (source.provider_created_at or source.created_at) > terminal.closed_at
+        and not source_request.exchange_requested
+        and (source_request.purchase_requested or source_request.new_purchase_requested)
+    )
+    if terminal and not terminal_new_purchase:
+        # A complaint, receipt or received-item size question is an observed
+        # source, not permission to edit the completed selection or open a sale.
+        _non_mutation(locked_client, source, "post_purchase_observation", classification="neutral")
     session = (
         IgCommerceSelectionSession.objects.select_for_update()
         .filter(client_id=locked_client.pk, open_slot=1)
@@ -727,7 +743,8 @@ def apply_turn(
     from management.services.ig_commercial_episodes import ensure_open_episode_for_locked_client, start_repeat_episode
     from management.services.ig_commerce_projection import start_new_session_for_episode
     episode = ensure_open_episode_for_locked_client(locked_client, materialization_prefix="commerce-source")
-    physical_order = _current_physical_order(locked_client, episode) if (request.new_purchase_requested or line_mode) else None
+    purchase_cycle_requested = request.new_purchase_requested or terminal_new_purchase
+    physical_order = _current_physical_order(locked_client, episode) if (purchase_cycle_requested or line_mode) else None
     copy_projection = {}
     if line_mode:
         from management.services.ig_commerce_projection import source_preferences_for
@@ -745,13 +762,14 @@ def apply_turn(
     # Additional positions in an unpaid draft retain its episode. An existing
     # unpaid physical order requires an explicit new-order source; editing its
     # issued proposal or invoice is a separate owner contract.
-    if request.new_purchase_requested and not request.exchange_requested and repeat_allowed and not repeat_preview_reason:
+    if purchase_cycle_requested and not request.exchange_requested and repeat_allowed and not repeat_preview_reason:
         from management.services.ig_commerce_turns import parse_turn
         event_at, event_id = _event_key(source)
         last_at = session.last_provider_event_at
         event_is_new = last_at is None or (event_at, event_id) > (last_at, str(session.last_provider_message_id or ""))
         if (event_is_new and source.client_id == locked_client.pk and source.sender_id == locked_client.igsid
-            and source.role == "user" and source.source == "webhook" and parse_turn(source.text).new_purchase_requested):
+            and source.role == "user" and source.source == "webhook"
+            and (parse_turn(source.text).new_purchase_requested or terminal_new_purchase)):
             episode = start_repeat_episode(locked_client, repeat_kind="explicit_more",
                 evidence_message_ids=[source.pk], confidence=1,
                 analysis_model="deterministic_source", analysis_prompt_version="commerce-source-v1",

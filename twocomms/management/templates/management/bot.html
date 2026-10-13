@@ -4,7 +4,7 @@
 {% block title %}Бот — TwoComms Management{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{% static 'management/ig_journey.css' %}?v=journey-presentation-v14">
+<link rel="stylesheet" href="{% static 'management/ig_journey.css' %}?v=journey-purchase-clarity-v15">
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_human_documents.css' %}?v=human-documents-v2">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_selection_corrections.css' %}?v=commerce-scope-v1"><link rel="stylesheet" href="{% static 'management/ig_commerce_scope.css' %}?v=commerce-scope-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
@@ -933,7 +933,7 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-chat-summary>summary::marker{color:#7da7de;}
 .bot-chat-summary>summary:hover{background:#101b2b;border-radius:10px;}
 .bot-chat-summary>summary:focus-visible{outline:2px solid #60a5fa;outline-offset:-2px;border-radius:10px;}
-.bot-chat-details{max-height:min(32dvh,300px);overflow:auto;overscroll-behavior:contain;padding:4px 10px 10px;scrollbar-width:thin;}
+.bot-chat-details{padding:4px 10px 10px;min-width:0;}
 .bot-chat-details .bot-linked-order-strip{margin-top:8px;}
 .bot-client-meta>.bot-client-context-alert{font-size:10.5px;line-height:1.35;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px;}
 .bot-client-row{position:relative;}
@@ -1287,7 +1287,7 @@ body.bot-drawer-open{overflow:hidden;}
 .bot-console-box::-webkit-scrollbar,.bot-clients-list::-webkit-scrollbar,.bot-client-detail::-webkit-scrollbar,.bot-kb-list::-webkit-scrollbar,.bot-orders-list::-webkit-scrollbar{width:8px;}
 .bot-console-box::-webkit-scrollbar-thumb,.bot-clients-list::-webkit-scrollbar-thumb,.bot-client-detail::-webkit-scrollbar-thumb,.bot-kb-list::-webkit-scrollbar-thumb,.bot-orders-list::-webkit-scrollbar-thumb{background:#222a39;border-radius:8px;}
 </style>
-<link rel="stylesheet" href="{% static 'management/bot_mobile.css' %}?v=bot-mobile-chat-v2">
+<link rel="stylesheet" href="{% static 'management/bot_mobile.css' %}?v=bot-mobile-chat-v3">
 <link rel="stylesheet" href="{% static 'management/gemini_v2_panel.css' %}?v=gemini-public-evidence-v2">
 {% endblock %}
 
@@ -1911,8 +1911,8 @@ body.bot-drawer-open{overflow:hidden;}
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-presentation-v14"></script>
-<script src="{% static 'management/ig_journey.js' %}?v=bbda591ea1da"></script>
+<script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-purchase-clarity-v15"></script>
+<script src="{% static 'management/ig_journey.js' %}?v=journey-purchase-clarity-v15"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=commerce-scope-v1"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=commerce-scope-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}

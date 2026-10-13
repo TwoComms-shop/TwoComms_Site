@@ -272,6 +272,22 @@ class MoneyPathRegressionTests(BuyerTruthTestMixin, TestCase):
             status=IgPaymentConfirmationReview.Status.CONFIRMED,
         )
         self._manager_decision(review)
+        from management.models import InstagramBotMessage
+        from management.services.ig_commercial_episodes import (
+            ensure_episode_for_review, start_repeat_episode,
+        )
+
+        ensure_episode_for_review(review)
+        source = InstagramBotMessage.objects.create(
+            client=client, sender_id=client.igsid, role="user", source="webhook",
+            text="Хочу замовити ще одну футболку",
+        )
+        start_repeat_episode(
+            client, repeat_kind="explicit_more", evidence_message_ids=[source.pk],
+            confidence="1", analysis_model="deterministic_source",
+            analysis_prompt_version="buyer-repeat-test",
+        )
+        client.refresh_from_db()
         category = Category.objects.create(name="Футболки", slug="tshirts-repeat")
         product = Product.objects.create(
             title="Футболка Харків",

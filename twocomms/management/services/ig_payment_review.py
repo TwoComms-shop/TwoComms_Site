@@ -1848,6 +1848,62 @@ def payment_review_canonical_sort_key(review) -> tuple:
     )
 
 
+def _payment_claim_conflicts(reviews) -> bool:
+    """Do not infer one payment across incompatible owners or manager decisions."""
+    live = [row for row in reviews if row.status not in {"cancelled", "superseded"}]
+    for field in ("order_id", "deal_id"):
+        if len({getattr(row, field) for row in live if getattr(row, field)}) > 1:
+            return True
+    decisions = {
+        (decision.decision, decision.verification_scope,
+         str(decision.confirmed_amount), decision.currency)
+        for row in live
+        for decision in [row.decisions.order_by("-id").first()]
+        if decision is not None
+    }
+    return len(decisions) > 1
+
+
+def _existing_payment_claim(client, claim_anchor, *, lock=False):
+    """Resolve immutable claim identity across episodes, including tombstones.
+
+    A new negotiation cannot turn an already reviewed source into a new
+    payment. Conflicting exact identities are blocked instead of manufacturing
+    a third review. Pending enrichment remains scoped to its original episode.
+    """
+    from management.ig_bot_models import IgPaymentConfirmationReview
+
+    if not re.fullmatch(r"[0-9a-f]{64}", str(claim_anchor or "")):
+        return None, False
+    query = IgPaymentConfirmationReview.objects.filter(
+        client_id=client.pk, evidence__claim_anchor=claim_anchor,
+    )
+    if lock:
+        query = query.select_for_update()
+    matches = list(query)
+    if not matches:
+        return None, False
+    if _payment_claim_conflicts(matches):
+        return None, True
+    live = [row for row in matches if row.status not in {"cancelled", "superseded"}]
+    canonical = min(live or matches, key=payment_review_canonical_sort_key)
+    if canonical.status == canonical.Status.SUPERSEDED and canonical.superseded_by_id:
+        successor = canonical.superseded_by
+        if (successor.client_id == client.pk
+                and _persisted_payment_review_claim_identity(successor) == f"claim:{claim_anchor}"):
+            canonical = successor
+    return canonical, False
+
+
+def _claim_is_historical_replay(client, review):
+    from management.ig_bot_models import IgCommercialEpisode
+
+    if review.status != review.Status.PENDING:
+        return True
+    current = IgCommercialEpisode.objects.filter(client_id=client.pk, open_slot=1).first()
+    return not current or current.primary_payment_review_id != review.pk
+
+
 def _resolve_duplicate_notification(review, *, now) -> bool:
     from management.ig_bot_models import IgBotNotification, IgBotNotificationAudit
 
@@ -2028,6 +2084,8 @@ def reconcile_duplicate_payment_review(
         ]
         if len(matches) < 2:
             return None
+        if _payment_claim_conflicts(matches):
+            return None
         canonical = min(matches, key=payment_review_canonical_sort_key)
         if canonical.pk == review.pk:
             return None
@@ -2062,24 +2120,41 @@ def reconcile_duplicate_payment_review(
                 primary_payment_review_id=canonical.pk,
             ).first()
             if episode and episode.pk != getattr(canonical_episode, "pk", None):
-                episode.open_slot = None
-                episode.state = IgCommercialEpisode.State.LOST
-                episode.outcome = "superseded_duplicate_payment_review"
-                episode.closed_at = now
-                episode.save(update_fields=["open_slot", "state", "outcome", "closed_at", "updated_at"])
-                IgClient.objects.filter(
-                    pk=review.client_id,
-                    current_commercial_episode_id=episode.pk,
-                ).update(
-                    current_commercial_episode_id=None,
-                    updated_at=now,
+                independent_commerce = bool(
+                    episode.repeat_evidence_message_ids or episode.deal_id
+                    or episode.intended_order_id or episode.order_attribution_id
+                    or episode.product_snapshot
+                    or (episode.price_snapshot.get("negotiated_total")
+                        if isinstance(episode.price_snapshot, dict) else episode.price_snapshot)
                 )
+                if independent_commerce:
+                    from management.services.ig_commercial_episodes import payment_truth_snapshot
+
+                    episode.primary_payment_review = None
+                    episode.payment_snapshot = payment_truth_snapshot(
+                        episode=episode, allow_deal_review_fallback=False,
+                    )
+                    episode.save(update_fields=["primary_payment_review", "payment_snapshot", "updated_at"])
+                else:
+                    episode.open_slot = None
+                    episode.state = IgCommercialEpisode.State.LOST
+                    episode.outcome = "superseded_duplicate_payment_review"
+                    episode.closed_at = now
+                    episode.save(update_fields=["open_slot", "state", "outcome", "closed_at", "updated_at"])
+                    IgClient.objects.filter(
+                        pk=review.client_id,
+                        current_commercial_episode_id=episode.pk,
+                    ).update(
+                        current_commercial_episode_id=None,
+                        updated_at=now,
+                    )
                 append_episode_event(
                     episode,
                     dedupe_key=f"episode:{episode.pk}:superseded-by-review:{canonical.pk}",
                     event_type="review_superseded",
                     source="payment_review_reconciliation",
-                    evidence={"canonical_review_id": canonical.pk, "identity": identity},
+                    evidence={"canonical_review_id": canonical.pk, "identity": identity,
+                              "independent_commerce_preserved": independent_commerce},
                 )
         except Exception:
             logger.exception("Could not close duplicate payment-review episode review=%s", review.pk)
@@ -2173,12 +2248,24 @@ def _claim_payment_review(client, *, extracted: dict, watermark: int, claim_anch
             or int(watermark or 0) <= _query_latest_reset_after_message_id(client.pk)
         ):
             return None, False
+        existing, conflict = _existing_payment_claim(locked_client, claim_anchor, lock=True)
+        if existing is not None or conflict:
+            return existing, False
         from management.services.ig_conversation_agreement import initial_agreement_transfer_sources, persist_conversation_agreement
         transfer = initial_agreement_transfer_sources(locked_client) if not locked_client.current_commercial_episode_id else {}
         episode = ensure_open_episode_for_locked_client(
             locked_client,
             materialization_prefix="ig-payment-review-v2",
         )
+        if (
+            episode.sequence > 1
+            and not episode.opened_watermark_message_id
+            and episode.materialization_key.startswith("ig-payment-review-v2:")
+        ):
+            source_ids = [int(value) for value in extracted.get("message_ids", []) if str(value).isdigit()]
+            if source_ids:
+                episode.opened_watermark_message_id = min(source_ids)
+                episode.save(update_fields=["opened_watermark_message_id", "updated_at"])
         if transfer.get("messages") and not transfer.get("reason"):
             # This is solely the fresh None→first episode transition validated
             # above; an existing cycle's floor is never widened.
@@ -2708,6 +2795,16 @@ def create_payment_review(client, *, watermark: int = 0, messages=None, allow_pr
     # Generic owned receipts must be discovered before the needs_review gate;
     # otherwise an image without a caption never reaches the review ledger.
     initial_evidence = extract_payment_review_evidence(messages)
+    if initial_evidence["needs_review"]:
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock
+
+        initial_anchor = payment_review_claim_anchor(initial_evidence)
+        with commercial_episode_client_lock(client.pk), transaction.atomic():
+            existing, conflict = _existing_payment_claim(client, initial_anchor, lock=True)
+            if conflict:
+                return None
+            if existing is not None and _claim_is_historical_replay(client, existing):
+                return existing
     messages = _inspect_payment_messages(
         client, messages, watermark=watermark,
         allow_provider=allow_provider and not initial_evidence["needs_review"],
@@ -2734,6 +2831,8 @@ def create_payment_review(client, *, watermark: int = 0, messages=None, allow_pr
         )
         if review is None:
             return None
+        if not created and _claim_is_historical_replay(client, review):
+            return review
         current_evidence = review.evidence if isinstance(review.evidence, dict) else {}
         previous_material = _payment_notification_material(review)
         if not created:

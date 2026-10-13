@@ -23,6 +23,10 @@ _EPISODE_LOCKS_GUARD = RLock()
 _HELD_DB_LOCKS = ContextVar("ig_episode_db_locks", default={})
 
 FALSE_HISTORICAL_PURCHASE_REASON = "false_historical_purchase_corrected"
+CORRECTED_EPISODE_OUTCOMES = {
+    "superseded_duplicate_payment_review",
+    "historical_purchase_corrected",
+}
 
 
 class SessionLockOwnershipLost(RuntimeError):
@@ -554,15 +558,26 @@ def client_payment_truth_state(client) -> dict:
         chronology.append((row, getattr(review, "created_at", None), 0, review.pk))
 
     current_episode_id = getattr(client, "current_commercial_episode_id", None)
+    corrected_ids = {episode.pk for episode in episodes
+                     if episode.outcome in CORRECTED_EPISODE_OUTCOMES}
+    eligible_rows = [row for row in rows
+                     if row.get("review_status") not in {"superseded", "cancelled"}
+                     and row.get("episode_id") not in corrected_ids]
     current = next(
-        (row for row in rows if row["episode_id"] == current_episode_id),
+        (row for row in eligible_rows if current_episode_id
+         and row["episode_id"] == current_episode_id),
         None,
     )
     if current is None:
-        current = next((row for row in rows if row["current"]), None)
-    if current is None and chronology:
+        current = next((row for row in eligible_rows if row["current"]), None)
+    eligible_chronology = [
+        item for item in chronology
+        if item[0].get("review_status") not in {"superseded", "cancelled"}
+        and item[0].get("episode_id") not in corrected_ids
+    ]
+    if current is None and eligible_chronology:
         current = max(
-            chronology,
+            eligible_chronology,
             key=lambda item: (
                 item[1].timestamp() if item[1] is not None else 0,
                 item[2],
@@ -756,6 +771,22 @@ def _new_episode(
     return episode
 
 
+def terminal_episode_for_passive_observation(client):
+    """Find completed commerce for aftercare without reopening operational scope."""
+    from management.ig_bot_models import IgCommercialEpisode
+
+    latest = (
+        IgCommercialEpisode.objects.filter(client_id=client.pk)
+        .exclude(outcome__in=CORRECTED_EPISODE_OUTCOMES)
+        .exclude(primary_payment_review__status__in={"superseded", "cancelled"})
+        .order_by("-sequence", "-id")
+        .first()
+    )
+    if latest and latest.state == IgCommercialEpisode.State.FULFILLED and latest.open_slot is None:
+        return latest
+    return None
+
+
 def ensure_open_episode_for_locked_client(client, *, materialization_prefix: str):
     """Return the client's open episode while the caller owns its row lock."""
     from management.ig_bot_models import IgCommercialEpisode
@@ -772,6 +803,13 @@ def ensure_open_episode_for_locked_client(client, *, materialization_prefix: str
             client.current_commercial_episode = current
             client.save(update_fields=["current_commercial_episode", "updated_at"])
         return current
+    if materialization_prefix in {"ig-funnel", "commerce-source", "commerce-selection"}:
+        terminal = terminal_episode_for_passive_observation(client)
+        if terminal:
+            # Analytics/neutral commerce observations are aftercare. They may
+            # reference the completed episode, but cannot reopen its slot or
+            # make its old payment the current purchase's payment.
+            return terminal
     sequence = _next_sequence(client.pk)
     return _new_episode(
         client,

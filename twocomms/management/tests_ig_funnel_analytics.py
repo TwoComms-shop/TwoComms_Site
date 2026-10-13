@@ -512,12 +512,29 @@ class IgFunnelAnalyticsApiTests(TestCase):
             status=ProductStatus.PUBLISHED,
         )
         client = IgClient.get_or_create_for_sender("ig-paylink-metadata")
+        from management.services.ig_funnel_analytics import record_client_step_event
+
+        source = InstagramBotMessage.objects.create(
+            client=client, sender_id=client.igsid, role="user", source="webhook",
+            text="Хочу оплатити футболку, класична M",
+        )
+        record_client_step_event(
+            client, event_type="conversation_started", event_key=f"paylink-source:{source.pk}",
+            actor="customer", evidence={"message_id": source.pk},
+        )
+        client.refresh_from_db()
+        client.current_product = product
+        client.current_size = "M"
+        client.intent = IgClient.Intent.PAYMENT
+        client.stage = IgClient.Stage.CHECKOUT
+        client.save(update_fields=["current_product", "current_size", "intent", "stage"])
         proposal_id = str(uuid.uuid4())
         control = {
             "paylink": "full",
             "product": str(product.pk),
             "qty": "1",
             "size": "M",
+            "fit": "classic",
         }
         with patch(
             "management.services.bot_orders.create_checkout_proposal_link",
@@ -527,7 +544,7 @@ class IgFunnelAnalyticsApiTests(TestCase):
                 "proposal_id": proposal_id,
                 "order_summary": {},
             },
-        ):
+        ) as create_link:
             instagram_bot.finalize_paylink(
                 "Оформлю пропозицію",
                 control,
@@ -536,6 +553,7 @@ class IgFunnelAnalyticsApiTests(TestCase):
                 trigger_text="Хочу оплатити",
             )
 
+        create_link.assert_called_once()
         self.assertEqual(control["_funnel_proposal_id"], proposal_id)
 
     @patch("management.services.instagram_bot.send_text", return_value=(True, "", ""))
