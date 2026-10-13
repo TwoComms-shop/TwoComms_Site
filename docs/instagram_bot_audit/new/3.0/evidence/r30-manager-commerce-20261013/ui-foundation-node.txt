@@ -1,0 +1,269 @@
+TAP version 13
+# Subtest: a verified available reuse renders original check date, cart scope, and no duplicate action
+ok 1 - a verified available reuse renders original check date, cart scope, and no duplicate action
+  ---
+  duration_ms: 27.70425
+  type: 'test'
+  ...
+# Subtest: pending original checks do not claim recorded reuse or checked availability, and viewers have no form controls
+ok 2 - pending original checks do not claim recorded reuse or checked availability, and viewers have no form controls
+  ---
+  duration_ms: 1.754167
+  type: 'test'
+  ...
+# Subtest: wait and unavailable cannot turn an original decision into a sealed available-reuse claim
+ok 3 - wait and unavailable cannot turn an original decision into a sealed available-reuse claim
+  ---
+  duration_ms: 2.109166
+  type: 'test'
+  ...
+# Subtest: inactive, delivered, uncertain, and malformed descriptors cannot display reusable manager authority
+ok 4 - inactive, delivered, uncertain, and malformed descriptors cannot display reusable manager authority
+  ---
+  duration_ms: 9.273084
+  type: 'test'
+  ...
+# Subtest: an original CART decision without a recorded availability event shows its date but no reuse claim
+ok 5 - an original CART decision without a recorded availability event shows its date but no reuse claim
+  ---
+  duration_ms: 1.069
+  type: 'test'
+  ...
+# Subtest: fresh GET removal of reuse clears the readonly subsection without a POST or scope conversion
+ok 6 - fresh GET removal of reuse clears the readonly subsection without a POST or scope conversion
+  ---
+  duration_ms: 1.318542
+  type: 'test'
+  ...
+# Subtest: stale outer projections or different original identities hide reusable authority despite an old nested descriptor
+ok 7 - stale outer projections or different original identities hide reusable authority despite an old nested descriptor
+  ---
+  duration_ms: 3.005667
+  type: 'test'
+  ...
+# Subtest: UNKNOWN refresh pins A even if GET returns newer B; retry preserves exact A operation and counts
+ok 8 - UNKNOWN refresh pins A even if GET returns newer B; retry preserves exact A operation and counts
+  ---
+  duration_ms: 10.315833
+  type: 'test'
+  ...
+# Subtest: verified stock_ready readback settles an UNKNOWN operation without inventing a proposal or reposting
+ok 9 - verified stock_ready readback settles an UNKNOWN operation without inventing a proposal or reposting
+  ---
+  duration_ms: 1.850625
+  type: 'test'
+  ...
+# Subtest: a verified receipt for newer B cannot settle the still UNKNOWN operation bound to A
+ok 10 - a verified receipt for newer B cannot settle the still UNKNOWN operation bound to A
+  ---
+  duration_ms: 2.027666
+  type: 'test'
+  ...
+# Subtest: a receipt for A with a different decision digest cannot settle or replace the pending operation
+ok 11 - a receipt for A with a different decision digest cannot settle or replace the pending operation
+  ---
+  duration_ms: 1.730583
+  type: 'test'
+  ...
+# Subtest: stale or unavailable readback retains the same UNKNOWN operation recovery action
+    # Subtest: stale
+    ok 1 - stale
+      ---
+      duration_ms: 1.658791
+      type: 'test'
+      ...
+    # Subtest: unavailable
+    ok 2 - unavailable
+      ---
+      duration_ms: 1.651375
+      type: 'test'
+      ...
+    1..2
+ok 12 - stale or unavailable readback retains the same UNKNOWN operation recovery action
+  ---
+  duration_ms: 3.639
+  type: 'test'
+  ...
+# Subtest: 409 refresh keeps physical counts but requires fresh confirmation and the new preview digest
+ok 13 - 409 refresh keeps physical counts but requires fresh confirmation and the new preview digest
+  ---
+  duration_ms: 1.8875
+  type: 'test'
+  ...
+# Subtest: catalogue shared pool and exact size counts remain separate explicit quantities in the real POST
+ok 14 - catalogue shared pool and exact size counts remain separate explicit quantities in the real POST
+  ---
+  duration_ms: 1.532291
+  type: 'test'
+  ...
+# Subtest: PII viewer sees verified stock facts without editable stock controls or any POST
+ok 15 - PII viewer sees verified stock facts without editable stock controls or any POST
+  ---
+  duration_ms: 1.170292
+  type: 'test'
+  ...
+# Subtest: warehouse-checked discrepancy uses explicit eligibility and preserves normal stock-sync authority
+ok 16 - warehouse-checked discrepancy uses explicit eligibility and preserves normal stock-sync authority
+  ---
+  duration_ms: 1.202708
+  type: 'test'
+  ...
+# Subtest: off-ledger supply without server eligibility cannot expose an actionable recount
+ok 17 - off-ledger supply without server eligibility cannot expose an actionable recount
+  ---
+  duration_ms: 2.210709
+  type: 'test'
+  ...
+# Subtest: fulfillment display uses structured title and leaves historical label and quantity evidence unchanged
+ok 18 - fulfillment display uses structured title and leaves historical label and quantity evidence unchanged
+  ---
+  duration_ms: 1.090875
+  type: 'test'
+  ...
+# Subtest: selecting WAIT exposes confirmed incoming basis without turning it into available quantity or stock authority
+ok 19 - selecting WAIT exposes confirmed incoming basis without turning it into available quantity or stock authority
+  ---
+  duration_ms: 1.549209
+  type: 'test'
+  ...
+# Subtest: passive constructor and GET show actual full basket/timing without auto groups or arrival promises
+ok 20 - passive constructor and GET show actual full basket/timing without auto groups or arrival promises
+  ---
+  duration_ms: 25.628334
+  type: 'test'
+  ...
+# Subtest: only explicit complete group assignment and fee caps issue an exact whole-basket offer
+ok 21 - only explicit complete group assignment and fee caps issue an exact whole-basket offer
+  ---
+  duration_ms: 5.407667
+  type: 'test'
+  ...
+# Subtest: adding and removing groups keeps draft identities but serializes contiguous canonical parcel keys
+ok 22 - adding and removing groups keeps draft identities but serializes contiguous canonical parcel keys
+  ---
+  duration_ms: 3.279375
+  type: 'test'
+  ...
+# Subtest: UNKNOWN retains the exact original offer operation through newer GET and retry
+ok 23 - UNKNOWN retains the exact original offer operation through newer GET and retry
+  ---
+  duration_ms: 2.801125
+  type: 'test'
+  ...
+# Subtest: 409 refresh preserves draft but changed digest requires explicit new terms before issuance
+ok 24 - 409 refresh preserves draft but changed digest requires explicit new terms before issuance
+  ---
+  duration_ms: 1.483375
+  type: 'test'
+  ...
+# Subtest: read-only operators can see choice and actual plans without mutation controls or POST
+ok 25 - read-only operators can see choice and actual plans without mutation controls or POST
+  ---
+  duration_ms: 0.87575
+  type: 'test'
+  ...
+# Subtest: binding requires native choice identity and explicit ordinary-order readiness
+ok 26 - binding requires native choice identity and explicit ordinary-order readiness
+  ---
+  duration_ms: 2.153292
+  type: 'test'
+  ...
+# Subtest: dispatch enforces the customer cap and posts the exact readonly server COD
+ok 27 - dispatch enforces the customer cap and posts the exact readonly server COD
+  ---
+  duration_ms: 1.888958
+  type: 'test'
+  ...
+# Subtest: missing money/COD, unavailable basket and unverified native receipt cannot enable false claims
+ok 28 - missing money/COD, unavailable basket and unverified native receipt cannot enable false claims
+  ---
+  duration_ms: 1.88825
+  type: 'test'
+  ...
+# Subtest: unsaved dispatch values survive GET redraw and require explicit discard before leaving
+ok 29 - unsaved dispatch values survive GET redraw and require explicit discard before leaving
+  ---
+  duration_ms: 1.114125
+  type: 'test'
+  ...
+# Subtest: each successful carrier code needs actual event/terminal/check clocks and reports only its parcel received
+ok 30 - each successful carrier code needs actual event/terminal/check clocks and reports only its parcel received
+  ---
+  duration_ms: 1.991125
+  type: 'test'
+  ...
+# Subtest: carrier return wording and return codes never become customer receipt even with terminal clocks
+ok 31 - carrier return wording and return codes never become customer receipt even with terminal clocks
+  ---
+  duration_ms: 1.135584
+  type: 'test'
+  ...
+# Subtest: registered TTN waits for carrier evidence; missing or inconsistent clocks cannot confirm receipt
+ok 32 - registered TTN waits for carrier evidence; missing or inconsistent clocks cannot confirm receipt
+  ---
+  duration_ms: 0.869833
+  type: 'test'
+  ...
+# Subtest: concrete POST failures explain changed dispatch/configuration/money and checkout evidence without raw codes
+ok 33 - concrete POST failures explain changed dispatch/configuration/money and checkout evidence without raw codes
+  ---
+  duration_ms: 3.4325
+  type: 'test'
+  ...
+# Subtest: oversized customer offer gets actionable format guidance and preserves the complete draft
+ok 34 - oversized customer offer gets actionable format guidance and preserves the complete draft
+  ---
+  duration_ms: 0.898625
+  type: 'test'
+  ...
+# Subtest: immutable offer names, quantities and locale survive stale or conflicting current basket data
+ok 35 - immutable offer names, quantities and locale survive stale or conflicting current basket data
+  ---
+  duration_ms: 0.761209
+  type: 'test'
+  ...
+# Subtest: structured display preserves signed history and renders quantity once; legacy labels stay intact
+ok 36 - structured display preserves signed history and renders quantity once; legacy labels stay intact
+  ---
+  duration_ms: 0.444
+  type: 'test'
+  ...
+# Subtest: carrier clocks collapse while receipt status, TTN and actual charges stay outside details
+ok 37 - carrier clocks collapse while receipt status, TTN and actual charges stay outside details
+  ---
+  duration_ms: 0.486333
+  type: 'test'
+  ...
+# Subtest: localized customer preview displays only the supplied exact offer body as text
+ok 38 - localized customer preview displays only the supplied exact offer body as text
+  ---
+  duration_ms: 0.448625
+  type: 'test'
+  ...
+# Subtest: a verified plan for the exact customer choice suppresses duplicate order binding
+ok 39 - a verified plan for the exact customer choice suppresses duplicate order binding
+  ---
+  duration_ms: 1.069
+  type: 'test'
+  ...
+# Subtest: a different historical plan cannot hide current binding and only exact-choice order candidates are submitted
+ok 40 - a different historical plan cannot hide current binding and only exact-choice order candidates are submitted
+  ---
+  duration_ms: 1.476292
+  type: 'test'
+  ...
+# Subtest: foreign-choice candidate readiness does not expose a manual order fallback for the current choice
+ok 41 - foreign-choice candidate readiness does not expose a manual order fallback for the current choice
+  ---
+  duration_ms: 0.476084
+  type: 'test'
+  ...
+1..41
+# tests 43
+# suites 0
+# pass 43
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 108.558083

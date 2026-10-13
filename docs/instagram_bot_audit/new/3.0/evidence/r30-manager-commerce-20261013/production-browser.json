@@ -1,0 +1,32 @@
+{
+  "layouts": [
+    {
+      "viewport": 1816,
+      "pageWidth": 1816,
+      "panelWidth": 335,
+      "componentOverflow": []
+    },
+    {
+      "componentOverflow": [],
+      "pageWidth": 390,
+      "panelWidth": 339,
+      "viewport": 390
+    },
+    {
+      "componentOverflow": [],
+      "pageWidth": 320,
+      "panelWidth": 269,
+      "viewport": 320
+    }
+  ],
+  "assets": [
+    "https://management.twocomms.shop/static/management/css/ig_fulfillment_review.99115d6a68e6.css?v=9853821fcf8b",
+    "https://management.twocomms.shop/static/css/management-ig-split-shipping.5525dc658d97.css?v=c3949ee0d051",
+    "https://management.twocomms.shop/static/management/js/ig_fulfillment_review.20b040744185.js?v=6783b00a696e",
+    "https://management.twocomms.shop/static/js/management-ig-split-shipping.ded3ce4b9dd5.js?v=e749772c9099"
+  ],
+  "applicationErrors": [],
+  "extensionErrorsObserved": true,
+  "businessMutations": 0,
+  "customerSends": 0
+}

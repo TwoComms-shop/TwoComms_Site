@@ -1,0 +1,1 @@
+{"sha": "cf58e8d2063591ddacf139cdf57b95962cc24225", "branch": "main", "catalogue_rows": 81, "catalogue_digest": "3d0a0a693dfb4c387ae1113ec4495df8611de37d58cdf7a65325a189d8b1c3a6", "fulfillment_enabled": true, "restock_enabled": true, "optional_holding_enabled": false, "python": "3.14.8", "django": "6.1", "provider_io": 0}
