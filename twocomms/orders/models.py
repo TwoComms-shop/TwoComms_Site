@@ -770,18 +770,8 @@ class OrderItem(models.Model):
 
     @property
     def generic_option_labels(self):
-        fit_label = self.fit_label.casefold()
-        fit_axis_labels = {'fit', 'посадка', 'крій', 'крой'}
-        return [
-            f"{label}: {value}"
-            for label, value in (self.option_labels or {}).items()
-            if str(value or '').strip()
-            and str(value or '').strip().casefold() != fit_label
-            and not (
-                fit_label
-                and str(label or '').strip().casefold() in fit_axis_labels
-            )
-        ]
+        from orders.services.customer_order_presentation import customer_item_option_labels
+        return customer_item_option_labels(self)
 
     @property
     def color_name(self):

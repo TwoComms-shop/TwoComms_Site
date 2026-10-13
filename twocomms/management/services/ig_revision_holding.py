@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import secrets
 from datetime import timedelta
 
@@ -149,7 +150,8 @@ def _positive_current_request(client, revision):
     texts = [str(row.get("text") or "") for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
     return bool(
         (intent.get("purpose") == "support" and any(SUPPORT_RE.search(text) for text in texts))
-        or manager_case_reason(revision) in {"customer_manager_request", "collaboration_review"}
+        or manager_case_reason(revision) in {"customer_manager_request", "collaboration_review",
+                                            "product_configuration_review", "product_information_review"}
         or _collaboration_route_present(revision)
         or any(extract_collaboration_brief(text) for text in texts)
     )
@@ -339,15 +341,23 @@ def holding_receipt_valid(revision, *, text=None):
         client_id=revision.client_id, terminal_resolution="failed", winner_attempt__isnull=True,
     ).exists():
         return False
+    product = receipt.get("product_inquiries") or {}
+    from management.services.ig_product_inquiries import REVIEW_REASONS, product_inquiries_for_revision
+    product_case = product.get("reason") in REVIEW_REASONS
+    if product_case and product_inquiries_for_revision(revision) != product:
+        return False
     task = IgFollowUpTask.objects.filter(
         pk=receipt.get("task_id"), client_id=revision.client_id,
-        event_key=f"ig-revision-debt:{revision.pk}", kind="manager_task",
-        reason="revision_case:execution_debt",
+        event_key=(f"ig-revision-case:{revision.client_id}:{revision.pk}:{product['reason']}"[:180]
+                   if product_case else f"ig-revision-debt:{revision.pk}"), kind="manager_task",
+        reason="revision_case:" + product["reason"] if product_case else "revision_case:execution_debt",
     ).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)).first()
     if not task or not IgBotNotification.objects.filter(
         pk=receipt.get("notification_id"), client_id=revision.client_id,
-        dedupe_key=f"revision-holding-case:{task.pk}",
+        dedupe_key=f"ig-revision-case:{task.pk}" if product_case else f"revision-holding-case:{task.pk}",
     ).exists():
+        return False
+    if product_case and (task.manager_context or {}).get("product_inquiries") != product:
         return False
     try:
         collaboration_task_id = int(receipt.get("collaboration_task_id") or 0)
@@ -364,7 +374,7 @@ def holding_receipt_valid(revision, *, text=None):
     return True
 
 
-def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=False):
+def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=False, product_inquiry_capture=None):
     """Admit only after conclusive generation failure and before any send."""
     from management.services.ig_revision_recovery import recovery_lineage_for_authority
     from management.services.bot_sales_classifier import extract_collaboration_brief
@@ -397,6 +407,25 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 return RevisionInputDecision(reason="holding_generation_not_failed")
             if not _sources_unchanged(revision):
                 return RevisionInputDecision(reason="holding_sources_changed")
+            from management.services.ig_product_inquiries import ProductInquiryCapture, product_inquiries_for_revision
+            if product_inquiry_capture is None and not (revision.action_receipts or {}).get(RECEIPT_KEY):
+                # Failed-graph restart has no request-local capture. Reuse the
+                # native current response-plan reader, then the existing cart
+                # fence below; missing catalogue facts never mean unsupported.
+                from management.services.ig_response_plan import capture_response_plan
+                recovery_plan = capture_response_plan(client, revision=revision)
+                if recovery_plan.plan_gap:
+                    return RevisionInputDecision(reason=recovery_plan.plan_gap)
+                product_inquiries_for_revision(revision, response_plan=recovery_plan)
+                product_inquiry_capture = revision._product_inquiry_capture
+            if product_inquiry_capture is not None:
+                if type(product_inquiry_capture) is not ProductInquiryCapture:
+                    return RevisionInputDecision(reason="holding_product_inquiry_capture_invalid")
+                product = product_inquiry_capture.recompute(revision)
+                if product is None:
+                    return RevisionInputDecision(reason="holding_product_inquiry_capture_changed")
+                revision._product_inquiries = product
+            product = product_inquiries_for_revision(revision)
             from management.services.ig_revision_recovery import wait_notification_receipts
             if any(item["notification"] for item in wait_notification_receipts(revision, exclude_revision_id=revision.pk)):
                 return RevisionInputDecision(reason="holding_continuous_wait_already_notified")
@@ -405,6 +434,17 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             if not positive_request and not neutral_request:
                 return RevisionInputDecision(reason="holding_current_purpose_ineligible")
             authority = build_revision_authority_bindings(client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=settings_row)
+            if product.get("status") == "manager_required" and product_inquiry_capture is not None:
+                from management.services.ig_response_cart_fence import capture_source_cart_authority
+                from management.services.ig_revision_authority import CLAIM_SOURCE_PREFERENCES
+                cart_payload = json.loads(product_inquiry_capture.cart_json)
+                if cart_payload.get("lines"):
+                    cart = capture_source_cart_authority(client, cart_payload, revision=revision)
+                    if not cart.ready:
+                        return RevisionInputDecision(reason=cart.reason)
+                    authority = build_revision_authority_bindings(client,
+                        claims=(CLAIM_PUBLIC_POLICY_INPUTS, CLAIM_SOURCE_PREFERENCES),
+                        control={"source_cart_fence": cart.binding}, settings_obj=settings_row)
             if not authority.ready:
                 return RevisionInputDecision(reason="holding_authority_unavailable")
             pub = settings_row.active_instruction_publication
@@ -483,6 +523,13 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             else:
                 text = texts[language]
                 collaboration_task = collaboration_notification = None
+            product_task = product_notification = None
+            from management.services.ig_service_complaints import revision_service_complaint
+            if product.get("status") == "manager_required" and not collaboration_request and not revision_service_complaint(revision):
+                from management.services.ig_product_inquiries import inquiry_reply
+                from management.services.ig_revision_intents import ensure_product_inquiry_review_case
+                product_task, product_notification = ensure_product_inquiry_review_case(revision, product)
+                text = inquiry_reply(product)
             if reply_language.reply_language and reply_language.reply_language not in {"uk", "ru", "en", "hi"}:
                 text = {
                     "uk": "Не вдалося надійно підготувати відповідь запитаною мовою. ",
@@ -513,18 +560,18 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 return RevisionInputDecision(True, "normal_reply", "provider_safe_reply_admitted", receipt)
             from management.services.ig_response_debt import record_reply_debt
             from management.services.instagram_bot import notify_manager
-            task = record_reply_debt(revision, "provider_candidates_exhausted")
+            task = product_task or record_reply_debt(revision, "provider_candidates_exhausted")
             if task.status in {task.Status.COMPLETED, task.Status.CANCELLED}:
                 return RevisionInputDecision(reason="holding_handoff_no_longer_open")
             key = f"revision-holding-case:{task.pk}"
-            if not notify_manager(
+            if not product_task and not notify_manager(
                 "Потрібна відповідь на запит клієнта після технічного збою підготовки відповіді.",
                 dedupe_key=key, event_type="escalation", client=client,
                 metadata={"revision_id": revision.pk, "manager_task_id": task.pk, "case_kind": "revision_execution_debt"},
                 deliver_immediately=False, raise_on_error=True,
             ):
                 raise RuntimeError("holding_notification_not_recorded")
-            notification = IgBotNotification.objects.get(dedupe_key=key)
+            notification = product_notification or IgBotNotification.objects.get(dedupe_key=key)
             receipt = {
                 "version": VERSION, "origin": PURPOSE, "purpose": PURPOSE,
                 "snapshot_digest": revision.snapshot_digest,
@@ -532,6 +579,8 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "failed_request_id": graph.request_id, "task_id": task.pk, "notification_id": notification.pk,
                 "collaboration_task_id": collaboration_task.pk if collaboration_task else 0,
                 "collaboration_notification_id": collaboration_notification.pk if collaboration_notification else 0,
+                "product_inquiries": product if product_task else {},
+                "proof": {"source_cart_capture": json.loads(product_inquiry_capture.cart_json)} if product_task and product_inquiry_capture else {},
                 "settings_id": settings_id, "settings_permission_epoch": holding_epoch,
                 "publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash},
                 "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),

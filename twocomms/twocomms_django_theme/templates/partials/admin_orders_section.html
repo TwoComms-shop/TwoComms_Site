@@ -587,7 +587,7 @@
                    target="_blank"
                    rel="noopener noreferrer"
                    title="UID {{ o.instagram_identity.uid }} · {{ o.instagram_identity.creation_mode }}">
-                  Instagram · {{ o.instagram_identity.name }} · UID {{ o.instagram_identity.uid }}
+                  Instagram · {% if o.instagram_identity.username %}@{{ o.instagram_identity.username }}{% else %}{{ o.instagram_identity.name }}{% endif %} · UID {{ o.instagram_identity.uid }}
                 </a>
               {% endif %}
               <span class="oadm-count-chip" title="Кількість позицій">
@@ -972,6 +972,7 @@
                       <span class="oadm-spec">{{ item.qty }} шт</span>
                       {% if item.fit_label %}<span class="oadm-spec">{{ item.fit_label }}</span>{% endif %}
                       {% if item.color_name %}<span class="oadm-spec">{{ item.color_name }}</span>{% endif %}{% endif %}
+                      {% for label in item.generic_option_labels %}<span class="oadm-spec">{{ label }}</span>{% endfor %}
                     </div>
                   </div>
                   <div class="oadm-item__price">

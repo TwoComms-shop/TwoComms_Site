@@ -33,6 +33,9 @@
     return (value.min_days===value.max_days?String(value.min_days):value.min_days+'–'+value.max_days)+' '+(value.unit==='business'?'робочих':'календарних')+' днів · від '+anchor;
   }
   function positiveId(value) { return /^[1-9]\d{0,14}$/.test(String(value||'')); }
+  function hasDisplayLabel(line) {return line&&typeof line.display_label==='string'&&Boolean(line.display_label.trim());}
+  function lineLabel(line) {return hasDisplayLabel(line)?line.display_label:line&&typeof line.label==='string'&&line.label||line&&typeof line.title==='string'&&line.title||'Позиція кошика';}
+  function lineSummary(line) {return lineLabel(line)+(hasDisplayLabel(line)&&Number.isInteger(line.quantity)?' · '+line.quantity+' шт.':'');}
   function reason(value) {
     const groups = [
       [['decision_changed','decision_digest_changed','split_decision_changed','configuration_changed'], 'Товари або перевірка менеджера змінилися. Оновіть кошик і звірте позиції перед новим погодженням.'],
@@ -122,10 +125,10 @@
       if(this.draft.decisionDigest!==current.decision_digest){box.append(this.note('Перевірка менеджера змінилася. Чернетку збережено для звірки; створіть нову чернетку перед надсиланням.','ig-ss-warning'),this.button('Відкинути чернетку й почати заново',()=>this.newDraft()));return box;}
       if(!this.draft.groups.length)box.appendChild(this.button('Створити окремі відправлення',()=>{this.draft.groups=['parcel-1','parcel-2'];this.draft.touched=true;this.draw();}));
       const basket=this.node('div','ig-ss-assignment');
-      (current.lines||[]).forEach(line=>{const row=this.node('div','ig-ss-assignment-row');row.appendChild(this.node('b','',line.label||'Позиція кошика'));
+      (current.lines||[]).forEach(line=>{const row=this.node('div','ig-ss-assignment-row');row.appendChild(this.node('b','',lineSummary(line)));
         const picker=this.select([['','Оберіть відправлення'],...this.draft.groups.map((key,index)=>[key,'Відправлення '+(index+1)])],(line.label||'Позиція')+' — відправлення',this.draft.assignments[line.line_id]);
         picker.addEventListener('change',()=>{this.draft.assignments[line.line_id]=picker.value;this.draft.touched=true;this.updateIssue();});this.disabled(picker,!this.draft.groups.length);
-        row.append(this.note('Уся кількість: '+line.quantity+' шт.'),this.field('Група позиції',picker));basket.appendChild(row);});box.appendChild(basket);
+        row.append(this.field('Група позиції',picker));basket.appendChild(row);});box.appendChild(basket);
       if(this.draft.groups.length&&this.draft.groups.length<Math.min(20,(current.lines||[]).length))box.appendChild(this.button('Додати відправлення',()=>{let number=1;while(this.draft.groups.includes('parcel-'+number))number++;this.draft.groups.push('parcel-'+number);this.draft.touched=true;this.draw();}));
       box.appendChild(this.termsEditor('together','Разом · весь кошик'));
       this.draft.groups.forEach((key,index)=>{const terms=this.termsEditor(key,'Відправлення '+(index+1));
@@ -137,8 +140,9 @@
     basket(current) {
       if(!Array.isArray(current.lines)||!current.lines.length)return null;
       const section=this.node('section','ig-ss-basket');section.appendChild(this.node('h4','','Увесь кошик'));
-      (current.lines||[]).forEach(line=>{const row=this.node('article','ig-ss-line');const head=this.node('div','ig-ss-line-head');head.append(this.node('b','',line.label||'Позиція кошика'),this.node('span','ig-ss-state '+(line.availability||'unknown'),labels[line.availability]||'Ще не перевірено'));
-        row.append(head,this.note('Кількість: '+(Number.isInteger(line.quantity)?line.quantity:'не підтверджено')+' шт.'),this.note('Готовність: '+timing(line.preparation)),this.note('Відправка: '+timing(line.dispatch)));section.appendChild(row);});
+      (current.lines||[]).forEach(line=>{const row=this.node('article','ig-ss-line');const head=this.node('div','ig-ss-line-head');head.append(this.node('b','',lineLabel(line)),this.node('span','ig-ss-state '+(line.availability||'unknown'),labels[line.availability]||'Ще не перевірено'));
+        row.appendChild(head);if(hasDisplayLabel(line))row.appendChild(this.note('Кількість: '+(Number.isInteger(line.quantity)?line.quantity:'не підтверджено')+' шт.'));
+        row.append(this.note('Готовність: '+timing(line.preparation)),this.note('Відправка: '+timing(line.dispatch)));section.appendChild(row);});
       const checked=date(current.decided_at||current.checked_at||current.decision&&current.decision.decided_at);if(checked)section.appendChild(this.note('Перевірка менеджера: '+checked));return section;
     }
     offer(current) {
@@ -149,13 +153,16 @@
         const parcels=offer.options&&offer.options[option]&&offer.options[option].parcels||[];
         let maximum=0,known=parcels.length>0;
         parcels.forEach((parcel,index)=>{const box=this.node('div','ig-ss-parcel');box.appendChild(this.node('b','','Відправлення '+(index+1)));const list=this.node('ul');
-          (parcel.line_ids||[]).forEach(id=>{const line=offeredLines.find(item=>item.line_id===id);list.appendChild(this.node('li','',line?(line.label+' · '+line.quantity+' шт.'):'Позиція попереднього кошика'));});
+          (parcel.line_ids||[]).forEach(id=>{const line=offeredLines.find(item=>item.line_id===id);list.appendChild(this.node('li','',line?lineSummary(line):'Позиція попереднього кошика'));});
           const cap=parcel.currency==='UAH'?money(parcel.customer_delivery_cap):null;
           if(cap===null||!payerLabels[parcel.payer]||parcel.payer==='merchant'&&cap!=='0.00')known=false;else maximum+=Math.round(Number(cap)*100);
           box.append(list,this.note(payerLabels[parcel.payer]||'Платник не підтверджений'),this.note('Максимальна вартість для клієнта: '+(cap!==null?cap.replace('.',',')+' UAH':'не підтверджена')));card.appendChild(box);});
         card.appendChild(this.note('Максимум за всі відправлення: '+(known?(Math.floor(maximum/100)+','+String(maximum%100).padStart(2,'0')+' UAH'):'не підтверджено'),'ig-ss-option-total'));comparisons.appendChild(card);});section.appendChild(comparisons);
       const locale=String(offer.locale||current.locale||'uk').toLowerCase().split('-')[0],buttons=copy[locale]||copy.uk;
       const preview=this.node('div','ig-ss-customer-options');preview.append(this.node('span','',buttons.together),this.node('span','',buttons.separate));section.append(this.note('Варіанти вибору в повідомленні клієнту'),preview);
+      if(typeof offer.body==='string'&&offer.body.trim()){
+        const message=this.node('details','ig-ss-message-preview');message.append(this.node('summary','','Повідомлення клієнту'),this.node('p','',offer.body));section.appendChild(message);
+      }
       const delivery=current.delivery||{},states={pending:'Повідомлення очікує надсилання',queued:'Повідомлення в черзі',sent:'Нативне надсилання підтверджено',unknown:'Результат надсилання невідомий. Потрібна звірка; повторне повідомлення не створюйте.',cancelled:'Надсилання скасовано',absent:'Підтвердження надсилання відсутнє'};
       section.appendChild(this.note(delivery.status==='sent'&&!delivery.mid?'Підтвердження надсилання відсутнє':states[delivery.status]||states.absent,'ig-ss-receipt'));
       const choice=current.choice;
@@ -188,14 +195,14 @@
       if(typeof tracked.status==='string'&&tracked.status.trim())box.appendChild(this.note('Статус перевізника: '+tracked.status));
       const facts=this.node('dl','ig-ss-tracking-facts');
       [['Код статусу',/^\d{1,3}$/.test(code)?code:''],['Подія перевізника',event],['Час завершальної події',terminal],['Перевірено',checked]].forEach(([label,value])=>{if(value){const row=this.node('div');row.append(this.node('dt','',label),this.node('dd','',value));facts.appendChild(row);}});
-      if(facts.children.length)box.appendChild(facts);return box;
+      if(facts.children.length){const details=this.node('details','ig-ss-tracking-details');details.append(this.node('summary','','Події та час перевірки'),facts);box.appendChild(details);}return box;
     }
     plans(current) {
       const section=this.node('section','ig-ss-plans');
       (current.plans||[]).forEach(plan=>{const box=this.node('section','ig-ss-plan');box.appendChild(this.node('h4','','План · замовлення '+(plan.order_number||('№'+plan.order_id))));
         if(plan.reason)box.appendChild(this.note(reason(plan.reason),'ig-ss-warning'));
         (plan.parcels||[]).forEach((parcel,index)=>{const row=this.node('section','ig-ss-plan-parcel');row.appendChild(this.node('h5','','Відправлення '+(index+1)));
-          const lines=this.node('ul');(parcel.lines||[]).forEach(line=>lines.appendChild(this.node('li','',typeof line==='string'?line:[line.label||line.title||'Позиція',line.quantity!=null?line.quantity+' шт.':''].filter(Boolean).join(' · '))));row.appendChild(lines);
+          const lines=this.node('ul');(parcel.lines||[]).forEach(line=>lines.appendChild(this.node('li','',typeof line==='string'?line:lineSummary(line))));row.appendChild(lines);
           const cap=parcel.currency&&parcel.currency!=='UAH'?null:money(parcel.customer_delivery_cap);
           row.append(this.note(payerLabels[parcel.payer]||'Платник не підтверджений'),this.note('Максимальна вартість для клієнта: '+(cap!==null?cap.replace('.',',')+' UAH':'не підтверджена')));
           const dispatch=parcel.dispatch||{},tracking=dispatch.tracking_number||parcel.tracking&&parcel.tracking.tracking_number;

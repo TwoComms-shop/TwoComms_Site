@@ -19,6 +19,39 @@ def _completion(*fields):
     return {'status': 'needs_manual_completion', 'order': None, 'missing_fields': sorted(set(fields))}
 
 
+def _commercial_currency_error(draft, decision, *, deal=None):
+    """Require explicit source money and manager payment to share UAH.
+
+    The reproduced agreement's amount currency owns merchandise, allocated
+    unit prices and delivery. Older drafts need not duplicate that field, but
+    an absent source currency can never be supplied by a model/deal default.
+    """
+    agreement = draft.get('agreement')
+    agreement = agreement if isinstance(agreement, dict) else {}
+    amounts = agreement.get('amounts')
+    amounts = amounts if isinstance(amounts, dict) else {}
+    if 'amount_currency_conflict' in (agreement.get('uncertainty_reasons') or []):
+        return 'commercial_currency_mismatch'
+    currencies = [getattr(decision, 'currency', None), agreement.get('currency'), amounts.get('currency')]
+    if deal is not None:
+        currencies.append(deal.currency)
+    # These projections normally inherit the verified source currency. If
+    # they explicitly carry one, never silently discard a conflicting value.
+    containers = [draft, agreement.get('shipping_payment')]
+    containers.extend(draft.get('items') if isinstance(draft.get('items'), list) else [])
+    for container in containers:
+        if isinstance(container, dict) and 'currency' in container:
+            currencies.append(container['currency'])
+    if any(not isinstance(value, str) or not value.strip() for value in currencies):
+        return 'commercial_currency_unproven'
+    currencies = {value.strip().upper() for value in currencies}
+    if len(currencies) != 1:
+        return 'commercial_currency_mismatch'
+    if currencies != {'UAH'}:
+        return 'commercial_currency_unsupported'
+    return ''
+
+
 def _current_agreement_error(client, draft):
     """Reproduce owned sources under the current conversation fence."""
     from management.models import InstagramBotMessage, InstagramBotSettings
@@ -255,6 +288,9 @@ def _review_order_operation(review, *, actor=None, create=True):
     agreement_error = _current_agreement_error(locked.client, draft)
     if agreement_error:
         return _completion(agreement_error)
+    currency_error = _commercial_currency_error(draft, decision, deal=locked.deal if locked.deal_id else None)
+    if currency_error:
+        return _completion(currency_error)
     shipping_policy = _review_shipping_policy(locked)
     if shipping_policy.get('mode') == 'unknown':
         return _completion('shipping_payment')

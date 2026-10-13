@@ -103,6 +103,14 @@ def _label(observation, index):
     return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:160] or f"Позиція {index + 1} (точні параметри потребують уточнення)"
 
 
+def _display_label(observation, index):
+    """Bounded configuration label; quantity has its own presentation field."""
+    target, labels = observation.get("target") or {}, observation.get("labels") or {}
+    text = " · ".join(str(part) for part in (labels.get("product"), labels.get("color"),
+        target.get("size"), labels.get("fit")) if part)
+    return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:160] or f"Позиція {index + 1} (точні параметри потребують уточнення)"
+
+
 def _lines(cart, watermark, now):
     from management.services.ig_response_cart_plan import source_line_preferences
     from management.services.ig_restock_availability import resolve_source_interest
@@ -113,7 +121,8 @@ def _lines(cart, watermark, now):
         preferences = _quantity_basis(preferences, row)
         observed = resolve_source_interest(preferences, now=now).as_dict()
         lines.append({"line_id": row["line_id"], "recipient_id": row.get("recipient_id", "self"),
-            "label": _label(observed, row.get("index", 0)), "target": observed.get("target") or {},
+            "label": _label(observed, row.get("index", 0)),
+            "display_label": _display_label(observed, row.get("index", 0)), "target": observed.get("target") or {},
             "preferences": preferences, "observation": observed, "inventory_digest": inventory_digest(observed)})
     # Pending manager debt needs a configuration proof too. Inventory counts
     # cannot stand in for the exact SKU/fit/options identity when no decision
@@ -253,11 +262,20 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         availability_requested = any((re.search(r"(?:наявн|налич|доступн|availab|in\s+stock)", row.text, re.I) and "?" in row.text)
             or is_restock_interest(row.text)
             for row in source_rows)
-        if not explicit and not (unavailable and (selection_requested or availability_requested)) and not availability_requested:
+        exact_available = all(line["target"] and line["configuration_digest"]
+            and line["observation"].get("status") == "available" for line in lines)
+        prior = Request.objects.filter(client=client, source__isnull=False).order_by("-created_at").first()
+        prior_requirements = bool(availability_requested and exact_available and not explicit
+            and prior and _verified(prior, "request")
+            and prior.envelope.get("cart_identity") == _cart_identity(cart)
+            and any(_context_requirements([hint]) or hint.get("request_detected") or hint.get("custom_print_hint")
+                for hint in prior.envelope.get("customer_requirements", []))
+            and not _current_reason(prior, settings_obj, now=now, current_source_cart=cart))
+        if not explicit and not (unavailable and (selection_requested or availability_requested)) and not (
+                availability_requested and (not exact_available or prior_requirements)):
             return {"created": False, "reason": "no_review_requirement", "pure": False}
         # A new availability question keeps an earlier deadline only through
         # its original sealed sources and an identical purchase selection.
-        prior = Request.objects.filter(client=client, source__isnull=False).order_by("-created_at").first()
         changes_requirement = any(hint.get("request_detected") or hint.get("supersession_hint") in {"changed", "withdrawn"} for hint in requirements)
         if (prior and _verified(prior, "request") and prior.envelope.get("cart_identity") == _cart_identity(cart)
                 and context_requirements and not changes_requirement
@@ -285,8 +303,17 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         if len(sources) > 16 or len(requirements) > 16:
             return {"created": False, "reason": "requirement_source_bound", "pure": False}
         scope = cart.get("scope") or {}
+        from management.services.ig_reply_language import resolve_own_source_reply_language
+        own_rows = [{"message_id": row.pk, "role": "user", "text": row.text,
+            "provider_created_at": row.provider_created_at.isoformat()} for row in source_rows]
+        latest_source = max(own_rows, key=lambda row: row["message_id"])
+        language = resolve_own_source_reply_language(sources=[latest_source],
+            history=[row for row in own_rows if row is not latest_source], profile_language=client.language,
+            reset_floor=scope.get("reset_floor") or 1, watermark_message_id=latest_source["message_id"],
+            watermark_event_at=now)
         payload = {"scope": "cart", "source_namespace": sources[0]["namespace"], "source_id": max(row.pk for row in source_rows),
-            "client_id": client.pk, "locale": "uk" if re.search(r"[іїєґ]", " ".join(row.text for row in source_rows).lower()) else "ru" if re.search(r"[а-яё]", " ".join(row.text for row in source_rows).lower()) else "en",
+            "client_id": client.pk, "locale": language.template_family if language.template_family in {"uk", "ru", "en"} else language.knowledge_locale,
+            "reply_language": language.as_dict(),
             "settings_id": settings_obj.pk, "settings_epoch": settings_obj.reply_permission_epoch,
             "client_epoch": client.reply_permission_epoch, "sources": sources, "customer_requirements": requirements,
             "lines": lines, "cart_identity": _cart_identity(cart), "source_scope": {**{key: scope.get(key) for key in ("client_id", "episode_id", "reset_floor")}, "source_namespace": sources[0]["namespace"],
@@ -496,6 +523,7 @@ def _decisions(value, request, now):
             clean[name] = text
         result.append({"line_id": row["line_id"], "availability": availability, "checked_quantity": checked,
             "supply_basis": basis,
+            "accounting_recount_required": availability == "available" and observed.get("status") != "available",
             "configuration_digest": configuration.get("configuration_digest", ""),
             "preparation": _timing(row.get("preparation"), now), "dispatch": _timing(row.get("dispatch"), now),
             "inventory_digest": inventory_digest(observed), **clean})
@@ -604,7 +632,8 @@ def _apply_fulfillment_decision(request_id, *, actor, expected_request_digest, o
         task.manager_approval_decided_at = now
         task.manager_context = {**(task.manager_context or {}), "decision_id": str(decision.pk), "decision_version": version,
             "decision_digest": decision.envelope_hmac}
-        if any(line.get("supply_basis") == "accessible_unrecorded" and line["availability"] == "available" for line in lines):
+        if any(line["availability"] == "available" and (line.get("supply_basis") == "accessible_unrecorded"
+                or line.get("accounting_recount_required")) for line in lines):
             task.manager_context["required_decisions"] = ["stock_record_sync_or_manual_order"]
             task.manager_context["business_debt_open"] = True
         task.save(update_fields=["manager_approval_status", "manager_approval_actor", "manager_approval_decided_at", "manager_context", "updated_at"])

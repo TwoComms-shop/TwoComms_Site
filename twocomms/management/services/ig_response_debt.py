@@ -86,6 +86,16 @@ def record_response_coverage(revision_id, token, coverage):
         receipt = {"version": 1, "snapshot_digest": revision.snapshot_digest,
                    "source_message_ids": source_ids, "covered": list(dict.fromkeys(covered)),
                    "remaining": list(dict.fromkeys(remaining)), "disposition": coverage["disposition"]}
+        if "product_inquiry_capture" in coverage:
+            from management.services.ig_product_inquiries import ProductInquiryCapture
+            captured = coverage["product_inquiry_capture"]
+            if type(captured) is not ProductInquiryCapture:
+                return False
+            inquiry = captured.recompute(revision)
+            if inquiry is None:
+                return False
+            if inquiry.get("status") == "manager_required":
+                receipt["product_inquiries"] = inquiry
         if plan_digest:
             receipt["plan_digest"] = plan_digest
         if next_selector:

@@ -86,9 +86,9 @@ class Node {
 
 function projection(extra = {}) {
   return { ready: true, decision_digest: 'decision-A', decided_at: '2026-10-12T09:00:00+00:00', locale: 'uk',
-    lines: [{ line_id: 'shirt', label: 'Футболка M · чорна', quantity: 2, availability: 'available',
+    lines: [{ line_id: 'shirt', label: 'Футболка M · чорна · × 2', display_label: 'Футболка M · чорна', quantity: 2, availability: 'available',
       preparation: { min_days: 0, max_days: 0, unit: 'calendar', anchor_at: '2026-10-12T09:00:00+00:00' } },
-    { line_id: 'hoodie', label: 'Худі L · сіре', quantity: 1, availability: 'wait',
+    { line_id: 'hoodie', label: 'Худі L · сіре · × 1', display_label: 'Худі L · сіре', quantity: 1, availability: 'wait',
       dispatch: { min_days: 3, max_days: 7, unit: 'business', anchor_at: '2026-10-12T09:00:00+00:00' } }], ...extra };
 }
 function offer(extra = {}) {
@@ -346,7 +346,7 @@ test('oversized customer offer gets actionable format guidance and preserves the
 
 test('immutable offer names, quantities and locale survive stale or conflicting current basket data', async () => {
   const f=fixture(false),data=offer({ready:false,locale:'uk',lines:[]});
-  data.offer.lines=[{line_id:'shirt',label:'Оригінальна футболка M',quantity:2},{line_id:'hoodie',label:'Оригінальне худі L',quantity:1}];data.offer.locale='en';
+  data.offer.lines=[{line_id:'shirt',label:'Оригінальна футболка M · × 2',display_label:'Оригінальна футболка M',quantity:2},{line_id:'hoodie',label:'Оригінальне худі L · × 1',display_label:'Оригінальне худі L',quantity:1}];data.offer.locale='en';
   await f.load(data);
   assert.equal(f.root.querySelector('.ig-ss-basket'),null);assert.doesNotMatch(f.root.textContent,/Увесь кошик|Позиція попереднього кошика/);
   assert.match(f.root.querySelector('.ig-ss-offer').textContent,/Оригінальна футболка M · 2 шт\./);
@@ -355,6 +355,48 @@ test('immutable offer names, quantities and locale survive stale or conflicting 
   await f.load(conflicting);
   assert.match(f.root.querySelector('.ig-ss-offer').textContent,/Оригінальна футболка M · 2 шт\./);
   assert.doesNotMatch(f.root.querySelector('.ig-ss-offer').textContent,/Інша поточна футболка|8 шт\./);
+  assert.equal(f.posts().length,0);
+});
+
+test('structured display preserves signed history and renders quantity once; legacy labels stay intact', async () => {
+  const f=fixture(false),data=offer();
+  const signed='Модель × 2 · Black · M · × 2';
+  data.offer.lines=[{line_id:'shirt',label:signed,display_label:'Модель × 2 · Black · M',quantity:2},
+    {line_id:'hoodie',label:'Історичне худі · L · × 1',quantity:1}];
+  data.plans=[{id:'plan',order_id:81,parcels:[{...trackedParcel(),lines:data.offer.lines}]}];
+  await f.load(data);
+  const items=f.root.querySelector('.ig-ss-offer').querySelectorAll('li');
+  assert.equal(items[0].textContent,'Модель × 2 · Black · M · 2 шт.');
+  assert.equal(items[1].textContent,'Історичне худі · L · × 1');
+  const planItems=f.root.querySelector('.ig-ss-plan-parcel').querySelectorAll('li');
+  assert.equal(planItems[0].textContent,items[0].textContent);
+  assert.equal(planItems[1].textContent,items[1].textContent);
+  assert.equal(data.offer.lines[0].label,signed,'rendering cannot rewrite the signed label');
+  assert.equal(f.posts().length,0);
+});
+
+test('carrier clocks collapse while receipt status, TTN and actual charges stay outside details', async () => {
+  const f=fixture(false);await f.load(offer({plans:[{id:'plan',order_id:81,parcels:[trackedParcel(carrier('9'))]}]}));
+  const parcel=f.root.querySelector('.ig-ss-plan-parcel'),details=parcel.querySelector('.ig-ss-tracking-details');
+  assert.ok(details);assert.ok(!details.open);
+  assert.equal(details.querySelector('summary').textContent,'Події та час перевірки');
+  assert.match(details.textContent,/Код статусу9.*Подія перевізника.*Час завершальної події.*Перевірено/);
+  assert.equal(parcel.querySelector('.ig-ss-tracking-title').parentNode.tagName,'section');
+  const visibleFacts=parcel.children.filter(node=>node.tagName==='p').map(node=>node.textContent).join('\n');
+  assert.match(visibleFacts,/ТТН зафіксовано: 20400000000001/);
+  assert.match(visibleFacts,/Фактична вартість для клієнта: 85,00 UAH/);
+  assert.match(visibleFacts,/Післяплата за відправленням: 635,50 UAH/);
+  assert.equal(f.posts().length,0);
+});
+
+test('localized customer preview displays only the supplied exact offer body as text', async () => {
+  const f=fixture(false),data=offer(),body='How should we ship these items?\nTogether: up to 150.00 UAH.\n<exact customer content>';
+  data.offer.body=body;data.offer.locale='en';await f.load(data);
+  const preview=f.root.querySelector('.ig-ss-message-preview');assert.ok(preview);assert.ok(!preview.open);
+  assert.equal(preview.querySelector('p').textContent,body);
+  assert.equal(preview.querySelectorAll('input,select,button').length,0);
+  const withoutBody=structuredClone(data);delete withoutBody.offer.body;await f.load(withoutBody);
+  assert.equal(f.root.querySelector('.ig-ss-message-preview'),null,'missing server body cannot be fabricated from current basket');
   assert.equal(f.posts().length,0);
 });
 

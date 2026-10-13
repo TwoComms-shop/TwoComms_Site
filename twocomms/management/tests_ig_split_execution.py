@@ -233,6 +233,14 @@ class NativeSplitExecutionTests(_SplitExecutionFixture, TransactionTestCase):
         original = data["choice"].offer.envelope["request"]["lines"]
         self.assertEqual([(row["line_id"], row["label"], row["quantity"]) for row in history["offer"]["lines"]],
             [(str(row["line_id"]), row["label"], row["target"]["quantity"]) for row in original])
+        self.assertEqual(history["offer"]["body"], shipping.render_offer(data["choice"].offer)[0])
+        expected_labels = {str(row["line_id"]): shipping.reviews._display_label(row["observation"], index)
+            for index, row in enumerate(original)}
+        for row in history["offer"]["lines"]:
+            self.assertEqual(row["display_label"], expected_labels[row["line_id"]])
+        for parcel in plans["plans"][0]["parcels"]:
+            for row in parcel["lines"]:
+                self.assertEqual(row["display_label"], expected_labels[row["line_id"]])
         self.assertEqual(plans["plans"][0]["choice_id"], str(data["choice"].pk))
         self.assertTrue(plans["plans"][0]["ready"])
         self.assertFalse(plans["can_bind_order"])

@@ -287,11 +287,99 @@ def manager_case_reason(revision, response=None):
     if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)):
         if _candidate_media_complaint_evidence(revision, response):
             return "media_complaint_review"
+    from management.services.ig_product_inquiries import product_inquiries_for_revision
+    inquiry = product_inquiries_for_revision(revision)
+    if inquiry.get("status") == "manager_required":
+        return inquiry["reason"]
     return ""
 
 
 def manager_handoff_promised(response):
     return bool(response is not None and _MANAGER_PROMISE.search(response.reply_text))
+
+
+def product_review_receipt_reason(revision, *, task=None, notification=None):
+    """The exact native product case must remain open until provider start."""
+    from management.services.ig_product_inquiries import REVIEW_REASONS, product_inquiries_for_revision
+    from management.models import IgFollowUpTask, IgBotNotification
+    receipt = (revision.action_receipts or {}).get(MANAGER_RECEIPT) or {}
+    reason = receipt.get("case_kind")
+    current = product_inquiries_for_revision(revision)
+    if current.get("status") != "manager_required" and reason not in REVIEW_REASONS:
+        return ""
+    if reason not in REVIEW_REASONS:
+        # The source classifier, not altered receipt metadata, determines
+        # whether an independently validated higher-priority case owns this.
+        priority = manager_case_reason(revision)
+        if priority not in REVIEW_REASONS and priority and reason == priority:
+            return ""
+        return "product_inquiry_handoff_missing" if not receipt else "product_inquiry_handoff_invalid"
+    if (current.get("status") != "manager_required" or current.get("reason") != reason
+        or receipt.get("snapshot_digest") != revision.snapshot_digest
+        or receipt.get("generation_proposal_digest") != revision.generation_proposal_digest):
+        return "product_inquiry_handoff_invalid"
+    task = task or IgFollowUpTask.objects.filter(pk=receipt.get("task_id"), client_id=revision.client_id).first()
+    notification = notification or IgBotNotification.objects.filter(pk=receipt.get("notification_id"), client_id=revision.client_id).first()
+    if (task is None or notification is None or task.kind != "manager_task"
+        or task.reason != "revision_case:" + reason
+        or task.event_key != f"ig-revision-case:{revision.client_id}:{revision.pk}:{reason}"[:180]
+        or (task.manager_context or {}).get("product_inquiries") != current
+        or notification.dedupe_key != f"ig-revision-case:{task.pk}"
+        or (notification.payload or {}).get("case_kind") != reason
+        or (notification.payload or {}).get("revision_id") != revision.pk
+        or (notification.payload or {}).get("manager_task_id") != task.pk):
+        return "product_inquiry_handoff_invalid"
+    if task.status in {"completed", "cancelled"}:
+        return "product_inquiry_handoff_no_longer_open"
+    return ""
+
+
+def _product_inquiry_case_message(preface, disposition):
+    """Human source text only; the frontend renders task prose as text."""
+    preface = str(preface or "").split("\n\nЗапит клієнта: ", 1)[0]
+    questions = list(dict.fromkeys(re.sub(r"[\x00-\x1f\x7f]", " ", str(row.get("question") or "")).strip()
+                    for row in disposition.get("inquiries", ()) if isinstance(row, dict)))
+    question = " · ".join(value for value in questions if value)[:600]
+    return preface + ("\n\nЗапит клієнта: " + question if question else "")
+
+
+def ensure_product_inquiry_review_case(revision, disposition):
+    """Reuse the native product-case identity after the caller's locked gate."""
+    from management.services.ig_product_inquiries import product_inquiries_for_revision, REVIEW_REASONS
+    from management.services.instagram_bot import notify_manager
+    from management.models import IgFollowUpTask, IgBotNotification
+    current = product_inquiries_for_revision(revision)
+    if (not connection.in_atomic_block or disposition != current
+        or current.get("status") != "manager_required" or current.get("reason") not in REVIEW_REASONS):
+        raise ValueError("product_inquiry_case_unverified")
+    reason, now = current["reason"], timezone.now()
+    event_key = f"ig-revision-case:{revision.client_id}:{revision.pk}:{reason}"[:180]
+    task, _ = IgFollowUpTask.objects.get_or_create(event_key=event_key, defaults={
+        "client": revision.client, "due_at": now, "status": IgFollowUpTask.Status.SKIPPED,
+        "kind": IgFollowUpTask.Kind.MANAGER_TASK, "reason": "revision_case:" + reason,
+        "manager_approval_status": IgFollowUpTask.ManagerApprovalStatus.PENDING,
+        "manager_approval_requested_at": now, "trigger": IgFollowUpTask.Trigger.EVENT,
+        "event_occurred_at": now, "policy_started_at": now, "policy_version": "revision-case-v1",
+        "skip_reason": "human_business_decision_required",
+        "message_text": "Перевірте точні параметри або деталі товару за питанням клієнта. Не замінюйте колір чи розмір."})
+    if task.status in {task.Status.COMPLETED, task.Status.CANCELLED}:
+        raise ValueError("product_inquiry_case_closed")
+    task.manager_context = {**(task.manager_context or {}), "schema_version": 1, "case_kind": reason,
+        "sources": current["source_refs"], "latest_revision_id": revision.pk,
+        "snapshot_digest": revision.snapshot_digest, "product_inquiries": current,
+        "required_decisions": ["exact_requested_configuration" if reason == "product_configuration_review" else "exact_product_information"],
+        "authority": {"catalog_confirmed": False, "stock_confirmed": False, "checkout_authorized": False,
+                      "price_confirmed": False, "fulfillment_started": False}}
+    task.message_text = _product_inquiry_case_message(task.message_text, current)
+    task.save(update_fields=["manager_context", "message_text", "updated_at"])
+    key = f"ig-revision-case:{task.pk}"
+    questions = list(dict.fromkeys(row["question"] for row in current["inquiries"]))
+    if not notify_manager("Перевірте точний запит про товар: " + " · ".join(questions)[:600],
+        dedupe_key=key, event_type="escalation", client=revision.client,
+        metadata={"revision_id": revision.pk, "manager_task_id": task.pk, "case_kind": reason},
+        deliver_immediately=False, raise_on_error=True):
+        raise RuntimeError("product_inquiry_notification_not_recorded")
+    return task, IgBotNotification.objects.get(dedupe_key=key, client_id=revision.client_id)
 
 
 def _readiness(revision, token, settings_row, authority, epoch, publication):
@@ -341,6 +429,9 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             notification = IgBotNotification.objects.filter(pk=existing.get("notification_id"), client=client).first()
             if existing.get("generation_proposal_digest") != revision.generation_proposal_digest or task is None or notification is None:
                 return RevisionIntentResult(reason="manager_receipt_invalid")
+            product_reason = product_review_receipt_reason(revision, task=task, notification=notification)
+            if product_reason:
+                return RevisionIntentResult(reason=product_reason)
             return RevisionIntentResult(True, "already_recorded", task.pk, notification.pk, True)
         stored = proposal.get("response") or {}
         response = ValidatedResponse(reply_text=stored.get("reply_text") or "", controls=tuple(ResponseControl(item["kind"], item["value"]) for item in stored.get("controls") or ()))
@@ -363,10 +454,14 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             "collaboration_review": "revision_case:collaboration_review",
             "media_complaint_review": "revision_case:media_complaint",
             "service_complaint_review": "revision_case:service_complaint",
+            "product_configuration_review": "revision_case:product_configuration_review",
+            "product_information_review": "revision_case:product_information_review",
         }.get(reason, "revision_case:manager_handoff")
         event_key = f"ig-revision-case:{client.pk}:{revision.pk}:{reason}"[:180]
         tasks = IgFollowUpTask.objects.select_for_update().filter(client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK, reason=task_reason).exclude(status__in=(IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED))
-        if complaint_evidence or service_complaint:
+        from management.services.ig_product_inquiries import product_inquiries_for_revision, REVIEW_REASONS
+        product_inquiry = product_inquiries_for_revision(revision)
+        if complaint_evidence or service_complaint or reason in REVIEW_REASONS:
             # Different complaint sources have independent unresolved service
             # debt. Only this revision's exact case may be reused on replay.
             tasks = tasks.filter(event_key=event_key)
@@ -386,6 +481,10 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                     if reason == "collaboration_review" else
                     "Клієнт повідомив про сервісну проблему: перевірити звернення та потребу в рішенні керівника; компенсацію не погоджено."
                     if reason == "service_complaint_review" else
+                    "Клієнт просить параметри поза підтвердженим каталогом: перевірити можливість саме цього запиту, без заміни кольору чи розміру."
+                    if reason == "product_configuration_review" else
+                    "Клієнт питає непідтверджені деталі товару: перевірити точне питання перед відповіддю."
+                    if reason == "product_information_review" else
                     "Клієнту потрібна допомога команди: відкрийте поточну розмову."
                 ),
                 event_key=event_key,
@@ -420,6 +519,13 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 context["pending_response_obligations"] = list(coverage["remaining"])
                 context["response_plan_digest"] = coverage.get("plan_digest", "")
                 context["required_decisions"].append("remaining_customer_questions")
+        if product_inquiry.get("status") == "manager_required":
+            context["product_inquiries"] = product_inquiry
+            context["required_decisions"] = list(dict.fromkeys([*context["required_decisions"],
+                "exact_requested_configuration" if product_inquiry["reason"] == "product_configuration_review" else "exact_product_information"]))
+            context["authority"].update(catalog_confirmed=False, stock_confirmed=False, checkout_authorized=False)
+            if reason in REVIEW_REASONS:
+                task.message_text = _product_inquiry_case_message(task.message_text, product_inquiry)
         if complaint_evidence:
             context["media_complaint_evidence"] = complaint_evidence
             if "customer_service_review" not in context["required_decisions"]:
@@ -428,10 +534,14 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             context["media_complaint_scope"] = media_complaint_source_scope(client, revision,
                 [row["message_id"] for row in source_refs])
         task.manager_context = context
-        task.save(update_fields=["manager_context", "updated_at"])
+        task.save(update_fields=["manager_context", "message_text", "updated_at"])
         notification_key = f"ig-revision-case:{task.pk}"
+        alert = format_operator_alert("Клієнту потрібна допомога команди", event_type="escalation", client_id=client.pk, task_id=task.pk, counts={"sources": len(previous)}, instruction_code="escalation")
+        if product_inquiry.get("status") == "manager_required":
+            questions = list(dict.fromkeys(row["question"] for row in product_inquiry["inquiries"]))
+            alert += "\n\nТочний запит про товар: " + " · ".join(questions)[:600]
         notified = notify_manager(
-            format_operator_alert("Клієнту потрібна допомога команди", event_type="escalation", client_id=client.pk, task_id=task.pk, counts={"sources": len(previous)}, instruction_code="escalation"),
+            alert,
             dedupe_key=notification_key, event_type="escalation", client=client,
             metadata={"revision_id": revision.pk, "manager_task_id": task.pk, "case_kind": reason},
             deliver_immediately=False, raise_on_error=True,

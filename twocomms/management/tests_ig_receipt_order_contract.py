@@ -40,22 +40,54 @@ class ReceiptOrderBoundaryTests(SimpleTestCase):
             self.assertIn('20400000000000', message)
             self.assertNotIn(forbidden, message)
 
-    def test_source_qualified_unpaid_manager_order_materializes_payment_ack(self):
-        order = SimpleNamespace(
-            pk=1, order_number='TWC-RECEIPT', tracking_number='',
-            payment_status='unpaid', status='new', total_sum=Decimal('850'), discount_amount=0,
-        )
-        assignment = SimpleNamespace(pk=2, version=1, order=order, client=SimpleNamespace(language='uk'))
-        with patch('management.services.ig_order_fulfillment.order_fulfillment_payment_verified', return_value=True), patch(
-            'management.services.ig_order_fulfillment.nova_poshta_order_fulfillment_confirmed', return_value=False,
-        ):
-            specs = list(_event_specs(assignment, now=None))
-        self.assertEqual([spec['kind'] for spec in specs], ['payment_confirmed'])
-        self.assertEqual(specs[0]['payload']['payment_status'], 'unpaid')
 
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+
+
+class ReceiptCurrencyBoundaryTests(SimpleTestCase):
+    def test_missing_currency_cannot_be_filled_from_other_projections(self):
+        from copy import deepcopy
+        from orders.services.ig_review_order_builder import _commercial_currency_error
+        original = {'agreement': {'currency': 'UAH', 'amounts': {'currency': 'UAH'}}}
+        for projection in ('agreement', 'amounts', 'decision'):
+            for value in (None, '', ' ', 980):
+                with self.subTest(projection=projection, value=value):
+                    draft = deepcopy(original)
+                    decision = SimpleNamespace(currency='UAH')
+                    if projection == 'decision':
+                        decision.currency = value
+                    elif projection == 'amounts':
+                        draft['agreement']['amounts']['currency'] = value
+                    else:
+                        draft['agreement']['currency'] = value
+                    self.assertEqual(_commercial_currency_error(draft, decision), 'commercial_currency_unproven')
+
+    def test_explicit_component_or_deal_currency_cannot_be_discarded(self):
+        from copy import deepcopy
+        from orders.services.ig_review_order_builder import _commercial_currency_error
+        original = {'agreement': {'currency': 'UAH', 'amounts': {'currency': 'UAH'}}}
+        for projection in ('draft', 'item', 'shipping', 'deal'):
+            for value, reason in (('USD', 'commercial_currency_mismatch'), ('', 'commercial_currency_unproven')):
+                with self.subTest(projection=projection, value=value):
+                    draft = deepcopy(original)
+                    deal = None
+                    if projection == 'draft':
+                        draft['currency'] = value
+                    elif projection == 'item':
+                        draft['items'] = [{'currency': value}]
+                    elif projection == 'shipping':
+                        draft['agreement']['shipping_payment'] = {'currency': value}
+                    else:
+                        deal = SimpleNamespace(currency=value)
+                    self.assertEqual(_commercial_currency_error(draft, SimpleNamespace(currency='UAH'), deal=deal), reason)
+
+    def test_conflicted_source_does_not_reuse_an_earlier_uah_amount(self):
+        from orders.services.ig_review_order_builder import _commercial_currency_error
+        draft = {'agreement': {'currency': 'UAH', 'amounts': {'currency': 'UAH'},
+            'uncertainty_reasons': ['amount_currency_conflict']}}
+        self.assertEqual(_commercial_currency_error(draft, SimpleNamespace(currency='UAH')), 'commercial_currency_mismatch')
 
 
 class ApprovedReceiptAutoOrderTests(TestCase):
@@ -155,6 +187,78 @@ class ApprovedReceiptAutoOrderTests(TestCase):
             review, actor=self.manager, decision='manager_verified',
             verification_scope=verification_scope, confirmed_amount=confirmed_amount,
         )
+
+    def _assert_currency_order_rejected(self, *, quote_currency, decision_currency, reason):
+        from copy import deepcopy
+        from orders.models import Order
+        from orders.services.ig_review_order_builder import create_order_from_payment_review, payment_review_order_completion_requirements
+        review = self._review(shipping_quote=f'850 {quote_currency} + 120 доставка = 970 {quote_currency}')
+        review.evidence['order_draft']['currency'] = decision_currency
+        review.save(update_fields=['evidence'])
+        evidence = deepcopy(review.evidence)
+        with patch('management.services.instagram_bot.send_text') as send:
+            approved = self._approve(review)
+            self.assertEqual(approved.order_creation_result, {
+                'status': 'needs_manual_completion', 'order': None, 'missing_fields': [reason],
+            })
+            self._approve(review)
+            replay = create_order_from_payment_review(review, actor=self.manager)
+            projection = payment_review_order_completion_requirements(review)
+        send.assert_not_called()
+        self.assertEqual(replay, approved.order_creation_result)
+        self.assertEqual(projection, replay)
+        review.refresh_from_db()
+        self.assertEqual(review.status, review.Status.CONFIRMED)
+        self.assertIsNone(review.order_id)
+        self.assertEqual(review.evidence, evidence)
+        self.assertEqual(review.decisions.count(), 1)
+        decision = review.decisions.get()
+        self.assertEqual((decision.currency, decision.confirmed_amount), (decision_currency, Decimal('970.00')))
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_all_usd_custom_receipt_preserves_approval_without_uah_order(self):
+        self._assert_currency_order_rejected(quote_currency='USD', decision_currency='USD', reason='commercial_currency_unsupported')
+
+    def test_all_eur_custom_receipt_preserves_approval_without_uah_order(self):
+        self._assert_currency_order_rejected(quote_currency='EUR', decision_currency='EUR', reason='commercial_currency_unsupported')
+
+    def test_usd_quote_uah_payment_does_not_compare_only_numeric_amount(self):
+        self._assert_currency_order_rejected(quote_currency='USD', decision_currency='UAH', reason='commercial_currency_mismatch')
+
+    def test_uah_quote_usd_payment_does_not_compare_only_numeric_amount(self):
+        self._assert_currency_order_rejected(quote_currency='UAH', decision_currency='USD', reason='commercial_currency_mismatch')
+
+    def test_explicit_uah_receipt_replay_keeps_one_custom_order(self):
+        from orders.models import Order
+        from orders.services.ig_review_order_builder import create_order_from_payment_review
+        review = self._review(shipping_quote='850 UAH + 120 доставка = 970 UAH')
+        review.evidence['order_draft']['currency'] = 'UAH'
+        review.save(update_fields=['evidence'])
+        approved = self._approve(review)
+        self.assertEqual(approved.order_creation_result['status'], 'created')
+        self._approve(review)
+        replay = create_order_from_payment_review(review, actor=self.manager)
+        self.assertEqual(replay['status'], 'already_created')
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(review.decisions.count(), 1)
+        self.assertEqual(replay['order'].pk, approved.order_creation_result['order'].pk)
+
+    def test_source_qualified_unpaid_manager_order_materializes_payment_ack(self):
+        from django.utils import timezone
+        from management.models import IgOrderAssignment
+        from orders.models import Order
+        review = self._review()
+        with patch('management.services.instagram_bot.send_text') as send:
+            self._approve(review)
+        send.assert_not_called()
+        review.refresh_from_db()
+        self.assertIsNotNone(review.order_id)
+        assignment = IgOrderAssignment.objects.select_related('order', 'client').get(order=review.order)
+        self.assertEqual(assignment.order.payment_status, 'unpaid')
+        specs = list(_event_specs(assignment, now=timezone.now()))
+        self.assertEqual([spec['kind'] for spec in specs], ['payment_confirmed'])
+        self.assertEqual(specs[0]['payload']['payment_status'], 'unpaid')
+        self.assertEqual(Order.objects.count(), 1)
 
     def test_complete_accepted_custom_order_is_created_by_approval_once(self):
         from orders.models import Order

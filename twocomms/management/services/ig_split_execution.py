@@ -574,12 +574,14 @@ def execution_projection(client_id, *, now=None):
             tracking = {row.parcel_id: row for row in IgSplitParcelTracking.objects.filter(parcel__plan=plan)}
             labels = {row["line_id"]: row.get("label") or f"Позиція {index + 1}"
                 for index, row in enumerate(checked["choice"].offer.envelope["request"]["lines"])}
+            display_labels = {row["line_id"]: shipping.reviews._display_label(row.get("observation") or {}, index)
+                for index, row in enumerate(checked["choice"].offer.envelope["request"]["lines"])}
             for parcel in checked["parcels"]:
                 dispatch, tracked = dispatches.get(parcel.pk), tracking.get(parcel.pk)
                 grouped = {}
                 for item in parcel.envelope["items"]:
                     line = grouped.setdefault(item["line_id"], {"line_id": item["line_id"],
-                        "label": labels[item["line_id"]], "quantity": 0})
+                        "label": labels[item["line_id"]], "display_label": display_labels[item["line_id"]], "quantity": 0})
                     line["quantity"] += item["quantity"]
                 shown["parcels"].append({"id": str(parcel.pk), "key": parcel.key, "label": parcel.key,
                     "items": deepcopy(parcel.envelope["items"]), "lines": list(grouped.values()),

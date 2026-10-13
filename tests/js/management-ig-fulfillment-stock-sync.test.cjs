@@ -264,3 +264,48 @@ test('PII viewer sees verified stock facts without editable stock controls or an
   assert.ok(f.sync()); assert.equal(f.sync().querySelectorAll('input,select,textarea,button').length, 0);
   assert.equal(f.posts().length, 0); assert.equal(f.uuids.length, 0); assert.equal(f.controller.canLeave(99), true);
 });
+
+test('warehouse-checked discrepancy uses explicit eligibility and preserves normal stock-sync authority', async () => {
+  const f=fixture(),review=reviewed();review.decision.lines[0].supply_basis='warehouse_checked';
+  await f.load(review);assert.ok(f.sync(),'typed eligibility opens recount regardless of supply basis');
+  f.counts()[0].input('8');f.replies.push(response(200,{success:true,sync_id:SYNC_ID,status:'stock_ready'}));
+  f.action().click();await f.flush();
+  const payload=JSON.parse(f.posts()[0].options.body);
+  assert.equal(payload.request_id,REQUEST_A);
+  assert.equal(payload.expected_decision_digest,review.stock_sync.decision_digest);
+  assert.deepEqual(payload.counts_by_pool,{'warehouse:17':{total:8}});
+  assert.equal(f.uuids.length,1);
+});
+
+test('off-ledger supply without server eligibility cannot expose an actionable recount', async () => {
+  for(const sync of [undefined,{eligible:false,reason:'inventory_mapping_unknown'},{eligible:'true'}]){
+    const f=fixture();await f.load(reviewed(REQUEST_A,{stock_sync:sync}));
+    assert.equal(f.sync(),null);assert.equal(f.posts().length,0);assert.equal(f.uuids.length,0);
+  }
+});
+
+test('fulfillment display uses structured title and leaves historical label and quantity evidence unchanged', async () => {
+  const f=fixture(),review=reviewed();
+  const line=review.current_request.lines[0];line.label='Модель × 2 · M · × 2';line.display_label='Модель × 2 · M';
+  await f.load(review);
+  const card=f.root.querySelector('.ig-fr-line');assert.equal(card.querySelector('legend').textContent,'Модель × 2 · M');
+  assert.match(card.textContent,/Кількість: 2/);assert.equal(line.label,'Модель × 2 · M · × 2');
+  delete line.display_label;await f.load(review);
+  assert.equal(f.root.querySelector('.ig-fr-line').querySelector('legend').textContent,line.label);
+  assert.doesNotMatch(f.root.querySelector('.ig-fr-line').textContent,/Кількість: 2/);
+  assert.equal(f.posts().length,0);
+});
+
+test('selecting WAIT exposes confirmed incoming basis without turning it into available quantity or stock authority', async () => {
+  const f=fixture(),review=reviewed(REQUEST_A,{status:'pending',decision:null,stock_sync:null});
+  await f.load(review);
+  const card=f.root.querySelector('.ig-fr-line'),selectors=card.querySelectorAll('select');
+  const availability=selectors[0],basis=selectors[1];
+  availability.value='wait';availability.emit('change');
+  assert.equal(basis.children.find(node=>node.value==='incoming_confirmed').textContent,'Підтверджене надходження');
+  const quantity=card.querySelector('input[type="number"]');assert.equal(quantity.parentNode.hidden,true);
+  assert.equal(f.sync(),null);assert.equal(f.posts().length,0);
+  availability.value='available';availability.emit('change');
+  assert.equal(basis.children.some(node=>node.value==='incoming_confirmed'),false,'incoming basis cannot survive transition to available');
+  assert.equal(quantity.parentNode.hidden,false);
+});

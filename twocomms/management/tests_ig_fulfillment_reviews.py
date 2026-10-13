@@ -179,6 +179,130 @@ class NativeFulfillmentReviewTests(_RestockFixture, TestCase):
         with self.assertRaises(ValueError):
             Request.objects.filter(pk=request.pk).update(envelope={})
 
+    def _ordinary_inquiry(self):
+        source = self.source("Ця позиція є в наявності?")
+        revision, _ = self.revision(source)
+        with patch("management.services.instagram_bot._provider_http") as provider:
+            result = review.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
+        provider.assert_not_called()
+        return result
+
+    def test_positive_exact_catalog_inquiry_has_no_manager_review(self):
+        self.variant.stock = self.rule.stock = 5
+        self.variant.save(update_fields=["stock"])
+        self.rule.save(update_fields=["stock"])
+        result = self._ordinary_inquiry()
+        self.assertFalse(result["ready"], result)
+        self.assertEqual(result["reason"], "no_review_requirement")
+        self.assertFalse(Request.objects.exists())
+        self.assertFalse(IgFollowUpTask.objects.filter(reason="fulfillment_review").exists())
+        self.assertFalse(IgBotNotification.objects.filter(event_type="fulfillment_review").exists())
+
+    def test_positive_exact_warehouse_inquiry_has_no_manager_review(self):
+        from management.tests_ig_fulfillment_stock_sync import NativeFulfillmentStockSyncTests
+        stock = NativeFulfillmentStockSyncTests.warehouse(self)
+        stock.quantity = 5
+        stock.save(update_fields=["quantity"])
+        result = self._ordinary_inquiry()
+        self.assertEqual(result["reason"], "no_review_requirement", result)
+        self.assertFalse(Request.objects.exists())
+        self.assertFalse(IgBotNotification.objects.filter(event_type="fulfillment_review").exists())
+
+    def test_zero_catalog_inquiry_still_creates_source_bound_review(self):
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertTrue(review._verified(request, "request"))
+        self.assertEqual(request.envelope["lines"][0]["observation"]["status"], "unavailable")
+
+    def test_zero_warehouse_inquiry_still_requires_manager_review(self):
+        from management.tests_ig_fulfillment_stock_sync import NativeFulfillmentStockSyncTests
+        NativeFulfillmentStockSyncTests.warehouse(self)
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertEqual(request.envelope["lines"][0]["observation"]["status"], "unavailable")
+
+    def test_missing_warehouse_mapping_inquiry_still_requires_manager_review(self):
+        from product_catalog.models import ProductInventoryPolicy
+        ProductInventoryPolicy.objects.filter(product=self.product).update(source="warehouse")
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertEqual(request.envelope["lines"][0]["observation"]["status"], "unknown")
+
+    def test_null_exact_size_inquiry_still_requires_manager_review(self):
+        self.variant.stock = 5
+        self.variant.save(update_fields=["stock"])
+        self.rule.stock = None
+        self.rule.save(update_fields=["stock"])
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertEqual(request.envelope["lines"][0]["observation"]["status"], "unknown")
+
+    def test_unsupported_inventory_inquiry_still_requires_manager_review(self):
+        from product_catalog.models import ProductInventoryPolicy
+        ProductInventoryPolicy.objects.filter(product=self.product).update(source="untracked")
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertEqual(request.envelope["lines"][0]["observation"]["status"], "unknown")
+
+    def test_positive_inquiry_preserves_current_source_bound_deadline(self):
+        first, _ = self.case("Встигнете відправити до 20.10.2026?")
+        self.variant.stock = self.rule.stock = 5
+        self.variant.save(update_fields=["stock"])
+        self.rule.save(update_fields=["stock"])
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertTrue(any(hint["deadline_date"] == "2026-10-20"
+            for hint in request.envelope["customer_requirements"]))
+        self.assertTrue(any(proof["message_id"] == first.source_id for proof in request.envelope["sources"]))
+
+    def test_latest_own_english_source_ignores_quoted_ukrainian_for_review_locale(self):
+        request, _ = self.case('Can you dispatch this by 20.10.2026? "Це подарунок для мами"')
+        self.assertEqual(request.envelope["locale"], "en")
+        self.assertEqual(request.envelope["reply_language"]["source_message_id"], request.source_id)
+
+    def test_current_explicit_english_reply_request_wins_over_ukrainian_profile(self):
+        request, _ = self.case("Встигнете відправити до 20.10.2026? Reply in English please")
+        self.assertEqual(request.envelope["locale"], "en")
+        self.assertEqual(request.envelope["reply_language"]["basis"], "current_source_requested")
+
+    def test_real_batched_review_uses_latest_own_source_language(self):
+        from management.models import IgCustomerTurn, IgTurnMessage
+        from management.services.ig_turn_revisions import (create_collecting_revision,
+            claim_revision_preparation, seal_revision, claim_sealed_revision)
+        rows = [self.source("Потрібен подарунок до 20.10.2026"),
+            self.source("Can you tell me if this is available?")]
+        turn = IgCustomerTurn.objects.create(client=self.client_row, primary_source_message=rows[0],
+            window_started_at=self.now, window_deadline=self.now)
+        for ordinal, row in enumerate(rows, 1):
+            IgTurnMessage.objects.create(turn=turn, message=row, ordinal=ordinal, role="user")
+        collected = create_collecting_revision(turn, rows, now=self.now, bypass_quiet=True)
+        self.assertIsNotNone(collected.revision, collected.reason)
+        prepared = claim_revision_preparation(collected.revision.pk, now=self.now)
+        sealed = seal_revision(collected.revision.pk, prepared.token, now=self.now)
+        self.assertTrue(sealed.sealed, sealed.reason)
+        claimed = claim_sealed_revision(sealed.revision.pk, now=self.now)
+        self.assertIsNotNone(claimed.revision, claimed.reason)
+        with patch("management.services.instagram_bot._provider_http") as provider:
+            result = review.prepare_fulfillment_review(claimed.revision, settings_obj=self.settings, now=self.now)
+        provider.assert_not_called()
+        self.assertTrue(result["ready"], result)
+        request = Request.objects.get(pk=result["request_id"])
+        self.assertEqual(request.envelope["locale"], "en")
+        self.assertEqual(request.envelope["reply_language"]["source_message_id"], rows[-1].pk)
+
+    def test_display_label_preserves_signed_historical_quantity_label(self):
+        request, _ = self.case()
+        line = request.envelope["lines"][0]
+        self.assertIn("× 1", line["label"])
+        self.assertNotIn("× 1", line["display_label"])
+        self.assertEqual(line["display_label"], review._display_label(line["observation"], 0))
+
     def test_one_final_decision_idempotent_operation_and_only_one_customer_effect(self):
         request, _ = self.case()
         operation = uuid.uuid4()

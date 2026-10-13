@@ -1346,7 +1346,7 @@ def _resolve_ig_client_context(raw_id, raw_token=""):
         raise ValueError("Контекст Instagram-клієнта не збігається.")
     from management.ig_bot_models import IgClient
 
-    client = IgClient.objects.filter(pk=client_id, hidden_at__isnull=True).first()
+    client = IgClient.objects.filter(pk=client_id, hidden_at__isnull=True, privacy_erasure_started_at__isnull=True).first()
     if client is None:
         raise ValueError("Instagram-клієнта не знайдено або його приховано.")
     return client
@@ -1388,7 +1388,7 @@ def _manual_order_mutation(payment_review, ig_client):
         from management.services.ig_commercial_episodes import commercial_episode_client_lock
         with commercial_episode_client_lock(ig_client.pk), transaction.atomic():
             current = IgClient.objects.select_for_update().get(pk=ig_client.pk)
-            if current.hidden_at is not None:
+            if current.hidden_at is not None or current.privacy_erasure_started_at is not None:
                 raise ValueError('Instagram-клієнт недоступний.')
             yield
     else:

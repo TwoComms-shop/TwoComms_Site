@@ -554,10 +554,11 @@ def shipping_projection(client, settings_obj=None, now=None, current_source_cart
         and all(row.get("availability") in {"available", "wait"} for row in decision.get("lines", [])))
     decisions = {str(row.get("line_id")): row for row in decision.get("lines", [])}
     lines = [{"line_id": str(line["line_id"]), "label": line.get("label", ""),
+        "display_label": reviews._display_label(line.get("observation") or {}, index),
         "quantity": (line.get("target") or {}).get("quantity"),
         "availability": decisions.get(str(line["line_id"]), {}).get("availability"),
         "preparation": decisions.get(str(line["line_id"]), {}).get("preparation"),
-        "dispatch": decisions.get(str(line["line_id"]), {}).get("dispatch")} for line in request.get("lines", [])]
+        "dispatch": decisions.get(str(line["line_id"]), {}).get("dispatch")} for index, line in enumerate(request.get("lines", []))]
     base = {"version": 1, "captured_at": now.isoformat(), "status": "none", "offer": None, "receipt": None, "choice": None,
         "ready": can_issue, "current": False, "request": deepcopy(request) if reviewed else None,
         "decision": deepcopy(decision) if reviewed else None, "request_lines": deepcopy(request.get("lines", [])),
@@ -587,8 +588,9 @@ def shipping_projection(client, settings_obj=None, now=None, current_source_cart
         "offer": {"id": str(offer.pk), "digest": offer.envelope_hmac, "version": offer.version,
             "locale": offer.envelope["request"].get("locale") or "uk",
             "lines": [{"line_id": str(line["line_id"]), "label": line.get("label", ""),
+                "display_label": reviews._display_label(line.get("observation") or {}, index),
                 "quantity": (line.get("target") or {}).get("quantity")}
-                for line in offer.envelope["request"]["lines"]],
+                for index, line in enumerate(offer.envelope["request"]["lines"])],
             "expires_at": offer.expires_at.isoformat(), "options": deepcopy(offer.envelope["options"]),
             "issued_at": offer.envelope["issued_at"], "request_digest": offer.envelope["request_digest"],
             "decision_digest": offer.envelope["decision_digest"],

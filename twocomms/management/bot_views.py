@@ -6348,6 +6348,8 @@ def bot_client_detail_api(request, client_id):
                         "revision_case:execution_debt",
                         "human_reply:delivery_unknown",
                         "fulfillment_review",
+                        "revision_case:product_configuration_review",
+                        "revision_case:product_information_review",
                     }
                 )
                 and f.manager_approval_status
@@ -6367,10 +6369,16 @@ def bot_client_detail_api(request, client_id):
                     if f.reason == "agreed_payment_reminder"
                     else "Перевірка наявності та строків"
                     if f.reason == "fulfillment_review"
+                    else "Перевірка параметрів товару"
+                    if f.reason == "revision_case:product_configuration_review"
+                    else "Уточнення деталей товару"
+                    if f.reason == "revision_case:product_information_review"
                     else "Результат перевірки для клієнта"
                     if f.reason == "fulfillment_manager_update"
                     else "Погоджене сповіщення про поповнення"
                     if f.reason == "subscribed_restock"
+                    else "Погодження способу відправлення"
+                    if f.reason == "split_shipping_offer"
                     else ""
                 )
             ),

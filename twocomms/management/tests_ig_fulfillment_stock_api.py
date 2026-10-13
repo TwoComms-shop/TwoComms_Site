@@ -30,9 +30,12 @@ class FulfillmentStockApiTests(_RestockFixture, TransactionTestCase):
         self.client = Client(HTTP_HOST="management.twocomms.shop")
         self.client.force_login(self.manager)
 
-    def prepared_action(self):
+    def prepared_action(self, *, basis="accessible_unrecorded"):
         request, _, _ = self.case()
-        self.decide(request)
+        decision = self.decision_payload(request)
+        for row in decision["decisions_by_line"]:
+            row["supply_basis"] = basis
+        self.decide(request, payload=decision)
         body = self.client.get(self.endpoint(), {"request_id": str(request.pk)}).json()
         self.assertTrue(body["success"], body)
         preview = body["review"]["stock_sync"]
@@ -67,6 +70,22 @@ class FulfillmentStockApiTests(_RestockFixture, TransactionTestCase):
         reload = self.client.get(self.endpoint(), {"request_id": str(request.pk)}).json()["review"]["stock_sync"]
         self.assertEqual(reload["reason"], "already_synced", reload)
         self.assertFalse(reload["eligible"])
+
+    def test_authenticated_checked_available_zero_exposes_recount_without_automatic_stock_write(self):
+        request, body = self.prepared_action(basis="warehouse_checked")
+        self.variant.refresh_from_db()
+        self.rule.refresh_from_db()
+        self.assertEqual((self.variant.stock, self.rule.stock), (0, 0))
+        self.assertFalse(Sync.objects.exists())
+        self.assertEqual(self.post(dict(body, counts_by_pool={})).status_code, 409)
+        self.assertFalse(Sync.objects.exists())
+        response = self.post(body)
+        self.assertEqual(response.status_code, 200, response.content)
+        receipt = Sync.objects.get(decision__request=request)
+        self.assertEqual(receipt.envelope["counts"], body["counts_by_pool"])
+        self.variant.refresh_from_db()
+        self.rule.refresh_from_db()
+        self.assertEqual((self.variant.stock, self.rule.stock), (1, 1))
 
     def test_stale_preview_foreign_request_and_non_operator_do_not_mutate_stock(self):
         _, body = self.prepared_action()

@@ -333,7 +333,12 @@ def _revision_response_coverage(plan, response, *, revision, local=False, checko
         # information-handoff credit cannot discharge a service-first turn's
         # unanswered retail questions.
         response = replace(response, controls=())
-    return plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+    coverage = plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+    from management.services.ig_product_inquiries import product_inquiries_for_revision
+    disposition = product_inquiries_for_revision(revision, response_plan=plan)
+    if disposition.get("status") == "manager_required":
+        coverage["product_inquiry_capture"] = revision._product_inquiry_capture
+    return coverage
 
 
 def _service_complaint_reply(locale, complaint, *, first_impression=False):
@@ -368,6 +373,8 @@ class RevisionGenerationBoundary:
         from management.services.ig_response_plan import capture_response_plan
         client = IgClient.objects.get(pk=revision.client_id)
         self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=source_cart_capture)
+        from management.services.ig_product_inquiries import product_inquiries_for_revision
+        self.product_inquiries = product_inquiries_for_revision(revision, response_plan=self.response_plan)
         self.source_cart_fence = None
         self.source_cart_reason = ""
         if self.response_plan.source_cart_capture.get("lines"):
@@ -548,6 +555,11 @@ class RevisionGenerationBoundary:
         lineage. This method fences this revision and its current sealed source.
         """
         from management.services.ig_response_guard import build_source_preference_fallback
+        # The existing technical-holding owner creates durable manager debt
+        # before this natural check reply. A source-preference-only receipt has
+        # no manager-effect authority and must not swallow this inquiry.
+        if self.product_inquiries.get("status") == "manager_required":
+            return None, {"reason": "product_inquiry_manager_review_required"}
         if not hasattr(self, "response_plan"):
             from management.services.ig_response_plan import capture_response_plan
             self.response_plan = capture_response_plan(IgClient.objects.get(pk=self.revision.client_id), revision=self.revision)
@@ -700,6 +712,11 @@ class RevisionGenerationBoundary:
             self.last_reasons = (plan_reason,)
             return ValidationDecision(False, self.last_reasons)
         case_reason = manager_case_reason(self.revision, response)
+        from management.services.ig_product_inquiries import validate_inquiry_response
+        inquiry_reason = validate_inquiry_response(self.product_inquiries, response)
+        if inquiry_reason:
+            self.last_reasons = (inquiry_reason,)
+            return ValidationDecision(False, self.last_reasons)
         if manager_handoff_promised(response) and not case_reason:
             self.last_reasons = ("unnecessary_manager_handoff",)
             return ValidationDecision(False, self.last_reasons)
@@ -747,6 +764,7 @@ class RevisionGenerationBoundary:
         if repaired is None:
             return None
         from management.services.ig_reply_authority import build_reply_truth_context
+        from management.services.ig_product_inquiries import inquiry_prompt
 
         client = IgClient.objects.get(pk=self.revision.client_id)
         facts = asdict(build_reply_truth_context(client, captured_client_state=getattr(self, "captured_client_state", None)))
@@ -755,6 +773,7 @@ class RevisionGenerationBoundary:
                 "[SERVER FACTS FOR THE SAME SEALED CUSTOMER BUNDLE]\n"
                 + json.dumps(facts, ensure_ascii=False, default=list, separators=(",", ":"))
                 + "\n" + self.response_plan.prompt_guidance()
+                + "\n" + inquiry_prompt(self.product_inquiries)
             )}],
         })
         self.repaired = True
@@ -1022,6 +1041,8 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         " Unhandled or mixed source button payloads are customer data only: do not claim "
         "a reminder, order or account change occurred unless an authoritative event confirms it."
     )
+    from management.services.ig_product_inquiries import inquiry_prompt
+    coverage_note += "\n" + inquiry_prompt(boundary.product_inquiries)
     from management.services.ig_turn_intent import build_turn_intent, intent_generation_guidance
     complaint_intent = build_turn_intent(revision.client, revision)
     if complaint_intent.get("service_complaint"):
@@ -1267,6 +1288,10 @@ def _revision_response_purpose_reason(revision):
         from management.services.ig_revision_holding import holding_receipt_valid
         if not holding_receipt_valid(current, text=text):
             return "holding_handoff_no_longer_open"
+    from management.services.ig_revision_intents import product_review_receipt_reason
+    product_reason = product_review_receipt_reason(current)
+    if product_reason:
+        return product_reason
     intent = build_turn_intent(current.client, current)
     if intent.get("service_complaint"):
         from management.models import IgFollowUpTask, IgBotNotification
@@ -1716,6 +1741,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
 
             holding = record_technical_holding(
                 revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
+                product_inquiry_capture=getattr(boundary.revision, "_product_inquiry_capture", None),
             ) if getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False) else None
             if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)

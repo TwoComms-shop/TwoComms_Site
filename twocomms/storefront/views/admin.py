@@ -465,6 +465,8 @@ def _build_orders_context(request):
 
     orders_page = Paginator(orders_qs, orders_per_page).get_page(page_number)
     selected_page_qs = orders_page.object_list.select_related(
+        'instagram_assignment',
+        'instagram_assignment__client',
         'instagram_attribution',
         'instagram_attribution__client',
         'instagram_commercial_episode',
@@ -514,15 +516,22 @@ def _build_orders_context(request):
         except Exception:
             episode = None
         deal_clients = {deal.client_id: deal.client for deal in order.ig_deals.all()}
+        assignment = getattr(order, 'instagram_assignment', None)
         ownership = []
         if attribution:
             ownership.append((attribution.client, attribution.get_creation_mode_display()))
         if episode:
             ownership.append((episode.client, 'Комерційний епізод'))
-        if len(deal_clients) == 1:
-            ownership.append((next(iter(deal_clients.values())), 'Instagram deal'))
+        ownership.extend((client, 'Instagram deal') for client in deal_clients.values())
+        if assignment is not None:
+            # An explicit unlink retires legacy ownership for presentation too.
+            # Historical attribution must not revive a current removed owner.
+            if assignment.client_id and assignment.unassigned_at is None:
+                ownership.append((assignment.client, assignment.get_source_display()))
+            else:
+                ownership = []
         owner_ids = {client.pk for client, _source in ownership}
-        if len(owner_ids) == 1:
+        if len(owner_ids) == 1 and not ownership[0][0].hidden_at and not ownership[0][0].privacy_erasure_started_at:
             ig_client, creation_mode = ownership[0]
             management_base = (
                 getattr(settings, 'MANAGEMENT_BASE_URL', '')

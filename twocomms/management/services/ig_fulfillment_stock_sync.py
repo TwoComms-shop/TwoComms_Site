@@ -167,6 +167,8 @@ def _size_protection(pool, reusable_ids, now, *, lock=False):
 
 
 def _capture(request, now, *, lock=False):
+    from django.contrib.auth import get_user_model
+    from management.bot_access import has_all_bot_capabilities, OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION
     from management.services.ig_commerce_projection import capture_current_selection_lines
     if not reviews._verified(request, "request") or request.envelope.get("scope") != "cart":
         raise StockSyncError("request_unverified")
@@ -178,6 +180,13 @@ def _capture(request, now, *, lock=False):
     decision = reviews.Decision.objects.filter(request=request).select_related("actor").order_by("-version").first()
     if not decision or not reviews._verified(decision, "decision") or not decision.actor.is_active:
         raise StockSyncError("decision_unverified")
+    # Historical signatures preserve who decided; a new inventory effect
+    # additionally needs that principal's current capabilities. Reload to
+    # discard Django permission caches and honour the reviewer dominant deny.
+    decision_actor = get_user_model().objects.filter(pk=decision.actor_id).first()
+    if not decision_actor or not has_all_bot_capabilities(decision_actor,
+            OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION):
+        raise StockSyncError("decision_actor_forbidden")
     reason = reviews._decision_reason(request, decision, now=now, current_source_cart=cart)
     if reason:
         raise StockSyncError(reason)
@@ -193,8 +202,6 @@ def _capture(request, now, *, lock=False):
     if any(answer.get("availability") != "available" or answer.get("supply_basis") not in
             {"accessible_unrecorded", "warehouse_checked"} for answer in answers):
         raise StockSyncError("all_lines_require_available")
-    if not any(answer.get("supply_basis") == "accessible_unrecorded" for answer in answers):
-        raise StockSyncError("accessible_stock_reconciliation_not_required")
     from management.services.ig_fulfillment_checkout import owned_stock_sync_reservation_ids
     reusable_ids = set(owned_stock_sync_reservation_ids(request, decision, cart, now))
     pools, captures = {}, []
@@ -237,6 +244,15 @@ def _capture(request, now, *, lock=False):
         pool["total_free"] = max(0, pool["before_total"] - pool["protected"])
         for size_pool in pool["size_counts"].values():
             size_pool["minimum_total"] = size_pool["protected"] + size_pool["required"]
+    # A checked physical AVAILABLE decision can disagree with the actual
+    # accounting pool too. Only the explicit absolute recount below grants
+    # capacity; the decision's checked quantity is never an inventory write.
+    accounting_shortfall = any(pool["before_total"] < pool["minimum_total"]
+        or any(type(size_pool["before_total"]) is int
+            and size_pool["before_total"] < size_pool["minimum_total"]
+            for size_pool in pool["size_counts"].values()) for pool in pools.values())
+    if not any(answer.get("supply_basis") == "accessible_unrecorded" for answer in answers) and not accounting_shortfall:
+        raise StockSyncError("accessible_stock_reconciliation_not_required")
     payload = _primitive({"request_id": str(request.pk), "request_digest": request.envelope_hmac,
         "decision_id": str(decision.pk), "decision_digest": decision.envelope_hmac,
         "settings_id": settings_obj.pk, "settings_epoch": settings_obj.reply_permission_epoch,

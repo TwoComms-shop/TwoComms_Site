@@ -35,7 +35,7 @@ class NativeFulfillmentStockSyncTests(_RestockFixture, TransactionTestCase):
             email="stock-sync@example.test", password="test")
 
     def case(self, *, availability="available", basis="accessible_unrecorded", purchase=False,
-            text="Ця позиція є в наявності?"):
+            text="Ця позиція є в наявності? Встигнете відправити до 20.10.2026?"):
         if purchase:
             self.canonical("Хочу купити")
         source = self.source(text)
@@ -157,6 +157,125 @@ class NativeFulfillmentStockSyncTests(_RestockFixture, TransactionTestCase):
         self.assertEqual(list(proposal.inventory_reservations.filter(state=Reservation.State.ACTIVE)
             .values_list("quantity", flat=True)), [1])
         self.assertIsNone(proposal.payment_attempt_id)
+
+    def _assert_zero_accounting_recount_then_finite_purchase(self, *, basis, warehouse=False):
+        stock = self.warehouse() if warehouse else None
+        request = self.case(purchase=True, basis=basis)
+        self.variant.refresh_from_db()
+        self.rule.refresh_from_db()
+        if stock:
+            stock.refresh_from_db()
+            self.assertEqual(stock.quantity, 0)
+        else:
+            self.assertEqual((self.variant.stock, self.rule.stock), (0, 0))
+        self.assertFalse(Reservation.objects.filter(proposal__client=request.client).exists())
+        request.task.refresh_from_db()
+        self.assertIn(sync.DEBT, request.task.manager_context["required_decisions"])
+        preview = self.preview(request)
+        self.assertEqual(preview["pools"][0]["before_total"], 0)
+        self.assertFalse(self.apply(request, preview, counts={})["ready"])
+        self.assertFalse(Sync.objects.exists())
+        result = self.apply(request, preview)
+        self.assertTrue(result["ready"], result)
+        proposal = IgCheckoutProposal.objects.get(pk=result["proposal_id"])
+        self.assertEqual(proposal.catalog_total, self.product.price)
+        hold = proposal.inventory_reservations.get(state=Reservation.State.ACTIVE)
+        self.assertEqual((hold.quantity, hold.allocation_source),
+            (1, "warehouse" if warehouse else "catalog_variant"))
+        self.assertIsNone(proposal.payment_attempt_id)
+        self.assertIsNone(proposal.winner_invoice_generation_id)
+        self.assertTrue(reviews._verified(Sync.objects.get(pk=result["sync_id"]), "stock_sync"))
+        request.task.refresh_from_db()
+        self.assertNotIn(sync.DEBT, request.task.manager_context["required_decisions"])
+        from management.services.ig_checkout import CheckoutConfigurationError
+        other = IgClient.objects.create(igsid="confirmed-recount-second-buyer")
+        with override_settings(IG_ASSISTED_CHECKOUT_V2="off", IG_ASSISTED_CHECKOUT_V2_CANARY_PERCENT=0), self.assertRaises(CheckoutConfigurationError):
+            create_or_update_proposal(client=other, pay_type="online_full", item_specs=[{
+                "product_id": self.product.pk, "color_variant_id": self.variant.pk, "qty": 1,
+                "size": "M", "fit_option_code": "classic", "option_values": {"fit": "classic"}}])
+
+    def test_checked_catalog_zero_requires_absolute_recount_before_finite_purchase(self):
+        self._assert_zero_accounting_recount_then_finite_purchase(basis="warehouse_checked")
+
+    def test_checked_warehouse_zero_requires_absolute_recount_before_finite_purchase(self):
+        self._assert_zero_accounting_recount_then_finite_purchase(basis="warehouse_checked", warehouse=True)
+
+    def test_unrecorded_catalog_zero_requires_absolute_recount_before_finite_purchase(self):
+        self._assert_zero_accounting_recount_then_finite_purchase(basis="accessible_unrecorded")
+
+    def test_unrecorded_warehouse_zero_requires_absolute_recount_before_finite_purchase(self):
+        self._assert_zero_accounting_recount_then_finite_purchase(basis="accessible_unrecorded", warehouse=True)
+
+    def _decision_from_second_capable_actor(self):
+        from django.contrib.auth.models import Permission
+        decision_actor = get_user_model().objects.create_user(username="original-stock-decision-actor",
+            is_staff=True, password="test")
+        permissions = list(Permission.objects.filter(content_type__app_label="management",
+            codename__in=["operate_ig_bot", "view_ig_conversation_pii"]).order_by("pk"))
+        self.assertEqual(len(permissions), 2)
+        decision_actor.user_permissions.add(*permissions)
+        executing_actor = self.manager
+        self.manager = decision_actor
+        try:
+            request = self.case(purchase=True, basis="warehouse_checked")
+        finally:
+            self.manager = executing_actor
+        decision = reviews.Decision.objects.get(request=request)
+        self.assertEqual(decision.actor_id, decision_actor.pk)
+        self.assertNotEqual(decision.actor_id, executing_actor.pk)
+        return request, decision, decision_actor, permissions
+
+    def _assert_original_actor_denied_with_no_inventory_effect(self, *, reviewer=False, revoke_codename="operate_ig_bot"):
+        request, decision, actor, permissions = self._decision_from_second_capable_actor()
+        preview = self.preview(request)
+        before = deepcopy(decision.envelope)
+        before_hmac = decision.envelope_hmac
+        if reviewer:
+            from django.contrib.auth.models import Group
+            from management.bot_access import META_REVIEWER_GROUP_NAME
+            actor.groups.add(Group.objects.get_or_create(name=META_REVIEWER_GROUP_NAME)[0])
+        else:
+            actor.user_permissions.remove(next(row for row in permissions if row.codename == revoke_codename))
+        denied = sync.projection(request.client_id, request.pk, now=self.now)
+        self.assertFalse(denied["eligible"])
+        self.assertEqual(denied["reason"], "decision_actor_forbidden")
+        result = self.apply(request, preview)
+        self.assertEqual(result, {"ready": False, "reason": "decision_actor_forbidden"})
+        self.variant.refresh_from_db()
+        self.rule.refresh_from_db()
+        self.assertEqual((self.variant.stock, self.rule.stock), (0, 0))
+        self.assertFalse(Sync.objects.exists())
+        self.assertFalse(IgCheckoutProposal.objects.filter(client=request.client).exists())
+        self.assertFalse(Reservation.objects.filter(proposal__client=request.client).exists())
+        self.assertFalse(AdminAuditLog.objects.filter(action="ig_fulfillment_stock_sync").exists())
+        decision.refresh_from_db()
+        self.assertEqual(decision.envelope, before)
+        self.assertEqual(decision.envelope_hmac, before_hmac)
+        self.assertTrue(reviews._verified(decision, "decision"))
+
+    def test_authorized_recounter_cannot_use_original_actor_with_revoked_capability(self):
+        self._assert_original_actor_denied_with_no_inventory_effect()
+
+    def test_authorized_recounter_cannot_use_original_actor_with_revoked_pii_capability(self):
+        self._assert_original_actor_denied_with_no_inventory_effect(revoke_codename="view_ig_conversation_pii")
+
+    def test_authorized_recounter_cannot_use_original_actor_now_meta_reviewer(self):
+        self._assert_original_actor_denied_with_no_inventory_effect(reviewer=True)
+
+    def test_second_authorized_actor_recounts_when_original_actor_remains_capable(self):
+        request, decision, _actor, _permissions = self._decision_from_second_capable_actor()
+        preview = self.preview(request)
+        self.variant.refresh_from_db()
+        self.rule.refresh_from_db()
+        self.assertEqual((self.variant.stock, self.rule.stock), (0, 0))
+        result = self.apply(request, preview)
+        self.assertTrue(result["ready"], result)
+        receipt = Sync.objects.get(pk=result["sync_id"])
+        self.assertEqual(receipt.actor_id, self.manager.pk)
+        self.assertEqual(receipt.decision_id, decision.pk)
+        proposal = IgCheckoutProposal.objects.get(pk=result["proposal_id"])
+        self.assertEqual(proposal.catalog_total, self.product.price)
+        self.assertEqual(proposal.inventory_reservations.get(state=Reservation.State.ACTIVE).quantity, 1)
 
     def test_same_operation_replays_receipt_without_adding_capacity_or_another_checkout(self):
         request, operation = self.case(), uuid.uuid4()
@@ -332,14 +451,21 @@ class NativeFulfillmentStockSyncTests(_RestockFixture, TransactionTestCase):
         self.variant.refresh_from_db()
         self.assertEqual(self.variant.stock, 0)
 
-    def test_wait_or_nonaccessible_decision_never_grants_recount(self):
-        for availability, basis in (("wait", "incoming_confirmed"), ("available", "warehouse_checked")):
-            with self.subTest(availability=availability):
-                request = self.case(availability=availability, basis=basis)
-                preview = sync.projection(request.client_id, request.pk, now=self.now)
-                self.assertFalse(preview["eligible"])
-                self.assertEqual(preview["reason"], "all_lines_require_available" if availability == "wait"
-                    else "accessible_stock_reconciliation_not_required")
+    def test_wait_never_grants_recount(self):
+        request = self.case(availability="wait", basis="incoming_confirmed")
+        preview = sync.projection(request.client_id, request.pk, now=self.now)
+        self.assertFalse(preview["eligible"])
+        self.assertEqual(preview["reason"], "all_lines_require_available")
+
+    def test_checked_available_accounting_with_no_shortfall_has_no_recount(self):
+        self.variant.stock = self.rule.stock = 3
+        self.variant.save(update_fields=["stock"])
+        self.rule.save(update_fields=["stock"])
+        request = self.case(basis="warehouse_checked")
+        preview = sync.projection(request.client_id, request.pk, now=self.now)
+        self.assertFalse(preview["eligible"])
+        self.assertEqual(preview["reason"], "accessible_stock_reconciliation_not_required")
+        self.assertFalse(Sync.objects.exists())
 
     def test_full_mixed_available_cart_preserves_regular_and_unrecorded_items(self):
         other, variant = self.products[1], self.variants[1]
