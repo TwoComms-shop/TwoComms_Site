@@ -300,7 +300,8 @@ class NovaPoshtaService:
             return None
         parsed = parse_datetime(str(raw).replace("Z", "+00:00"))
         if parsed is not None:
-            return parsed
+            from zoneinfo import ZoneInfo
+            return timezone.make_aware(parsed, ZoneInfo("Europe/Kyiv")) if timezone.is_naive(parsed) else parsed
         for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
             try:
                 return timezone.make_aware(datetime.strptime(str(raw), fmt))
@@ -529,6 +530,9 @@ class NovaPoshtaService:
         Returns:
             bool: True если что-то изменилось/отправлено, False если нет
         """
+        from management.services.ig_split_tracking import has_split_plan, track_split_orders
+        if has_split_plan(order):
+            return bool(track_split_orders(self, onlyorder=order)["updated"])
         if not order.tracking_number:
             logger.debug(f"Order {order.order_number}: no tracking number")
             return False
@@ -549,6 +553,9 @@ class NovaPoshtaService:
     def _apply_tracking_info_to_order(self, order, tracking_info):
         """Apply one provider result; external notifications stay outside DB locks."""
         self._last_tracking_update_error = False
+        from management.services.ig_split_tracking import has_split_plan
+        if has_split_plan(order):
+            return False
         if not tracking_info:
             return False
 
@@ -746,6 +753,9 @@ class NovaPoshtaService:
         """
         with transaction.atomic():
             order = Order.objects.select_for_update().get(pk=order_pk)
+            from management.services.ig_split_tracking import has_split_plan
+            if has_split_plan(order):
+                return None
 
             old_shipment_status = order.shipment_status or ''
             old_order_status = order.status
@@ -1308,6 +1318,7 @@ class NovaPoshtaService:
         five minutes into the future after every failed attempt.
         """
         from storefront.models import UserAction
+        from management.models import IgSplitOrderPlan
 
         now = timezone.now()
         purchase_order_ids = UserAction.objects.filter(
@@ -1324,6 +1335,8 @@ class NovaPoshtaService:
             created__gte=now - self.TRACKING_MAX_AGE
         ).filter(
             tracking_terminal_at__isnull=True
+        ).exclude(
+            pk__in=IgSplitOrderPlan.objects.values("order_id")
         )
         if not include_deferred:
             base_orders = base_orders.filter(
@@ -1490,18 +1503,24 @@ class NovaPoshtaService:
             'row_errors': row_error_count,
             'application_errors': application_error_count,
         }
+        from management.services.ig_split_tracking import track_split_orders
+        split_result = track_split_orders(self)
+        for key in result:
+            result[key] += split_result.get(key, 0)
+        result['split_orders'] = split_result['total_orders']
+        result['split_parcels_processed'] = split_result['processed']
 
         logger.info(
             f"Finished updating tracking statuses: "
-            f"{updated_count}/{total_orders} updated, {error_count} errors"
+            f"{result['updated']}/{result['total_orders']} updated, {result['errors']} errors"
         )
 
-        if error_count == 0:
+        if result['errors'] == 0:
             cache.set(self.LAST_UPDATE_CACHE_KEY, timezone.now(), timeout=None)
         else:
             logger.error(
                 "Nova Poshta tracking heartbeat not updated because the batch had %s error(s)",
-                error_count,
+                result['errors'],
             )
 
         return result

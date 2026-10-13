@@ -53,10 +53,13 @@ def _candidate(snapshot, client_id):
     from management.services.ig_marketing_consent import PREFIX
     from management.services.ig_payment_reminders import PAYMENT_REMINDER_PREFIX
     from management.services.ig_restock_subscriptions import RESTOCK_SUBSCRIPTION_PREFIX
+    from management.services.ig_split_shipping import PREFIX as SPLIT_PREFIX
 
     raw = str(snapshot.get("quick_reply_payload") or snapshot.get("text") or "").strip()
     if not raw or len(raw) > 1000:
         return None
+    if str(snapshot.get("quick_reply_payload") or "").startswith(SPLIT_PREFIX):
+        return {"action": "split_shipping_choice", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(RESTOCK_SUBSCRIPTION_PREFIX):
         return {"action": "restock_subscription", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(PAYMENT_REMINDER_PREFIX):
@@ -258,6 +261,10 @@ def apply_revision_postback(
             source = revision.sources.select_for_update().select_related("message").filter(message_id=source_message_id, message__client_id=client.pk, message__role=InstagramBotMessage.Role.USER).first()
             if source is None or source.source_digest != selected.get("source_digest") or source.text != selected.get("text") or source.quick_reply_payload != selected.get("quick_reply_payload"):
                 raise _Rollback("postback_source_changed")
+            if candidate["action"] == "split_shipping_choice":
+                from management.services.ig_split_shipping import _pure_bundle
+
+                requires_model = requires_model or not _pure_bundle(revision, source.message)
             authority = build_revision_authority_bindings(client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=settings_row)
             if not authority.ready:
                 raise _Rollback("postback_authority_unavailable")
@@ -269,6 +276,11 @@ def apply_revision_postback(
             )
             if not readiness.ready:
                 raise _Rollback(readiness.reasons[0])
+            if candidate["action"] == "split_shipping_choice" and requires_model:
+                # No part of a mixed revision may accept a shipping contract.
+                # The complete source bundle continues through the model path.
+                return RevisionPostbackResult(handled=True, ready=True,
+                    reason="split_choice_mixed_source", requires_model=True)
             binding = {
                 "version": VERSION, "origin": "postback", "snapshot_digest": revision.snapshot_digest,
                 "source_message_id": source_message_id, "source_digest": source.source_digest,
@@ -284,6 +296,16 @@ def apply_revision_postback(
                     or global_receipt.outcome_digest != _digest(global_receipt.outcome)):
                     raise _Rollback("postback_source_receipt_mismatch")
                 outcome = dict(global_receipt.outcome)
+                if candidate["action"] == "split_shipping_choice":
+                    from management.models import IgSplitShippingChoice
+                    from management.services.ig_split_shipping import validated_choice
+                    recorded = IgSplitShippingChoice.objects.select_related("offer__decision__request",
+                        "offer__decision__actor", "offer__actor", "client", "receipt__task", "source", "revision").filter(
+                            source_id=source_message_id, client_id=client.pk).first()
+                    checked = validated_choice(recorded, settings_row, now=now) if recorded else {"ready": False}
+                    if not checked.get("ready"):
+                        return RevisionPostbackResult(handled=True, ready=True,
+                            reason=checked.get("reason") or "split_choice_replay_stale", requires_model=True)
                 if candidate["order_id"]:
                     _order, proof = _owned_order(client, candidate["order_id"])
                     if outcome.get("ownership") != proof:
@@ -291,7 +313,19 @@ def apply_revision_postback(
             else:
                 language = str(client.language or "uk").casefold()
                 language = language if language in {"uk", "ru", "en"} else "uk"
-                if candidate["action"] == "restock_subscription":
+                if candidate["action"] == "split_shipping_choice":
+                    from management.services.ig_split_shipping import apply_choice
+
+                    consent = apply_choice(source.message, revision, settings_row, now=now)
+                    if not consent.handled or not consent.ready:
+                        # An obsolete card still deserves a contextual answer.
+                        # It creates neither consent nor an action receipt.
+                        return RevisionPostbackResult(handled=True, ready=True,
+                            reason=consent.reason or "postback_split_choice_not_handled", requires_model=True)
+                    effect = {"consent_reason": consent.reason, "offer_id": consent.offer_id,
+                              "choice_id": consent.choice_id, "quick_replies": []}
+                    reply_text = consent.reply_text
+                elif candidate["action"] == "restock_subscription":
                     from management.services.ig_restock_subscriptions import handle_reply
 
                     consent = handle_reply(source.message, revision=revision, settings_obj=settings_row)

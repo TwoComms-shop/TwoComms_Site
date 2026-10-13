@@ -12,6 +12,8 @@ def purge_fulfillment_data(client_ids, *, using="default"):
         IgFulfillmentReviewDecision, IgFulfillmentReviewRequest,
     )
     from management.ig_fulfillment_stock_sync_models import IgFulfillmentStockSync
+    from management.ig_split_shipping_models import (IgSplitShippingOffer, IgSplitShippingReceipt,
+        IgSplitShippingChoice, IgSplitOrderPlan, IgSplitParcel, IgSplitParcelDispatch, IgSplitParcelTracking)
     ids = sorted({int(value) for value in client_ids})
     if not ids:
         return
@@ -28,9 +30,20 @@ def purge_fulfillment_data(client_ids, *, using="default"):
     answer_table = connection.ops.quote_name(IgRestockAnswer._meta.db_table)
     subscription_table = connection.ops.quote_name(IgRestockSubscription._meta.db_table)
     placeholders = ",".join(["%s"] * len(ids))
+    split_offer_table = connection.ops.quote_name(IgSplitShippingOffer._meta.db_table)
+    split_plan_table = connection.ops.quote_name(IgSplitOrderPlan._meta.db_table)
+    split_parcel_table = connection.ops.quote_name(IgSplitParcel._meta.db_table)
+    split_parcels = f"SELECT p.id FROM {split_parcel_table} p JOIN {split_plan_table} sp ON sp.id=p.plan_id WHERE sp.client_id IN ({placeholders})"
     # Normal ORM collectors must never bypass immutable evidence guards. Raw
     # deletions here still execute the database's owner/privacy triggers.
     steps = (
+        (IgSplitParcelTracking, f"parcel_id IN ({split_parcels})"),
+        (IgSplitParcelDispatch, f"parcel_id IN ({split_parcels})"),
+        (IgSplitParcel, f"plan_id IN (SELECT id FROM {split_plan_table} WHERE client_id IN ({placeholders}))"),
+        (IgSplitOrderPlan, f"client_id IN ({placeholders})"),
+        (IgSplitShippingChoice, f"client_id IN ({placeholders})"),
+        (IgSplitShippingReceipt, f"offer_id IN (SELECT id FROM {split_offer_table} WHERE client_id IN ({placeholders}))"),
+        (IgSplitShippingOffer, f"client_id IN ({placeholders})"),
         (IgRestockAvailabilityEvent, f"subscription_id IN (SELECT id FROM {subscription_table} WHERE client_id IN ({placeholders}))"),
         (IgRestockSubscription, f"client_id IN ({placeholders})"),
         (IgRestockAnswer, f"invitation_id IN (SELECT id FROM {invitation_table} WHERE client_id IN ({placeholders}))"),

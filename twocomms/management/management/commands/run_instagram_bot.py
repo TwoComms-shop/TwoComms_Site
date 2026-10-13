@@ -1271,8 +1271,12 @@ def _drain_customer_followups(settings_obj):
     from management.services.ig_payment_reminders import process_due_payment_reminders
     from management.services.ig_restock_subscriptions import reconcile_subscriptions, process_due_restock_notifications
     from management.services.ig_fulfillment_delivery import process_due_fulfillment_updates
+    from management.services.ig_split_delivery import process_due_split_offers
+    from management.services.ig_split_order_binding import reconcile_paid_shipping_plans
 
     process_due_fulfillment_updates(settings_obj, limit=20)
+    process_due_split_offers(settings_obj, limit=20)
+    reconcile_paid_shipping_plans(limit=10)
     reconcile_subscriptions(limit=50)
     process_due_restock_notifications(settings_obj, limit=50)
     process_due_payment_reminders(settings_obj)

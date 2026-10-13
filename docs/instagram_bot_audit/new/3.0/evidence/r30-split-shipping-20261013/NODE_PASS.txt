@@ -1,0 +1,124 @@
+TAP version 13
+# Subtest: passive constructor and GET show actual full basket/timing without auto groups or arrival promises
+ok 1 - passive constructor and GET show actual full basket/timing without auto groups or arrival promises
+  ---
+  duration_ms: 10.96425
+  type: 'test'
+  ...
+# Subtest: only explicit complete group assignment and fee caps issue an exact whole-basket offer
+ok 2 - only explicit complete group assignment and fee caps issue an exact whole-basket offer
+  ---
+  duration_ms: 4.361916
+  type: 'test'
+  ...
+# Subtest: adding and removing groups keeps draft identities but serializes contiguous canonical parcel keys
+ok 3 - adding and removing groups keeps draft identities but serializes contiguous canonical parcel keys
+  ---
+  duration_ms: 2.140209
+  type: 'test'
+  ...
+# Subtest: UNKNOWN retains the exact original offer operation through newer GET and retry
+ok 4 - UNKNOWN retains the exact original offer operation through newer GET and retry
+  ---
+  duration_ms: 1.858708
+  type: 'test'
+  ...
+# Subtest: 409 refresh preserves draft but changed digest requires explicit new terms before issuance
+ok 5 - 409 refresh preserves draft but changed digest requires explicit new terms before issuance
+  ---
+  duration_ms: 1.095875
+  type: 'test'
+  ...
+# Subtest: read-only operators can see choice and actual plans without mutation controls or POST
+ok 6 - read-only operators can see choice and actual plans without mutation controls or POST
+  ---
+  duration_ms: 0.608042
+  type: 'test'
+  ...
+# Subtest: binding requires native choice identity and explicit ordinary-order readiness
+ok 7 - binding requires native choice identity and explicit ordinary-order readiness
+  ---
+  duration_ms: 1.399042
+  type: 'test'
+  ...
+# Subtest: dispatch enforces the customer cap and posts the exact readonly server COD
+ok 8 - dispatch enforces the customer cap and posts the exact readonly server COD
+  ---
+  duration_ms: 1.061083
+  type: 'test'
+  ...
+# Subtest: missing money/COD, unavailable basket and unverified native receipt cannot enable false claims
+ok 9 - missing money/COD, unavailable basket and unverified native receipt cannot enable false claims
+  ---
+  duration_ms: 1.313041
+  type: 'test'
+  ...
+# Subtest: unsaved dispatch values survive GET redraw and require explicit discard before leaving
+ok 10 - unsaved dispatch values survive GET redraw and require explicit discard before leaving
+  ---
+  duration_ms: 1.121083
+  type: 'test'
+  ...
+# Subtest: each successful carrier code needs actual event/terminal/check clocks and reports only its parcel received
+ok 11 - each successful carrier code needs actual event/terminal/check clocks and reports only its parcel received
+  ---
+  duration_ms: 1.502791
+  type: 'test'
+  ...
+# Subtest: carrier return wording and return codes never become customer receipt even with terminal clocks
+ok 12 - carrier return wording and return codes never become customer receipt even with terminal clocks
+  ---
+  duration_ms: 0.806792
+  type: 'test'
+  ...
+# Subtest: registered TTN waits for carrier evidence; missing or inconsistent clocks cannot confirm receipt
+ok 13 - registered TTN waits for carrier evidence; missing or inconsistent clocks cannot confirm receipt
+  ---
+  duration_ms: 0.929834
+  type: 'test'
+  ...
+# Subtest: concrete POST failures explain changed dispatch/configuration/money and checkout evidence without raw codes
+ok 14 - concrete POST failures explain changed dispatch/configuration/money and checkout evidence without raw codes
+  ---
+  duration_ms: 2.876792
+  type: 'test'
+  ...
+# Subtest: oversized customer offer gets actionable format guidance and preserves the complete draft
+ok 15 - oversized customer offer gets actionable format guidance and preserves the complete draft
+  ---
+  duration_ms: 0.774209
+  type: 'test'
+  ...
+# Subtest: immutable offer names, quantities and locale survive stale or conflicting current basket data
+ok 16 - immutable offer names, quantities and locale survive stale or conflicting current basket data
+  ---
+  duration_ms: 0.54525
+  type: 'test'
+  ...
+# Subtest: a verified plan for the exact customer choice suppresses duplicate order binding
+ok 17 - a verified plan for the exact customer choice suppresses duplicate order binding
+  ---
+  duration_ms: 0.4485
+  type: 'test'
+  ...
+# Subtest: a different historical plan cannot hide current binding and only exact-choice order candidates are submitted
+ok 18 - a different historical plan cannot hide current binding and only exact-choice order candidates are submitted
+  ---
+  duration_ms: 0.717042
+  type: 'test'
+  ...
+# Subtest: foreign-choice candidate readiness does not expose a manual order fallback for the current choice
+ok 19 - foreign-choice candidate readiness does not expose a manual order fallback for the current choice
+  ---
+  duration_ms: 0.232167
+  type: 'test'
+  ...
+1..19
+# tests 19
+# suites 0
+# pass 19
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 72.092833

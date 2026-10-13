@@ -69,7 +69,7 @@ def _reservations(source, identity, now, *, lock=False):
     rows = list(_inventory_read(Reservation.objects.filter(**filters), lock).order_by("pk").values()[:MAX_RESERVATIONS + 1])
     if len(rows) > MAX_RESERVATIONS:
         raise StockSyncError("reservation_capture_bound")
-    protected = sum(row["quantity"] for row in rows if row["state"] == Reservation.State.PAID_COMMITTED
+    protected = sum(row["quantity"] - (row.get("fulfilled_quantity", 0) if source == "warehouse" else 0) for row in rows if row["state"] == Reservation.State.PAID_COMMITTED
         or row["state"] == Reservation.State.ACTIVE and row["expires_at"] > now)
     return protected, _primitive(rows)
 

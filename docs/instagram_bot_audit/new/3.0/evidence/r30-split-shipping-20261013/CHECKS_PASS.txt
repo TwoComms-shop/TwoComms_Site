@@ -1,0 +1,7 @@
+System check identified no issues (0 silenced).
+No changes detected in app 'management'
+Scoped AST parsed: 36
+SQLite vendor trigger DDL install/remove: 45/45 (DDL only)
+Native MariaDB: 8 InnoDB owner tables + catalogue parent; 24 physical triggers
+Default feature flags enabled; provider probes: 0
+Native split guards 21/21; provider probes: 0

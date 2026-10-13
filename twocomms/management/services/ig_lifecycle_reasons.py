@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from django.conf import settings as django_settings
+from django.db.models import Q
 from django.utils import timezone
 
 from management.models import (
@@ -648,8 +649,7 @@ def _delivered_ig_orders(start, now) -> list:
             tracking_terminal_at__lte=now,
             tracking_status_code__in=NOVA_POSHTA_DELIVERY_SUCCESS_CODES,
         )
-        .exclude(tracking_number__isnull=True)
-        .exclude(tracking_number="")
+        .filter(Q(instagram_split_plan__isnull=False) | (Q(tracking_number__isnull=False) & ~Q(tracking_number="")))
         .only(
             "id",
             "status",

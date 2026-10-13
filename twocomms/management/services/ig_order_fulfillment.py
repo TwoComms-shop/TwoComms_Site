@@ -221,6 +221,34 @@ def _event_specs(assignment, *, now):
     client = assignment.client
     locale = _locale(client)
     tracking = str(order.tracking_number or "").strip()
+    from management.models import IgSplitOrderPlan
+    split_plan = IgSplitOrderPlan.objects.filter(order_id=order.pk).first()
+    if split_plan:
+        from management.services.ig_split_execution import verified_tracking_plan
+        verified = verified_tracking_plan(order, now=now)
+        if not verified.get("ready"):
+            return
+        if order.status not in {"done", "cancelled"}:
+            parcels = sorted(verified["parcels"], key=lambda row: row.key)
+            positions = {row.pk: index for index, row in enumerate(parcels, 1)}
+            for dispatch in verified["dispatches"]:
+                index, total = positions[dispatch.parcel_id], len(parcels)
+                number = dispatch.tracking_number
+                link = f"https://novaposhta.ua/tracking/?cargo_number={number}"
+                if locale == "en":
+                    text = f"A tracking number has been created for parcel {index} of {total} in order #{order.order_number}: {number}. Track it here: {link}. We will send each remaining parcel’s tracking number separately."
+                elif locale == "ru":
+                    text = f"Создана ТТН для посылки {index} из {total} заказа №{order.order_number}: {number}. Отслеживание: {link}. Номера оставшихся посылок пришлём отдельно."
+                else:
+                    text = f"Створено ТТН для посилки {index} з {total} замовлення №{order.order_number}: {number}. Відстеження: {link}. Номери решти посилок надішлемо окремо."
+                if total == 1:
+                    text = text.rsplit(". ", 1)[0] + "."
+                yield {"kind": "ttn_assigned", "event_key": f"ig-assignment:{assignment.pk}:v{assignment.version}:split:{dispatch.pk}",
+                    "message": text, "payload": {"tracking_number": number, "tracking_url": link,
+                        "split_dispatch_id": str(dispatch.pk), "split_dispatch_digest": dispatch.envelope_hmac,
+                        "split_plan_id": str(split_plan.pk), "parcel_position": index, "parcel_count": total}}
+        # Canonical lifecycle remains the sole owner of delivered-review.
+        return
     # IMP-021: подтверждение оплаты идёт тем же durable-путём, что и ТТН, —
     # там уже есть идемпотентность по event_key, guard'ы, lease и локализация.
     # Оно не зависит от того, сформулирует ли модель нужную фразу.
@@ -304,7 +332,8 @@ def ensure_assignment_events(assignment, *, now=None, queue_consent=True):
         from management.services.ig_marketing_consent import queue_post_purchase_consent
 
         queue_post_purchase_consent(assignment.client, assignment.order, assignment, now=now)
-    if _uses_canonical_lifecycle(assignment):
+    from management.models import IgSplitOrderPlan
+    if _uses_canonical_lifecycle(assignment) and not IgSplitOrderPlan.objects.filter(order_id=assignment.order_id).exists():
         _cancel_redundant_events(assignment, now=now)
         return []
     if assignment.version == 1 and assignment.last_reason_code == "legacy_attribution":
@@ -523,6 +552,8 @@ def _inside_response_window(client, *, now) -> bool:
 def _matches_current_fulfillment(event, order) -> bool:
     """Return whether the durable snapshot still matches the live order."""
     tracking = str(getattr(order, "tracking_number", "") or "").strip()
+    if (event.payload or {}).get("split_dispatch_id"):
+        return _is_current_split_event(event, order)
     if event.kind in {"ttn_assigned", "exchange_shipped"}:
         event_tracking = str((event.payload or {}).get("tracking_number") or "").strip()
         return bool(
@@ -541,6 +572,21 @@ def _matches_current_fulfillment(event, order) -> bool:
     if event.kind == "delivered_review":
         return nova_poshta_order_fulfillment_confirmed(order)
     return False
+
+
+def _is_current_split_event(event, order=None):
+    if event.kind != "ttn_assigned" or not (event.payload or {}).get("split_dispatch_id"):
+        return False
+    from management.services.ig_split_execution import verified_tracking_plan
+    order = order or event.order
+    if order.status in {"done", "cancelled"}:
+        return False
+    result = verified_tracking_plan(order)
+    if not result.get("ready"):
+        return False
+    return any(str(row.pk) == event.payload["split_dispatch_id"]
+        and row.envelope_hmac == event.payload.get("split_dispatch_digest")
+        and row.tracking_number == event.payload.get("tracking_number") for row in result["dispatches"])
 
 
 @contextmanager
@@ -595,6 +641,7 @@ def _event_send_boundary(
                 current_event
                 and assignment
                 and _uses_canonical_lifecycle(assignment)
+                and not _is_current_split_event(current_event, order)
             )
             if canonical_handoff:
                 boundary_state["canonical_handoff"] = True
@@ -666,7 +713,7 @@ def deliver_event(event_id, *, send=True, now=None):
     )
     assignment = event.assignment
     client = event.client
-    if _uses_canonical_lifecycle(assignment):
+    if _uses_canonical_lifecycle(assignment) and not _is_current_split_event(event, event.order):
         _finish(
             event,
             token=token,

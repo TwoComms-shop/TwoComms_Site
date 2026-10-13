@@ -53,6 +53,24 @@ def fulfillment_slot(projection, *, boundary, captured_at):
         watermark = boundary.get("source_watermark") or boundary.get("watermark") or {}
         cutoff = _time(watermark["event_at"])
         sources = list(request.get("sources") or [])
+        split = projection.get("split_shipping") or {}
+        proof = split.get("proof") or {}
+        choice = proof.get("choice") or {}
+        choice_source = choice.get("source") or {}
+        if proof:
+            times = [split.get("offer", {}).get("issued_at")]
+            times += [row.get(field) for row, field in ((proof.get("receipt") or {}, "delivered_at"), (choice, "confirmed_at")) if row]
+            source_after_capture = bool(choice_source and (
+                type(choice_source.get("message_id")) is not int
+                or not boundary["reset_floor"] <= choice_source["message_id"] <= watermark["message_id"]
+                or _time(choice_source.get("provider_created_at")) > min(cutoff, captured_at)))
+            if source_after_capture or any(not stamp or _time(stamp) > captured_at for stamp in times):
+                projection = deepcopy(projection)
+                projection.pop("split_shipping", None)
+                projection["split_shipping_omission"] = "shipping_after_capture"
+            elif choice_source:
+                sources.append({"message_id": choice_source.get("message_id"),
+                    "provider_created_at": choice_source.get("provider_created_at"), "digest": choice_source.get("digest")})
         interest = projection.get("restock_interest") or {}
         interest_refs = interest.get("source_refs") or []
         source_ids = {source.get("message_id") for source in sources}
@@ -65,6 +83,9 @@ def fulfillment_slot(projection, *, boundary, captured_at):
             projection.pop("restock_interest", None)
             projection["restock_interest_omission"] = "source_reference_bound"
             sources = list(request.get("sources") or [])
+            if proof:
+                projection.pop("split_shipping", None)
+                projection["split_shipping_omission"] = "source_reference_bound"
         for source in sources:
             identity = source.get("message_id")
             stamp = _time(source["provider_created_at"])
@@ -85,7 +106,10 @@ def fulfillment_slot(projection, *, boundary, captured_at):
             "Manager free-text notes are context, not action authority; only the typed availability, checked quantity and timing fields authorize these claims. "
             "Manager preparation and dispatch windows are distinct from carrier arrival. Never guarantee arrival or infer same-day delivery from city names. "
             "For an important customer deadline explain carrier variability and ask the manager; clarify incomplete dates. "
-            "Split delivery is an offer until customer agreement and delivery charges are confirmed; do not silently split orders."))
+            "Split delivery is an offer until customer agreement and delivery charges are confirmed; do not silently split orders. "
+            "Only the signed shipping component proves a chosen option and maximum customer fee for each parcel. "
+            "A pending/UNKNOWN card is not consent. Carrier fees are separate from merchandise/COD; never charge a parcel above the accepted cap. "
+            "A shipping choice does not authorize unavailable goods, payment, dispatch or guaranteed arrival. Complete receipt requires every original parcel."))
     value["capture_digest"] = _digest(value)
     return {"value": value, "status": "confirmed", "authority": "verified_manager_review",
         "source_refs": refs, "scope": {key: boundary.get(key) for key in SCOPE_KEYS},
@@ -98,6 +122,12 @@ def capture_fulfillment_context(client, *, boundary, captured_at, current_source
     from management.services.ig_fulfillment_reviews import fulfillment_review_projection
     projection = fulfillment_review_projection(getattr(client, "pk", client), now=captured_at,
         current_source_cart=current_source_cart, _catalog_readback=_catalog_readback)
+    if projection.get("status") == "reviewed" and current_source_cart is not None:
+        from management.services.ig_split_shipping import context_snapshot
+        shipping = context_snapshot(client, now=captured_at, current_source_cart=current_source_cart,
+            current_review=projection, _catalog_readback=_catalog_readback)
+        if shipping.get("proof"):
+            projection = {**projection, "split_shipping": shipping}
     return fulfillment_slot(projection, boundary=boundary, captured_at=captured_at)
 
 
@@ -143,6 +173,14 @@ def validate_retained_fulfillment(revision, frame, *, now=None):
     new_decision = current.get("decision") or {}
     if old_decision and (current.get("status") != "reviewed" or new_decision.get("id") != old_decision.get("id")):
         return "fulfillment_decision_changed"
+    shipping = captured.get("split_shipping") or {}
+    if shipping.get("proof"):
+        from management.services.ig_split_shipping import context_snapshot
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        latest_shipping = context_snapshot(revision.client_id, now=now or timezone.now(), current_review=current,
+            current_source_cart=capture_current_selection_lines(revision.client_id, now=now or timezone.now()))
+        if latest_shipping.get("fingerprint") != shipping.get("fingerprint"):
+            return "split_shipping_terms_changed"
     return ""
 
 

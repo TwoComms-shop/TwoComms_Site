@@ -2071,18 +2071,6 @@ class InstagramLifecycleTests(TestCase):
         self.assertEqual(channel["provider_message_id"], "meta-delivered")
 
     def test_delivered_review_copy_conditions_discount_on_verified_story(self):
-        self.order.status = "done"
-        self.order.tracking_number = "20450000000009"
-        self.order.tracking_status_code = 9
-        self.order.tracking_terminal_at = timezone.now()
-        self.order.save(
-            update_fields=[
-                "status",
-                "tracking_number",
-                "tracking_status_code",
-                "tracking_terminal_at",
-            ]
-        )
         # The combined incentive requires native business consent independently
         # of the real paid purchase and the carrier delivery receipt.
         import os
@@ -2100,6 +2088,20 @@ class InstagramLifecycleTests(TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         fixture.grant_business_consent(self.client, self.order, assignment)
+        # Consent is acquired while paid goods are still unshipped. Carrier
+        # receipt arrives later; post-shipment acquisition must stay blocked.
+        self.order.status = "done"
+        self.order.tracking_number = "20450000000009"
+        self.order.tracking_status_code = 9
+        self.order.tracking_terminal_at = timezone.now()
+        self.order.save(
+            update_fields=[
+                "status",
+                "tracking_number",
+                "tracking_status_code",
+                "tracking_terminal_at",
+            ]
+        )
         event = self._event(
             IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED,
             payload={"status_code": "9", "status": "delivered"},

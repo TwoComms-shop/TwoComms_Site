@@ -6,7 +6,7 @@ from typing import Optional
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from django.utils import timezone
 
 from warehouse.models import (
@@ -64,15 +64,15 @@ def protected_stock_quantity(
         # transaction's new reservation after waiting for that parent lock.
         from django.db import connection, OperationalError
         try:
-            return sum(reservations.select_for_update(
+            return sum(quantity - fulfilled for quantity, fulfilled in reservations.select_for_update(
                 nowait=connection.features.has_select_for_update_nowait,
-            ).order_by("pk").values_list("quantity", flat=True))
+            ).order_by("pk").values_list("quantity", "fulfilled_quantity"))
         except OperationalError as exc:
             if exc.args and exc.args[0] in {1205, 3572}:
                 from management.services.ig_inventory import InventoryReservationError
                 raise InventoryReservationError("inventory_allocation_busy") from exc
             raise
-    return int(reservations.aggregate(total=Sum("quantity"))["total"] or 0)
+    return int(reservations.aggregate(total=Sum(F("quantity") - F("fulfilled_quantity")))["total"] or 0)
 
 
 def weighted_average_cost(
@@ -139,6 +139,11 @@ def adjust_stock_item(
             f"Недостатньо залишку: маємо {old_qty}, спроба списати {-delta}"
         )
     if delta < 0:
+        if order is not None:
+            from management.models import IgSplitOrderPlan
+            if IgSplitOrderPlan.objects.filter(order_id=order.pk).exists():
+                from management.services.ig_inventory import InventoryReservationError
+                raise InventoryReservationError("split_parcel_dispatch_required")
         protected_quantity = protected_stock_quantity(
             stock_item_id=stock_item.pk,
             exclude_paid_order_id=getattr(order, "pk", None),
@@ -330,6 +335,7 @@ def reverse_write_off(*, write_off_request, user=None) -> int:
             state=IgCheckoutInventoryReservation.State.FULFILLED,
         ).update(
             state=IgCheckoutInventoryReservation.State.PAID_COMMITTED,
+            fulfilled_quantity=0,
             write_off_request=None,
             stock_movement=None,
             order_item=None,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from django.utils import timezone
 
 
@@ -138,7 +138,11 @@ def reserve_proposal_inventory(
             allocation = decision.allocation
         key = _allocation_key(allocation)
         group = groups.setdefault(
-            (allocation.source, allocation.stock_item_id, allocation.color_variant_id),
+            # Physical warehouse ownership is the stock pool, even when two
+            # distinct catalogue variants/products map to it. This identity
+            # must equal the fingerprint's identity or bulk_create can emit
+            # two same-generation rows with the same unique fingerprint.
+            key,
             {
                 "allocation": allocation,
                 "allocation_key": key,
@@ -379,14 +383,14 @@ def _catalog_variant_protected_quantity(
         try:
             # A proposal editor may hold its old reservations before it
             # reaches the stock parent. Never wait on that reverse edge.
-            return sum(reservations.select_for_update(
+            return sum(quantity - fulfilled for quantity, fulfilled in reservations.select_for_update(
                 nowait=connection.features.has_select_for_update_nowait,
-            ).order_by("pk").values_list("quantity", flat=True))
+            ).order_by("pk").values_list("quantity", "fulfilled_quantity"))
         except OperationalError as exc:
             if exc.args and exc.args[0] in {1205, 3572}:
                 raise InventoryReservationError("inventory_allocation_busy") from exc
             raise
-    return int(reservations.aggregate(total=Sum("quantity"))["total"] or 0)
+    return int(reservations.aggregate(total=Sum(F("quantity") - F("fulfilled_quantity")))["total"] or 0)
 
 
 def _payment_inventory_targets(candidate_rows):
@@ -628,7 +632,6 @@ def commit_proposal_inventory(
         variant.stock = int(variant.stock) - quantity
         variant.save(update_fields=["stock"])
         from product_catalog.models import VariantSizeRule
-        from django.db.models import F
         for rule_id, size_quantity in size_plans.get(variant_id, {}).items():
             changed = VariantSizeRule.objects.filter(pk=rule_id,
                 variant_id=variant_id, stock__gte=size_quantity).update(
@@ -638,6 +641,7 @@ def commit_proposal_inventory(
 
     updates = {
         "state": IgCheckoutInventoryReservation.State.FULFILLED,
+        "fulfilled_quantity": F("quantity"),
         "consumed_at": now,
         "fulfilled_at": now,
         "updated_at": now,
@@ -646,6 +650,7 @@ def commit_proposal_inventory(
         # The reservation model intentionally has no order FK in 0116; the
         # payment attempt/proposal remains the durable ownership link.
         updates["release_reason"] = f"order:{order.pk}"[:128]
+        updates["order_id"] = order.pk
     if catalog_rows:
         IgCheckoutInventoryReservation.objects.filter(
             pk__in=[reservation.pk for reservation in catalog_rows],
@@ -782,6 +787,160 @@ def mark_overbooked_proposal_inventory(
     return len(review_rows)
 
 
+def fulfill_split_parcel_inventory(parcel, dispatch, actor, now=None):
+    """Consume only a signed parcel's paid allocation, inside its dispatch transaction.
+
+    ``dispatch`` is an unsaved UUID identity. The caller must seal the returned
+    receipt into its immutable envelope and insert that dispatch before the
+    enclosing transaction commits. Existing receipts are the per-parcel ledger;
+    catalogue stock was already consumed by verified payment.
+    """
+    from django.db import connection
+
+    if not connection.in_atomic_block:
+        raise InventoryReservationError("split_inventory_requires_dispatch_transaction")
+    # Preserve a savepoint even if a caller converts a typed inventory failure
+    # into a result inside its outer dispatch transaction.
+    with transaction.atomic():
+        return _fulfill_split_parcel_inventory(parcel, dispatch, actor, now=now)
+
+
+def _fulfill_split_parcel_inventory(parcel, dispatch, actor, now=None):
+    from django.contrib.contenttypes.models import ContentType
+    from management.models import IgCheckoutInventoryReservation as Reservation, IgCheckoutProposalItem, IgSplitParcelDispatch
+    from management.services.ig_split_execution import validated_split_plan
+    from warehouse.models import MovementReason, StockItem, StockMovement
+    from warehouse.services.inventory import protected_stock_quantity
+
+    now = now or timezone.now()
+    validation = validated_split_plan(parcel.plan_id, now=now)
+    if not validation.get("ready"):
+        raise InventoryReservationError(validation.get("reason") or "split_plan_invalid")
+    plan, order = validation["plan"], validation["order"]
+    actual_parcel = next((row for row in validation["parcels"] if row.pk == parcel.pk), None)
+    if actual_parcel is None or dispatch.parcel_id != actual_parcel.pk:
+        raise InventoryReservationError("split_inventory_parcel_mismatch")
+    if not getattr(actor, "pk", None) or dispatch.actor_id != actor.pk:
+        raise InventoryReservationError("split_inventory_actor_mismatch")
+    # The executor locks the order/plan/parcel before entering this hook. The
+    # current read also makes accidental repeated calls before sealing fail.
+    prior_dispatches = list(IgSplitParcelDispatch.objects.select_for_update()
+        .filter(parcel__plan_id=plan.pk).order_by("pk"))
+    existing = next((row for row in prior_dispatches if row.parcel_id == actual_parcel.pk), None)
+    if existing is not None:
+        if existing.pk != dispatch.pk:
+            raise InventoryReservationError("split_parcel_already_dispatched")
+        receipt = existing.envelope.get("inventory_receipt", {})
+        if (receipt.get("schema") != "ig-split-inventory-receipt.v1"
+                or receipt.get("dispatch_id") != str(existing.pk)
+                or receipt.get("parcel_id") != str(actual_parcel.pk)):
+            raise InventoryReservationError("split_inventory_receipt_invalid")
+        return {"ready": True, "proof": receipt}
+    if not dispatch._state.adding:
+        raise InventoryReservationError("split_inventory_receipt_missing")
+
+    owner = plan.envelope
+    proposal_id = owner.get("proposal_id")
+    generation_id = owner.get("invoice_generation_id")
+    if not proposal_id or "invoice_generation_id" not in owner:
+        raise InventoryReservationError("split_inventory_owner_missing")
+    items = actual_parcel.envelope.get("items", [])
+    if not items:
+        raise InventoryReservationError("split_inventory_manifest_empty")
+    proposal_items = {row.pk: row for row in IgCheckoutProposalItem.objects.filter(proposal_id=proposal_id)}
+    requested = {}
+    for item in items:
+        item_id, quantity = item.get("proposal_item_id"), item.get("quantity")
+        if (type(item_id) is not int or type(quantity) is not int or quantity <= 0
+                or item_id not in proposal_items):
+            raise InventoryReservationError("split_inventory_manifest_invalid")
+        requested[item_id] = requested.get(item_id, 0) + quantity
+    candidates = Reservation.objects.filter(proposal_id=proposal_id,
+        invoice_generation_id=generation_id, order_id=order.pk)
+    # Allocation parent locks are globally ordered before reservation locks.
+    stock_ids = sorted(set(candidates.filter(allocation_source="warehouse")
+        .values_list("stock_item_id", flat=True)) - {None})
+    stocks = {row.pk: row for row in StockItem.objects.select_for_update()
+        .filter(pk__in=stock_ids).order_by("pk")}
+    reservations = list(candidates.select_for_update().order_by("pk"))
+    mapping, selected = {}, []
+    for row in reservations:
+        line_ids = row.line_ids or [row.item_id]
+        if (not line_ids or any(type(identity) is not int or identity not in proposal_items for identity in line_ids)
+                or len(set(line_ids)) != len(line_ids)
+                or sum(proposal_items[identity].quantity for identity in line_ids) != row.quantity):
+            raise InventoryReservationError("split_inventory_line_ownership_invalid")
+        for identity in line_ids:
+            if identity in mapping:
+                raise InventoryReservationError("split_inventory_line_ownership_ambiguous")
+            mapping[identity] = row
+        quantity = sum(requested.get(identity, 0) for identity in line_ids)
+        if quantity:
+            selected.append((row, quantity, sorted(identity for identity in line_ids if identity in requested)))
+    if set(requested) - set(mapping):
+        raise InventoryReservationError("split_inventory_reservation_missing")
+
+    previous = {}
+    for prior in prior_dispatches:
+        receipt = prior.envelope.get("inventory_receipt", {})
+        if (receipt.get("schema") != "ig-split-inventory-receipt.v1"
+                or receipt.get("dispatch_id") != str(prior.pk)
+                or receipt.get("order_id") != order.pk
+                or receipt.get("plan_id") != str(plan.pk)):
+            raise InventoryReservationError("split_inventory_receipt_invalid")
+        for entry in receipt.get("rows", []):
+            identity, quantity = entry.get("reservation_id"), entry.get("quantity")
+            if type(identity) is not int or type(quantity) is not int or quantity <= 0:
+                raise InventoryReservationError("split_inventory_receipt_invalid")
+            previous[identity] = previous.get(identity, 0) + quantity
+    for row, quantity, _line_ids in selected:
+        if row.allocation_source == "warehouse":
+            if (row.state != Reservation.State.PAID_COMMITTED or row.stock_item_id not in stocks
+                    or row.fulfilled_quantity != previous.get(row.pk, 0)
+                    or quantity > row.quantity - row.fulfilled_quantity):
+                raise InventoryReservationError("split_inventory_commitment_mismatch")
+        elif row.allocation_source in {"catalog_variant", ""}:
+            if row.state not in {Reservation.State.FULFILLED, Reservation.State.CONSUMED} or row.fulfilled_quantity != row.quantity:
+                raise InventoryReservationError("split_catalogue_payment_not_consumed")
+        else:
+            raise InventoryReservationError("split_inventory_source_unsupported")
+
+    proof = {"schema": "ig-split-inventory-receipt.v1", "dispatch_id": str(dispatch.pk),
+        "parcel_id": str(actual_parcel.pk), "plan_id": str(plan.pk), "order_id": order.pk,
+        "proposal_id": proposal_id, "invoice_generation_id": generation_id, "rows": [], "catalogue_rows": []}
+    # Reduce commitments before checking the protected physical remainder. All
+    # changes, movements, and the immutable dispatch receipt commit together.
+    for row, quantity, line_ids in selected:
+        if row.allocation_source != "warehouse":
+            proof["catalogue_rows"].append({"reservation_id": row.pk, "quantity": quantity,
+                "proposal_item_ids": line_ids, "consumed_at_payment": True})
+            continue
+        row.fulfilled_quantity += quantity
+        row.state = Reservation.State.FULFILLED if row.fulfilled_quantity == row.quantity else Reservation.State.PAID_COMMITTED
+        row.fulfilled_at = now if row.state == Reservation.State.FULFILLED else None
+        row.consumed_at = row.consumed_at or now
+        row.save(update_fields=["fulfilled_quantity", "state", "fulfilled_at", "consumed_at", "updated_at"])
+    stock_ct = ContentType.objects.get_for_model(StockItem)
+    for row, quantity, line_ids in selected:
+        if row.allocation_source != "warehouse":
+            continue
+        stock = stocks[row.stock_item_id]
+        after = stock.quantity - quantity
+        if after < 0 or after < protected_stock_quantity(stock_item_id=stock.pk, at=now, lock=True):
+            raise InventoryReservationError("fulfillment_stock_shortfall")
+        stock.quantity = after
+        stock.save(update_fields=["quantity", "updated_at"])
+        movement = StockMovement.objects.create(content_type=stock_ct, object_id=stock.pk,
+            delta=-quantity, quantity_after=after, reason=MovementReason.ORDER_WRITE_OFF,
+            comment=f"Instagram split parcel {actual_parcel.pk} · dispatch {dispatch.pk}", order=order, created_by=actor)
+        row.stock_movement = movement
+        row.save(update_fields=["stock_movement", "updated_at"])
+        proof["rows"].append({"reservation_id": row.pk, "stock_item_id": stock.pk,
+            "movement_id": movement.pk, "quantity": quantity, "fulfilled_quantity": row.fulfilled_quantity,
+            "proposal_item_ids": line_ids})
+    return {"ready": True, "proof": proof}
+
+
 @transaction.atomic
 def fulfill_warehouse_reservation(
     reservation,
@@ -806,13 +965,21 @@ def fulfill_warehouse_reservation(
     locked = IgCheckoutInventoryReservation.objects.select_for_update().get(pk=reservation.pk)
     if locked.stock_item_id != stock_item.pk or locked.allocation_source != "warehouse":
         raise InventoryReservationError("inventory_allocation_changed")
-    if locked.state == IgCheckoutInventoryReservation.State.FULFILLED:
+    if locked.state in {IgCheckoutInventoryReservation.State.FULFILLED,
+            IgCheckoutInventoryReservation.State.CONSUMED}:
         return None
     if locked.state != IgCheckoutInventoryReservation.State.PAID_COMMITTED:
         raise InventoryReservationError("inventory_not_paid_committed")
     if locked.allocation_source != "warehouse" or not locked.stock_item_id:
         raise InventoryReservationError("not_warehouse_allocation")
-    quantity = int(locked.quantity or 0)
+    from management.models import IgSplitOrderPlan
+    if IgSplitOrderPlan.objects.filter(order_id=order.pk).exists():
+        raise InventoryReservationError("split_parcel_dispatch_required")
+    if locked.order_id not in {None, order.pk}:
+        raise InventoryReservationError("inventory_order_mismatch")
+    quantity = int(locked.quantity or 0) - int(locked.fulfilled_quantity or 0)
+    if quantity <= 0:
+        raise InventoryReservationError("inventory_fulfillment_ledger_mismatch")
     if int(stock_item.quantity or 0) < quantity:
         locked.state = IgCheckoutInventoryReservation.State.OVERBOOKED_REVIEW
         locked.release_reason = "fulfillment_stock_shortfall"
@@ -829,6 +996,7 @@ def fulfill_warehouse_reservation(
     )
     now = timezone.now()
     locked.state = IgCheckoutInventoryReservation.State.FULFILLED
+    locked.fulfilled_quantity = locked.quantity
     locked.order = order
     locked.order_item = order_item
     locked.write_off_request = write_off_request
@@ -837,7 +1005,7 @@ def fulfill_warehouse_reservation(
     locked.consumed_at = locked.consumed_at or now
     locked.save(update_fields=[
         "state", "order", "order_item", "write_off_request", "stock_movement",
-        "fulfilled_at", "consumed_at", "updated_at",
+        "fulfilled_at", "fulfilled_quantity", "consumed_at", "updated_at",
     ])
     return movement
 
@@ -856,6 +1024,9 @@ def fulfill_order_inventory_reservations(order, *, write_off_request=None, user=
 
     try:
         with transaction.atomic():
+            from management.models import IgSplitOrderPlan
+            if IgSplitOrderPlan.objects.filter(order_id=order.pk).exists():
+                raise InventoryReservationError("split_parcel_dispatch_required")
             if write_off_request is not None:
                 # The callback may hold an instance loaded before a reversal.
                 # Re-read it under the transaction lock so a repeated callback
@@ -894,7 +1065,7 @@ def fulfill_order_inventory_reservations(order, *, write_off_request=None, user=
                     )
                     movement = movement_queryset.filter(
                         object_id=reservation.stock_item_id,
-                        delta=-int(reservation.quantity),
+                        delta=-(int(reservation.quantity) - int(reservation.fulfilled_quantity)),
                     ).order_by("-pk").first()
                     if movement is None and movement_queryset.exists():
                         raise InventoryReservationError("warehouse_writeoff_mismatch")
@@ -917,6 +1088,7 @@ def fulfill_order_inventory_reservations(order, *, write_off_request=None, user=
                     state=IgCheckoutInventoryReservation.State.PAID_COMMITTED,
                 ).update(
                     state=IgCheckoutInventoryReservation.State.FULFILLED,
+                    fulfilled_quantity=F("quantity"),
                     order=order,
                     write_off_request=write_off_request,
                     stock_movement=movement,
@@ -958,6 +1130,7 @@ def restore_order_inventory_reservations(write_off_request):
         ],
     ).update(
         state=IgCheckoutInventoryReservation.State.PAID_COMMITTED,
+        fulfilled_quantity=0,
         write_off_request=None,
         stock_movement=None,
         order_item=None,

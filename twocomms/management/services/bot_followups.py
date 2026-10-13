@@ -2307,7 +2307,7 @@ def recover_expired_followup_leases(
             claim_until__isnull=False,
             claim_until__lte=now,
         )
-        .exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update"))
+        .exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update", "split_shipping_offer"))
         .order_by("claim_until", "id")
         .values_list("id", flat=True)[: max(1, min(int(limit), 500))]
     )
@@ -2609,7 +2609,7 @@ def recover_sent_followup_receipts(
             sent_message__isnull=True,
         ).exclude(
             provider_message_id="",
-        ).exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update")).order_by("updated_at", "id").values_list("id", flat=True)[
+        ).exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update", "split_shipping_offer")).order_by("updated_at", "id").values_list("id", flat=True)[
             : max(1, min(int(limit), 500))
         ]
     )
@@ -3038,7 +3038,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
             due_at__lte=now,
             discount_percent__gt=0,
         )
-        .exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update"))
+        .exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update", "split_shipping_offer"))
         .filter(Q(event_payload__origin__isnull=True) | ~Q(event_payload__origin="agreed_payment_reminder"))
         .exclude(kind=IgFollowUpTask.Kind.MANAGER_TASK)
         .exclude(
@@ -3055,7 +3055,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
         .exclude(kind=IgFollowUpTask.Kind.MANAGER_TASK)
         # Exact-time, receipt-bound reminders have their own admission lane.
         # Generic quiet-hour/retry scheduling must never move the agreed time.
-        .exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update"))
+        .exclude(reason__in=("agreed_payment_reminder", "subscribed_restock", "fulfillment_manager_update", "split_shipping_offer"))
         .filter(Q(event_payload__origin__isnull=True) | ~Q(event_payload__origin="agreed_payment_reminder"))
         .filter(
             Q(discount_percent=0)

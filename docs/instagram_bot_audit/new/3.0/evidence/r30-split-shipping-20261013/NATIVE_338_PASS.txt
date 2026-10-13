@@ -1,0 +1,70 @@
+.................................................../Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+................................Assisted attempt 65 provider identity/currency mismatch -> checking
+Assisted attempt 65 provider identity/currency mismatch -> checking
+..................................................................................ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+............/Users/zainllw0w/TwoComms/site/.venv/lib/python3.14/site-packages/django/core/handlers/base.py:63: UserWarning: No directory at: /Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/staticfiles/
+  mw_instance = middleware(adapted_handler)
+ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+..ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+Split tracking proof unavailable for order 1
+Traceback (most recent call last):
+  File "/Users/zainllw0w/.codex/worktrees/r30-media-integration/site/twocomms/management/services/ig_split_tracking.py", line 83, in _verified
+    result = verified_tracking_plan(order, now=now)
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1176, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1180, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/zainllw0w/.local/share/uv/python/cpython-3.14.6-macos-aarch64-none/lib/python3.14/unittest/mock.py", line 1241, in _execute_mock_call
+    raise effect
+ValueError: source signature invalid
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.................Forbidden (CSRF cookie not set.): /bot/api/clients/1/split-shipping/
+...........ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+.ig_bot event=send level=error detail=HTTP -1 [unknown] результат доставки не підтверджено: тимчасова мережева/серверна помилка
+............................................................................................ig_bot event=send level=error detail=provider_exception before receipt for chunk 1
+..
+----------------------------------------------------------------------
+Ran 338 tests in 262.025s
+
+OK
+Found 338 test(s).
+System check identified no issues (0 silenced).

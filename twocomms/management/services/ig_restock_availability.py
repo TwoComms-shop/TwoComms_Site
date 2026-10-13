@@ -122,10 +122,10 @@ def _protected(*, source, identity, now):
         queryset = Reservation.objects.filter(allocation_source__in=["catalog_variant", ""], color_variant_id=identity)
     rows = list(queryset.filter(Q(state=Reservation.State.ACTIVE, expires_at__gt=now)
         | Q(state=Reservation.State.PAID_COMMITTED)).order_by("pk").values(
-            "id", "quantity", "state", "expires_at", "updated_at")[:MAX_RESERVATIONS + 1])
+            "id", "quantity", "fulfilled_quantity", "state", "expires_at", "updated_at")[:MAX_RESERVATIONS + 1])
     if len(rows) > MAX_RESERVATIONS:
         raise ObservationError("reservation_bound")
-    if sum(row["quantity"] for row in rows) != protected:
+    if sum(row["quantity"] - (row["fulfilled_quantity"] if source == "warehouse" else 0) for row in rows) != protected:
         raise ObservationError("inventory_snapshot_changed")
     return protected, rows
 

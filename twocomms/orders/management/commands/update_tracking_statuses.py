@@ -69,11 +69,13 @@ class Command(BaseCommand):
     def _update_single_order(self, service, order_number, dry_run):
         """Обновляет статус одного заказа"""
         from orders.models import Order
+        from management.services.ig_split_tracking import has_split_plan
 
         try:
             order = Order.objects.get(order_number=order_number)
 
-            if not order.tracking_number:
+            split = has_split_plan(order)
+            if not order.tracking_number and not split:
                 self.stdout.write(
                     self.style.WARNING(f"Заказ {order_number} не имеет ТТН")
                 )
@@ -84,6 +86,9 @@ class Command(BaseCommand):
             logger.info(f"Updating tracking status for order {order_number}")
 
             if dry_run:
+                if split:
+                    self.stdout.write("  Розділене відправлення: окремі ТТН перевіряються без зміни замовлення.")
+                    return
                 tracking_info = service.get_tracking_info(order.tracking_number)
                 if tracking_info:
                     status = tracking_info.get('Status', '')
@@ -124,8 +129,10 @@ class Command(BaseCommand):
     def _update_all_orders(self, service, dry_run, *, heartbeat_state=None):
         """Обновляет статусы всех заказов"""
         orders_with_ttn = service.get_orders_with_tracking_queryset()
+        from management.services.ig_split_tracking import pending_split_orders
+        split_count = pending_split_orders().count()
 
-        total_orders = orders_with_ttn.count()
+        total_orders = orders_with_ttn.count() + split_count
 
         if total_orders == 0:
             if heartbeat_state is not None:
@@ -140,6 +147,8 @@ class Command(BaseCommand):
         if dry_run:
             self.stdout.write("DRY RUN - показываем что будет обновлено:")
             logger.info("Running in DRY RUN mode")
+            if split_count:
+                self.stdout.write(f"  Розділених замовлень для перевірки: {split_count}")
 
             for order in orders_with_ttn:
                 tracking_info = service.get_tracking_info(order.tracking_number)

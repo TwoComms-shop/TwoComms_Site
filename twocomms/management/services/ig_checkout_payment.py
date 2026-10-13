@@ -1718,6 +1718,8 @@ def bind_verified_payment(attempt_id, order):
         generation.save(update_fields=[
             "state", "paid_at", "terminal_at", "active_slot", "updated_at",
         ])
+    from management.services.ig_split_order_binding import try_bind_paid_shipping_order
+    transaction.on_commit(lambda order_id=order.pk: try_bind_paid_shipping_order(order_id))
     from management.services.ig_lifecycle import (
         dispatch_lifecycle_event,
         ensure_lifecycle_event,

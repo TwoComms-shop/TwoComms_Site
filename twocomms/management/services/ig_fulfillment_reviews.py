@@ -1,6 +1,6 @@
 """Source-bound manager feasibility review; estimates confer no commerce effects."""
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
@@ -50,7 +50,9 @@ def _columns(row):
         if field.name in {"envelope", "envelope_hmac", "created_at"}:
             continue
         value = getattr(row, field.attname)
-        columns[field.attname] = str(value) if isinstance(value, uuid.UUID) else value
+        columns[field.attname] = (value.isoformat(timespec="microseconds") if isinstance(value, datetime)
+            else format(field.to_python(value), f".{field.decimal_places}f") if value is not None and hasattr(field, "decimal_places")
+            else str(value) if isinstance(value, (uuid.UUID, Decimal)) else value)
     return columns
 
 
@@ -302,7 +304,7 @@ def prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
     return {**result, "ready": bool(result.get("request_id"))}
 
 
-def _batch_cart_sources_reason(request, settings_obj, cart, *, now):
+def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_checked=False):
     """Two bounded actual-row reads, including every inherited revision source."""
     from django.db.models import Q
     from management.models import IgTurnRevisionSource, InstagramBotMessage
@@ -372,6 +374,10 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now):
         return "source_continuation_bound"
     captured_context = _context_requirements(data.get("customer_requirements") or [])
     for row in later:
+        from management.services.ig_split_shipping import is_authenticated_choice_source
+        if is_authenticated_choice_source(request, row, settings_obj=settings_obj, now=now,
+                _permission_checked=_permission_checked):
+            continue
         hint = extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now)
         updated_context = _context_requirements([hint])
         if (hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") != "none"
@@ -428,12 +434,12 @@ def _current_reason(request, settings_obj, *, now, current_source_cart=None, _se
             return "subscription_changed"
         return ""
     if current_source_cart is not None:
-        reason = _batch_cart_sources_reason(request, settings_obj, current_source_cart, now=now)
+        reason = _batch_cart_sources_reason(request, settings_obj, current_source_cart, now=now, _permission_checked=True)
         if reason:
             return reason
         return "" if _cart_identity(current_source_cart) == data["cart_identity"] else "selection_changed"
     cart = capture_current_selection_lines(client.pk, now=now)
-    reason = _batch_cart_sources_reason(request, settings_obj, cart, now=now)
+    reason = _batch_cart_sources_reason(request, settings_obj, cart, now=now, _permission_checked=True)
     if reason:
         return reason
     return "" if _cart_identity(cart) == data["cart_identity"] else "selection_changed"
@@ -680,21 +686,27 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
             base.update(status="reviewed", decision={**deepcopy(decision.envelope), "id": str(decision.pk),
                 "version": decision.version, "created_at": decision.created_at.isoformat()})
     from django.db.models import Subquery
+    from management.models import InstagramBotSettings
     latest = Decision.objects.filter(request_id=request.pk, created_at__lte=now).order_by("-version")
-    final_request = Request.objects.filter(pk=request.pk).annotate(review_decision_id=Subquery(latest.values("pk")[:1]),
-        review_decision_version=Subquery(latest.values("version")[:1])).first()
+    final_settings_query = InstagramBotSettings.objects.filter(pk=settings_obj.pk)
+    # One fresh statement observes the signed request, its latest decision,
+    # owner and settings together. Preserve both read fences while avoiding
+    # separate round trips that exhaust the bounded capture for staff roles.
+    final_request = Request.objects.filter(pk=request.pk).select_related("client").annotate(
+        review_decision_id=Subquery(latest.values("pk")[:1]),
+        review_decision_version=Subquery(latest.values("version")[:1]),
+        **{f"review_settings_{key}": Subquery(final_settings_query.values(key)[:1])
+            for key in permission_fields}).first()
     latest_again = (final_request.review_decision_id, final_request.review_decision_version) if final_request and final_request.review_decision_id else None
     if not final_request or not _verified(final_request, "request") or final_request.envelope_hmac != request.envelope_hmac:
         return {**base, "status": "stale", "decision": None, "reason": "review_read_conflict"}
     if latest_again != ((decision.pk, decision.version) if decision else None):
         return {**base, "status": "pending", "decision": None, "reason": "review_read_conflict"}
-    from management.models import InstagramBotSettings
-    final_settings = InstagramBotSettings.objects.filter(pk=settings_obj.pk).values(*permission_fields).first()
+    final_settings = {key: getattr(final_request, f"review_settings_{key}") for key in permission_fields}
     if final_settings != initial_settings:
         return {**base, "status": "stale", "decision": None, "reason": "permission_changed"}
-    from management.models import IgClient
     owner_fields = ("igsid", "reply_permission_epoch", "privacy_erasure_started_at", "current_commercial_episode_id")
-    if IgClient.objects.filter(pk=request.client_id).values(*owner_fields).first() != {
+    if {key: getattr(final_request.client, key) for key in owner_fields} != {
             key: getattr(request.client, key) for key in owner_fields}:
         return {"version": 1, "captured_at": now.isoformat(), "status": "stale", "current_request": None,
             "request_digest": "", "decision": None, "reason": "owner_scope_changed"}

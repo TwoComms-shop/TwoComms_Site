@@ -3315,6 +3315,7 @@ class IgCheckoutInventoryReservation(models.Model):
         db_constraint=False,
     )
     quantity = models.PositiveIntegerField()
+    fulfilled_quantity = models.PositiveIntegerField(default=0)
     reservation_fingerprint = models.CharField(max_length=64, unique=True)
     state = models.CharField(
         max_length=24,
@@ -3344,6 +3345,10 @@ class IgCheckoutInventoryReservation(models.Model):
             models.CheckConstraint(
                 condition=models.Q(quantity__gt=0),
                 name="ig_res_qty_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(fulfilled_quantity__lte=models.F("quantity")),
+                name="ig_res_fulfilled_lte_qty",
             ),
             models.CheckConstraint(
                 condition=(
@@ -4189,6 +4194,7 @@ class IgOrderShipment(models.Model):
 
     class Purpose(models.TextChoices):
         INITIAL = "initial", _("Перша відправка")
+        SPLIT_INITIAL = "split_initial", _("Часткова перша відправка")
         EXCHANGE_REPLACEMENT = "exchange_replacement", _("Заміна відправлена")
         RETURN_INBOUND = "return_inbound", _("Повернення від клієнта")
         CORRECTION = "correction", _("Переоформлена ТТН")

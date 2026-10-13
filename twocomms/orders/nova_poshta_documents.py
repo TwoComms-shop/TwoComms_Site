@@ -753,6 +753,11 @@ class NovaPoshtaDocumentService:
         }
 
     def create_waybill(self, order, payload: dict[str, Any]) -> dict[str, Any]:
+        from management.services.ig_split_execution import assert_legacy_waybill_allowed, SplitExecutionError
+        try:
+            assert_legacy_waybill_allowed(order)
+        except SplitExecutionError as exc:
+            raise NovaPoshtaDocumentError(exc.reason) from exc
         self._validate_order_delivery(order)
         validate_shipment_contract_token(order, payload.get("shipment_contract_token", ""))
         snapshot = build_order_payment_snapshot(order)

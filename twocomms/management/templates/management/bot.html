@@ -11,6 +11,7 @@
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_memory_card.css' %}?v=memory-presentation-v1">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=b6619c0f7a98">{% endif %}
+{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'css/management-ig-split-shipping.css' %}?v=96d442011f6f">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1887,6 +1888,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=d4d7d222914d"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'js/management-ig-split-shipping.js' %}?v=d29a64b34db6"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=gemini-public-evidence-v2"></script>{% endif %}
@@ -2486,6 +2488,22 @@ body.bot-drawer-open{overflow:hidden;}
     let commerceScopeController=null,commerceScopeRoot=null,commerceScopeClientId=null,commerceScopeOrderId=null,commerceScopeEnvelope=null,commerceScopeRequest=0,commerceScopeAbort=null;
     let decisionTraceController=null,decisionTraceClientId=null,decisionTraceDisclosure=null;
     let fulfillmentReviewController=null,fulfillmentReviewRoot=null;
+    let splitShippingController=null,splitShippingRoot=null,splitShippingClientId=null;
+    function renderSplitShipping(id){
+      {% if bot_can_view_pii %}
+      if(!window.IgSplitShipping)return;
+      if(splitShippingClientId!==Number(id)){
+        if(splitShippingController&&!splitShippingController.destroy())return;
+        splitShippingRoot=node('section','bot-context-block');
+        splitShippingController=new window.IgSplitShipping.Controller(splitShippingRoot,{
+          apiUrl:'{% url "management_bot_split_shipping_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/'),
+          csrfToken:csrf,canOperate:{% if bot_can_operate %}true{% else %}false{% endif %}
+        });
+        splitShippingClientId=Number(id);
+      }
+      contextEl.appendChild(splitShippingRoot);void splitShippingController.load();
+      {% endif %}
+    }
     function renderFulfillmentReview(id){
       {% if bot_can_view_pii %}
       if(!window.IgFulfillmentReview)return;
@@ -3259,6 +3277,7 @@ body.bot-drawer-open{overflow:hidden;}
       const next=nextAction(d);const nextBlock=node('div','bot-context-next');nextBlock.style.marginTop='9px';nextBlock.append(node('span','','Наступна дія'),node('b','',next[0]),node('span','',next[1]));status.appendChild(nextBlock);const active=d.review&&d.review.active;if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-client-order-action is-pending');review.type='button';review.append(node('span','',active.approval.state==='needs_order_resolution'?"Потрібно прив'язати замовлення":'Потрібно підтвердити оплату'),node('span','',active.approval.state==='needs_order_resolution'?'Оберіть існуюче або створіть нове':'Звірте чек, товари та суму'));review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));status.appendChild(review);}
       renderCapturedState(contextEl,id);
       renderFulfillmentReview(id);
+      renderSplitShipping(id);
       renderSizeCorrectionEditor(id);
       renderActualRequests(contextEl,id);
       renderDecisionTrace(id);
@@ -3399,6 +3418,7 @@ body.bot-drawer-open{overflow:hidden;}
     OrderAssignmentDrawer.setRenderer(renderAssignmentDrawer);
     async function detail(id){
       if(fulfillmentReviewController&&!fulfillmentReviewController.canLeave(id)){activeId=Number(fulfillmentReviewController.clientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));setGlobalFeedback('Завершіть або відкиньте перевірку виконання перед переходом до іншого клієнта.','error');return false;}
+      if(splitShippingController&&splitShippingClientId!==Number(id)&&!splitShippingController.canLeave()){activeId=splitShippingClientId;listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));setGlobalFeedback('Збережіть або відкиньте умови відправлення перед переходом до іншого клієнта.','error');return false;}
       if(sizeCorrectionController&&!sizeCorrectionController.canLeave(id)){activeId=Number(sizeCorrectionClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));sizeCorrectionDisclosure.open=true;setGlobalFeedback('Завершіть або відкиньте уточнення розміру перед переходом до іншого клієнта.','error');return false;}
       if(!canLeaveHumanDocuments(id)){activeId=Number(humanDocumentsClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));return false;}
       const requestedDetailId=Number(id);const requestGeneration=++detailRequestGeneration;if(detailAbortController)detailAbortController.abort();detailAbortController=new AbortController();const controller=detailAbortController;const preserveLastGood=renderedDetailId===requestedDetailId;
