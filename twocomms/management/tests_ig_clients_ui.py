@@ -301,9 +301,9 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
 
     def test_client_context_is_a_third_desktop_column_and_a_small_screen_drawer(self):
         for contract in (
-            "grid-template-columns:minmax(260px,320px) minmax(0,1fr) minmax(300px,380px)",
+            "grid-template-columns:minmax(250px,290px) minmax(0,1fr) minmax(290px,340px)",
             'class="bot-client-context-shell"',
-            "window.matchMedia('(min-width:1201px)')",
+            "window.matchMedia('(min-width:1381px)')",
             "desktopContext.matches",
             "contextShell.scrollIntoView({block:'nearest'})",
         ):
@@ -334,24 +334,23 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
         for contract in (
             ".bot-clients-workspace{display:grid;",
             "align-items:stretch;",
-            "height:clamp(620px,calc(100dvh - 180px),760px);",
+            "height:clamp(560px,calc(100dvh - 270px),1060px);",
             "min-height:0;transition:grid-template-columns .2s ease;",
             ".bot-clients-sidebar,.bot-client-conversation,.bot-client-context-shell{height:100%;min-height:0;align-self:stretch;}",
             ".bot-clients-sidebar{padding:12px;position:relative;top:auto;display:flex;flex-direction:column;overflow:hidden;}",
             ".bot-clients-list{max-height:none;min-height:0;flex:1;",
-            ".bot-client-conversation{display:flex;flex-direction:column;overflow:hidden;padding:16px;}",
-            ".bot-conversation-messages{display:flex;flex-direction:column;gap:6px;margin-top:14px;max-height:none;min-height:0;flex:1 1 auto;overflow-y:auto;",
+            ".bot-client-conversation{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;padding:16px;",
+            ".bot-conversation-messages{display:flex;flex-direction:column;gap:10px;margin-top:8px;max-height:none;min-height:240px;flex:1 0 240px;overflow-y:auto;",
             ".bot-client-context-shell{min-width:0;position:relative;top:auto;}",
             ".bot-client-context-shell .bot-drawer-body{min-height:0;overflow-y:auto;",
             ".bot-client-pane-empty{display:grid;place-items:center;min-height:0;flex:1 1 auto;",
         ):
             self.assertIn(contract, self.template)
 
-    def test_client_workspace_returns_to_natural_flow_on_mobile_and_reduces_reflow_motion(self):
+    def test_mobile_list_returns_to_natural_flow_and_chat_keeps_its_scroll_area(self):
         for contract in (
             ".bot-clients-workspace{display:block;height:auto;min-height:0;transition:none;}",
             ".bot-clients-sidebar,.bot-client-conversation{display:none;position:static;height:auto;max-height:none;overflow:visible;min-height:0;}",
-            ".bot-conversation-messages{max-height:none;min-height:0;overflow:visible;flex:0 1 auto;}",
             ".bot-clients-workspace,.bot-tab-ind,.bot-client-row",
         ):
             self.assertIn(contract, self.template)
@@ -680,7 +679,7 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
         for contract in (
             "function managerTruthLabelForClient(payment,client)",
             "Архівну покупку підтверджено",
-            "contextFact(grid,'Перевірка менеджера',managerTruthLabelForClient(d.payment||{},c))",
+            "contextFact(grid,'Перевірка оплати менеджером',managerTruthLabelForClient(d.payment||{},c))",
         ):
             self.assertIn(contract, self.template)
 
@@ -1099,7 +1098,7 @@ class ClientWorkspaceTemplateContractTests(SimpleTestCase):
     def test_payment_truth_and_verification_scope_are_not_visually_collapsed(self):
         for visible_copy in (
             "Оплата через Monobank",
-            "Перевірка менеджера",
+            "Перевірка оплати менеджером",
             "Що підтверджено",
             "Повна оплата",
             "Передоплата",
