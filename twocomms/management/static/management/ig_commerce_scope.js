@@ -34,7 +34,17 @@
     const revenue = el('div', 'ig-cs-revenue');
     panel.append(header, revenue, label, summary, positions, status); root.replaceChildren(panel);
     let clientId = null, envelope = null, destroyed = false;
+    function originalDate(field, withClock) {
+      if (typeof field.observed_at !== 'string' || !field.observed_at) return '';
+      const value = new Date(field.observed_at); if (!Number.isFinite(value.getTime())) return '';
+      return new Intl.DateTimeFormat('uk-UA', Object.assign({timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric'},
+        withClock ? {hour: '2-digit', minute: '2-digit'} : {})).format(value) + (withClock ? ' (Київ)' : '');
+    }
     function sourceLabel(field) {
+      if (field.authority === 'assisted_continuation') {
+        const observed = originalDate(field, true);
+        return 'З попереднього вибору · підтверджено продовженням' + (observed ? ' · початкове джерело: ' + observed : '');
+      }
       const refs = Array.isArray(field.source_refs) ? field.source_refs : [];
       const message = refs.find(row => row && row.kind === 'message' && id(row.id));
       const audit = refs.find(row => row && row.kind === 'commerce_transition' && id(row.actor_id));
@@ -58,14 +68,15 @@
       const fields = line.fields || {}, details = el('dl', 'ig-cs-fields');
       for (const [key, name] of [['size', 'Розмір'], ['color', 'Колір'], ['fit_option_code', 'Посадка'], ['quantity', 'Кількість']]) {
         const field = fields[key];
-        if (!field || field.status !== 'confirmed' || !['customer_source', 'audited_correction', 'validated_selection_action'].includes(field.authority)) continue;
+        if (!field || field.status !== 'confirmed' || !['customer_source', 'audited_correction', 'validated_selection_action', 'assisted_continuation'].includes(field.authority)) continue;
         const group = el('div', 'ig-cs-field'), term = el('dt', '', name);
         const refs = Array.isArray(field.source_refs) ? field.source_refs : [];
         const message = refs.find(row => row && row.kind === 'message' && id(row.id));
         const audit = refs.find(row => row && row.kind === 'commerce_transition' && id(row.actor_id));
-        if (message || audit) {
+        if (message || audit || field.authority === 'assisted_continuation') {
           const origin = field.copied_from && field.copied_from.proof;
-          const evidence = el('span', 'ig-cs-field-source', origin && id(origin.source_message_id) ? `Повторено · №${origin.source_message_id}` : field.authority === 'audited_correction' ?
+          const observed = originalDate(field, false);
+          const evidence = el('span', 'ig-cs-field-source', field.authority === 'assisted_continuation' ? 'Продовження' + (observed ? ' · ' + observed : '') : origin && id(origin.source_message_id) ? `Повторено · №${origin.source_message_id}` : field.authority === 'audited_correction' ?
             `Менеджер${audit ? ' №' + audit.actor_id : ''}${message ? ' / №' + message.id : ''}` : message ? '№' + message.id : 'Підтверджено');
           evidence.setAttribute('title', sourceLabel(field)); term.append(evidence);
         }
@@ -80,6 +91,9 @@
       }
       node.append(details);
       const chosen = fields.product_id;
+      if ((!chosen || chosen.status !== 'confirmed' || chosen.authority !== 'assisted_continuation') && Object.values(fields).some(field => field && field.status === 'confirmed' && field.authority === 'assisted_continuation')) {
+        node.append(el('p', 'ig-cs-source', 'З попереднього вибору · підтверджено продовженням'));
+      }
       if (chosen && chosen.status === 'confirmed') node.append(el('p', 'ig-cs-source', sourceLabel(chosen)));
       const history = line.history;
       if (history && history.status === 'captured' && Array.isArray(history.items) && history.items.length) {

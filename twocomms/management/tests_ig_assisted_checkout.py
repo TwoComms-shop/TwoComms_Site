@@ -378,11 +378,18 @@ class NativeAssistedOfferStockTests(AssistedStockSyncFixture, TransactionTestCas
         self.assertTrue(created)
         self.assertEqual(request.intention_id, old_request.intention_id)
         self.assertEqual(request.version, old_request.version + 1)
+        self.assertEqual(request.created_at, old_request.created_at)
         self.assertEqual(request.revision_id, revision.pk)
         self.assertEqual(request.envelope["snapshot"]["full_capture"], capture)
         pending = self._offer(revision)
         self.assertFalse(pending["ready"])
         self.assertEqual(pending["reason"], "approved_decision_missing")
+        self.assertFalse(pending["can_prepare_checkout"])
+        self.assertEqual(pending["request"].pk, request.pk)
+        self.assertNotIn("verified_decision", pending)
+        self.assertFalse(Execution.objects.exists())
+        self.assertFalse(IgCheckoutProposal.objects.exists())
+        self.assertFalse(PaymentAttempt.objects.exists())
         items = commerce._editable_items(request.envelope["snapshot"])
         self.assertEqual(len(items), 1)
         self.assertEqual(Decimal(items[0]["unit_price"]), old_decision.approved_total + Decimal("100.00"))
@@ -415,6 +422,54 @@ class NativeAssistedOfferStockTests(AssistedStockSyncFixture, TransactionTestCas
         self.assertFalse(IgCheckoutProposal.objects.exists())
         self.assertFalse(IgCheckoutAccessToken.objects.exists())
         self.assertFalse(IgCheckoutInventoryReservation.objects.exists())
+
+        # A same-clock same-source refresh must choose the native version
+        # head, even when its UUID sorts before an old approved request.
+        with patch("django.utils.timezone.now", return_value=self.now):
+            current_capture = capture_current_selection_lines(self.client_row.pk, now=self.now)
+            head, created = commerce.create_assisted_request(revision.pk,
+                settings_id=self.settings.pk, operation_id=uuid.uuid4(),
+                expected_revision_digest=revision.snapshot_digest,
+                expected_full_capture_digest=current_capture["capture_digest"],
+                intention_id=request.intention_id, expected_request_version=request.version,
+                expected_request_digest=request.envelope_hmac, now=self.now)
+        self.assertTrue(created)
+        self.assertEqual((head.created_at, head.source_id), (request.created_at, request.source_id))
+        self.assertEqual(head.version, request.version + 1)
+        same_source_pending = self._offer(revision)
+        self.assertEqual(same_source_pending["reason"], "approved_decision_missing")
+        self.assertEqual(same_source_pending["request"].pk, head.pk)
+
+        # A genuinely newer own source creates a distinct intention. Its
+        # version one wins the frozen-clock tie against the older version three.
+        newer_revision = self._buy()
+        with patch("django.utils.timezone.now", return_value=self.now):
+            newer_capture = capture_current_selection_lines(self.client_row.pk, now=self.now)
+            newer, created = commerce.create_assisted_request(newer_revision.pk,
+                settings_id=self.settings.pk, operation_id=uuid.uuid4(),
+                expected_revision_digest=newer_revision.snapshot_digest,
+                expected_full_capture_digest=newer_capture["capture_digest"], now=self.now)
+        self.assertTrue(created)
+        self.assertNotEqual(newer.intention_id, head.intention_id)
+        self.assertEqual(newer.created_at, head.created_at)
+        self.assertGreater(newer.source_id, head.source_id)
+        self.assertEqual(newer.version, 1)
+        newer_pending = self._offer(newer_revision)
+        self.assertEqual(newer_pending["reason"], "approved_decision_missing")
+        self.assertEqual(newer_pending["request"].pk, newer.pk)
+        self.assertFalse(newer_pending["can_prepare_checkout"])
+        self.assertNotIn("verified_decision", newer_pending)
+        with patch("django.utils.timezone.now", return_value=self.now), \
+                patch("management.services.instagram_bot._provider_http") as provider:
+            manager_view = commerce.operator_context(self.client_row.pk, actor=self.manager, now=self.now)
+        provider.assert_not_called()
+        self.assertEqual(manager_view["request"]["id"], str(newer.pk))
+        self.assertEqual(manager_view["request"]["version"], 1)
+        self.assertIsNone(manager_view["approved_head"])
+        self.assertFalse(manager_view["can_prepare"])
+        self.assertFalse(Execution.objects.exists())
+        self.assertFalse(IgCheckoutProposal.objects.exists())
+        self.assertFalse(PaymentAttempt.objects.exists())
 
     def test_foreign_real_hold_prevents_raw_positive_stock_from_authorizing_our_offer(self):
         foreign_proposal, foreign_hold = self.foreign_hold()

@@ -29,7 +29,8 @@ def protected_stock_quantity(
 ) -> int:
     """Return warehouse units protected by live or paid IG commitments.
 
-    ACTIVE reservations expire with their proposal. A PAID_COMMITTED row is a
+    ACTIVE reservations with a possible bank effect stay protected until a
+    trusted terminal result; ordinary holds expire with their proposal. A PAID_COMMITTED row is a
     durable obligation until warehouse fulfillment, regardless of its
     original checkout TTL. A write-off may exclude only paid commitments that
     belong to the exact order being fulfilled.
@@ -40,13 +41,9 @@ def protected_stock_quantity(
     reservations = IgCheckoutInventoryReservation.objects.filter(
         allocation_source="warehouse",
         stock_item_id=stock_item_id,
-    ).filter(
-        Q(
-            state=IgCheckoutInventoryReservation.State.ACTIVE,
-            expires_at__gt=current_time,
-        )
-        | Q(state=IgCheckoutInventoryReservation.State.PAID_COMMITTED)
     )
+    from management.services.ig_inventory import protected_inventory_reservation_q
+    reservations = reservations.filter(protected_inventory_reservation_q(current_time))
     if exclude_proposal_id is not None:
         reservations = reservations.exclude(proposal_id=exclude_proposal_id)
     if exclude_generation_id is not None:

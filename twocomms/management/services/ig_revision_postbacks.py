@@ -58,6 +58,8 @@ def _candidate(snapshot, client_id):
     raw = str(snapshot.get("quick_reply_payload") or snapshot.get("text") or "").strip()
     if not raw or len(raw) > 1000:
         return None
+    if str(snapshot.get("quick_reply_payload") or "").startswith("AC1:"):
+        return {"action": "assisted_card_choice", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(SPLIT_PREFIX):
         return {"action": "split_shipping_choice", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(RESTOCK_SUBSCRIPTION_PREFIX):
@@ -276,11 +278,11 @@ def apply_revision_postback(
             )
             if not readiness.ready:
                 raise _Rollback(readiness.reasons[0])
-            if candidate["action"] == "split_shipping_choice" and requires_model:
+            if candidate["action"] in {"split_shipping_choice", "assisted_card_choice"} and requires_model:
                 # No part of a mixed revision may accept a shipping contract.
                 # The complete source bundle continues through the model path.
                 return RevisionPostbackResult(handled=True, ready=True,
-                    reason="split_choice_mixed_source", requires_model=True)
+                    reason="native_card_mixed_source", requires_model=True)
             binding = {
                 "version": VERSION, "origin": "postback", "snapshot_digest": revision.snapshot_digest,
                 "source_message_id": source_message_id, "source_digest": source.source_digest,
@@ -296,6 +298,22 @@ def apply_revision_postback(
                     or global_receipt.outcome_digest != _digest(global_receipt.outcome)):
                     raise _Rollback("postback_source_receipt_mismatch")
                 outcome = dict(global_receipt.outcome)
+                if candidate["action"] == "assisted_card_choice":
+                    from management.services.ig_assisted_partial_delivery import validate_card_choice_source, AssistedPartialSourceError
+                    try:
+                        native = validate_card_choice_source(source.message, revision, settings_row, now=now,
+                            expected_task_id=outcome.get("card_task_id"), require_current=False)
+                    except AssistedPartialSourceError as exc:
+                        return RevisionPostbackResult(handled=True, ready=True, reason=exc.reason, requires_model=True)
+                    if (native.source_proof != outcome.get("card_source_proof")
+                        or native.receipt != outcome.get("card_native_receipt") or native.action != outcome.get("card_action")):
+                        raise _Rollback("assisted_postback_receipt_changed")
+                    requires_model = native.action == "partial"
+                    client.refresh_from_db()
+                    authority = build_revision_authority_bindings(client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=settings_row)
+                    if not authority.ready:
+                        raise _Rollback("postback_authority_unavailable")
+                    binding["authority"] = _authority_projection(authority)
                 if candidate["action"] == "split_shipping_choice":
                     from management.models import IgSplitShippingChoice
                     from management.services.ig_split_shipping import validated_choice
@@ -313,7 +331,25 @@ def apply_revision_postback(
             else:
                 language = str(client.language or "uk").casefold()
                 language = language if language in {"uk", "ru", "en"} else "uk"
-                if candidate["action"] == "split_shipping_choice":
+                if candidate["action"] == "assisted_card_choice":
+                    from management.services.ig_assisted_partial import consume_card_choice
+                    from management.services.ig_assisted_partial_delivery import validate_card_choice_source
+                    consent = consume_card_choice(source.message, revision, settings_row, now=now)
+                    if not consent.get("handled") or not consent.get("ready"):
+                        return RevisionPostbackResult(handled=True, ready=True,
+                            reason=consent.get("reason") or "assisted_card_choice_invalid", requires_model=True)
+                    native = validate_card_choice_source(source.message, revision, settings_row, now=now, require_current=False)
+                    requires_model = native.action == "partial"
+                    effect = {"card_task_id": native.task_id, "card_action": native.action,
+                        "card_source_proof": native.source_proof, "card_native_receipt": native.receipt,
+                        "quick_replies": [], "requires_model": requires_model}
+                    reply_text = consent.get("reply_text") or ""
+                    client.refresh_from_db()
+                    authority = build_revision_authority_bindings(client, claims=(CLAIM_PUBLIC_POLICY_INPUTS,), settings_obj=settings_row)
+                    if not authority.ready:
+                        raise _Rollback("postback_authority_unavailable")
+                    binding["authority"] = _authority_projection(authority)
+                elif candidate["action"] == "split_shipping_choice":
                     from management.services.ig_split_shipping import apply_choice
 
                     consent = apply_choice(source.message, revision, settings_row, now=now)

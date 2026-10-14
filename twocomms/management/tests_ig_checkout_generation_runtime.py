@@ -2061,11 +2061,9 @@ class CheckoutGenerationRuntimeTests(TestCase):
             ).exists()
         )
 
-        due = timezone.now() - timedelta(seconds=1)
-        IgCheckoutInvoiceGeneration.objects.filter(pk=generation.pk).update(
-            ambiguity_review_due_at=due
-        )
-        outcome = resolve_due_generation_ambiguities(now=timezone.now())
+        due = generation.ambiguity_review_due_at + timedelta(seconds=1)
+        with patch("django.utils.timezone.now", return_value=due):
+            outcome = resolve_due_generation_ambiguities(now=due)
         self.assertEqual(outcome["resolved"], 1)
         generation.refresh_from_db()
         proposal.refresh_from_db()
@@ -2076,10 +2074,33 @@ class CheckoutGenerationRuntimeTests(TestCase):
         self.assertEqual(attempt.status, PaymentAttempt.Status.FAILED)
         reservation.refresh_from_db()
         promo.refresh_from_db()
-        self.assertEqual(reservation.state, reservation.State.RELEASED)
+        self.assertEqual(reservation.state, reservation.State.ACTIVE)
+        self.assertEqual(outcome["released_inventory"], 0)
+        review_event = generation.events.get(kind="provider_ambiguous",
+            event_key=f"checkout-generation:{generation.pk}:provider_ambiguous:bounded-review:{attempt.pk}")
+        self.assertFalse(review_event.payload["resources_released"])
+        self.assertTrue(review_event.payload["resources_held_for_review"])
+        self.assertEqual(review_event.payload["released_inventory"], 0)
+        from management.services.ig_inventory import (
+            _catalog_variant_protected_quantity, release_expired_proposal_inventory,
+        )
+        self.assertLess(reservation.expires_at, due)
+        self.assertEqual(_catalog_variant_protected_quantity(color_variant_id=variant.pk, at=due), 1)
+        with patch("django.utils.timezone.now", return_value=due):
+            self.assertEqual(release_expired_proposal_inventory(), 0)
+            other = IgClient.objects.create(igsid="ambiguity-review-protected-second-buyer")
+            from management.services.ig_checkout import CheckoutConfigurationError
+            with override_settings(IG_ASSISTED_CHECKOUT_V2="off", IG_ASSISTED_CHECKOUT_V2_CANARY_PERCENT=0), \
+                    self.assertRaises(CheckoutConfigurationError) as denied:
+                create_or_update_proposal(client=other, pay_type="online_full",
+                    item_specs=[{**self._item(), "color_variant_id": variant.pk, "qty": 2}])
+            self.assertEqual(denied.exception.code, "insufficient_stock")
+        reservation.refresh_from_db()
+        self.assertEqual(reservation.state, reservation.State.ACTIVE)
         self.assertEqual(promo.current_uses, 0)
 
-        with patch("storefront.views.monobank._monobank_api_request") as retry:
+        with patch("django.utils.timezone.now", return_value=due), \
+                patch("storefront.views.monobank._monobank_api_request") as retry:
             blocked = self.client.post(
                 url,
                 self._delivery_payload(promo_code=promo.code),

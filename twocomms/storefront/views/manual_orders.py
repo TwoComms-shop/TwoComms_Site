@@ -573,7 +573,9 @@ def _review_shipping_policy(review):
 
 def _shipping_initial(order):
     from orders.services.delivery_payment import delivery_payment_snapshot
+    from management.services.ig_assisted_partial_shipping import assisted_shipping_snapshot
     snapshot = delivery_payment_snapshot(order, item_rows=list(order.items.all()))
+    snapshot = assisted_shipping_snapshot(order, snapshot)
     return {
         'delivery_payment_mode': snapshot['mode'],
         'delivery_charge_amount': f"{snapshot['delivery_amount']:.2f}",
@@ -617,6 +619,8 @@ def _manual_delivery_contract(data, *, merchandise_total, actor, preset_key, ite
     current = None
     if existing is not None:
         current = existing_snapshot or delivery_payment_snapshot(existing, item_rows=list(existing.items.all()))
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_snapshot
+        current = assisted_shipping_snapshot(existing, current)
         if not canonical_explicit and current['valid'] is True and data.get('delivery_payer_type') == current['payer_type']:
             mode, amount = current['mode'], current['delivery_amount']
         if current['source_locked']:
@@ -677,7 +681,9 @@ def _assert_delivery_contract_compatible(order, contract):
     if contract is None:
         return
     from orders.services.delivery_payment import delivery_payment_snapshot
+    from management.services.ig_assisted_partial_shipping import assisted_shipping_snapshot
     current = delivery_payment_snapshot(order, item_rows=list(order.items.all()))
+    current = assisted_shipping_snapshot(order, current)
     if current['valid'] is not True or any(
         str(current[key]) != str(contract[key]) if key in {'mode', 'payer_type'}
         else Decimal(str(current[key])) != Decimal(str(contract[key]))
@@ -1841,6 +1847,12 @@ def manual_order_edit(request, order_id):
         # (кнопка «Редагувати» на картці). Глибокий лінк відкриває drawer.
         return redirect(f"{reverse('admin_panel')}?section=orders&edit_order={order.id}")
 
+    from management.services.ig_assisted_partial_shipping import assisted_manual_order_edit_lock
+    native_lock = assisted_manual_order_edit_lock(order)
+    if native_lock is not None:
+        return JsonResponse({'success': False, 'message': native_lock['message'],
+            'management_url': native_lock['management_url']}, status=409)
+
     # POST — оновлення замовлення
     data = _parse_request_payload(request)
     if data is None:
@@ -1880,7 +1892,9 @@ def manual_order_edit(request, order_id):
             locked = Order.objects.select_for_update().get(pk=order.pk)
             before_snapshot = snapshot_order(locked)
             from orders.services.delivery_payment import delivery_payment_snapshot
+            from management.services.ig_assisted_partial_shipping import assisted_shipping_snapshot
             shipping_before = delivery_payment_snapshot(locked, item_rows=list(locked.items.all()))
+            shipping_before = assisted_shipping_snapshot(locked, shipping_before)
             old_payment_payload = dict(locked.payment_payload or {})
             old_pay_type, old_payment_status = locked.pay_type, locked.payment_status
             locked.full_name = full_name[:200]
@@ -2028,9 +2042,11 @@ def manual_order_edit_data(request, order_id):
         Order.objects.prefetch_related('items__product', 'items__color_variant__color'),
         pk=order_id,
     )
+    from management.services.ig_assisted_partial_shipping import assisted_manual_order_edit_lock
     return JsonResponse({
         'success': True,
         'order': _build_order_initial(order),
+        'edit_lock': assisted_manual_order_edit_lock(order),
         'products': _build_products_payload(),
         'categories': _build_categories_payload(),
         'payment_presets': {key: preset['label'] for key, preset in PAYMENT_PRESETS.items()},

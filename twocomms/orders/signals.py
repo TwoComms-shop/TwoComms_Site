@@ -48,7 +48,13 @@ def track_order_changes(sender, instance, **kwargs):
             )
 
             # Отслеживаем изменение статуса заказа
-            if status_will_save and old_instance.status != instance.status:
+            from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+            shipping_ready = None
+            if (status_will_save and old_instance.status != instance.status
+                    and instance.status in {'ship', 'done'}):
+                shipping_ready = assisted_shipping_dispatch_ready(instance)
+            if (status_will_save and old_instance.status != instance.status
+                    and shipping_ready is not False):
                 _safe_queue_notification(
                     instance.id,
                     'status_update',
@@ -62,6 +68,7 @@ def track_order_changes(sender, instance, **kwargs):
                 tracking_will_save
                 and not old_instance.tracking_number
                 and instance.tracking_number
+                and (shipping_ready is True or assisted_shipping_dispatch_ready(instance))
             ):
                 _safe_queue_notification(
                     instance.id,

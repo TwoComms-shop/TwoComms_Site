@@ -18,6 +18,7 @@ import re
 import secrets
 
 from django.conf import settings as django_settings
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
@@ -387,7 +388,7 @@ class RevisionGenerationBoundary:
             client, revision, self.response_plan, reference=reference)
         if self.assisted_context is not None:
             revision._assisted_commerce_context = self.assisted_context
-            current_capture = self.assisted_context.verified.current_capture
+            current_capture = self.assisted_context.current_capture
             if current_capture.get("capture_digest") != self.response_plan.source_cart_capture.get("capture_digest"):
                 self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=current_capture)
         elif hasattr(revision, "_assisted_commerce_context"):
@@ -805,13 +806,19 @@ class RevisionGenerationBoundary:
         repaired.setdefault("contents", []).append({
             "role": "user", "parts": [{"text": (
                 "[SERVER FACTS FOR THE SAME SEALED CUSTOMER BUNDLE]\n"
-                + json.dumps(facts, ensure_ascii=False, default=list, separators=(",", ":"))
+                + json.dumps(facts, ensure_ascii=False, default=_repair_fact_json_default, separators=(",", ":"))
                 + "\n" + self.response_plan.prompt_guidance()
                 + "\n" + inquiry_prompt(self.product_inquiries)
             )}],
         })
         self.repaired = True
         return repaired
+
+
+def _repair_fact_json_default(value):
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=str)
+    return DjangoJSONEncoder().default(value)
 
 
 def _claim_preparation(revision_id, settings_row):

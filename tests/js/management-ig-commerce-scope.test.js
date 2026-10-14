@@ -209,3 +209,40 @@ test('actual order item known codes share the same display labels', () => {
   assert.match(f.field('ig-cs-order-item-detail').textContent, /Розмір S · Білий · Оверсайз/);
   assert.doesNotMatch(f.texts(), /white|oversize/);
 });
+
+test('verified continuation restores readonly inherited facts with original dates instead of pretending new customer assertions', () => {
+  const f = fixture(), data = dto(), line = data.current.lines[0];
+  line.editable = false; data.current.editable = false; data.current.editable_scope = null;
+  const continuation = value => ({value, status:'confirmed', authority:'assisted_continuation', validity:'valid',
+    observed_at:'2026-10-01T23:30:00Z', adopted_at:'2026-10-14T09:00:00Z',
+    origin:{root_request_id:'opaque-original-request', line_id:'opaque-original-line', proof:{observed_at:'2026-10-01T23:30:00Z'}},
+    adopted_by:{source:{message_id:77},receipt:{task_id:31,native_mid:'opaque-receipt'}},
+    source_refs:[{kind:'message',id:77,event_at:'2026-10-14T09:00:00Z',authority:'assisted_continuation'},
+      {kind:'assisted_original_line',request_id:'opaque-original-request',line_id:'opaque-original-line',event_at:'2026-10-01T23:30:00Z'}]});
+  line.fields = {size:continuation('XL'), color:continuation('olive'), fit_option_code:continuation('classic'), quantity:continuation(2)};
+  const before = JSON.stringify(data); f.controller.render(12, data);
+  const shown = f.root.all().filter(node=>node.className==='ig-cs-field').slice(0,4);
+  assert.deepEqual(shown.map(node=>node.children[1].textContent),['XL','olive','Класична','2']);
+  assert.equal(f.field('ig-cs-active').textContent,'Поточна позиція');
+  assert.match(f.texts(),/З попереднього вибору · підтверджено продовженням/);
+  const sources = shown.map(node=>node.children[0].children[0]);
+  assert.ok(sources.every(node=>node.textContent==='Продовження · 02.10.2026'));
+  assert.ok(sources.every(node=>/02\.10\.2026, 02:30 \(Київ\)/.test(node.attributes.title)));
+  assert.doesNotMatch(f.texts(),/14\.10\.2026|№77|opaque-|Поточна для уточнення/);
+  assert.equal(f.root.all().some(node=>['input','textarea','button'].includes(node.tagName)),false);
+  assert.equal(JSON.stringify(data),before); assert.equal(f.selected.length,0);
+});
+
+test('ambiguous or unknown continuation fields stay omitted and missing original time never becomes adoption time', () => {
+  const f = fixture(), data = dto(), line = data.current.lines[0];
+  line.fields = {size:{value:'Unconfirmed inherited size',status:'ambiguous',authority:'assisted_continuation'},
+    color:{value:'Confirmed inherited color',status:'confirmed',authority:'assisted_continuation',observed_at:null,adopted_at:'2026-10-14T09:00:00Z'},
+    quantity:{value:99,status:'confirmed',authority:'some_future_effect_authority'},
+    fit_option_code:{value:'Unknown inherited fit',status:'unknown',authority:'assisted_continuation'}};
+  f.controller.render(12,data);
+  assert.doesNotMatch(f.texts(),/Unconfirmed inherited size|Unknown inherited fit|14\.10\.2026/);
+  const row = f.root.all().find(node=>node.className==='ig-cs-field'&&node.children[1].textContent==='Confirmed inherited color');
+  assert.equal(row.children[0].children[0].textContent,'Продовження');
+  assert.equal(row.children[0].children[0].attributes.title,'З попереднього вибору · підтверджено продовженням');
+  assert.equal(f.root.all().some(node=>node.className==='ig-cs-field'&&node.children[1].textContent==='99'),false);
+});

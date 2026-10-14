@@ -547,6 +547,16 @@
     {% for o in orders %}
       <article class="admin-order-card oadm-card" data-order-id="{{ o.id }}" data-payment-status="{{ o.payment_status_canonical }}" data-status="{{ o.status }}">
         <div class="oadm-card__pad">
+          {% if o.assisted_group %}
+            <details class="oadm-related-orders">
+              <summary>Частини запиту від {{ o.assisted_group.original_requested_at|date:"d.m.Y H:i" }}</summary>
+              <div>{{ o.assisted_group.shipping_label }}</div>
+              {% if o.assisted_group.shipping_review %}<div>ТТН потребує звірки; відправку заблоковано.</div>{% endif %}
+              {% for related in o.assisted_group.orders %}
+                <div>{% if related.is_current %}<strong>{% endif %}#{{ related.order_number }}{% if related.is_current %}</strong>{% endif %} · {{ related.payment_status_label }} · {{ related.status_label }}{% if related.tracking_number %} · ТТН {{ related.tracking_number }}{% endif %}</div>
+              {% endfor %}
+            </details>
+          {% endif %}
 
           <!-- Head -->
           <div class="oadm-card__head">
@@ -1465,6 +1475,14 @@
         presets = d.payment_presets || {};
         saleSourcePresets = d.sale_source_presets || [];
         hydrate(d.order);
+        if (d.edit_lock) {
+          body.insertAdjacentHTML('afterbegin', '<p class="oedit-delivery-warning" role="status">' + esc(d.edit_lock.message) +
+            ' <a href="' + esc(d.edit_lock.management_url) + '">Керування Instagram-замовленням</a></p>');
+          body.querySelectorAll('input, select, textarea, button').forEach(function (field) { field.disabled = true; });
+          btnSave.disabled = true;
+          submitUrl = null;
+          return;
+        }
         submitUrl = subUrl;
         btnSave.disabled = false;
       })

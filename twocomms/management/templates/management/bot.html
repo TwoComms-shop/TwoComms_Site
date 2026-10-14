@@ -12,7 +12,7 @@
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=9853821fcf8b">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'css/management-ig-split-shipping.css' %}?v=c3949ee0d051">{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_assisted_commerce.css' %}?v=3a1c897d208a">{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_assisted_commerce.css' %}?v=79f864b3f503"><link rel="stylesheet" href="{% static 'management/css/ig_assisted_partial.css' %}?v=8e908d88ef84">{% endif %}
 <style>
 .bot-app{max-width:1360px;margin:0 auto;padding:20px 18px 64px;color:#e7ecf3;overflow-x:hidden;}
 .bot-app *{box-sizing:border-box;}
@@ -1915,13 +1915,13 @@ body.bot-drawer-open{overflow:hidden;}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-purchase-clarity-v16"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-purchase-clarity-v16"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=commerce-scope-v1"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=commerce-scope-v1"></script>{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=commerce-scope-v1"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=19d27b08a180"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=6783b00a696e"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'js/management-ig-split-shipping.js' %}?v=e749772c9099"></script>{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=1ea6d497f545"></script>{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=920aa9c3a0b6"></script><script src="{% static 'management/js/ig_assisted_partial.js' %}?v=369002f1ad35"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 <script src="{% static 'management/bot_chat_reading.js' %}?v=chat-reading-v1"></script>
@@ -2529,26 +2529,49 @@ body.bot-drawer-open{overflow:hidden;}
     let decisionTraceController=null,decisionTraceClientId=null,decisionTraceDisclosure=null;
     let fulfillmentReviewController=null,fulfillmentReviewRoot=null;
     let splitShippingController=null,splitShippingRoot=null,splitShippingClientId=null;
-    let assistedCommerceController=null,assistedCommerceRoot=null,assistedCommerceClientId=null;
+    let assistedCommerceController=null,assistedCommerceRoot=null,assistedCommerceClientId=null,assistedPartialController=null,assistedPartialRoot=null;
     function canLeaveAssistedCommerce(id){
-      if(!assistedCommerceController||assistedCommerceClientId===Number(id)||assistedCommerceController.canLeave())return true;
+      if(!assistedCommerceController||assistedCommerceClientId===Number(id)||(assistedCommerceController.canLeave()&&(!assistedPartialController||assistedPartialController.canLeave())))return true;
       activeId=assistedCommerceClientId;listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));
-      setGlobalFeedback(assistedCommerceController.unknown?'Перевірте результат попередньої операції погодження товарів перед переходом.':'Збережіть або відкиньте чернетку товарів перед переходом до іншого клієнта.','error');return false;
+      const unknown=assistedCommerceController.unknown||(assistedPartialController&&assistedPartialController.unknown);
+      setGlobalFeedback(unknown?'Перевірте результат попередньої операції перед переходом.':'Збережіть або відкиньте чернетку товарів і доставки перед переходом до іншого клієнта.','error');return false;
+    }
+    function syncAssistedPanelOrder(commerce){
+      if(!assistedCommerceRoot||!assistedPartialRoot||assistedCommerceRoot.parentNode!==contextEl||assistedPartialRoot.parentNode!==contextEl)return;
+      const primaryFirst=Boolean(window.IgAssistedPartial&&window.IgAssistedPartial.isRelevant((commerce||{}).partial_intention)&&!((commerce||{}).stock_sync||{}).requires_sync);
+      const first=primaryFirst?assistedPartialRoot:assistedCommerceRoot,second=primaryFirst?assistedCommerceRoot:assistedPartialRoot;
+      if(second.previousElementSibling!==first)contextEl.insertBefore(first,second);
     }
     function renderAssistedCommerce(id){
       {% if bot_can_operate and bot_can_view_pii %}
       if(!window.IgAssistedCommerce)return;
       let created=false;
       if(assistedCommerceClientId!==Number(id)){
+        if(assistedPartialController&&!assistedPartialController.destroy())return;
         if(assistedCommerceController&&!assistedCommerceController.destroy())return;
+        assistedPartialController=null;
         assistedCommerceRoot=node('section','bot-context-block');assistedCommerceRoot.setAttribute('data-ig-assisted-commerce','');assistedCommerceRoot.setAttribute('aria-label','Погодження індивідуальних товарів');
+        const apiUrl='{% url "management_assisted_commerce_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/');
+        const openProposal=(proposalId,state)=>{CheckoutProposals.select(proposalId,state);activate('orders',true);};
         assistedCommerceController=new window.IgAssistedCommerce.Controller(assistedCommerceRoot,{
-          apiUrl:'{% url "management_assisted_commerce_api" 0 %}'.replace('/clients/0/','/clients/'+String(id)+'/'),
-          csrfToken:csrf,canOperate:true,logoUrl:'{% static "img/logo.svg" %}',
-          onOpenProposal:(proposalId,state)=>{CheckoutProposals.select(proposalId,state);activate('orders',true);}
+          apiUrl,csrfToken:csrf,canOperate:true,logoUrl:'{% static "img/logo.svg" %}',onOpenProposal:openProposal,
+          isPartialRelevant:p=>Boolean(window.IgAssistedPartial&&window.IgAssistedPartial.isRelevant(p)),
+          canAct:()=>!assistedPartialController||Boolean(!assistedPartialController.busy&&!assistedPartialController.pending&&!assistedPartialController.dirty),
+          onCommerce:commerce=>{if(assistedPartialController)assistedPartialController.update(commerce);syncAssistedPanelOrder(commerce);},
+          onStateChange:()=>{if(assistedPartialController)assistedPartialController.syncActions();}
         });assistedCommerceClientId=Number(id);created=true;
+        if(window.IgAssistedPartial){
+          assistedPartialRoot=node('section','bot-context-block');assistedPartialRoot.setAttribute('data-ig-assisted-partial','');assistedPartialRoot.setAttribute('aria-label','Зараз і пізніше');
+          assistedPartialController=new window.IgAssistedPartial.Controller(assistedPartialRoot,{
+            apiUrl,csrfToken:csrf,canOperate:true,onOpenProposal:openProposal,
+            onStateChange:()=>{if(assistedCommerceController)assistedCommerceController.draw();},
+            canAct:()=>Boolean(assistedCommerceController&&!assistedCommerceController.busy&&!assistedCommerceController.pending&&!assistedCommerceController.dirty),
+            onRefresh:async pin=>{if(pin&&pin.requestId&&assistedPartialController&&assistedPartialController.unknown){const response=await fetch(apiUrl+'?request_id='+encodeURIComponent(pin.requestId),{credentials:'same-origin',cache:'no-store'});const data=await response.json();if(!response.ok||data.success!==true||!data.commerce)throw new Error('Не вдалося звірити попередню операцію.');assistedCommerceController.accept(data.commerce);assistedCommerceController.draw();return true;}return assistedCommerceController.load();},
+            onCommerce:commerce=>{assistedCommerceController.accept(commerce);assistedCommerceController.draw();}
+          });
+        }
       }
-      contextEl.appendChild(assistedCommerceRoot);if(created)void assistedCommerceController.load();
+      contextEl.appendChild(assistedCommerceRoot);if(assistedPartialRoot&&assistedPartialController)contextEl.appendChild(assistedPartialRoot);syncAssistedPanelOrder(assistedCommerceController.commerce);if(created)void assistedCommerceController.load();
       {% endif %}
     }
     function renderSplitShipping(id){

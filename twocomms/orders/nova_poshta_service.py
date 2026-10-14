@@ -530,6 +530,13 @@ class NovaPoshtaService:
         Returns:
             bool: True если что-то изменилось/отправлено, False если нет
         """
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+        try:
+            order.refresh_from_db()
+        except ObjectDoesNotExist:
+            return False
+        if not assisted_shipping_dispatch_ready(order):
+            return False
         from management.services.ig_split_tracking import has_split_plan, track_split_orders
         if has_split_plan(order):
             return bool(track_split_orders(self, onlyorder=order)["updated"])
@@ -553,6 +560,10 @@ class NovaPoshtaService:
     def _apply_tracking_info_to_order(self, order, tracking_info):
         """Apply one provider result; external notifications stay outside DB locks."""
         self._last_tracking_update_error = False
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+        actual = Order.objects.filter(pk=order.pk).first()
+        if actual is None or not assisted_shipping_dispatch_ready(actual):
+            return False
         from management.services.ig_split_tracking import has_split_plan
         if has_split_plan(order):
             return False
@@ -583,6 +594,7 @@ class NovaPoshtaService:
                 status_code,
                 full_status,
                 provider_event_at=self._provider_event_datetime(tracking_info),
+                carrier_observation=tracking_info,
             )
         except ObjectDoesNotExist:
             logger.warning(f"Order pk={order.pk} disappeared during tracking update")
@@ -603,6 +615,8 @@ class NovaPoshtaService:
             # the retry path for COD/manual orders excluded from backfill.
             if delivered_status:
                 order.refresh_from_db()
+                if not assisted_shipping_dispatch_ready(order):
+                    return False
                 if order.status == 'done':
                     self._record_purchase_action(order)
                     self._dispatch_ig_delivery_lifecycle(
@@ -627,6 +641,12 @@ class NovaPoshtaService:
         order.tracking_failure_count = fresh.tracking_failure_count
         order.tracking_terminal_at = fresh.tracking_terminal_at
         order.payment_payload = fresh.payment_payload
+
+        # Fee review may have changed after the tracking transaction committed.
+        # No downstream notification or aftercare effect may borrow its old proof.
+        current = Order.objects.filter(pk=order.pk).first()
+        if current is None or not assisted_shipping_dispatch_ready(current):
+            return decision['changed']
 
         if delivered_status and order.status == 'done':
             self._record_purchase_action(order)
@@ -744,6 +764,7 @@ class NovaPoshtaService:
         full_status,
         *,
         provider_event_at=None,
+        carrier_observation=None,
     ):
         """
         Атомарно (с row-lock) применяет изменение статуса к заказу.
@@ -753,6 +774,16 @@ class NovaPoshtaService:
         """
         with transaction.atomic():
             order = Order.objects.select_for_update().get(pk=order_pk)
+            from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+            if not assisted_shipping_dispatch_ready(order):
+                return None
+            if carrier_observation is not None:
+                from management.services.ig_assisted_partial_shipping import observe_assisted_tracking_charge
+                observed = observe_assisted_tracking_charge(order, carrier_observation)
+                if observed.get('is_assisted'):
+                    order.save(update_fields=['payment_payload', 'updated'])
+                if not observed.get('ready'):
+                    return None
             from management.services.ig_split_tracking import has_split_plan
             if has_split_plan(order):
                 return None
@@ -1391,6 +1422,14 @@ class NovaPoshtaService:
         order_rows = list(
             orders_with_ttn.values('pk', 'order_number', 'tracking_number', 'phone')
         )
+        # A preserved review TTN is an audit fact, not polling/dispatch authority.
+        # Validate actual Orders before forming any provider batch; the locked
+        # application boundary independently repeats the same native guard.
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+        actual_orders = {order.pk: order for order in Order.objects.filter(
+            pk__in=[row['pk'] for row in order_rows])}
+        order_rows = [row for row in order_rows if row['pk'] in actual_orders
+            and assisted_shipping_dispatch_ready(actual_orders[row['pk']])]
         total_orders = len(order_rows)
         updated_count = 0
         error_count = 0

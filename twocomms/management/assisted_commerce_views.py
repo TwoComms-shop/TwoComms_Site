@@ -134,6 +134,12 @@ def _context(client, actor, request_id=None):
                     "expected_request_digest": execution.request_digest,
                     "expected_decision_digest": execution.decision_digest,
                     "can_recover_checkout": initiator.get("kind") == "manager" and initiator.get("actor_id") == actor.pk}
+                if execution.scope == "partial":
+                    snapshot = execution.envelope["snapshot"]
+                    evidence, choice = snapshot["selection_evidence"], snapshot["choice_proof"]
+                    value["prepared_checkout"].update(action="prepare_selected", task_id=choice["task_id"],
+                        expected_choice_digest=commerce._digest(choice), expected_terms_digest=evidence["terms_digest"],
+                        expected_coverage_digest=evidence["ledger_coverage_digest"])
                 value["prepare_reason"] = labels["assisted_checkout_already_prepared"]
     from management.services.ig_assisted_stock_sync import projection as stock_projection
     value["stock_sync"] = stock_projection(client.pk, actor=actor,
@@ -144,6 +150,9 @@ def _context(client, actor, request_id=None):
         if not native_message:
             value["can_prepare_reason"] = "assisted_stock_recount_required"
             value["prepare_reason"] = "Спочатку звірте фактичний залишок позицій каталогу. Перевірена кількість для клієнта не є загальним складським залишком."
+    from management.services.ig_assisted_partial import partial_intention_projection
+    value["partial_intention"] = partial_intention_projection(client.pk, actor=actor,
+        request_id=(value.get("request") or {}).get("id"))
     return value
 
 
@@ -239,6 +248,8 @@ def assisted_commerce_api(request, client_id):
                 "commerce": _context(client, request.user, row.pk)})
         if action in {"draft", "approve", "reject"}:
             extra = {"items"} if action == "draft" else {"rejection_reason"} if action == "reject" else set()
+            if action == "draft" and "shipping_terms" in payload:
+                extra.add("shipping_terms")
             if set(payload) != {"action", "operation_id", "request_id", *CAS_KEYS, *extra}:
                 raise ValueError("decision fields invalid")
             request_id = _uuid(payload["request_id"])
@@ -248,6 +259,46 @@ def assisted_commerce_api(request, client_id):
                 **{key: payload[key] for key in CAS_KEYS | extra})
             return JsonResponse({"success": True, "created": created, "request_id": str(request_id),
                 "decision_id": str(decision.pk), "commerce": _context(client, request.user, request_id)})
+        if action == "resolve_shipping_review":
+            from management.services.ig_assisted_partial import resolve_shipping_review
+            if set(payload) != {"action", "operation_id", "order_id", "expected_document_ref", "expected_terms_digest"}:
+                raise ValueError("shipping review fields invalid")
+            if (type(payload["order_id"]) is not int or payload["order_id"] <= 0
+                or not isinstance(payload["expected_document_ref"], str) or len(payload["expected_document_ref"]) > 36
+                or not commerce._hash(payload["expected_terms_digest"])):
+                raise ValueError("shipping review identity invalid")
+            result = resolve_shipping_review(client.pk, actor=request.user, operation_id=operation,
+                order_id=payload["order_id"], expected_document_ref=payload["expected_document_ref"],
+                expected_terms_digest=payload["expected_terms_digest"])
+            return JsonResponse({"success": result.get("ready") is True, "shipping_review": result,
+                "commerce": _context(client, request.user)}, status=200 if result.get("ready") is True else 409)
+        if action in {"issue_partial_offer", "prepare_selected", "issue_continuation_offer"}:
+            from management.services import ig_assisted_partial as partial
+            extra = ({"decision_id", "expected_decision_digest", "expected_terms_digest"}
+                if action != "issue_continuation_offer" else set())
+            if action == "prepare_selected":
+                extra |= {"task_id", "expected_choice_digest"}
+            required = {"action", "operation_id", "request_id", "expected_request_digest", "expected_coverage_digest", *extra}
+            if set(payload) != required:
+                raise ValueError("partial fields invalid")
+            request_id = _uuid(payload["request_id"])
+            _request_owned(client, request_id)
+            arguments = {key: payload[key] for key in required - {"action", "operation_id", "request_id"}}
+            if "decision_id" in arguments:
+                arguments["decision_id"] = _uuid(arguments["decision_id"])
+            if "task_id" in arguments and (type(arguments["task_id"]) is not int or arguments["task_id"] <= 0):
+                raise ValueError("task identity invalid")
+            if any(not commerce._hash(value) for key, value in arguments.items() if key.startswith("expected_")):
+                raise ValueError("partial digest invalid")
+            if action == "prepare_selected":
+                result = partial.prepare_selected(client.pk, actor=request.user, request_id=request_id,
+                    operation_id=operation, **arguments)
+                return JsonResponse({"success": result.get("ready") is True, "checkout": _checkout_payload(result),
+                    "commerce": _context(client, request.user, request_id)}, status=200 if result.get("ready") is True else 409)
+            task, created = getattr(partial, action)(client.pk, actor=request.user, request_id=request_id,
+                operation_id=operation, **arguments)
+            return JsonResponse({"success": True, "created": created, "offer": partial._offer_dto(task),
+                "commerce": _context(client, request.user, request_id)})
         if action == "stock_sync":
             if set(payload) != {"action", "operation_id", "request_id", "decision_id",
                     "expected_request_digest", "expected_decision_digest", "expected_preview_digest", "counts_by_pool"}:

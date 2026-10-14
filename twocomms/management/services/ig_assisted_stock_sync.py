@@ -40,11 +40,15 @@ def _rows(client_id, request_id=None, decision_id=None, *, lock=False):
 def _capture(request, decision, *, actor, now, lock=False):
     cap = commerce.load_verified_assisted_decision(request.pk, decision.pk, actor=actor,
         expected_request_digest=request.envelope_hmac, expected_decision_digest=decision.envelope_hmac, now=now)
-    if cap.proof_scope != "unconsumed" or not cap.lines or len(cap.ready_lines) != len(cap.lines):
+    partial = decision.envelope["snapshot"].get("scoped_quotes")
+    if cap.proof_scope != "unconsumed" or not cap.lines or not cap.ready_lines or not partial and len(cap.ready_lines) != len(cap.lines):
         raise inventory.StockSyncError("full_ready_required")
+    if partial:
+        from management.services.ig_assisted_scopes import _quote_lines
+        _quote_lines(request, decision, parent_lines=cap.lines)
     if _model().objects.filter(decision=decision).exists():
         raise inventory.StockSyncError("already_synced")
-    catalog = [line for line in cap.lines if line.item_kind == "catalog_apparel"]
+    catalog = [line for line in cap.ready_lines if line.item_kind == "catalog_apparel"]
     if not catalog:
         raise inventory.StockSyncError("catalog_lines_missing")
     entries = []
@@ -90,7 +94,7 @@ def _catalog_metadata(cap):
     cart = cap.current_capture
     current = commerce._catalog_configuration_observations(cart, resolve_source_cart_catalog(cart).as_dict())
     result = {}
-    for line in cap.lines:
+    for line in cap.ready_lines:
         if line.item_kind != "catalog_apparel":
             continue
         spec = current.get(line.line_id)

@@ -61,7 +61,8 @@ def _prelock_assisted_proposal(proposal):
     if "assisted_commerce_execution" in cache:
         candidate = cache["assisted_commerce_execution"] is not None
     else:
-        candidate = bool(getattr(proposal, "custom_print_full_only", False))
+        candidate = bool(getattr(proposal, "custom_print_full_only", False)
+            or getattr(proposal, "_ig_assisted_execution_id", None) is not None)
     if not candidate:
         return None
     from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
@@ -1829,6 +1830,28 @@ def bind_verified_payment(attempt_id, order):
         if proposal.assisted_checkout_v2
         else payment_follow_preparation_due_at(proposal.client, now=now)
     )
+    try:
+        proposal.client.set_stage(IgClient.Stage.ORDER_CREATED, reason="instagram_checkout_paid")
+    except Exception:
+        logger.warning("Failed to advance IG client stage for proposal %s", proposal.pk, exc_info=True)
+    try:
+        from management.services.bot_payment_truth import recalculate_client_payment_aggregates
+
+        recalculate_client_payment_aggregates(proposal.client)
+    except Exception:
+        logger.warning("Failed to refresh IG payment aggregates for proposal %s", proposal.pk, exc_info=True)
+    try:
+        from management.services.ig_commercial_episodes import sync_episode_payment
+
+        sync_episode_payment(deal=deal)
+    except Exception:
+        logger.warning("Failed to refresh IG episode payment for deal %s", deal.pk, exc_info=True)
+    if "assisted_execution" in (attempt.cart_snapshot or {}):
+        from management.services.ig_assisted_checkout import attach_assisted_order
+        attached = attach_assisted_order(attempt, order, now=now)
+        if not isinstance(attached, dict) or attached.get("ready") is not True:
+            raise CheckoutPaymentError((attached or {}).get("reason") or "assisted_order_attach_failed",
+                "Оплату зафіксовано; потрібна перевірка прив’язки замовлення.")
     event, _created = ensure_lifecycle_event(
         order,
         IgLifecycleEvent.Kind.PAYMENT_VERIFIED,
@@ -1871,26 +1894,4 @@ def bind_verified_payment(attempt_id, order):
         transaction.on_commit(
             lambda event_id=event.pk: dispatch_lifecycle_event(event_id)
         )
-    try:
-        proposal.client.set_stage(IgClient.Stage.ORDER_CREATED, reason="instagram_checkout_paid")
-    except Exception:
-        logger.warning("Failed to advance IG client stage for proposal %s", proposal.pk, exc_info=True)
-    try:
-        from management.services.bot_payment_truth import recalculate_client_payment_aggregates
-
-        recalculate_client_payment_aggregates(proposal.client)
-    except Exception:
-        logger.warning("Failed to refresh IG payment aggregates for proposal %s", proposal.pk, exc_info=True)
-    try:
-        from management.services.ig_commercial_episodes import sync_episode_payment
-
-        sync_episode_payment(deal=deal)
-    except Exception:
-        logger.warning("Failed to refresh IG episode payment for deal %s", deal.pk, exc_info=True)
-    if "assisted_execution" in (attempt.cart_snapshot or {}):
-        from management.services.ig_assisted_checkout import attach_assisted_order
-        attached = attach_assisted_order(attempt, order, now=now)
-        if not isinstance(attached, dict) or attached.get("ready") is not True:
-            raise CheckoutPaymentError((attached or {}).get("reason") or "assisted_order_attach_failed",
-                "Оплату зафіксовано; потрібна перевірка прив’язки замовлення.")
     return event

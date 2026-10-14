@@ -70,6 +70,9 @@ def _waybill_action_block_reason(order: Order) -> str | None:
         NovaPoshtaDocumentService._validate_order_delivery(order)
     except NovaPoshtaDocumentError as exc:
         return str(exc)
+    review = (order.payment_payload or {}).get('ig_assisted_shipping_review')
+    if isinstance(review, dict) and review.get('state') == 'requires_review':
+        return 'ТТН збережена для звірки фактичної оплати. Відправку та повторне створення заблоковано до звірки або підтвердженого видалення.'
     if order.status in {"done", "cancelled"}:
         return (
             f"Створення ТТН більше недоступне. "
@@ -171,16 +174,18 @@ def _delete_created_waybill_safely(
     *,
     document_ref: str,
     order_id: int,
-) -> None:
+) -> bool:
     if not document_ref:
-        return
+        return False
     try:
-        service.delete_waybill(document_ref)
+        deleted = service.delete_waybill(document_ref)
+        return isinstance(deleted, dict) and deleted.get('document_ref') == document_ref
     except Exception:
         logger.exception(
             "Failed to compensate Nova Poshta waybill creation after local order update failed for order %s",
             order_id,
         )
+        return False
 
 
 def _payment_snapshot_payload(order: Order) -> dict:
@@ -495,6 +500,17 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
                     locked_order.nova_poshta_document_ref = None
                     locked_order.nova_poshta_recipient_ref = None
                     locked_order.nova_poshta_recipient_contact_ref = None
+                    from management.services.ig_assisted_partial_shipping import assisted_shipping_contract
+                    if assisted_shipping_contract(locked_order) is not None:
+                        payload = dict(locked_order.payment_payload)
+                        cancellations = list(payload.get('ig_assisted_shipping_cancellations') or [])
+                        cancellations.append({'document_ref': document_ref, 'tracking_number': tracking_number,
+                            'provider_confirmed': deleted['document_ref'] == document_ref,
+                            'previous_review': payload.get('ig_assisted_shipping_review')})
+                        payload['ig_assisted_shipping_cancellations'] = cancellations[-20:]
+                        payload['ig_assisted_shipping_review'] = {'state': 'cancelled', 'document_ref': document_ref}
+                        payload.pop('ig_assisted_carrier_charge', None)
+                        locked_order.payment_payload = payload
                     if locked_order.status == "ship":
                         locked_order.status = "prep"
                     locked_order.save(
@@ -512,6 +528,7 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
                             "nova_poshta_recipient_ref",
                             "nova_poshta_recipient_contact_ref",
                             "status",
+                            "payment_payload",
                         ]
                     )
 
@@ -588,9 +605,12 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
                 block_reason = _waybill_action_block_reason(locked_order)
                 snapshot = build_order_payment_snapshot(locked_order)
                 validate_shipment_contract_token(locked_order, form.cleaned_data.get("shipment_contract_token", ""))
+                from management.services.ig_assisted_partial_shipping import assisted_requested_payer_allowed
+                assisted_payer = assisted_requested_payer_allowed(locked_order, form.cleaned_data['payer_type'])
                 if not block_reason and (
                     snapshot['delivery_payment_requires_manual']
-                    or form.cleaned_data['payer_type'] != snapshot['delivery_payer_type']
+                    or assisted_payer is False
+                    or (assisted_payer is None and form.cleaned_data['payer_type'] != snapshot['delivery_payer_type'])
                 ):
                     block_reason = 'Збережіть правильний спосіб оплати доставки в замовленні перед створенням ТТН.'
                 if block_reason:
@@ -623,6 +643,19 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
                 locked_order.nova_poshta_recipient_contact_ref = created["recipient_contact_ref"]
                 locked_order.nova_poshta_document_ref = created["document_ref"] or None
 
+                if created.get('shipping_review'):
+                    # Commit the provider's real references while keeping the
+                    # Order unshipped. The native delete action remains available
+                    # and validates cancellation before clearing these refs.
+                    locked_order.tracking_number = created['tracking_number'] or None
+                    locked_order.save(update_fields=['payment_payload', 'tracking_number',
+                        'nova_poshta_document_ref', 'nova_poshta_recipient_ref',
+                        'nova_poshta_recipient_contact_ref', 'updated'])
+                    return _render_waybill_action_page(request, order=locked_order, token=token,
+                        form=form, status_code=409, is_blocked=True, can_submit=False,
+                        can_delete=bool(created['document_ref']),
+                        error_message='ТТН створена, але її фактична оплата не відповідає погодженим умовам. Відправку заблоковано; звірте або видаліть цю накладну перед повторним створенням.')
+
                 update_result = _apply_order_status_update_to_order(
                     locked_order,
                     status="ship",
@@ -633,18 +666,22 @@ def telegram_order_np_waybill_action(request, order_id: int, action: str):
         except NovaPoshtaDocumentError as exc:
             error_message = str(exc)
         except ValidationError as exc:
-            _delete_created_waybill_safely(
+            cancelled = _delete_created_waybill_safely(
                 service,
                 document_ref=str((created or {}).get("document_ref") or ""),
                 order_id=order.pk,
             )
+            from management.services.ig_assisted_partial_shipping import preserve_assisted_waybill_failure
+            order = preserve_assisted_waybill_failure(order.pk, created=created, provider_cancelled=cancelled) or order
             error_message = first_validation_error(exc)
         except Exception:
-            _delete_created_waybill_safely(
+            cancelled = _delete_created_waybill_safely(
                 service,
                 document_ref=str((created or {}).get("document_ref") or ""),
                 order_id=order.pk,
             )
+            from management.services.ig_assisted_partial_shipping import preserve_assisted_waybill_failure
+            order = preserve_assisted_waybill_failure(order.pk, created=created, provider_cancelled=cancelled) or order
             logger.exception("Unexpected error while creating Nova Poshta waybill for order %s", order.pk)
             error_message = "Не вдалося створити ТТН через внутрішню помилку. Спробуйте ще раз."
         else:

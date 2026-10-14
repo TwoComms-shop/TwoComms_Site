@@ -1,4 +1,4 @@
-"""Full READY assisted approval -> the existing checkout/payment owners.
+"""Native assisted approval and customer scope -> existing checkout owners.
 
 No provider call, Product, stock count, payment winner or Order is created here.
 Fresh effect checks and historical paid evidence have separate boundaries.
@@ -19,6 +19,8 @@ from django.utils import timezone
 from management.services import ig_assisted_commerce as commerce
 
 EXECUTION_SCHEMA = "ig-assisted-checkout-execution.v1"
+SELECTED_EXECUTION_SCHEMA = "ig-assisted-checkout-execution.v3"
+_INLINE_SELECTED_EXECUTION_SCHEMA = "ig-assisted-checkout-execution.v2"
 _ISSUER = object()
 CUSTOM_KEYS = ("product_id", "color_variant_id", "is_custom", "title", "color_name_custom",
     "size", "fit_option_code", "fit_option_label", "option_values", "option_labels", "qty",
@@ -57,11 +59,33 @@ def _execution_query():
 
 
 def _proof(execution):
-    return {"schema": EXECUTION_SCHEMA, "execution_id": str(execution.pk),
+    proof = {"schema": EXECUTION_SCHEMA, "execution_id": str(execution.pk),
         "execution_digest": execution.envelope_hmac, "request_id": str(execution.request_id),
         "decision_id": str(execution.decision_id), "proposal_id": execution.proposal_id,
         "snapshot_digest": execution.snapshot_digest, "request_digest": execution.request_digest,
         "decision_digest": execution.decision_digest, "full_capture_digest": execution.full_capture_digest}
+    if execution.scope == "partial":
+        body = execution.envelope["snapshot"]
+        proof.update(schema=body["schema"], scope_digest=execution.scope_digest,
+            coverage_digest=body["coverage_digest"], terms_digest=body["terms_digest"])
+    return proof
+
+
+def _selected_export(cap):
+    """Only a native historical scope can authorize an actual shipping contract."""
+    return {"intention_id": str(cap.intention_id), "original_request_id": str(cap.original_request_id),
+        "scope": cap.scope, "scope_digest": cap.scope_digest, "terms_digest": cap.terms_digest,
+        "shipping_terms": deepcopy(cap.shipping_terms), "selected_line_ids": list(cap.selected_line_ids),
+        "deferred_line_ids": list(cap.deferred_line_ids), "shipping_scope": cap.shipping_scope}
+
+
+def _admit_selected_scope(cap, *, now, exclude_execution_id=None):
+    from management.services.ig_assisted_scopes import admit_selected_scope
+    admitted = admit_selected_scope(cap, now=now, exclude_execution_id=exclude_execution_id, lock=False)
+    if not admitted.get("ready"):
+        reason = admitted.get("reason") or "assisted_coverage_unverified"
+        _fail("assisted_scope_overlap" if reason == "selected_capacity_already_consumed" else reason)
+    return admitted["coverage"]
 
 
 def _purchase(client, capture, settings_obj, *, revision=None, now):
@@ -171,6 +195,43 @@ def _proposal_rows(proposal, revision, cap):
     return rows, custom
 
 
+def _native_quote_digest(value):
+    """Checksum native quote/provenance under its existing 1 MiB boundary.
+
+    The referenced SQL artifact is not a newly embedded assisted snapshot.
+    Its canonical bytes match the core signer for smaller existing records;
+    Request/Decision/Execution envelope limits remain independently unchanged.
+    """
+    from management.services.ig_checkout_cart_provenance import _copy
+    from management.services.ig_revision_cart_binding import _digest
+    if not isinstance(value, dict):
+        _fail("assisted_execution_quote_reference_changed")
+    return _digest(_copy(value))
+
+
+def _execution_quote(execution, body):
+    """Resolve only the signed exact native quote revision, never a new quote."""
+    from management.models import IgCheckoutRevision
+    revision = IgCheckoutRevision.objects.filter(pk=body.get("checkout_revision_id"),
+        proposal_id=execution.proposal_id, revision=body.get("proposal_revision")).first()
+    if revision is None:
+        _fail("assisted_execution_owner_or_quote_changed")
+    if execution.scope == "partial" and body.get("schema") == SELECTED_EXECUTION_SCHEMA:
+        if ("quote_snapshot" in body or "source_cart_binding" in body
+            or _native_quote_digest(revision.snapshot) != body.get("quote_snapshot_digest")
+            or not isinstance(revision.snapshot.get("source_cart_binding"), dict)
+            or _native_quote_digest(revision.snapshot["source_cart_binding"]) != body.get("binding_digest")):
+            _fail("assisted_execution_quote_reference_changed")
+        frozen = revision.snapshot
+        binding = frozen["source_cart_binding"]
+    else:
+        # FULL39 and already-issued inline v2 evidence remain byte-for-byte.
+        frozen, binding = body.get("quote_snapshot"), body.get("source_cart_binding")
+        if revision.snapshot != frozen:
+            _fail("assisted_execution_owner_or_quote_changed")
+    return revision, frozen, binding
+
+
 def _validated_execution(execution, *, now, fresh):
     """Strong read-only guard; never acquire locks after a payment graph lock."""
     from management.models import IgCheckoutRevision, IgCustomerTurnRevision
@@ -179,25 +240,39 @@ def _validated_execution(execution, *, now, fresh):
     if not commerce.verify_assisted_evidence(execution, "execution"):
         _fail("assisted_execution_unverified")
     request, decision, proposal = execution.request, execution.decision, execution.proposal
-    cap = commerce.verified_assisted_decision_from_evidence(request, decision, historical=not fresh)
+    selected = execution.scope == "partial"
+    if selected:
+        from management.services.ig_assisted_scopes import verified_selection_from_evidence
+        cap = verified_selection_from_evidence(request, decision, execution, historical=not fresh)
+    else:
+        cap = commerce.verified_assisted_decision_from_evidence(request, decision, historical=not fresh)
     body = execution.envelope["snapshot"]
-    if (body.get("schema") != EXECUTION_SCHEMA or execution.client_id != cap.client_id
+    expected_scope = "partial" if selected else "full"
+    selected_ids = list(cap.selected_line_ids) if selected else [line.line_id for line in cap.lines]
+    deferred_ids = list(cap.deferred_line_ids) if selected else []
+    if (body.get("schema") not in ({SELECTED_EXECUTION_SCHEMA, _INLINE_SELECTED_EXECUTION_SCHEMA}
+            if selected else {EXECUTION_SCHEMA}) or execution.client_id != cap.client_id
         or execution.intention_id != cap.intention_id or execution.request_digest != cap.request_digest
         or execution.decision_digest != cap.decision_digest or execution.full_capture_digest != cap.full_capture_digest
-        or execution.scope != "full" or len(cap.ready_lines) != len(cap.lines)
+        or execution.scope != expected_scope or (any(line.ready_capacity != line.quantity for line in cap.lines)
+            if selected else len(cap.ready_lines) != len(cap.lines))
         or execution.quoted_total != cap.approved_total or execution.quoted_custom_quantity != cap.approved_custom_quantity
-        or execution.currency != "UAH" or body.get("selected_line_ids") != [line.line_id for line in cap.lines]
-        or body.get("deferred_line_ids") != [] or body.get("origin_full_capture") != cap.full_capture
+        or execution.currency != "UAH" or body.get("selected_line_ids") != selected_ids
+        or body.get("deferred_line_ids") != deferred_ids
+        or body.get("origin_full_capture") != (cap.origin_full_capture if selected else cap.full_capture)
         or (body.get("purchase_proof") or {}).get("message_id") != execution.purchase_source_id
         or (body.get("purchase_proof") or {}).get("revision_id") != execution.revision_id
         or body.get("scope_digest") != execution.scope_digest
-        or commerce._digest({"scope": "full", "selected_line_ids": body["selected_line_ids"], "deferred_line_ids": []}) != execution.scope_digest):
+        or (cap.scope_digest != execution.scope_digest if selected else
+            commerce._digest({"scope": "full", "selected_line_ids": body["selected_line_ids"], "deferred_line_ids": []}) != execution.scope_digest)):
         _fail("assisted_execution_terms_changed")
-    revision = IgCheckoutRevision.objects.filter(pk=body.get("checkout_revision_id"), proposal=proposal,
-        revision=body.get("proposal_revision")).first()
-    binding = body.get("source_cart_binding")
-    checked = validate_assisted_cart_binding(binding, episode_id=execution.episode_id)
-    if (revision is None or not checked.ok or revision.snapshot != body.get("quote_snapshot")
+    revision, frozen_quote, binding = _execution_quote(execution, body)
+    if selected:
+        from management.services.ig_revision_cart_binding import validate_selected_cart_binding
+        checked = validate_selected_cart_binding(binding, episode_id=execution.episode_id)
+    else:
+        checked = validate_assisted_cart_binding(binding, episode_id=execution.episode_id)
+    if (not checked.ok or revision.snapshot != frozen_quote
         or proposal.revision != revision.revision or revision.snapshot.get("source_cart_binding") != binding
         or revision.snapshot.get("assisted_commerce") != assisted_quote_evidence(cap)
         or binding.get("assisted_commerce") != assisted_quote_evidence(cap)
@@ -231,15 +306,30 @@ def _validated_execution(execution, *, now, fresh):
         source = request.envelope["snapshot"]
         settings_obj, _permission = commerce._permission(execution.client, source["settings_id"],
             expected_settings_epoch=source["settings_permission_epoch"], expected_client_epoch=request.client_permission_epoch)
-        for proof in source["sources"]:
+        for proof in ([] if selected else source["sources"]):
             member = request.revision.sources.filter(message_id=proof["message_id"]).select_related("message").first()
             owned, reason = owned_source(request.revision, member.message, settings_obj, require_head=False) if member else (None, "source_not_owned")
             if not owned or owned[2] != proof:
                 _fail(reason or "request_source_changed")
-        purchase_revision = IgCustomerTurnRevision.objects.filter(pk=execution.revision_id).first()
-        owned, reason = owned_source(purchase_revision, execution.purchase_source, settings_obj, require_head=False) if purchase_revision else (None, "source_not_owned")
-        if not owned or owned[2] != body.get("purchase_proof"):
-            _fail(reason or "purchase_source_changed")
+        if selected:
+            from management.services.ig_assisted_scopes import revalidate_verified_assisted_selection
+            from management.services.ig_assisted_partial_delivery import validate_card_choice_source
+            cap = revalidate_verified_assisted_selection(cap, client=execution.client, now=now)
+            purchase_revision = IgCustomerTurnRevision.objects.filter(pk=execution.revision_id).first()
+            if purchase_revision is None:
+                _fail("checkout_purchase_revision_missing")
+            native = validate_card_choice_source(execution.purchase_source, purchase_revision,
+                settings_obj, now=now, expected_task_id=cap.choice_proof["task_id"], require_current=False)
+            if (native.action != "partial" or native.source_proof != cap.purchase_proof
+                or native.receipt != cap.choice_proof["receipt"]
+                or native.card["proof"]["card_digest"] != cap.choice_proof["card_digest"]):
+                _fail("assisted_execution_choice_changed")
+            _admit_selected_scope(cap, now=now, exclude_execution_id=execution.pk)
+        else:
+            purchase_revision = IgCustomerTurnRevision.objects.filter(pk=execution.revision_id).first()
+            owned, reason = owned_source(purchase_revision, execution.purchase_source, settings_obj, require_head=False) if purchase_revision else (None, "source_not_owned")
+            if not owned or owned[2] != body.get("purchase_proof"):
+                _fail(reason or "purchase_source_changed")
         current = capture_current_selection_lines(execution.client_id, now=now)
         if not same_checkout_source_capture(body.get("current_quote_capture"), current):
             _fail("assisted_execution_source_changed")
@@ -253,7 +343,8 @@ def _validated_execution(execution, *, now, fresh):
     verified = VerifiedAssistedExecution(execution.pk, proposal.pk, execution.client_id, execution.envelope_hmac, _ISSUER)
     return {"ready": True, "reason": "", "proof": _proof(execution), "custom_rows": custom,
         "source_cart_binding": deepcopy(binding), "verified_execution": verified,
-        "verified_decision": cap, "current_capture": cap.current_capture}
+        "verified_decision": cap.decision if selected else cap, "current_capture": current if fresh else cap.current_capture,
+        **({"verified_selection": cap, "selection": _selected_export(cap)} if selected else {})}
 
 
 def revalidate_verified_assisted_execution(value, *, client=None, now=None):
@@ -265,7 +356,50 @@ def revalidate_verified_assisted_execution(value, *, client=None, now=None):
     execution = _execution_query().filter(pk=value.execution_id, proposal_id=value.proposal_id, client_id=value.client_id).first()
     if not execution or execution.envelope_hmac != value.execution_digest:
         _fail("assisted_execution_changed")
-    return _validated_execution(execution, now=commerce._now(now), fresh=True)["verified_decision"]
+    result = _validated_execution(execution, now=commerce._now(now), fresh=True)
+    return result.get("verified_selection") or result["verified_decision"]
+
+
+def validate_assisted_execution_history(execution, *, now=None):
+    """Coverage leaf: original signed evidence, never a current coverage read."""
+    try:
+        actual = _execution_query().filter(pk=getattr(execution, "pk", execution)).first()
+        if actual is None:
+            _fail("assisted_execution_missing")
+        result = _validated_execution(actual, now=commerce._now(now), fresh=False)
+        if actual.order_id is not None:
+            paid = validate_assisted_order(actual.order, execution=actual, now=now)
+            if not paid.get("ready"):
+                _fail(paid.get("reason"))
+            result["item_map"] = paid["item_map"]
+        return {**result, "execution_id": str(actual.pk), "order_id": actual.order_id,
+            "selected_line_ids": list(actual.envelope["snapshot"]["selected_line_ids"]),
+            "deferred_line_ids": list(actual.envelope["snapshot"]["deferred_line_ids"])}
+    except (AssistedCheckoutError, commerce.AssistedDecisionError, KeyError, TypeError, ValueError) as exc:
+        return {"ready": False, "reason": _reason(exc)}
+
+
+def admit_assisted_settlement(attempt, *, now=None):
+    """Before winner/stock/Order effects, retain UNKNOWN and foreign coverage."""
+    try:
+        if not transaction.get_connection().in_atomic_block:
+            _fail("assisted_order_transaction_required")
+        result = validate_assisted_attempt(attempt, now=now)
+        if not result.get("ready") or result.get("is_assisted") is not True:
+            return result
+        execution = _execution_query().get(pk=result["proof"]["execution_id"])
+        if execution.scope != "partial":
+            return {"ready": True, "reason": "", "is_assisted": True,
+                "execution_id": str(execution.pk)}
+        from management.models import IgClient
+        # All commercial effects already take this owner before the Deal graph.
+        # The reentrant row lock also makes direct materializer calls serialize.
+        IgClient.objects.select_for_update().get(pk=execution.client_id)
+        _admit_selected_scope(result["verified_selection"], now=commerce._now(now), exclude_execution_id=execution.pk)
+        return {"ready": True, "reason": "", "is_assisted": True,
+            "execution_id": str(execution.pk)}
+    except (AssistedCheckoutError, commerce.AssistedDecisionError, KeyError, TypeError, ValueError) as exc:
+        return {"ready": False, "reason": _reason(exc)}
 
 
 def validate_assisted_proposal(proposal, now=None, fresh=True):
@@ -303,8 +437,8 @@ def lock_assisted_checkout_owner(proposal_id):
 
 def _url(proposal, token=None):
     base = str(getattr(settings, "SITE_BASE_URL", "") or getattr(settings, "BOT_PUBLIC_BASE_URL", "") or "https://twocomms.shop").rstrip("/")
-    return base + (reverse("ig_checkout_token_entry", kwargs={"token": token}) if token else
-        reverse("ig_checkout_proposal", kwargs={"proposal_id": proposal.public_id}))
+    return base + (reverse("ig_checkout_token_entry", kwargs={"token": token}, urlconf="twocomms.urls") if token else
+        reverse("ig_checkout_proposal", kwargs={"proposal_id": proposal.public_id}, urlconf="twocomms.urls"))
 
 
 def _access_token(execution, *, now, create=False):
@@ -332,7 +466,12 @@ def _access_token(execution, *, now, create=False):
 
 
 def prepare_assisted_checkout(client_id, *, actor, request_id, decision_id, expected_request_digest,
-        expected_decision_digest, operation_id, revision_id=None, settings_id=None):
+        expected_decision_digest, operation_id, revision_id=None, settings_id=None, verified_selection=None):
+    if verified_selection is not None:
+        return _prepare_selected_assisted_checkout(client_id, actor=actor, request_id=request_id,
+            decision_id=decision_id, expected_request_digest=expected_request_digest,
+            expected_decision_digest=expected_decision_digest, operation_id=operation_id,
+            revision_id=revision_id, settings_id=settings_id, verified_selection=verified_selection)
     from management.models import IgClient, IgCustomerTurnRevision, InstagramBotSettings, IgCheckoutAccessToken
     from management.services.ig_commercial_episodes import commercial_episode_client_lock
     from management.services.ig_checkout import (build_assisted_quote, create_or_update_proposal,
@@ -431,6 +570,123 @@ def prepare_assisted_checkout(client_id, *, actor, request_id, decision_id, expe
         return {"ready": False, "reason": "assisted_execution_conflict", "replayed": False}
 
 
+def _prepare_selected_assisted_checkout(client_id, *, actor, request_id, decision_id,
+        expected_request_digest, expected_decision_digest, operation_id, revision_id,
+        settings_id, verified_selection):
+    """Selected native purchase, with original identity kept beside dense rows."""
+    from management.models import IgClient, IgCustomerTurnRevision, InstagramBotMessage, InstagramBotSettings
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+    from management.services.ig_assisted_scopes import (VerifiedAssistedSelection,
+        revalidate_verified_assisted_selection, selection_evidence)
+    from management.services.ig_checkout import (build_assisted_quote, create_or_update_proposal,
+        _deal_item_snapshot, CheckoutConfigurationError)
+    from management.services.ig_revision_cart_binding import build_selected_cart_binding
+    from management.services.ig_commerce_projection import capture_current_selection_lines
+    from management.services.ig_inventory import reserve_proposal_inventory, InventoryReservationError
+    try:
+        now = commerce._now()
+        if type(verified_selection) is not VerifiedAssistedSelection:
+            _fail("assisted_selection_requires_native_producer")
+        request_id, decision_id = commerce._uuid(request_id), commerce._uuid(decision_id)
+        operation_id = commerce._uuid(operation_id, "operation_invalid")
+        executing = commerce._actor(getattr(actor, "pk", None)) if actor is not None else None
+        if (verified_selection.client_id != client_id or verified_selection.request_id != request_id
+            or verified_selection.decision_id != decision_id
+            or verified_selection.request_digest != expected_request_digest
+            or verified_selection.decision_digest != expected_decision_digest):
+            _fail("assisted_selection_owner_changed")
+        evidence = selection_evidence(verified_selection)
+        input_digest = commerce._digest({"client_id": client_id, "request_id": str(request_id),
+            "decision_id": str(decision_id), "request_digest": expected_request_digest,
+            "decision_digest": expected_decision_digest, "actor_id": executing.pk if executing else None,
+            "revision_id": revision_id, "settings_id": settings_id, "selection_evidence": evidence})
+        Request, Decision, Execution, _Image = commerce._models()
+        with commercial_episode_client_lock(client_id), transaction.atomic():
+            client = IgClient.objects.select_for_update().filter(pk=client_id).first()
+            if not client or client.privacy_erasure_started_at or client.hidden_at:
+                _fail("client_unavailable")
+            revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id, client=client).first() if revision_id else None
+            if executing is None:
+                settings_obj = InstagramBotSettings.objects.select_related("active_instruction_publication").filter(pk=settings_id).first()
+                _bot_boundary(client, revision, settings_obj, now=now)
+            previous = _execution_query().filter(operation_id=operation_id).first()
+            if previous:
+                if previous.client_id != client.pk or previous.envelope.get("operation_input_digest") != input_digest:
+                    _fail("operation_conflict")
+                result = _validated_execution(previous, now=now, fresh=False)
+                raw = _access_token(previous, now=now)
+                return {**result, "proposal": previous.proposal, "proposal_id": previous.proposal_id,
+                    "public_id": str(previous.proposal.public_id), "checkout_url": _url(previous.proposal, raw),
+                    "token": None, "replayed": True}
+            request = Request.objects.select_for_update().filter(pk=request_id, client=client).first()
+            decision = Decision.objects.select_for_update().select_related("actor").filter(pk=decision_id, request=request, client=client).first() if request else None
+            if not decision:
+                _fail("approved_decision_missing")
+            cap = revalidate_verified_assisted_selection(verified_selection, client=client,
+                actor=executing or decision.actor, now=now)
+            if (cap.proof_scope != "unconsumed" or cap.scope != "partial" or not cap.lines
+                or any(line.ready_capacity != line.quantity for line in cap.lines)):
+                _fail("assisted_selected_ready_required")
+            _admit_selected_scope(cap, now=now)
+            if Execution.objects.filter(decision=decision).exists():
+                _fail("assisted_decision_already_executed")
+            purchase_proof, choice_proof = cap.purchase_proof, cap.choice_proof
+            purchase = InstagramBotMessage.objects.filter(pk=purchase_proof.get("message_id"), client=client).first()
+            choice = InstagramBotMessage.objects.filter(pk=choice_proof.get("source_id"), client=client).first()
+            purchase_revision = IgCustomerTurnRevision.objects.filter(pk=purchase_proof.get("revision_id"), client=client).first()
+            if not purchase or not choice or not purchase_revision or (revision and revision.pk != purchase_revision.pk):
+                _fail("checkout_purchase_authority_missing")
+            quote = build_assisted_quote(client=client, verified_selection=cap)
+            binding = build_selected_cart_binding(verified_selection=cap,
+                quoted_items=[_deal_item_snapshot(item) for item in quote.items])
+            from management.services.ig_assisted_partial import selection_reply_language
+            proposal = create_or_update_proposal(client=client, pay_type="online_full", item_specs=[],
+                allow_promo=False, evidence={"message_ids": sorted(set(cap.current_capture["fence"]["source_ids"]) | {purchase.pk})},
+                source_cart_binding=binding, source_cart_capture=cap.full_capture,
+                verified_selection=cap, locale=selection_reply_language(cap))
+            quote_revision = proposal.revisions.get(revision=proposal.revision)
+            binding = deepcopy(quote_revision.snapshot["source_cart_binding"])
+            rows, _custom = _proposal_rows(proposal, quote_revision, cap)
+            current = capture_current_selection_lines(client.pk, now=now)
+            if current.get("status") != "captured" or not current.get("coverage_complete"):
+                _fail("assisted_owned_rebind_capture_missing")
+            scope = {"scope": "partial", "selected_line_ids": list(cap.selected_line_ids),
+                "deferred_line_ids": list(cap.deferred_line_ids)}
+            execution = Execution(intention_id=request.intention_id, operation_id=operation_id,
+                request=request, decision=decision, proposal=proposal, client=client,
+                episode_id=proposal.commercial_episode_id, choice_source=choice, purchase_source=purchase,
+                revision=purchase_revision, scope="partial", scope_digest=cap.scope_digest,
+                request_digest=request.envelope_hmac, decision_digest=decision.envelope_hmac,
+                full_capture_digest=request.full_capture_digest, currency="UAH", quoted_total=quote.quoted_total,
+                quoted_custom_quantity=cap.approved_custom_quantity, expires_at=min(proposal.expires_at, cap.expires_at))
+            commerce._seal(execution, "execution", {"schema": SELECTED_EXECUTION_SCHEMA, **scope,
+                "scope_digest": cap.scope_digest, "selection_evidence": evidence,
+                "coverage": deepcopy(cap.coverage), "coverage_digest": cap.coverage_digest,
+                "terms_digest": cap.terms_digest, "shipping_terms": deepcopy(cap.shipping_terms),
+                "line_map": deepcopy(cap.line_map), "origin_full_capture": cap.origin_full_capture,
+                "approved_current_capture": cap.current_capture, "current_quote_capture": current,
+                "binding_digest": _native_quote_digest(binding),
+                "quote_snapshot_digest": _native_quote_digest(quote_revision.snapshot),
+                "checkout_revision_id": quote_revision.pk, "proposal_revision": proposal.revision,
+                "proposal_id": proposal.pk, "public_id": str(proposal.public_id),
+                "episode_id": proposal.commercial_episode_id, "rows": rows,
+                "choice_proof": deepcopy(choice_proof), "purchase_proof": deepcopy(purchase_proof),
+                "initiator": {"kind": "manager" if executing else "bot", "actor_id": executing.pk if executing else None}},
+                operation_input_digest=input_digest)
+            reserve_proposal_inventory(proposal, expires_at=execution.expires_at, require_policy=True)
+            result = validate_assisted_proposal(proposal, now=commerce._now(), fresh=True)
+            if not result.get("ready"):
+                _fail(result.get("reason") or "assisted_execution_invalid")
+            raw = _access_token(execution, now=commerce._now(), create=True)
+            return {**result, "proposal": proposal, "proposal_id": proposal.pk, "public_id": str(proposal.public_id),
+                "checkout_url": _url(proposal, raw), "token": raw, "replayed": False}
+    except (AssistedCheckoutError, commerce.AssistedDecisionError, CheckoutConfigurationError,
+            InventoryReservationError, KeyError, TypeError, ValueError) as exc:
+        return {"ready": False, "reason": _reason(exc), "replayed": False}
+    except IntegrityError:
+        return {"ready": False, "reason": "assisted_execution_conflict", "replayed": False}
+
+
 def validate_assisted_attempt(attempt, now=None):
     """Read original frozen attempt/provenance, independent of current choice."""
     from orders.models import PaymentAttempt
@@ -467,7 +723,7 @@ def validate_assisted_attempt(attempt, now=None):
         body = execution.envelope["snapshot"]
         if (proof != result["proof"] or provenance.get("status") != "bound"
             or provenance.get("binding") != result["source_cart_binding"]
-            or snapshot.get("assisted_commerce") != body["quote_snapshot"]["assisted_commerce"]
+            or snapshot.get("assisted_commerce") != result["source_cart_binding"]["assisted_commerce"]
             or owner.get("proposal_pk") != execution.proposal_id or owner.get("client_id") != execution.client_id
             or owner.get("episode_id") != execution.episode_id or owner.get("revision_id") != body["checkout_revision_id"]
             or owner.get("revision") != body["proposal_revision"]
@@ -572,12 +828,19 @@ def attach_assisted_order(attempt, order, now=None):
             return {"ready": True, "reason": "", "execution_id": str(execution.pk), "item_map": item_map, "replayed": True}
         if execution.active_slot != 1 or execution.released_at or execution.settled_at:
             _fail("assisted_execution_terminal_conflict")
+        if execution.scope == "partial":
+            admitted = admit_assisted_settlement(attempt, now=now)
+            if not admitted.get("ready"):
+                _fail(admitted.get("reason") or "assisted_scope_overlap")
         execution.order = order
         execution.settled_at = commerce._now(now)
         execution.active_slot = None
         execution.save(update_fields=["order", "settled_at", "active_slot"])
         order.payment_payload = {**order.payment_payload, "ig_assisted_commerce": payload}
         order.save(update_fields=["payment_payload"])
+        if execution.scope == "partial":
+            from management.services.ig_assisted_partial_shipping import attach_assisted_shipping_contract
+            attach_assisted_shipping_contract(order, execution=execution, now=now)
         return {"ready": True, "reason": "", "execution_id": str(execution.pk), "item_map": item_map, "replayed": False}
     except (AssistedCheckoutError, commerce.AssistedDecisionError, CartProvenanceError, KeyError, TypeError, ValueError) as exc:
         return {"ready": False, "reason": _reason(exc)}
@@ -605,7 +868,8 @@ def validate_assisted_order(order, execution=None, now=None):
         if (actual.order_id != order.pk or actual.active_slot is not None or actual.settled_at is None
             or actual.released_at or order.payment_payload.get("ig_assisted_commerce") != payload):
             _fail("assisted_order_attachment_changed")
-        return {"ready": True, "reason": "", "execution_id": str(actual.pk), "item_map": item_map}
+        return {"ready": True, "reason": "", "execution_id": str(actual.pk), "item_map": item_map,
+            **({"selection": result["selection"]} if actual.scope == "partial" else {})}
     except (AssistedCheckoutError, commerce.AssistedDecisionError, CartProvenanceError, KeyError, TypeError, ValueError) as exc:
         return {"ready": False, "reason": _reason(exc)}
 
@@ -613,7 +877,7 @@ def validate_assisted_order(order, execution=None, now=None):
 def _offer_message(reason):
     if reason == "assisted_stock_recount_required":
         return "Спочатку звірте фактичний залишок позицій каталогу. Перевірена кількість для клієнта не є загальним складським залишком."
-    if reason == "assisted_catalog_price_changed":
+    if reason in {"assisted_catalog_price_changed", "selected_catalog_price_changed"}:
         return "Ціна позицій каталогу змінилася. Менеджеру потрібно повторно перевірити та затвердити актуальні умови."
     if reason == "assisted_catalog_facts_changed":
         return "Опис або конфігурація позицій каталогу змінилися. Підготуйте нову версію запиту та повторно затвердьте актуальні умови."
@@ -624,14 +888,14 @@ def _offer_message(reason):
     return ""
 
 
-def _offer_catalog_readiness(client, cap, *, now):
+def _offer_catalog_readiness(client, cap, *, now, verified_in_call=False):
     """Observation only: the same finite protected pools as explicit recount.
 
     This unconsumed approval has no owned proposal hold to exclude. Manager
     checked quantities never replace physical accounting or current pricing.
     """
     from management.services import ig_fulfillment_stock_sync as inventory
-    from management.services.ig_checkout import build_assisted_quote, CheckoutConfigurationError
+    from management.services.ig_checkout import build_assisted_quote, observe_assisted_quote, CheckoutConfigurationError
     catalog = [line for line in cap.lines if line.item_kind == "catalog_apparel"]
     if catalog:
         entries = [{"line_id": line.line_id, "target": {"product_id": line.product_id,
@@ -650,7 +914,10 @@ def _offer_catalog_readiness(client, cap, *, now):
     try:
         # Use the same canonical aggregate tier/recipient/configuration price
         # resolver as proposal creation; no quote, reservation or token writes.
-        build_assisted_quote(client=client, verified_decision=cap)
+        from management.services.ig_assisted_scopes import VerifiedAssistedSelection
+        quote_reader = observe_assisted_quote if verified_in_call else build_assisted_quote
+        quote_reader(client=client, **({"verified_selection": cap}
+            if type(cap) is VerifiedAssistedSelection else {"verified_decision": cap}))
     except CheckoutConfigurationError as exc:
         _fail(_reason(exc))
 
@@ -662,7 +929,7 @@ def current_assisted_offer(client, revision=None, now=None):
     try:
         now = commerce._now(now)
         Request, Decision, _Execution, _Image = commerce._models()
-        request = Request.objects.filter(client_id=client.pk).order_by("-created_at", "-pk").first()
+        request = commerce.latest_assisted_request(client.pk)
         if not request:
             return {"ready": False, "reason": "assisted_request_absent", "can_prepare_checkout": False}
         decision = Decision.objects.select_related("actor").filter(request=request).order_by("-version").first()
@@ -670,20 +937,44 @@ def current_assisted_offer(client, revision=None, now=None):
             return {"ready": False, "reason": "approved_decision_missing", "request": request, "decision": decision, "can_prepare_checkout": False}
         execution = _execution_query().filter(request=request, decision=decision).first()
         if execution:
-            result = validate_assisted_proposal(execution.proposal, now=now, fresh=True)
+            if execution.scope == "partial":
+                from management.services.ig_checkout import observe_assisted_quote
+                result = _validated_execution(execution, now=now, fresh=True)
+                quote = observe_assisted_quote(client=client, verified_selection=result["verified_selection"])
+                if quote.digest != execution.proposal.items_digest or quote.quoted_total != execution.quoted_total:
+                    _fail("assisted_quote_changed")
+            else:
+                result = validate_assisted_proposal(execution.proposal, now=now, fresh=True)
             if not result.get("ready"):
                 _fail(result.get("reason") or "assisted_quote_changed")
-            cap = result["verified_decision"]
+            cap = result.get("verified_selection") or result["verified_decision"]
             # An already prepared proposal is dialog truth, never capacity for
             # another operation. The root effect owner replays its same UUID.
             can_prepare, prepare_reason = False, "assisted_checkout_already_prepared"
         else:
-            cap = commerce.load_verified_assisted_decision(request.pk, decision.pk, actor=decision.actor,
-                expected_request_digest=request.envelope_hmac, expected_decision_digest=decision.envelope_hmac, now=now)
             result = {"proof": {"request_id": str(request.pk), "decision_id": str(decision.pk),
                 "request_digest": request.envelope_hmac, "decision_digest": decision.envelope_hmac}}
             can_prepare, prepare_reason = False, "assisted_full_ready_required"
-            if cap.lines and len(cap.ready_lines) == len(cap.lines):
+            if (decision.envelope["snapshot"].get("scoped_quotes") or {}).get("selected"):
+                from management.services.ig_assisted_partial import current_verified_selection
+                selected = current_verified_selection(client, request, decision, revision=revision, now=now)
+                prepare_reason = "choice_required"
+                if selected is not None:
+                    cap = selected
+                    # The native choice producer has just verified the parent,
+                    # delivered receipt, current owner and conserved coverage.
+                    # Reuse that per-call proof for observation. Effect owners
+                    # retain their independent fresh admission and quote gates.
+                    _offer_catalog_readiness(client, cap, now=now, verified_in_call=True)
+                    result.update(verified_selection=cap, selection=_selected_export(cap))
+                    can_prepare, prepare_reason = True, ""
+                else:
+                    cap = commerce.load_verified_assisted_decision(request.pk, decision.pk, actor=decision.actor,
+                        expected_request_digest=request.envelope_hmac, expected_decision_digest=decision.envelope_hmac, now=now)
+            else:
+                cap = commerce.load_verified_assisted_decision(request.pk, decision.pk, actor=decision.actor,
+                    expected_request_digest=request.envelope_hmac, expected_decision_digest=decision.envelope_hmac, now=now)
+            if not (decision.envelope["snapshot"].get("scoped_quotes") or {}).get("selected") and cap.lines and len(cap.ready_lines) == len(cap.lines):
                 _offer_catalog_readiness(client, cap, now=now)
                 settings_obj = InstagramBotSettings.objects.filter(pk=cap.source_proof["settings_id"]).first()
                 try:
@@ -692,7 +983,8 @@ def current_assisted_offer(client, revision=None, now=None):
                 except AssistedCheckoutError as exc:
                     prepare_reason = exc.reason
         return {**result, "ready": True, "reason": "", "request": request, "decision": decision,
-            "verified_decision": cap, "rows": [line.as_dict() for line in cap.lines], "proof": result["proof"],
+            "verified_decision": cap.decision if result.get("verified_selection") else cap,
+            "rows": [line.as_dict() for line in cap.lines], "proof": result["proof"],
             "current_capture": cap.current_capture, "can_prepare_checkout": can_prepare,
             "prepare_reason": prepare_reason, "can_prepare_reason": prepare_reason,
             "prepare_message": _offer_message(prepare_reason)}

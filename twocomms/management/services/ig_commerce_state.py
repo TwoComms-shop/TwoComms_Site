@@ -1338,3 +1338,36 @@ def resume_turn_delivery(
         if state != IgCommerceTurnDecision.DeliveryState.SENT:
             _ensure_review(locked, f"delivery_{state}")
         return locked
+
+
+def append_assisted_adoption_transition(client, source, session, lines, *, expected_revision, next_snapshot, signed_receipt):
+    """Dedicated native-card transition; never reinterpret copied wishes as text."""
+    from management.services import ig_assisted_commerce as commerce
+    from management.services.ig_assisted_continuation_sources import ACTION, SCHEMA, AssistedAdoptionError
+    import hmac
+    value = signed_receipt.get("manifest") or {}
+    signature = commerce._sign("residual_adoption", value, signed_receipt.get("key_id"))
+    session = IgCommerceSelectionSession.objects.select_for_update().get(pk=session.pk, client=client, open_slot=1, state="open")
+    if (not signature or not hmac.compare_digest(str(signed_receipt.get("hmac") or ""), signature)
+        or expected_revision != 0 or session.revision != expected_revision or session.lines
+        or value.get("source_id") != source.pk or value.get("session_id") != session.pk
+        or value.get("episode_id") != session.commercial_episode_id or value.get("generation") != session.generation
+        or value.get("to_revision") != 1 or value.get("previous_digest") != commerce._digest(session.snapshot())
+        or value.get("next_digest") != commerce._digest(next_snapshot) or next_snapshot.get("lines") != lines
+        or source.client_id != client.pk or source.sender_id != client.igsid or source.role != "user"
+        or source.source != "webhook" or source.status == "failed" or not source.quick_reply_payload.startswith("AC1:")):
+        raise AssistedAdoptionError("adoption_native_transition_input_invalid")
+    event_at, event_id = _event_key(source)
+    transition = IgCommerceSelectionTransition.objects.create(session=session, source_message=source,
+        action=ACTION, from_revision=0, to_revision=1, previous_snapshot=session.snapshot(), next_snapshot=deepcopy(next_snapshot),
+        effects={SCHEMA: deepcopy(signed_receipt)}, reasons=["authenticated_residual_wishlist_adoption"],
+        source_order_key=f"{event_at.isoformat()}|{event_id}")
+    IgCommerceTurnDecision.objects.create(source_message=source, session=session, transition=transition,
+        request_payload={"producer": ACTION, "native_payload": source.quick_reply_payload},
+        result_payload={"reason": ACTION, "adoption_digest": commerce._digest(value)}, accepted=True, is_stale=False,
+        reply_payload={}, effects_payload={}, delivery_required=False,
+        delivery_state=IgCommerceTurnDecision.DeliveryState.NOT_REQUIRED)
+    session.lines, session.active_index, session.revision = deepcopy(lines), 0, 1
+    session.last_provider_event_at, session.last_provider_message_id = event_at, event_id
+    session.save(update_fields=["lines", "active_index", "revision", "last_provider_event_at", "last_provider_message_id", "updated_at"])
+    return transition

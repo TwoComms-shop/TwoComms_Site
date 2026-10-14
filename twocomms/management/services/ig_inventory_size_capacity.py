@@ -61,10 +61,11 @@ def _effective(index, size, fit):
 
 def _protected_rows(variant_id, now):
     from management.models import IgCheckoutInventoryReservation as Reservation
+    from management.services.ig_inventory import protected_inventory_reservation_q
     query = Reservation.objects.select_for_update(nowait=True) if connection.vendor == "mysql" else Reservation.objects.select_for_update()
     try:
         rows = list(query.filter(allocation_source__in=["catalog_variant", ""], color_variant_id=variant_id).filter(
-                Q(state=Reservation.State.ACTIVE, expires_at__gt=now) | Q(state=Reservation.State.PAID_COMMITTED))
+                protected_inventory_reservation_q(now))
             .order_by("pk")[:MAX_RESERVATIONS + 1])
     except OperationalError as exc:
         if exc.args and exc.args[0] in {1205, 3572}:

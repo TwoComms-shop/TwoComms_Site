@@ -12,6 +12,7 @@ from management.services import ig_revision_cart_binding as binding_contract
 
 SCHEMA = "ig-checkout-cart-provenance.v1"
 ASSISTED_SCHEMA = "ig-checkout-cart-provenance.v2"
+SELECTED_SCHEMA = "ig-checkout-cart-provenance.v3"
 MAX_EXPANDED_ROWS = 64
 OWNER_KEYS = {"proposal_id", "proposal_pk", "revision_id", "revision", "client_id", "deal_id", "episode_id"}
 BINDING_KEYS = {"schema", "scope", "source_capture_digest", "session_id", "generation", "selection_revision",
@@ -82,8 +83,10 @@ def _owner(owner):
 
 def _binding(raw, owner):
     binding = _copy(raw)
-    if isinstance(binding, dict) and binding.get('schema') == binding_contract.ASSISTED_SCHEMA:
-        checked = binding_contract.validate_assisted_cart_binding(binding, episode_id=owner['episode_id'])
+    if isinstance(binding, dict) and binding.get('schema') in {binding_contract.ASSISTED_SCHEMA, binding_contract.SELECTED_SCHEMA}:
+        checker = (binding_contract.validate_selected_cart_binding
+            if binding['schema'] == binding_contract.SELECTED_SCHEMA else binding_contract.validate_assisted_cart_binding)
+        checked = checker(binding, episode_id=owner['episode_id'])
         if (not checked.ok or binding['scope']['client_id'] != owner['client_id']
             or binding['assisted_commerce']['client_id'] != owner['client_id']):
             _reject('assisted_cart_provenance_owner_changed')
@@ -129,12 +132,28 @@ def _binding(raw, owner):
     return binding
 
 
+def _provenance_schema(binding):
+    return {binding_contract.SCHEMA: SCHEMA, binding_contract.ASSISTED_SCHEMA: ASSISTED_SCHEMA,
+        binding_contract.SELECTED_SCHEMA: SELECTED_SCHEMA}.get(binding.get('schema'))
+
+
 def _configuration(raw, *, schema=SCHEMA):
-    configured = (binding_contract.union_configuration(raw, schema=binding_contract.ASSISTED_SCHEMA)
-        if schema == ASSISTED_SCHEMA else binding_contract._configuration(raw))
+    configured = (binding_contract.union_configuration(raw,
+        schema=binding_contract.SELECTED_SCHEMA if schema == SELECTED_SCHEMA else binding_contract.ASSISTED_SCHEMA)
+        if schema in {ASSISTED_SCHEMA, SELECTED_SCHEMA} else binding_contract._configuration(raw))
     if configured is None:
         _reject("cart_provenance_configuration_invalid")
     return configured
+
+
+def _selected_totals(schema, binding, groups):
+    if schema != SELECTED_SCHEMA:
+        return
+    evidence = binding['assisted_commerce']
+    if (sum((_money(group['line_total']) for group in groups), Decimal('0')) != _money(evidence['quoted_total'])
+        or sum(group['configuration']['qty'] for group in groups if group['configuration'].get('is_custom') is True)
+            != evidence['custom_quantity']):
+        _reject('selected_cart_approved_totals_changed')
 
 
 def legacy_unknown():
@@ -156,8 +175,8 @@ def capture_proposal_provenance(*, revision_snapshot, owner, proposal_items):
         return legacy_unknown()
     owner = _owner(owner)
     binding = _binding(revision_snapshot["source_cart_binding"], owner)
-    schema = ASSISTED_SCHEMA if binding['schema'] == binding_contract.ASSISTED_SCHEMA else SCHEMA
-    if schema == ASSISTED_SCHEMA and revision_snapshot.get('assisted_commerce') != binding['assisted_commerce']:
+    schema = _provenance_schema(binding)
+    if schema in {ASSISTED_SCHEMA, SELECTED_SCHEMA} and revision_snapshot.get('assisted_commerce') != binding['assisted_commerce']:
         _reject('assisted_cart_approval_changed')
     frozen = revision_snapshot.get("items")
     maps = binding["quote_line_map"]
@@ -180,10 +199,11 @@ def capture_proposal_provenance(*, revision_snapshot, owner, proposal_items):
         groups.append({"proposal_item_id": item["proposal_item_id"], "quote_position": index,
             "configuration": config, "line_total": str(_money(item.get("line_total"))),
             "unit_price": str(_money(item.get("unit_price")))})
-    if schema == ASSISTED_SCHEMA:
+    if schema in {ASSISTED_SCHEMA, SELECTED_SCHEMA}:
         if (sum(row['configuration']['qty'] for row in groups) > 50
             or not Decimal('0') < sum((_money(row['line_total']) for row in groups), Decimal('0')) <= Decimal('1000000.00')):
             _reject('assisted_cart_bounds')
+    _selected_totals(schema, binding, groups)
     return {"schema": schema, "status": "bound", "owner": owner, "binding": binding,
         "proposal_items": groups, "item_map": []}
 
@@ -216,7 +236,9 @@ def _expanded_map(provenance, cart_items):
         source = provenance["binding"]["quote_line_map"][quote_position]
         rows.append({"cart_position": position, "proposal_item_id": group["proposal_item_id"],
             "quote_position": quote_position, "line_id": source["line_id"], "recipient_id": source["recipient_id"],
-            "configuration": config})
+            "configuration": config,
+            **({key: source[key] for key in ('original_index', 'current_line_id', 'current_index')}
+                if provenance['schema'] == SELECTED_SCHEMA else {})})
     for group in groups:
         quantity, total = totals[group["proposal_item_id"]]
         if quantity != group["configuration"]["qty"] or total != _money(group["line_total"]):
@@ -250,15 +272,15 @@ def validate_attempt_provenance(snapshot):
     result = _copy(raw)
     if not isinstance(result, dict) or set(result) != {"schema", "status", "owner", "binding", "proposal_items", "item_map"}:
         _reject("cart_attempt_provenance_invalid")
-    if result["schema"] not in {SCHEMA, ASSISTED_SCHEMA} or result["status"] != "bound":
+    if result["schema"] not in {SCHEMA, ASSISTED_SCHEMA, SELECTED_SCHEMA} or result["status"] != "bound":
         _reject("cart_attempt_provenance_invalid")
     owner = _owner(result["owner"])
     if snapshot.get("proposal_id") != owner["proposal_id"] or snapshot.get("checkout_surface") != "instagram_proposal":
         _reject("cart_attempt_owner_changed")
     binding = _binding(result["binding"], owner)
-    if (result['schema'] == ASSISTED_SCHEMA) != (binding['schema'] == binding_contract.ASSISTED_SCHEMA):
+    if result['schema'] != _provenance_schema(binding):
         _reject('assisted_cart_schema_changed')
-    if result['schema'] == ASSISTED_SCHEMA and snapshot.get('assisted_commerce') != binding['assisted_commerce']:
+    if result['schema'] in {ASSISTED_SCHEMA, SELECTED_SCHEMA} and snapshot.get('assisted_commerce') != binding['assisted_commerce']:
         _reject('assisted_cart_approval_changed')
     if "source_cart_binding" in snapshot and _copy(snapshot["source_cart_binding"]) != binding:
         _reject("cart_attempt_binding_changed")
@@ -274,6 +296,7 @@ def validate_attempt_provenance(snapshot):
             _reject("cart_attempt_proposal_items_invalid")
         ids.add(group["proposal_item_id"])
         _money(group["line_total"]); _money(group["unit_price"])
+    _selected_totals(result["schema"], binding, groups)
     if result["item_map"] != _expanded_map(result, snapshot.get("cart")):
         _reject("cart_attempt_item_map_changed")
     return result

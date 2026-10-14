@@ -301,6 +301,8 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
 
     from orders.services.delivery_payment import delivery_payment_snapshot
     delivery_policy = amounts.get('delivery_payment_snapshot') or delivery_payment_snapshot(order)
+    from management.services.ig_assisted_partial_shipping import assisted_shipping_snapshot
+    delivery_policy = assisted_shipping_snapshot(order, delivery_policy)
     if delivery_policy.get('mode') == 'customer_paid_included' and delivery_policy['valid'] is True:
         merchandise_payable = delivery_policy['merchandise_total']
     delivery_prepaid = delivery_policy['delivery_prepaid']
@@ -325,7 +327,8 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
     # A manual order contract must not weaken a reviewed Instagram agreement.
     instagram_authority = bool(
         delivery_policy['source_locked'] or delivery_policy['requires_manual']
-        or payment_payload.get('instagram_delivery_contract') or reconciliation or manager_payment_verified
+        or payment_payload.get('instagram_delivery_contract') or payment_payload.get('ig_assisted_shipping')
+        or reconciliation or manager_payment_verified
         or payment_payload.get("manager_payment_decision_id")
         or payment_payload.get("manual_payment_evidence_confirmed")
     )
@@ -394,6 +397,7 @@ def build_order_payment_snapshot(order) -> dict[str, Any]:
         "delivery_payment_requires_manual": delivery_policy['requires_manual'],
         "delivery_payment_contract_valid": delivery_policy['valid'],
         "delivery_payment_authority": delivery_policy['authority'],
+        "delivery_payment_label": delivery_policy['label'],
         "delivery_payment_method": manual_payment["payment_method"] if manual_payment_valid else "Cash",
         "manual_shipment_payment_valid": manual_payment_valid,
         "cod_enabled": manual_payment["cod_enabled"] and cod_amount > 0 if manual_payment_valid else cod_amount > 0,
@@ -487,6 +491,8 @@ def _shipment_contract_fingerprint(order, snapshot: dict[str, Any]) -> str:
     payload = getattr(order, 'payment_payload', None)
     payload = payload if isinstance(payload, dict) else {}
     contract['delivery_source'] = payload.get('delivery_payment') or payload.get('instagram_delivery_contract') or {}
+    if 'ig_assisted_shipping' in payload:
+        contract['assisted_shipping'] = payload['ig_assisted_shipping']
     contract["items"] = [
         {name: str(getattr(item, name, "") or "") for name in (
             "pk", "item_kind", "film_length_m", "qty", "unit_price", "title",
@@ -753,6 +759,17 @@ class NovaPoshtaDocumentService:
         }
 
     def create_waybill(self, order, payload: dict[str, Any]) -> dict[str, Any]:
+        from management.services.ig_assisted_partial_shipping import (
+            AssistedShippingError, assisted_shipping_contract, assisted_requested_payer_allowed,
+            assess_carrier_charge, record_assisted_carrier_charge,
+        )
+        try:
+            accepted_shipping = assisted_shipping_contract(order)
+        except AssistedShippingError as exc:
+            raise NovaPoshtaDocumentError(str(exc)) from exc
+        if accepted_shipping is not None and (order.tracking_number or order.nova_poshta_document_ref
+                or (order.payment_payload.get('ig_assisted_shipping_review') or {}).get('state') == 'requires_review'):
+            raise NovaPoshtaDocumentError('Попередня ТТН потребує звірки або підтвердженого видалення. Повторне створення заблоковано.')
         from management.services.ig_split_execution import assert_legacy_waybill_allowed, SplitExecutionError
         try:
             assert_legacy_waybill_allowed(order)
@@ -763,7 +780,9 @@ class NovaPoshtaDocumentService:
         snapshot = build_order_payment_snapshot(order)
         if snapshot['delivery_payment_requires_manual']:
             raise NovaPoshtaDocumentError('Уточніть і збережіть оплату доставки в замовленні перед створенням ТТН.')
-        if str(payload.get('payer_type') or snapshot['delivery_payer_type']) != snapshot['delivery_payer_type']:
+        requested_payer = str(payload.get('payer_type') or snapshot['delivery_payer_type'])
+        allowed_payer = assisted_requested_payer_allowed(order, requested_payer)
+        if allowed_payer is False or (allowed_payer is None and requested_payer != snapshot['delivery_payer_type']):
             raise NovaPoshtaDocumentError('Платник доставки має відповідати збереженим умовам замовлення.')
         if not self.is_configured():
             raise NovaPoshtaDocumentError("NOVA_POSHTA_API_KEY не налаштований.")
@@ -847,7 +866,7 @@ class NovaPoshtaDocumentService:
         )
 
         method_properties = {
-            "PayerType": snapshot['delivery_payer_type'],
+            "PayerType": requested_payer,
             "PaymentMethod": str(payload.get("payment_method") or "Cash").strip() or "Cash",
             "DateTime": date.today().strftime("%d.%m.%Y"),
             "CargoType": "Parcel",
@@ -885,6 +904,18 @@ class NovaPoshtaDocumentService:
         if cod_amount > 0:
             method_properties["AfterpaymentOnGoodsCost"] = self._format_money(cod_amount)
 
+        if accepted_shipping is not None and requested_payer == 'Recipient':
+            # A real tariff response checks the ceiling before document creation.
+            # Its actual save response is independently checked below; this
+            # amount never becomes delivery prepayment or merchandise due.
+            tariff = self._request('InternetDocument', 'getDocumentPrice', method_properties)
+            tariff_row = next(iter(tariff.get('data') or []), None) or {}
+            try:
+                assess_carrier_charge(accepted_shipping, payer_type=requested_payer,
+                    carrier_cost=tariff_row.get('Cost'))
+            except AssistedShippingError as exc:
+                raise NovaPoshtaDocumentError(str(exc)) from exc
+
         try:
             response = self._request("InternetDocument", "save", method_properties)
         except NovaPoshtaInvalidDescriptionError:
@@ -899,11 +930,30 @@ class NovaPoshtaDocumentService:
         result = next(iter(response.get("data") or []), None) or {}
         tracking_number = str(result.get("IntDocNumber") or "").strip()
         document_ref = str(result.get("Ref") or "").strip()
-        if not tracking_number:
-            self._delete_incomplete_waybill_safely(document_ref)
-            raise NovaPoshtaDocumentError("Nova Poshta API не повернув номер ТТН.")
-        if not document_ref:
-            raise NovaPoshtaDocumentError("Nova Poshta API не повернув Ref створеної накладної.")
+        shipping_review = None
+        if accepted_shipping is not None:
+            try:
+                if not tracking_number or not document_ref:
+                    raise AssistedShippingError('assisted_created_document_incomplete')
+                if 'PayerType' in result and result['PayerType'] != requested_payer:
+                    raise AssistedShippingError('assisted_created_payer_changed')
+                record_assisted_carrier_charge(order, tracking_number=tracking_number, document_ref=document_ref,
+                    payer_type=requested_payer, carrier_cost=result.get('CostOnSite'), source='nova_poshta_save')
+            except AssistedShippingError as exc:
+                # Preserve the actual provider reference for native review and
+                # cancellation. Never turn an ambiguous delete into a successful
+                # rollback or silently permit a second provider create.
+                shipping_review = {'state': 'requires_review', 'reason': exc.reason,
+                    'tracking_number': tracking_number, 'document_ref': document_ref,
+                    'payer_type': str(result.get('PayerType', requested_payer)),
+                    'carrier_cost': str(result.get('CostOnSite') or '')}
+                order.payment_payload = {**order.payment_payload, 'ig_assisted_shipping_review': shipping_review}
+        if shipping_review is None:
+            if not tracking_number:
+                self._delete_incomplete_waybill_safely(document_ref)
+                raise NovaPoshtaDocumentError("Nova Poshta API не повернув номер ТТН.")
+            if not document_ref:
+                raise NovaPoshtaDocumentError("Nova Poshta API не повернув Ref створеної накладної.")
 
         return {
             "tracking_number": tracking_number,
@@ -912,6 +962,7 @@ class NovaPoshtaDocumentService:
             "recipient_contact_ref": recipient_contact_ref,
             "recipient_point": recipient_point,
             "sender_point": sender_point,
+            **({'shipping_review': shipping_review} if shipping_review is not None else {}),
             "warnings": [str(item).strip() for item in response.get("warnings") or [] if str(item).strip()],
         }
 

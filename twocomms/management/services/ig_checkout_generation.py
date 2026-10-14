@@ -368,6 +368,50 @@ def _provider_terminal_proof_hmac(proof) -> str:
     ).hexdigest()
 
 
+_CREATE_REFUSAL_FIELDS = frozenset({"version", "hmac_key_id", "source", "generation_id", "attempt_id",
+    "reference", "call_token_digest", "request_digest", "reason_digest", "observed_at", "hmac"})
+
+
+def _create_refusal_signature(proof):
+    return salted_hmac("management.ig_checkout.classified_create_refusal.v1",
+        json.dumps({key: proof[key] for key in sorted(_CREATE_REFUSAL_FIELDS - {"hmac"})},
+            sort_keys=True, separators=(",", ":")), secret=settings.SECRET_KEY,
+        algorithm="sha256").hexdigest()
+
+
+def _prior_create_ambiguity(generation):
+    # The native append-only journal survives later local state/JSON edits.
+    return generation.events.filter(kind="provider_ambiguous").exists()
+
+
+def _create_refusal_proof_matches(generation, attempt):
+    """A FAILED label cannot replace the classified native rejection receipt."""
+    proof = (attempt.event_state or {}).get("provider_create_refusal")
+    if (not isinstance(proof, dict) or set(proof) != _CREATE_REFUSAL_FIELDS
+        or type(proof.get("version")) is not int or proof["version"] != 1
+        or proof.get("hmac_key_id") != _PROVIDER_TERMINAL_PROOF_KEY_ID
+        or proof.get("source") != "classified_create_refusal"
+        or generation.state != generation.State.FAILED or attempt.status != PaymentAttempt.Status.FAILED
+        or generation.provider_invoice_id or attempt.monobank_invoice_id or attempt.invoice_url
+        or not generation.provider_request_digest or not generation.provider_call_token
+        or (attempt.event_state or {}).get("invoice_creation_ambiguous")
+        or proof.get("generation_id") != generation.pk or proof.get("attempt_id") != attempt.pk
+        or proof.get("reference") != attempt.reference
+        or proof.get("request_digest") != generation.provider_request_digest
+        or proof.get("call_token_digest") != hashlib.sha256(generation.provider_call_token.encode()).hexdigest()
+        or not isinstance(proof.get("reason_digest"), str) or len(proof["reason_digest"]) != 64):
+        return False
+    try:
+        observed = parse_datetime(proof["observed_at"])
+        return bool(observed and timezone.is_aware(observed)
+            and generation.created_at <= observed <= timezone.now()
+            and isinstance(proof["hmac"], str)
+            and secrets.compare_digest(proof["hmac"], _create_refusal_signature(proof))
+            and not _prior_create_ambiguity(generation))
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def _build_provider_terminal_proof(
     generation,
     attempt,
@@ -1499,6 +1543,21 @@ def _persist_provider_failure(attempt_id, *, ambiguous, reason):
             reason="provider_creation_ambiguous",
         )
         return
+    if (generation.state == generation.State.PROVIDER_INFLIGHT
+        and attempt.status in {PaymentAttempt.Status.INITIATED, PaymentAttempt.Status.PROCESSING}
+        and generation.provider_request_digest and generation.provider_call_token
+        and not generation.provider_invoice_id and not attempt.monobank_invoice_id and not attempt.invoice_url
+        and not (attempt.event_state or {}).get("invoice_creation_ambiguous")
+        and not _prior_create_ambiguity(generation)):
+        proof = {"version": 1, "hmac_key_id": _PROVIDER_TERMINAL_PROOF_KEY_ID,
+            "source": "classified_create_refusal", "generation_id": generation.pk,
+            "attempt_id": attempt.pk, "reference": attempt.reference,
+            "call_token_digest": hashlib.sha256(generation.provider_call_token.encode()).hexdigest(),
+            "request_digest": generation.provider_request_digest,
+            "reason_digest": hashlib.sha256(str(reason).encode()).hexdigest(), "observed_at": now.isoformat()}
+        proof["hmac"] = _create_refusal_signature(proof)
+        attempt.event_state = {**(attempt.event_state or {}), "provider_create_refusal": proof}
+        attempt.save(update_fields=["event_state", "updated"])
     _terminalize_locked_generation(
         proposal,
         generation,
@@ -1700,9 +1759,8 @@ def terminalize_generation_attempt(
                     "attempt_reference": attempt.reference,
                 },
             )
-        elif (
-            _provider_boundary_uncertain(generation, attempt)
-            or (provider_terminal_requested and provider_terminal_proof is None)
+        elif provider_terminal_proof is None and (
+            _provider_boundary_uncertain(generation, attempt) or provider_terminal_requested
         ):
             if generation.state not in {
                 generation.State.AMBIGUITY_REVIEW,
@@ -1959,6 +2017,14 @@ def _mark_resource_review(
         source=source,
         now=now,
     )
+    if getattr(proposal, "_ig_assisted_execution_id", None) is not None:
+        from management.ig_assisted_commerce_models import IgAssistedCommerceExecution
+        if IgAssistedCommerceExecution.objects.filter(pk=proposal._ig_assisted_execution_id, scope="partial").exists():
+            from management.models import IgCheckoutInventoryReservation as Reservation
+            Reservation.objects.filter(invoice_generation=generation,
+                state__in=[Reservation.State.ACTIVE, Reservation.State.RELEASED]).update(
+                    state=Reservation.State.OVERBOOKED_REVIEW,
+                    release_reason=str(reason or "assisted_scope_overlap")[:128], updated_at=now)
     from management.services.ig_checkout_payment import (
         project_verified_payment_without_order,
     )
@@ -2145,6 +2211,19 @@ def apply_verified_generation_payment(
                 reason=generation.review_reason,
             )
             return None, False
+        partial = False
+        if getattr(proposal, "_ig_assisted_execution_id", None) is not None:
+            from management.ig_assisted_commerce_models import IgAssistedCommerceExecution
+            partial = IgAssistedCommerceExecution.objects.filter(pk=proposal._ig_assisted_execution_id, scope="partial").exists()
+        if partial:
+            from management.services.ig_assisted_checkout import validate_assisted_attempt, admit_assisted_settlement
+            original = validate_assisted_attempt(attempt, now=timezone.now())
+            admitted = admit_assisted_settlement(attempt, now=timezone.now()) if original.get("ready") is True else original
+            if not isinstance(admitted, dict) or admitted.get("ready") is not True:
+                _mark_resource_review(deal, proposal, generation, attempt, payload=payload,
+                    source=source, now=timezone.now(),
+                    reason=(admitted or {}).get("reason") or "assisted_scope_overlap")
+                return None, False
         if (
             proposal.winner_invoice_generation_id
             and proposal.winner_invoice_generation_id != generation.pk
@@ -2193,14 +2272,21 @@ def apply_verified_generation_payment(
             )
             return None, False
 
-        if getattr(proposal, "_ig_assisted_execution_id", None) is not None or "assisted_execution" in (attempt.cart_snapshot or {}):
-            from management.services.ig_assisted_checkout import validate_assisted_attempt
+        if not partial and (getattr(proposal, "_ig_assisted_execution_id", None) is not None or "assisted_execution" in (attempt.cart_snapshot or {})):
+            from management.services.ig_assisted_checkout import validate_assisted_attempt, admit_assisted_settlement
             assisted = validate_assisted_attempt(attempt, now=now)
             if not isinstance(assisted, dict) or assisted.get("ready") is not True:
                 _mark_resource_review(deal, proposal, generation, attempt, payload=payload,
                     source=source, now=now,
                     reason=(assisted or {}).get("reason") or "assisted_original_proof_invalid")
                 return None, False
+            if assisted.get("verified_selection") is not None:
+                admitted = admit_assisted_settlement(attempt, now=now)
+                if not isinstance(admitted, dict) or admitted.get("ready") is not True:
+                    _mark_resource_review(deal, proposal, generation, attempt, payload=payload,
+                        source=source, now=now,
+                        reason=(admitted or {}).get("reason") or "assisted_scope_overlap")
+                    return None, False
 
         if not proposal.winner_invoice_generation_id:
             generation.winner_slot = 1
@@ -2485,21 +2571,26 @@ def resolve_due_generation_ambiguities(*, now=None, limit=100, dry_run=False):
                     attempt.save(update_fields=[
                         "status", "error_reason", "last_status_at", "updated",
                     ])
-                result["released_inventory"] += int(
+                released_inventory = int(
                     release_generation_inventory(
                         generation,
                         reason="provider_create_ambiguity_expired",
                     )
                     or 0
                 )
-                result["released_promos"] += int(
-                    bool(
-                        release_attempt_promo(
-                            attempt,
-                            reason="provider_create_ambiguity_expired",
-                        )
+                released_promo = bool(
+                    release_attempt_promo(
+                        attempt,
+                        reason="provider_create_ambiguity_expired",
                     )
                 )
+                result["released_inventory"] += released_inventory
+                result["released_promos"] += int(released_promo)
+                from management.models import IgCheckoutInventoryReservation
+                from management.services.ig_inventory import protected_inventory_reservation_q
+                resources_held = IgCheckoutInventoryReservation.objects.filter(
+                    invoice_generation=generation,
+                ).filter(protected_inventory_reservation_q(now)).exists()
                 proposal.status = proposal.Status.MANAGER_REVIEW
                 proposal.save(update_fields=["status", "updated_at"])
                 _event(
@@ -2510,7 +2601,10 @@ def resolve_due_generation_ambiguities(*, now=None, limit=100, dry_run=False):
                         "attempt_reference": attempt.reference,
                         "request_digest": generation.provider_request_digest,
                         "provider_invoice_id": generation.provider_invoice_id or "",
-                        "resources_released": True,
+                        "resources_released": bool(released_inventory or released_promo) and not resources_held,
+                        "released_inventory": released_inventory,
+                        "released_promo": released_promo,
+                        "resources_held_for_review": resources_held,
                         "blind_retry_allowed": False,
                     },
                 )

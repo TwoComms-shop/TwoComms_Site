@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import F, Q, Sum
@@ -14,6 +15,28 @@ class InventoryReservationError(ValueError):
     def __init__(self, reason):
         self.reason = str(reason or "inventory_unavailable")[:128]
         super().__init__(self.reason)
+
+
+def uncertain_inventory_reservation_q():
+    """Potential bank effects and paid review cannot become free by ageing.
+
+    Trusted terminalization explicitly changes reservation state to RELEASED.
+    A provider dispatch digest remains durable evidence even if a local clock
+    or generation label later changes; ACTIVE rows retain that obligation.
+    """
+    from management.models import IgCheckoutInventoryReservation as Reservation, IgCheckoutInvoiceGeneration as Generation
+    effect = (Q(invoice_generation__isnull=False) & ~Q(invoice_generation__provider_request_digest="")) | Q(
+        invoice_generation__state__in=[Generation.State.PROVIDER_INFLIGHT, Generation.State.PROVIDER_AMBIGUOUS,
+            Generation.State.AMBIGUITY_REVIEW, Generation.State.LATE_PROVIDER_REVIEW,
+            Generation.State.INVOICE_CREATED, Generation.State.WINNER_CLAIMED,
+            Generation.State.PAID_WINNER, Generation.State.LATE_PAID_REVIEW, Generation.State.RESOURCE_REVIEW])
+    return Q(state__in=[Reservation.State.ACTIVE, Reservation.State.OVERBOOKED_REVIEW]) & effect
+
+
+def protected_inventory_reservation_q(at):
+    from management.models import IgCheckoutInventoryReservation as Reservation
+    return (Q(state=Reservation.State.ACTIVE, expires_at__gt=at)
+        | Q(state=Reservation.State.PAID_COMMITTED) | uncertain_inventory_reservation_q())
 
 
 def _fingerprint(proposal, allocation_key, *, generation=None):
@@ -88,7 +111,11 @@ def reserve_proposal_inventory(
     from warehouse.models import StockItem
     from productcolors.models import ProductColorVariant
 
+    from management.services.ig_checkout_payment import _prelock_assisted_proposal
+    assisted_owner = _prelock_assisted_proposal(proposal)
     proposal = type(proposal).objects.select_for_update().get(pk=proposal.pk)
+    if assisted_owner is not None:
+        proposal._ig_assisted_execution_id = assisted_owner.pk
     if generation is not None:
         from management.models import IgCheckoutInvoiceGeneration
 
@@ -111,7 +138,7 @@ def reserve_proposal_inventory(
 
     groups = {}
     custom_rows = {}
-    if any(item.product_id is None for item in items):
+    if assisted_owner is not None or any(item.product_id is None for item in items):
         from management.services.ig_checkout_payment import _assisted_proposal_validation, _assisted_custom_rows
         from management.services.ig_checkout_payment import CheckoutPaymentError
         try:
@@ -291,7 +318,7 @@ def release_proposal_inventory(proposal, *, reason="released"):
     return IgCheckoutInventoryReservation.objects.filter(
         proposal=proposal,
         state=IgCheckoutInventoryReservation.State.ACTIVE,
-    ).update(
+    ).exclude(uncertain_inventory_reservation_q()).update(
         state=IgCheckoutInventoryReservation.State.RELEASED,
         released_at=now,
         release_reason=str(reason or "released")[:128],
@@ -309,6 +336,25 @@ def release_generation_inventory(generation, *, reason="released"):
     generation = IgCheckoutInvoiceGeneration.objects.select_for_update().get(
         pk=generation.pk
     )
+    attempt = generation.payment_attempt
+    from management.services.ig_checkout_generation import (
+        _provider_terminal_proof_matches, _cancelled_pre_dispatch_proof_matches,
+        _create_refusal_proof_matches, _retry_source_is_safe,
+    )
+    terminal = generation.state in {generation.State.FAILED, generation.State.CANCELLED, generation.State.EXPIRED}
+    no_effect = (terminal and not generation.provider_invoice_id and not attempt.monobank_invoice_id
+        and not attempt.invoice_url and not (attempt.event_state or {}).get("invoice_creation_ambiguous")
+        and not generation.provider_request_digest)
+    proved = (_provider_terminal_proof_matches(generation, attempt, {"failure", "rejected", "reversed", "cancelled", "expired"})
+        or _cancelled_pre_dispatch_proof_matches(generation, attempt)
+        or _create_refusal_proof_matches(generation, attempt)) if terminal else False
+    selected = IgCheckoutInvoiceGeneration.objects.filter(pk=generation.pk,
+        proposal__assisted_commerce_execution__scope="partial").exists()
+    ordinary_expired = (not selected and generation.state == generation.State.EXPIRED
+        and _retry_source_is_safe(generation, attempt))
+    if (generation.winner_slot == 1 or attempt.order_id or attempt.checkout_winner_claimed
+        or Decimal(str(attempt.paid_amount or 0)) > 0 or not (no_effect or proved or ordinary_expired)):
+        return 0
     now = timezone.now()
     return IgCheckoutInventoryReservation.objects.filter(
         invoice_generation_id=generation.pk,
@@ -380,13 +426,7 @@ def _catalog_variant_protected_quantity(
     reservations = IgCheckoutInventoryReservation.objects.filter(
         allocation_source__in=["catalog_variant", ""],
         color_variant_id=color_variant_id,
-    ).filter(
-        Q(
-            state=IgCheckoutInventoryReservation.State.ACTIVE,
-            expires_at__gt=at,
-        )
-        | Q(state=IgCheckoutInventoryReservation.State.PAID_COMMITTED)
-    )
+    ).filter(protected_inventory_reservation_q(at))
     if exclude_proposal_id is not None:
         reservations = reservations.exclude(proposal_id=exclude_proposal_id)
     if exclude_generation_id is not None:
@@ -571,7 +611,14 @@ def commit_proposal_inventory(
 
     now = timezone.now()
     paid_at = paid_at or now
+    from management.services.ig_checkout_payment import _prelock_assisted_proposal
+    assisted_owner = _prelock_assisted_proposal(proposal)
     proposal = type(proposal).objects.select_for_update().get(pk=proposal.pk)
+    if assisted_owner is not None and generation is not None:
+        from management.services.ig_assisted_checkout import admit_assisted_settlement
+        admitted = admit_assisted_settlement(generation.payment_attempt, now=now)
+        if not isinstance(admitted, dict) or admitted.get("ready") is not True:
+            raise InventoryReservationError((admitted or {}).get("reason") or "assisted_scope_overlap")
     candidate_rows = IgCheckoutInventoryReservation.objects.filter(
         proposal=proposal,
         state__in=[
@@ -1168,14 +1215,14 @@ def release_expired_proposal_inventory(*, limit=500):
         Q(proposal__payment_attempt__isnull=True)
         | Q(proposal__payment_attempt__status__in=["failed", "cancelled", "expired"])
         | Q(proposal__status__in=["cancelled", "expired", "revoked", "superseded"])
-    ).order_by("expires_at", "pk").values_list("pk", flat=True)[:limit])
+    ).exclude(uncertain_inventory_reservation_q()).order_by("expires_at", "pk").values_list("pk", flat=True)[:limit])
     if not ids:
         return 0
     return IgCheckoutInventoryReservation.objects.filter(
         pk__in=ids,
         state=IgCheckoutInventoryReservation.State.ACTIVE,
         expires_at__lte=now,
-    ).update(
+    ).exclude(uncertain_inventory_reservation_q()).update(
         state=IgCheckoutInventoryReservation.State.RELEASED,
         released_at=now,
         release_reason="expired",

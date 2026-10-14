@@ -15,6 +15,7 @@ import re
 
 SCHEMA = "ig-checkout-source-cart.v1"
 ASSISTED_SCHEMA = "ig-checkout-source-cart.v2"
+SELECTED_SCHEMA = "ig-checkout-source-cart.v3"
 MAX_ASSISTED_BINDING_BYTES = 1024 * 1024
 SOURCE_SCHEMA = "source-selections.v1"
 MAX_SOURCE_LINES = 16
@@ -289,7 +290,7 @@ def union_configuration(item, *, schema=SCHEMA):
     """Strict versioned transport; structure alone never grants authority."""
     if schema == SCHEMA:
         return _configuration(item)
-    if schema != ASSISTED_SCHEMA or not isinstance(item, dict):
+    if schema not in {ASSISTED_SCHEMA, SELECTED_SCHEMA} or not isinstance(item, dict):
         return None
     if item.get('product_id') is not None:
         if item.get('is_custom') is True:
@@ -501,6 +502,9 @@ def build_assisted_cart_binding(*, verified_decision, quoted_items, bound_episod
 
 
 def assisted_quote_evidence(cap):
+    from management.services.ig_assisted_scopes import VerifiedAssistedSelection, selection_evidence
+    if type(cap) is VerifiedAssistedSelection:
+        return selection_evidence(cap)
     return {'schema': 'ig-assisted-quote.v1', 'request_id': str(cap.request_id),
         'decision_id': str(cap.decision_id), 'client_id': cap.client_id, 'intention_id': str(cap.intention_id),
         'request_version': cap.request_version, 'decision_version': cap.decision_version,
@@ -523,6 +527,275 @@ def rebind_assisted_cart_episode(binding, episode_id):
     payload['source_binding_digest'] = _digest(source)
     payload['quote_binding_digest'] = _digest({'source_binding_digest': payload['source_binding_digest'],
         'quote_line_map': payload['quote_line_map']})
+    return payload
+
+
+def _selected_source_digest_matches(payload):
+    if not isinstance(payload, dict) or payload.get('schema') != SELECTED_SCHEMA:
+        return False
+    source = {key: value for key, value in payload.items()
+        if key not in {'source_binding_digest', 'quote_line_map', 'quote_binding_digest'}}
+    return _hash(payload.get('source_binding_digest')) and _digest(source) == payload['source_binding_digest']
+
+
+def _selected_shipping_valid(terms):
+    from decimal import Decimal
+    if not isinstance(terms, dict) or set(terms) != {'now', 'later', 'together'}:
+        return False
+    for row in terms.values():
+        if (not isinstance(row, dict) or set(row) != {'payer', 'customer_maximum', 'currency'}
+            or row['payer'] not in {'customer', 'merchant'} or row['currency'] != 'UAH'
+            or not isinstance(row['customer_maximum'], str)
+            or not re.fullmatch(r'(?:0|[1-9]\d{0,6})\.\d{2}', row['customer_maximum'])):
+            return False
+        maximum = Decimal(row['customer_maximum'])
+        if maximum > Decimal('1000000.00') or row['payer'] == 'merchant' and maximum != 0:
+            return False
+    return True
+
+
+def _selected_coverage_valid(coverage, evidence, originals):
+    from uuid import UUID
+    keys = {'schema', 'client_id', 'intention_id', 'root_request_id', 'root_request_digest',
+        'original_quantities', 'selected_line_ids', 'deferred_line_ids', 'settled_line_ids',
+        'inflight_line_ids', 'cancelled_line_ids', 'orders', 'executions', 'ledger_digest', 'coverage_digest'}
+    if (not isinstance(coverage, dict) or set(coverage) != keys
+        or coverage['schema'] != 'assisted-intention-coverage.v1'
+        or type(coverage['client_id']) is not int or coverage['client_id'] != evidence['client_id'] or coverage['intention_id'] != evidence['intention_id']
+        or coverage['root_request_id'] != evidence['root_request_id']
+        or coverage['root_request_digest'] != evidence['root_request_digest']
+        or not _hash(coverage['ledger_digest']) or coverage['ledger_digest'] != evidence['ledger_coverage_digest']
+        or coverage['coverage_digest'] != evidence['coverage_digest']
+        or _digest({key: value for key, value in coverage.items() if key != 'coverage_digest'}) != coverage['coverage_digest']
+        or coverage['inflight_line_ids'] != []):
+        return False
+    # Wish quantities stay observational. Native scope authority separately
+    # authenticates the first accepted full Decision's physical quantities.
+    quantities = coverage['original_quantities']
+    if (not isinstance(quantities, dict) or set(quantities) != {line['line_id'] for line in originals}
+        or any(type(value) is not int or not 1 <= value <= 50 for value in quantities.values())):
+        return False
+    combined = []
+    for bucket in ('selected_line_ids', 'deferred_line_ids', 'settled_line_ids', 'cancelled_line_ids'):
+        values = coverage[bucket]
+        if (not isinstance(values, list) or len(values) > MAX_SOURCE_LINES
+            or any(not _identity(value) for value in values) or len(set(values)) != len(values)
+            or values != evidence[bucket]):
+            return False
+        combined.extend(values)
+    if len(set(combined)) != len(combined) or set(combined) != set(quantities):
+        return False
+    root_order = [line['line_id'] for line in originals]
+    if any(coverage[key] != [line_id for line_id in root_order if line_id in coverage[key]]
+            for key in ('selected_line_ids', 'deferred_line_ids', 'settled_line_ids', 'cancelled_line_ids')):
+        return False
+    original_ledger = {key: _copy(value) for key, value in coverage.items()
+        if key not in {'ledger_digest', 'coverage_digest'}}
+    original_ledger['selected_line_ids'] = []
+    original_ledger['deferred_line_ids'] = [line_id for line_id in root_order
+        if line_id in set(coverage['selected_line_ids']) | set(coverage['deferred_line_ids'])]
+    if _digest(original_ledger) != coverage['ledger_digest']:
+        return False
+    orders, executions = coverage['orders'], coverage['executions']
+    if not isinstance(orders, list) or not isinstance(executions, list) or len(orders) > MAX_SOURCE_LINES or len(executions) > 64:
+        return False
+    by_execution = {}
+    for row in executions:
+        if (not isinstance(row, dict) or set(row) != {'execution_id', 'execution_digest', 'request_id',
+                'decision_id', 'episode_id', 'scope', 'line_ids', 'quantities', 'state'}
+            or not _identity(row['execution_id']) or row['execution_id'] in by_execution
+            or not _positive(row['episode_id'])
+            or any(str(UUID(row[key])) != row[key] for key in ('execution_id', 'request_id', 'decision_id'))
+            or not _hash(row['execution_digest']) or row['scope'] not in {'full', 'partial'}
+            or row['state'] not in {'settled', 'inflight', 'cancelled'}
+            or not isinstance(row['line_ids'], list) or not row['line_ids']
+            or len(set(row['line_ids'])) != len(row['line_ids'])
+            or any(line_id not in quantities for line_id in row['line_ids'])
+            or row['quantities'] != {line_id: quantities[line_id] for line_id in row['line_ids']}):
+            return False
+        by_execution[row['execution_id']] = row
+    seen_orders, seen_executions, settled = set(), set(), []
+    for row in orders:
+        if (not isinstance(row, dict) or set(row) != {'execution_id', 'episode_id', 'order_id', 'line_ids', 'quantities'}
+            or not _positive(row['episode_id']) or not _positive(row['order_id']) or row['order_id'] in seen_orders):
+            return False
+        execution = by_execution.get(row['execution_id'])
+        if (not execution or execution['state'] != 'settled' or row['line_ids'] != execution['line_ids']
+            or row['quantities'] != execution['quantities'] or row['episode_id'] != execution['episode_id']):
+            return False
+        if row['execution_id'] in seen_executions:
+            return False
+        seen_orders.add(row['order_id'])
+        seen_executions.add(row['execution_id'])
+        settled.extend(row['line_ids'])
+    return (len(set(settled)) == len(settled) and set(settled) == set(coverage['settled_line_ids'])
+        and seen_executions == {key for key, row in by_execution.items() if row['state'] == 'settled'}
+        and not any(row['state'] == 'inflight' for row in by_execution.values()))
+
+
+@_finite_assisted_input
+def validate_selected_cart_binding(binding, *, episode_id=None):
+    """Strict v3 selected transport; cryptographic authority stays with its native owner."""
+    from management.services.ig_assisted_scopes import SELECTION_EVIDENCE_KEYS
+    from datetime import datetime
+    from uuid import UUID
+    encoded = _json(binding)
+    if len(encoded.encode()) > MAX_ASSISTED_BINDING_BYTES:
+        return _result('conflict', 'assisted_cart_binding_too_large')
+    payload = json.loads(encoded)
+    keys = {'schema', 'scope', 'bound_episode_id', 'origin_full_capture', 'request_full_capture',
+        'current_capture', 'assisted_commerce', 'coverage', 'choice_proof', 'purchase_proof', 'line_map',
+        'source_capture_digest', 'checkout_item_limit', 'lines', 'source_binding_digest', 'quote_line_map', 'quote_binding_digest'}
+    if not isinstance(payload, dict) or set(payload) != keys or not _selected_source_digest_matches(payload):
+        return _result('conflict', 'selected_cart_binding_invalid')
+    evidence = payload['assisted_commerce']
+    if (not isinstance(evidence, dict) or set(evidence) != set(SELECTION_EVIDENCE_KEYS)
+        or evidence['schema'] != 'ig-assisted-selection.v1' or evidence['scope'] != 'partial'
+        or evidence['currency'] != 'UAH' or type(evidence['client_id']) is not int or not _positive(evidence['client_id'])
+        or any(not _hash(evidence[key]) for key in ('root_request_digest', 'origin_full_capture_digest',
+            'request_digest', 'decision_digest', 'full_capture_digest', 'decision_snapshot_digest',
+            'scope_digest', 'terms_digest', 'coverage_digest', 'ledger_coverage_digest', 'choice_digest', 'purchase_digest'))
+        or any(str(UUID(evidence[key])) != evidence[key] for key in ('intention_id', 'root_request_id', 'request_id', 'decision_id'))
+        or datetime.fromisoformat(evidence['expires_at']).tzinfo is None
+        or type(evidence['custom_quantity']) is not int or not 0 <= evidence['custom_quantity'] <= 50
+        or any(not _positive(evidence[key]) for key in ('choice_source_id', 'purchase_source_id'))):
+        return _result('conflict', 'selected_cart_evidence_invalid')
+    if (evidence['scope_digest'] != _digest({'scope': 'partial',
+            'selected_line_ids': evidence['selected_line_ids'], 'deferred_line_ids': evidence['deferred_line_ids']})
+        or not _selected_shipping_valid(evidence['shipping_terms']) or evidence['delivery_scope'] not in {'now', 'later', 'together'}
+        or not isinstance(payload['choice_proof'], dict) or not isinstance(payload['purchase_proof'], dict)
+        or evidence['choice_digest'] != _digest(payload['choice_proof'])
+        or evidence['purchase_digest'] != _digest(payload['purchase_proof'])
+        or payload['choice_proof'].get('source_id') != evidence['choice_source_id']
+        or payload['purchase_proof'].get('message_id') != evidence['purchase_source_id']):
+        return _result('conflict', 'selected_cart_terms_changed')
+    from decimal import Decimal
+    amount = evidence['quoted_total']
+    if (not isinstance(amount, str) or not re.fullmatch(r'(?:0|[1-9]\d{0,6})\.\d{2}', amount)
+        or not Decimal('0') < Decimal(amount) <= Decimal('1000000.00')):
+        return _result('conflict', 'selected_cart_totals_invalid')
+    origin, request, current = (payload[key] for key in ('origin_full_capture', 'request_full_capture', 'current_capture'))
+    if any(stable_checkout_source_capture(capture) is None for capture in (origin, request, current)):
+        return _result('conflict', 'selected_cart_capture_invalid')
+    scope = current['scope']
+    if (_scope_reason(payload['scope'], scope) or scope['client_id'] != evidence['client_id']
+        or origin['scope']['client_id'] != scope['client_id'] or request['scope']['client_id'] != scope['client_id']
+        or any(capture['scope'][key] != scope[key] for capture in (origin, request)
+            for key in ('reset_id', 'reset_floor', 'source_namespace'))
+        or origin['capture_digest'] != evidence['origin_full_capture_digest']
+        or request['capture_digest'] != evidence['full_capture_digest']
+        or payload['source_capture_digest'] != current['capture_digest']):
+        return _result('conflict', 'selected_cart_owner_changed')
+    bound = payload['bound_episode_id']
+    if (bound is not None and not _positive(bound) or scope['episode_id'] is not None and bound != scope['episode_id']
+        or episode_id is not None and bound != episode_id):
+        return _result('conflict', 'selected_cart_owner_changed')
+    originals, currents = origin['lines'], current['lines']
+    if (not isinstance(originals, list) or not 1 <= len(originals) <= MAX_SOURCE_LINES
+        or not isinstance(currents, list) or not 1 <= len(currents) <= MAX_SOURCE_LINES
+        or any(type(line.get('index')) is not int or line['index'] != index
+            or not _identity(line.get('line_id')) or not _identity(line.get('recipient_id'))
+            for index, line in enumerate(originals))
+        or any(type(line.get('index')) is not int or line['index'] != index
+            or not _identity(line.get('line_id')) or not _identity(line.get('recipient_id'))
+            for index, line in enumerate(currents))
+        or len({line['line_id'] for line in originals}) != len(originals)
+        or len({line['line_id'] for line in currents}) != len(currents)
+        or not _selected_coverage_valid(payload['coverage'], evidence, originals)):
+        return _result('conflict', 'selected_cart_coverage_changed')
+    maps, lines, quote = payload['line_map'], payload['lines'], payload['quote_line_map']
+    if (not isinstance(maps, list) or not 1 <= len(maps) <= CATALOG_CHECKOUT_ITEM_LIMIT
+        or maps != evidence['line_map'] or len(lines) != len(maps) or len(quote) != len(maps)
+        or payload['checkout_item_limit'] != CATALOG_CHECKOUT_ITEM_LIMIT
+        or [row['line_id'] for row in maps] != evidence['selected_line_ids']
+        or not isinstance(payload['choice_proof'], dict) or not isinstance(payload['purchase_proof'], dict)):
+        return _result('conflict', 'selected_cart_line_map_changed')
+    for index, (mapping, line, row) in enumerate(zip(maps, lines, quote, strict=True)):
+        if (set(mapping) != {'line_id', 'recipient_id', 'original_index', 'current_line_id', 'current_index', 'quote_position'}
+            or type(mapping['original_index']) is not int or not 0 <= mapping['original_index'] < len(originals)
+            or type(mapping['current_index']) is not int or not 0 <= mapping['current_index'] < len(currents)
+            or type(mapping['quote_position']) is not int or mapping['quote_position'] != index):
+            return _result('conflict', 'selected_cart_line_map_changed')
+        original, fresh = originals[mapping['original_index']], currents[mapping['current_index']]
+        selected_scope = (fresh.get('source_selection') or {}).get('scope')
+        native_scope = {**scope, 'session_id': current['session_id'], 'generation': current['generation'],
+            'revision': current['selection_revision'], 'line_id': fresh['line_id'], 'recipient_id': fresh['recipient_id']}
+        if (not isinstance(selected_scope, dict) or fresh['source_selection'].get('schema') != 'source-selection.v1'
+            or any(selected_scope.get(key) != value or type(selected_scope.get(key)) is not type(value)
+                for key, value in native_scope.items())):
+            return _result('conflict', 'selected_cart_current_source_changed')
+        expected = {'line_id': mapping['line_id'], 'recipient_id': mapping['recipient_id'], 'index': index,
+            'original_index': mapping['original_index'], 'current_line_id': mapping['current_line_id'],
+            'current_index': mapping['current_index'], 'source_selection': fresh['source_selection']}
+        config = union_configuration(row.get('configuration'), schema=SELECTED_SCHEMA)
+        if (line != expected or original['line_id'] != mapping['line_id']
+            or original['recipient_id'] != mapping['recipient_id'] or fresh['line_id'] != mapping['current_line_id']
+            or fresh['recipient_id'] != mapping['recipient_id'] or config is None or config != row['configuration']
+            or set(row) != {'line_id', 'recipient_id', 'original_index', 'current_line_id', 'current_index',
+                'quote_position', 'configuration', 'configuration_digest', 'quantity_source_confirmed'}
+            or any(row[key] != value for key, value in mapping.items())
+            or row['configuration_digest'] != _digest(config) or row['quantity_source_confirmed'] is not True
+            or config['qty'] != payload['coverage']['original_quantities'][mapping['line_id']]):
+            return _result('conflict', 'selected_cart_configuration_changed')
+        approved = config.get('assisted_line')
+        if approved and (any(approved[key] != mapping[key] for key in ('line_id', 'recipient_id', 'original_index'))
+            or approved['decision_id'] != evidence['decision_id'] or approved['decision_digest'] != evidence['decision_digest']):
+            return _result('conflict', 'selected_cart_approval_changed')
+    if (len({row['current_line_id'] for row in maps}) != len(maps)
+        or sum(row['configuration']['qty'] for row in quote) > 50
+        or sum(row['configuration']['qty'] for row in quote if row['configuration'].get('is_custom') is True) != evidence['custom_quantity']
+        or payload['quote_binding_digest'] != _digest({'source_binding_digest': payload['source_binding_digest'], 'quote_line_map': quote})):
+        return _result('conflict', 'selected_cart_quote_changed')
+    return _result('ready', payload=payload)
+
+
+def build_selected_cart_binding(*, verified_selection, quoted_items, bound_episode_id=None):
+    from management.services.ig_assisted_scopes import VerifiedAssistedSelection, selection_evidence
+    if type(verified_selection) is not VerifiedAssistedSelection:
+        raise ValueError('assisted_selection_requires_native_producer')
+    cap = verified_selection
+    if (cap.proof_scope not in {'unconsumed', 'execution'} or not isinstance(quoted_items, (list, tuple))
+        or len(quoted_items) != len(cap.lines) or any(line.ready_capacity != line.quantity for line in cap.lines)):
+        raise ValueError('assisted_selected_ready_required')
+    current, origin = cap.current_capture, cap.origin_full_capture
+    maps, lines, quoted = _copy(cap.line_map), [], []
+    for index, (approved, mapping, item) in enumerate(zip(cap.lines, maps, quoted_items, strict=True)):
+        config = union_configuration(item, schema=SELECTED_SCHEMA)
+        if (config is None or (approved.line_id, approved.recipient_id, approved.original_index) !=
+            (mapping['line_id'], mapping['recipient_id'], mapping['original_index']) or mapping['quote_position'] != index):
+            raise ValueError('assisted_quote_configuration_invalid')
+        fresh = current['lines'][mapping['current_index']]
+        lines.append({'line_id': mapping['line_id'], 'recipient_id': mapping['recipient_id'], 'index': index,
+            'original_index': mapping['original_index'], 'current_line_id': mapping['current_line_id'],
+            'current_index': mapping['current_index'], 'source_selection': _copy(fresh['source_selection'])})
+        quoted.append({**mapping, 'configuration': config, 'configuration_digest': _digest(config), 'quantity_source_confirmed': True})
+    payload = {'schema': SELECTED_SCHEMA, 'scope': _copy(current['scope']),
+        'bound_episode_id': current['scope']['episode_id'] if bound_episode_id is None else bound_episode_id,
+        'origin_full_capture': origin, 'request_full_capture': cap.full_capture, 'current_capture': current,
+        'assisted_commerce': selection_evidence(cap), 'coverage': _copy(cap.coverage),
+        'choice_proof': _copy(cap.choice_proof), 'purchase_proof': _copy(cap.purchase_proof), 'line_map': maps,
+        'source_capture_digest': current['capture_digest'], 'checkout_item_limit': CATALOG_CHECKOUT_ITEM_LIMIT, 'lines': lines}
+    payload['source_binding_digest'] = _digest(payload)
+    payload['quote_line_map'] = quoted
+    payload['quote_binding_digest'] = _digest({'source_binding_digest': payload['source_binding_digest'], 'quote_line_map': quoted})
+    checked = validate_selected_cart_binding(payload)
+    if not checked.ok:
+        raise ValueError(checked.reason)
+    return checked.binding
+
+
+def rebind_selected_cart_episode(binding, episode_id):
+    checked = validate_selected_cart_binding(binding)
+    if not checked.ok or not _positive(episode_id):
+        raise ValueError('selected_cart_owner_changed')
+    payload = checked.binding
+    if payload['scope']['episode_id'] not in {None, episode_id} or payload['bound_episode_id'] not in {None, episode_id}:
+        raise ValueError('selected_cart_owner_changed')
+    payload['bound_episode_id'] = episode_id
+    source = {key: value for key, value in payload.items()
+        if key not in {'source_binding_digest', 'quote_line_map', 'quote_binding_digest'}}
+    payload['source_binding_digest'] = _digest(source)
+    payload['quote_binding_digest'] = _digest({'source_binding_digest': payload['source_binding_digest'], 'quote_line_map': payload['quote_line_map']})
     return payload
 
 

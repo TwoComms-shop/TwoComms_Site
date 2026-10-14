@@ -126,7 +126,7 @@ test('catalog facts quantity price and photo remain canonical while custom terms
 
 test('WAIT remains in saved full basket and cannot prepare a partial payable link even under an inconsistent gate',async()=>{
  const waiting=item({line_id:'wait-line',original_index:1,title:'Пізніше худі',availability:'wait',unit_price:null,checked_quantity:null,supply_basis:null,preparation:null,dispatch:null});const data=context();data.editable_items.push(waiting);data.request.lines.push({line_id:waiting.line_id,recipient_id:'self',original_index:1,source_choices:{size:'L',quantity:2}});data.item_controls.push({line_id:waiting.line_id,can_edit_price:true});
- const approved=decision(data,data.editable_items,'approved',2);approved.can_prepare_checkout=true;const f=fixture();await f.load(approved);assert.equal(f.button('Підготувати посилання на оформлення').disabled,true);assert.match(f.root.textContent,/посилання на оплату для частини кошика не створюється/);assert.equal(f.controller.local.items.length,2);assert.equal(f.controller.local.items[1].availability,'wait');assert.equal(f.posts().length,0);
+ const approved=decision(data,data.editable_items,'approved',2);approved.can_prepare_checkout=true;const f=fixture();await f.load(approved);assert.equal(f.button('Підготувати посилання на оформлення').disabled,true);assert.match(f.root.textContent,/Готову частину можна оформити після погодження ціни, доставки та вибору клієнта/);assert.equal(f.controller.local.items.length,2);assert.equal(f.controller.local.items[1].availability,'wait');assert.equal(f.posts().length,0);
 });
 
 test('manual prepare needs native-buy authority while bot pause disables only automatic sending',async()=>{
@@ -241,4 +241,59 @@ test('native catalog price drift exposes explicit CAS renewal without copying pr
 
 test('catalog renewal cannot run over unsaved recount or already prepared execution',async()=>{
  const data=stockContext();data.can_prepare_reason='assisted_catalog_facts_changed';const f=fixture();await f.load(data);assert.equal(f.button('Перевірити актуальні умови кошика').disabled,false);fillStock(f);assert.equal(f.button('Перевірити актуальні умови кошика').disabled,true);f.button('Відкинути введений переоблік').click();assert.equal(f.button('Перевірити актуальні умови кошика').disabled,false);data.status='prepared';data.prepared_checkout={ready:true,public_id:PUBLIC};await f.load(data);assert.equal(f.button('Перевірити актуальні умови кошика'),undefined);assert.equal(f.posts().length,0);
+});
+
+
+test('actual partial sibling dirty blocks parent item edits and new POST until its draft is discarded',async()=>{
+ const {Controller:PartialController}=require('../../twocomms/management/static/management/js/ig_assisted_partial.js');const data=context(),f=fixture();await f.load(data);let partial;f.controller.options.canAct=()=>!partial||partial.canLeave();f.controller.options.onStateChange=()=>{if(partial)partial.syncActions();};const root=new Node('section',f.root.ownerDocument);partial=new PartialController(root,{canOperate:true,canAct:()=>!f.controller.dirty&&!f.controller.pending&&!f.controller.busy,onStateChange:()=>f.controller.draw()});const projection={ready:true,request_id:A,request_digest:hash('a'),decision_id:PUBLIC,decision_digest:hash('d'),coverage_digest:hash('e'),terms_digest:hash('f'),lines:[{title:'Готова футболка',line_id:'custom-line',quantity:2,disposition:'ready'},{title:'Решта',line_id:'wait',quantity:1,disposition:'deferred'}],scoped_quote:{total:'800.00',currency:'UAH'},shipping_terms:null,can_approve_terms:false};partial.update({...data,partial_intention:projection});const payer=root.all().find(node=>node.attributes['aria-label']==='Платник — Готові зараз');payer.value='customer';payer.emit('change');assert.equal(partial.dirty,true);assert.equal(f.control('Назва — позиція 1').disabled,true);assert.equal(await f.controller.perform({action:'draft',request_id:A,items:data.editable_items,...data.cas}),false);assert.equal(f.posts().length,0);assert.equal(f.uuids.length,0);root.all().find(node=>node.tagName==='button'&&node.textContent==='Відкинути чернетку умов').click();assert.equal(partial.canLeave(),true);assert.equal(f.control('Назва — позиція 1').disabled,false);f.control('Назва — позиція 1').input('Перевірена зміна');assert.equal(root.all().find(node=>node.attributes['aria-label']==='Платник — Готові зараз').disabled,true);assert.equal(f.posts().length,0);
+});
+
+function compactPartialContext(){const waiting=item({line_id:'wait-line',original_index:1,title:'Худі для подарунка',color:'Фіолетовий',size:'L',quantity:1,availability:'wait',unit_price:null,checked_quantity:null,supply_basis:null});const base=context();base.editable_items=[item({quantity:1,checked_quantity:1}),waiting];base.request.lines.push({line_id:waiting.line_id,recipient_id:'gift',original_index:1,source_choices:{color:'Фіолетовий',size:'L',quantity:1}});const data=decision(base,base.editable_items,'approved',2);data.partial_intention={ready:true,request_id:A,decision_id:data.approved_head.id,can_approve_terms:false,lines:[{line_id:'custom-line',recipient_id:'self',recipient_label:'Клієнт',disposition:'ready'},{line_id:'wait-line',recipient_id:'gift',recipient_label:'Одержувач 2',disposition:'deferred'}]};data.stock_sync={eligible:true,request_id:A,request_digest:hash('a'),decision_id:data.approved_head.id,decision_digest:hash('d'),preview_digest:hash('1'),pools:[{pool_id:'warehouse:11',source:'warehouse',before_total:0,protected:0,required:1,minimum_total:1,labels:['Футболка — чорний M'],size_counts:{}}]};return data;}
+
+test('approved partial summary is compact while explicit zero-to-one recount remains outside closed item editor',async()=>{const data=compactPartialContext(),f=fixture();await f.load(data);const summary=f.root.querySelector('.ig-ac-item-summary'),editor=f.root.querySelector('.ig-ac-item-editor'),stock=f.root.querySelector('.ig-ac-stock');assert.equal(editor.open,false);assert.equal(summary.querySelectorAll('.ig-ac-summary-card').length,2);assert.equal(summary.querySelectorAll('input,select,textarea').length,0);assert.match(summary.textContent,/Футболка з написом.*Чорний.*M.*1 шт/);assert.match(summary.textContent,/Худі для подарунка.*Фіолетовий.*L.*1 шт/);assert.match(summary.textContent,/Одержувач 2/);assert.match(summary.textContent,/Без фото/);assert.equal(stock.parentNode,f.root);assert.equal(editor.querySelector('.ig-ac-stock'),null);assert.ok(f.root.children.indexOf(stock)<f.root.children.indexOf(editor));assert.equal(f.control('Фізичний залишок — група 1').value,'');assert.match(stock.textContent,/За обліком0/);assert.match(stock.textContent,/Мінімум фізично1/);f.control('Фізичний залишок — група 1').input('1');f.control('Підтверджую весь фактичний залишок і кількості розмірів').click();assert.equal(f.button('Підтвердити переоблік').disabled,false);assert.equal(editor.open,false);assert.equal(f.controller.canLeave(),false);assert.equal(f.calls.filter(call=>call.method==='POST').length,0);});
+
+test('partial dirty and UNKNOWN item inputs remain open and signed summary does not masquerade as unsaved terms',async()=>{const data=compactPartialContext(),f=fixture();await f.load(data);let editor=f.root.querySelector('.ig-ac-item-editor');editor.open=true;editor.emit('toggle');f.control('Назва — позиція 1').input('Незбережена особлива назва');editor.open=false;editor.emit('toggle');assert.equal(editor.open,true);assert.doesNotMatch(f.root.querySelector('.ig-ac-item-summary').textContent,/Незбережена особлива назва/);assert.equal(f.button('Підтвердити переоблік').disabled,true);f.replies.push(new Error('timeout'));f.button('Зберегти чернетку').click();await f.flush();editor=f.root.querySelector('.ig-ac-item-editor');assert.equal(editor.open,true);assert.equal(f.control('Назва — позиція 1').value,'Незбережена особлива назва');assert.ok(f.controller.pending);assert.equal(f.controller.canLeave(),false);editor.open=false;editor.emit('toggle');assert.equal(editor.open,true);assert.ok(f.button('Перевірити ту саму операцію'));});
+
+test('ordinary FULL39 keeps its existing visible item editor and checkout controls',async()=>{const data=decision(context(),[item()],'approved',2),f=fixture();data.can_prepare_checkout=true;await f.load(data);assert.equal(f.root.querySelector('.ig-ac-item-editor'),null);assert.equal(f.root.querySelector('.ig-ac-item-summary'),null);assert.equal(f.root.classList.contains('is-partial-compact'),false);assert.equal(f.root.querySelector('.ig-ac-lines').parentNode,f.root);assert.equal(f.button('Зберегти чернетку').parentNode.parentNode,f.root);assert.equal(f.button('Підготувати посилання на оформлення').disabled,false);});
+
+test('visible physical recount edits immediately lock partial sibling inputs and commands until discard',async()=>{
+ const {Controller:PartialController}=require('../../twocomms/management/static/management/js/ig_assisted_partial.js');
+ const data=compactPartialContext(),f=fixture();await f.load(data);let partial;
+ f.controller.options.canAct=()=>!partial||partial.canLeave();
+ f.controller.options.onStateChange=()=>{if(partial)partial.syncActions();};
+ const root=new Node('section',f.root.ownerDocument);
+ partial=new PartialController(root,{canOperate:true,canAct:()=>!f.controller.dirty&&!f.controller.pending&&!f.controller.busy,onStateChange:()=>f.controller.draw()});
+ partial.update({...data,partial_intention:{...data.partial_intention,request_digest:hash('a'),decision_digest:hash('d'),coverage_digest:hash('e'),terms_digest:hash('f'),scoped_quote:{total:'500.00',currency:'UAH'},can_issue:true}});
+ const payer=()=>root.all().find(node=>node.attributes['aria-label']==='Платник — Готові зараз');
+ const issue=()=>root.all().find(node=>node.tagName==='button'&&node.textContent==='Надіслати варіанти клієнту');
+ assert.equal(payer().disabled,false);assert.equal(issue().disabled,false);
+ f.control('Фізичний залишок — група 1').input('1');
+ assert.equal(f.root.querySelector('.ig-ac-item-editor').open,false);
+ assert.equal(payer().disabled,true);assert.equal(issue().disabled,true);
+ assert.equal(partial.actionPayload('issue_partial_offer'),null);
+ f.button('Відкинути введений переоблік').click();
+ assert.equal(payer().disabled,false);assert.equal(issue().disabled,false);
+ assert.equal(f.posts().length,0);
+});
+
+test('exact settled execution replaces consumed-stock warning and prepared copy with native linked order truth',async()=>{
+ const data=compactPartialContext(),f=fixture(),execution='native-execution';
+ data.status='prepared';data.partial_intention.request_digest=hash('a');data.partial_intention.decision_digest=hash('d');
+ data.partial_intention.scoped_quote={selected_line_ids:['custom-line']};data.partial_intention.lines[0].disposition='settled';
+ data.partial_intention.coverage={ready:true,executions:[{execution_id:execution,request_id:A,decision_id:data.approved_head.id,state:'settled',line_ids:['custom-line']}]};
+ data.partial_intention.orders=[{execution_id:execution,order_id:51,line_ids:['custom-line'],order_number:'TC-0051',payment_status_label:'Оплачено повністю',shipping_status_label:'ТТН ще не створено'}];
+ data.stock_sync={...data.stock_sync,eligible:false,reason:'residual_coverage_changed',requires_sync:false,pools:[]};
+ data.prepared_checkout={ready:true,public_id:PUBLIC,request_id:A,decision_id:data.approved_head.id,expected_request_digest:hash('a'),expected_decision_digest:hash('d'),can_recover_checkout:true};
+ await f.load(data);assert.match(f.root.querySelector('.ig-ac-stock').textContent,/Товари оформлено.*пов’язаному замовленні/);
+ assert.doesNotMatch(f.root.querySelector('.ig-ac-stock').textContent,/Фактичні залишки перед оформленням|Дію не виконано/);
+ assert.match(f.root.querySelector('.ig-ac-checkout').textContent,/Товари у пов’язаному замовленні.*TC-0051.*Оплачено повністю.*ТТН ще не створено/);
+ assert.equal(f.button('Звірити підготовлене оформлення'),undefined);assert.ok(f.button('Відкрити пропозицію'));
+ for(const mutate of [value=>value.partial_intention.coverage.executions[0].state='inflight',value=>value.partial_intention.orders[0].execution_id='foreign-execution',value=>value.partial_intention.orders[0].order_id=0]){
+  const other=clone(data);mutate(other);await f.load(other);assert.match(f.root.querySelector('.ig-ac-stock').textContent,/Фактичні залишки перед оформленням/);assert.match(f.root.querySelector('.ig-ac-checkout').textContent,/Оформлення підготовлено/);
+ }
+ const dirty=fixture();await dirty.load(compactPartialContext());dirty.control('Фізичний залишок — група 1').input('1');await dirty.load(data);
+ assert.equal(dirty.controller.dirty,true);assert.match(dirty.root.querySelector('.ig-ac-stock').textContent,/Фактичні залишки перед оформленням/);
+ const unknown=fixture();await unknown.load(compactPartialContext());unknown.replies.push(new Error('timeout'));unknown.button('Зберегти чернетку').click();await unknown.flush();await unknown.load(data);
+ assert.ok(unknown.controller.pending);assert.equal(unknown.controller.unknown,true);assert.match(unknown.root.querySelector('.ig-ac-stock').textContent,/Фактичні залишки перед оформленням/);assert.ok(unknown.button('Перевірити ту саму операцію'));
+ assert.equal(f.posts().length,0);
 });

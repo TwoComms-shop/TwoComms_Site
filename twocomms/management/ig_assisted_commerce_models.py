@@ -114,7 +114,7 @@ Never clear the historical generation winner to release this row.
 """
     class Scope(models.TextChoices):
         FULL = "full", "Full intention"
-        PARTIAL = "partial", "Blocked: customer-accepted selection (future continuation)"
+        PARTIAL = "partial", "Customer-accepted selection"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     intention_id = models.UUIDField(editable=False)
@@ -158,6 +158,8 @@ Never clear the historical generation winner to release this row.
         app_label = "management"
         constraints = [models.UniqueConstraint(fields=["intention_id", "active_slot"], name="ig_assist_intention_active"),
             models.CheckConstraint(condition=models.Q(active_slot__isnull=True) | models.Q(active_slot=1), name="ig_assist_active_shape"),
+            models.CheckConstraint(condition=models.Q(scope="full") | models.Q(scope="partial", choice_source__isnull=False),
+                name="ig_assist_execution_scope"),
             models.CheckConstraint(condition=models.Q(quoted_total__gt=0) & models.Q(quoted_total__lte=1000000)
                 & models.Q(quoted_custom_quantity__lte=50), name="ig_assist_execution_bounds")]
         indexes = [models.Index(fields=["client", "created_at"], name="ig_assist_execution_client")]

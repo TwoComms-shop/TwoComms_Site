@@ -822,7 +822,8 @@ def prepare_revision_assisted_checkout(
                 decision_id=refs[0]["decision_id"], expected_request_digest=refs[0]["request_digest"],
                 expected_decision_digest=refs[0]["decision_digest"],
                 operation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"ig-assisted-revision:{revision.pk}:{generation_proposal_digest}"),
-                revision_id=revision.pk, settings_id=settings_id)
+                revision_id=revision.pk, settings_id=settings_id,
+                verified_selection=context.selection)
             if not result.get("ready") or not result.get("token"):
                 raise _Rollback(result.get("reason") or "assisted_checkout_token_missing")
             checkout, url = result["proposal"], result["checkout_url"]

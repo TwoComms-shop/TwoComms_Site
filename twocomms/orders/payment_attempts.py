@@ -102,6 +102,15 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
         raise PaymentAttemptConversionError(f'Unsupported conversion status: {status}')
 
     with transaction.atomic():
+        # A direct assisted materializer must take the same Client/Execution
+        # barrier as the generation callback before locking its Attempt.
+        # This preserves one lock order for cross-execution overlap admission.
+        from management.models import IgCheckoutInvoiceGeneration
+        assisted_locator = IgCheckoutInvoiceGeneration.objects.filter(payment_attempt_id=attempt_id,
+            proposal__assisted_commerce_execution__isnull=False).values("proposal_id").first()
+        if assisted_locator:
+            from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
+            lock_assisted_checkout_owner(assisted_locator["proposal_id"])
         attempt = (
             PaymentAttempt.objects.select_for_update()
             .select_related('user', 'promo_code', 'order')
@@ -118,6 +127,12 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
         snapshot = attempt.cart_snapshot if isinstance(attempt.cart_snapshot, dict) else {}
         cart_items = snapshot.get('cart') or []
         assisted, custom_rows = _verified_assisted_cart(attempt, snapshot, cart_items)
+        if assisted is not None and assisted.get("verified_selection") is not None:
+            from management.services.ig_assisted_checkout import admit_assisted_settlement
+            admitted = admit_assisted_settlement(attempt, now=timezone.now())
+            if not isinstance(admitted, dict) or admitted.get("ready") is not True:
+                raise PaymentAttemptConversionError((admitted or {}).get("reason") or "assisted_scope_overlap",
+                    marker="assisted_scope_overlap")
         is_instagram_proposal = snapshot.get('checkout_surface') == 'instagram_proposal'
         source_provenance = None
         if is_instagram_proposal or 'source_cart_provenance' in snapshot or 'source_cart_binding' in snapshot:

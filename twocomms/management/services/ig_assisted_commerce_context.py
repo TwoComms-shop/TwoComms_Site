@@ -18,6 +18,13 @@ _ISSUER = object()
 
 def should_capture_assisted_context(plan, client, revision=None):
     """No extra lookup on a ready ordinary catalogue path."""
+    if revision is not None and any(
+        row.get("role") == "user" and str(row.get("quick_reply_payload") or "").startswith("AC1:")
+        for row in (revision.bundle_snapshot or {}).get("sources", ())
+    ):
+        # This is only a bounded read hint. Native delivery, source ownership,
+        # signed choice and exact selected scope are verified by the reader.
+        return True
     if "custom" in str(getattr(client, "intent", "") or "").casefold():
         return True
     rows = [line.as_dict() for line in plan.line_plans] or [plan.as_dict()]
@@ -42,43 +49,103 @@ class AssistedCommerceContext:
     cart_capture_digest: str
     can_prepare_checkout: bool
     _issuer: object
+    selection: object | None = None
+    partial_pending: bool = False
+    _current_capture_json: str | None = None
 
     def __post_init__(self):
         if (self._issuer is not _ISSUER or not isinstance(self.verified, VerifiedAssistedDecision)
             or self.verified.proof_scope == "historical"):
             raise ValueError("assisted_context_requires_current_native_reader")
+        if self.selection is not None:
+            from management.services.ig_assisted_scopes import VerifiedAssistedSelection, selection_evidence
+            if (type(self.selection) is not VerifiedAssistedSelection or self.selection.historical
+                or any(getattr(self.selection, key) != getattr(self.verified, key)
+                    for key in ("client_id", "request_id", "decision_id", "request_digest", "decision_digest", "snapshot_digest"))):
+                raise ValueError("assisted_context_requires_current_native_selection")
+            selection_evidence(self.selection)
+        elif self.partial_pending and self.can_prepare_checkout:
+            raise ValueError("assisted_partial_context_requires_native_choice")
+
+    @property
+    def current_capture(self):
+        if self._current_capture_json is not None:
+            return json.loads(self._current_capture_json)
+        return self.selection.current_capture if self.selection is not None else self.verified.current_capture
+
+    @property
+    def lines(self):
+        if self.selection is not None:
+            selected = set(self.selection.current_selected_line_ids)
+            deferred = tuple(replace(line, unit_price=None) for line in self.verified.lines if line.line_id not in selected)
+            return (*self.selection.lines, *deferred)
+        if self.partial_pending:
+            return tuple(replace(line, unit_price=None) for line in self.verified.lines)
+        return self.verified.lines
+
+    @property
+    def approved_total(self):
+        if self.selection is not None:
+            return self.selection.approved_total
+        return None if self.partial_pending else self.verified.approved_total
+
+    def _current_line_id(self, line):
+        if self.selection is not None:
+            return next((row["current_line_id"] for row in self.selection.line_map if row["line_id"] == line.line_id), line.line_id)
+        return line.line_id
 
     @property
     def reference(self):
         value = self.verified
-        return {"request_id": str(value.request_id), "decision_id": str(value.decision_id),
+        reference = {"request_id": str(value.request_id), "decision_id": str(value.decision_id),
             "request_digest": value.request_digest, "decision_digest": value.decision_digest,
             "snapshot_digest": value.snapshot_digest, "intention_id": str(value.intention_id),
             "full_capture_digest": value.full_capture_digest, "revision_id": self.revision_id,
             "revision_digest": self.revision_digest, "cart_capture_digest": self.cart_capture_digest}
+        if self.selection is not None:
+            from management.services.ig_assisted_scopes import selection_evidence
+            reference["selection"] = selection_evidence(self.selection)
+        return reference
 
     @property
     def projection(self):
-        return {"schema": "current-assisted-dialogue.v1", "reference": self.reference,
+        result = {"schema": "current-assisted-dialogue.v1", "reference": self.reference,
             "manager_checked_at": self.verified.physical_checked_at.isoformat() if self.verified.physical_checked_at else None,
             "expires_at": self.verified.expires_at.isoformat(), "currency": "UAH",
-            "approved_total": str(self.verified.approved_total),
-            "lines": [line.as_dict() for line in self.verified.lines]}
+            "approved_total": str(self.approved_total) if self.approved_total is not None else None,
+            "lines": [line.as_dict() for line in self.lines]}
+        if self.selection is not None or self.partial_pending:
+            selected = set(self.selection.selected_line_ids) if self.selection is not None else set()
+            result.update(schema="current-assisted-partial-dialogue.v1", scope="partial",
+                native_purchase_accepted=self.selection is not None,
+                selected_lines=[line.as_dict() for line in self.lines if line.line_id in selected],
+                deferred_unpaid_lines=[{**line.as_dict(), "disposition": "unpaid_wishlist", "unit_price": None}
+                    for line in self.lines if line.line_id not in selected],
+                can_prepare_checkout=self.can_prepare_checkout)
+            if self.selection is not None:
+                result.update(coverage=self.selection.coverage, shipping_terms=self.selection.shipping_terms,
+                    delivery_scope=self.selection.delivery_scope)
+        return result
 
     def prompt_guidance(self):
         # Typed manager terms authorize this exact offer; they do not rewrite
         # customer choices, grant a catalogue ID or settle any payment.
+        partial = ("\nOnly selected_lines belong to the accepted current purchase and its quoted goods total. "
+            "deferred_unpaid_lines remain an unpaid wishlist: no price, payment, reservation, shipment or arrival claim. "
+            "Shipping maxima are agreed customer caps paid to the carrier, not goods prices or carrier quotations. "
+            "Without native_purchase_accepted there is no selected price or checkout authority."
+            if self.selection is not None or self.partial_pending else "")
         return ("[CURRENT VERIFIED MANAGER OFFER]\n" + json.dumps(self.projection, ensure_ascii=False, separators=(",", ":"))
             + "\nUse these exact manager-approved offer facts for the named current lines. READY is checked physical availability in the stated quantity. "
             "Manager terms differing from a source wish are a counteroffer; the hosted checkout must obtain customer adoption. "
             "Only confirmed answers to the exact original question are known; new fabric/hardware questions remain unanswered. "
             "A typed preparation/dispatch estimate is its own domain and never guarantees arrival. No typed estimate means timing unknown. "
-            "Do not create product IDs, stock, discounts, paid money or order-created facts. Reference IDs are backend metadata, never customer prose.")
+            "Do not create product IDs, stock, discounts, paid money or order-created facts. Reference IDs are backend metadata, never customer prose." + partial)
 
     def resolves_inquiry(self, inquiry):
         source = self.verified.source_proof
         questions = source.get("questions") or []
-        answers = {answer["question_id"]: answer for line in self.verified.lines
+        answers = {answer["question_id"]: answer for line in self.lines
                    for answer in line.as_dict()["question_answers"]}
         keys = ("source_message_id", "source_digest", "line_id", "axis", "requested_value", "question")
         return any(all(question.get(key) == inquiry.get(key) for key in keys)
@@ -86,6 +153,15 @@ class AssistedCommerceContext:
 
     def purchase_ready(self, revision, capture):
         from management.services.ig_response_cart_plan import source_line_preferences
+        if self.selection is not None:
+            proof = self.selection.purchase_proof
+            current_ids = {row["message_id"] for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"}
+            return bool(self.can_prepare_checkout and self.selection.lines
+                and self.selection.revision_id == revision.pk and self.selection.purchase_source_id in current_ids
+                and proof.get("revision_digest") == revision.snapshot_digest
+                and capture.get("capture_digest") == self.cart_capture_digest)
+        if self.partial_pending:
+            return False
         if not self.can_prepare_checkout or not self.verified.lines or len(self.verified.ready_lines) != len(self.verified.lines):
             return False
         current_ids = {row["message_id"] for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"}
@@ -106,9 +182,9 @@ class AssistedCommerceContext:
                 times.append(TimingAuthority(domain=domain, min_days=timing["min_days"], max_days=timing["max_days"],
                     unit="calendar_days" if timing["unit"] == "calendar" else "business_days",
                     anchor_at="",
-                    line_id=line.line_id, line_label=line.title, source_ref=self.verified.decision_digest,
-                    review_line_labels=tuple((value.line_id, value.title) for value in self.verified.lines)))
-                if len(self.verified.lines) == 1:
+                    line_id=self._current_line_id(line), line_label=line.title, source_ref=self.verified.decision_digest,
+                    review_line_labels=tuple((self._current_line_id(value), value.title) for value in self.lines)))
+                if len(self.lines) == 1:
                     times.append(replace(times[-1], line_id="", line_label=""))
         return replace(base, authorized_prices=(line.unit_price,) if line.unit_price is not None else (),
             authorized_price_ranges=(), allowed_sizes=(line.size,), allowed_fits=(line.fit_code,) if line.fit_code else (),
@@ -119,7 +195,7 @@ class AssistedCommerceContext:
     def validate_reply(self, response, base):
         from management.services.ig_reply_truth import (_claim_sentences, _MONEY_RE, _product_availability_claim,
             validate_reply_truth, ReplyTruthResult, _TIMING_RE, _timing_nonclaim)
-        lines = self.verified.lines
+        lines = self.lines
         from management.services.ig_product_inquiries import _SPEC, validate_inquiry_response
         from management.services.ig_reply_language import own_reply_text
         questions = {question["question_id"]: question for question in self.verified.source_proof.get("questions", ())
@@ -144,7 +220,7 @@ class AssistedCommerceContext:
                     + r"(?!\d))\s*[:—–-]\s*", "", part, count=1, flags=re.I)
                 for answer in line.as_dict()["question_answers"]:
                     question = questions.get(answer["question_id"], {})
-                    if (answer["state"] == "confirmed" and question.get("line_id") == line.line_id
+                    if (answer["state"] == "confirmed" and question.get("line_id") == self._current_line_id(line)
                         and answer["answer"].strip() and exact_unit(framed) == exact_unit(answer["answer"])):
                         approved = True
                         break
@@ -162,10 +238,19 @@ class AssistedCommerceContext:
             if not (money or stock or timing):
                 continue
             total = money and re.search(r"разом|итого|всього|total|весь\s+(?:кошик|заказ)", clause, re.I)
+            if money and (self.selection is not None or self.partial_pending):
+                selected_total = re.search(r"(?:готов\w*|вибран\w*|выбран\w*)\s+(?:част\w*|позиц\w*|товар\w*)|(?:ready|selected)\s+(?:part|items|goods)", clause, re.I)
+                total = total or selected_total
+                if total:
+                    selected = set(self.selection.selected_line_ids) if self.selection is not None else set()
+                    if (self.approved_total is None or re.search(r"весь\s+(?:кошик|заказ)|ус[іi]\s+товар|all\s+(?:items|goods)", clause, re.I)
+                        or any(line.line_id not in selected for line in matched)
+                        or not matched and not selected_total):
+                        return ReplyTruthResult(False, ("assisted_partial_total_scope_unverified",))
             if not matched and len(lines) == 1:
                 matched = [lines[0]]
             if total and not stock and not timing:
-                result = validate_reply_truth(clause, context=replace(base, authorized_prices=(self.verified.approved_total,),
+                result = validate_reply_truth(clause, context=replace(base, authorized_prices=(self.approved_total,) if self.approved_total is not None else (),
                     authorized_price_ranges=(), explicitly_qualified_standard_dispatch_days=None, approved_timing_claims=()))
             elif len(matched) != 1:
                 return ReplyTruthResult(False, ("assisted_reply_line_scope_unverified",))
@@ -190,7 +275,8 @@ class AssistedCommerceContext:
             if not result.valid:
                 return result
         contexts = [self._line_context(base, line) for line in lines]
-        aggregate = replace(base, authorized_prices=tuple(dict.fromkeys([self.verified.approved_total, *[line.unit_price for line in lines if line.unit_price is not None]])),
+        prices = ([self.approved_total] if self.approved_total is not None else []) + [line.unit_price for line in lines if line.unit_price is not None]
+        aggregate = replace(base, authorized_prices=tuple(dict.fromkeys(prices)),
             allowed_sizes=tuple(dict.fromkeys(line.size for line in lines)),
             allowed_colors=tuple(dict.fromkeys(color for context in contexts for color in context.allowed_colors)),
             allowed_fits=tuple(dict.fromkeys(line.fit_code for line in lines if line.fit_code)),
@@ -206,10 +292,32 @@ class AssistedCommerceContext:
             return original
         result = deepcopy(original)
         additions = []
+        native_purchase = False
+        if self.selection is not None:
+            from management.services.ig_revision_checkout import _payment_request
+            request, reasons = _payment_request(response.control)
+            native_purchase = bool((response.control.get("paylink") or response.control.get("payment"))
+                and request == "full" and not reasons
+                and not any(key in response.control for key in
+                    ("items", "item", "product", "color_variant_id", "option", "price", "price_quoted"))
+                and self.purchase_ready(revision, plan.source_cart_capture))
         for obligation in plan.obligations:
             if obligation["id"] not in result.get("remaining", ()):
                 continue
             kind = obligation["kind"]
+            if (native_purchase and kind == "unresolved_line_operation"
+                and not obligation.get("line_id")
+                and obligation.get("source_message_id") == self.selection.purchase_source_id
+                and obligation["id"] == f"{self.selection.purchase_source_id}:unresolved_line_operation"):
+                # The real AC1 action is already an owned selected purchase.
+                # It supplies no fabricated cart-field observations and cannot
+                # acknowledge a different source's unresolved operation.
+                additions.append(obligation["id"])
+                continue
+            if self.selection is not None and obligation.get("line_id") not in set(self.selection.current_selected_line_ids):
+                continue
+            if self.partial_pending:
+                continue
             if kind == "info:price" and _MONEY_RE.search(response.reply_text):
                 additions.append(obligation["id"])
             elif kind == "purchase_requested" and (response.control.get("paylink") or response.control.get("payment")) and self.purchase_ready(revision, plan.source_cart_capture):
@@ -231,6 +339,15 @@ def capture_assisted_context(client, revision, plan=None, *, reference=None, now
     value = result.get("verified_decision")
     if not isinstance(value, VerifiedAssistedDecision) or value.client_id != client.pk or value.proof_scope == "historical":
         return None, "assisted_offer_unverified"
+    selection = result.get("verified_selection")
+    if selection is not None:
+        from management.services.ig_assisted_scopes import VerifiedAssistedSelection
+        if (type(selection) is not VerifiedAssistedSelection or selection.historical
+            or selection.client_id != client.pk):
+            return None, "assisted_selection_unverified"
+    decision = result.get("decision")
+    partial_pending = bool(selection is None and decision is not None
+        and ((decision.envelope.get("snapshot") or {}).get("scoped_quotes") or {}).get("selected"))
     current = result.get("current_capture") or value.current_capture
     capture = plan.source_cart_capture if plan is not None else current
     # Only the native execution reader may explain its own quote-owner change.
@@ -242,7 +359,8 @@ def capture_assisted_context(client, revision, plan=None, *, reference=None, now
         if capture.get("capture_digest") == before.get("capture_digest"):
             capture = current
     context = AssistedCommerceContext(value, revision.pk, revision.snapshot_digest, capture.get("capture_digest", ""),
-                                      result.get("can_prepare_checkout") is True, _ISSUER)
+        result.get("can_prepare_checkout") is True, _ISSUER, selection=selection, partial_pending=partial_pending,
+        _current_capture_json=json.dumps(current, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     if reference is not None and context.reference != reference:
         rebound = dict(reference) if isinstance(reference, dict) else {}
         if (isinstance(execution, VerifiedAssistedExecution) and execution.client_id == client.pk

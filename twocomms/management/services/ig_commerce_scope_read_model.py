@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import json
 
 from django.db import DatabaseError, connection, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 
@@ -42,17 +42,18 @@ def _related(row, name):
 
 
 def _order_binding(client_id, order_id):
-    from management.models import IgOrderAssignment, IgOrderAttribution, IgCommercialEpisode, IgDeal, IgPaymentConfirmationReview
+    from management.models import IgOrderAttribution, IgCommercialEpisode, IgDeal, IgPaymentConfirmationReview
     from orders.models import Order
     if order_id is None:
         return {"status": "unbound", "order_id": None, "reason": ""}
-    if not Order.objects.filter(pk=order_id).exists():
+    actual = Order.objects.filter(pk=order_id).values("pk", "instagram_assignment__pk",
+        "instagram_assignment__client_id", "instagram_assignment__unassigned_at", "instagram_assignment__version").first()
+    if actual is None:
         return {"status": "unknown", "order_id": order_id, "reason": "current_order_missing"}
-    assignment = IgOrderAssignment.objects.filter(order_id=order_id).values("client_id", "unassigned_at", "version").first()
-    if assignment is not None:
-        proven = assignment["client_id"] == client_id and assignment["unassigned_at"] is None
+    if actual["instagram_assignment__pk"] is not None:
+        proven = actual["instagram_assignment__client_id"] == client_id and actual["instagram_assignment__unassigned_at"] is None
         return {"status": "confirmed" if proven else "unknown", "order_id": order_id,
-            "source": "active_assignment", "version": assignment["version"], "reason": "" if proven else "current_order_owner_not_captured"}
+            "source": "active_assignment", "version": actual["instagram_assignment__version"], "reason": "" if proven else "current_order_owner_not_captured"}
     attribution = IgOrderAttribution.objects.filter(order_id=order_id).values_list("client_id", flat=True).first()
     episode = IgCommercialEpisode.objects.filter(intended_order_id=order_id).values_list("client_id", flat=True).first()
     legacy_conflict = (attribution not in (None, client_id) or episode not in (None, client_id)
@@ -234,8 +235,12 @@ def _history(client_id):
     from orders.models import Order, OrderItem
     from management.models import IgClient, IgPaymentConfirmationReview
     from management.services.bot_payment_truth import historical_purchase_confirmation
-    archive = historical_purchase_confirmation(IgClient.objects.only("id").get(pk=client_id))
-    order_fields = {"id", "order_number", "created", "status", "payment_status", "total_sum", "discount_amount"}
+    archived = IgPaymentConfirmationReview.objects.filter(client_id=OuterRef("pk"),
+        status=IgPaymentConfirmationReview.Status.CONFIRMED,
+        resolution_kind=IgPaymentConfirmationReview.ResolutionKind.HISTORICAL_PAID_ARCHIVED)
+    archive = historical_purchase_confirmation(IgClient.objects.only("id")
+        .annotate(has_historical_paid_archive=Exists(archived)).get(pk=client_id))
+    order_fields = {"id", "order_number", "created", "status", "payment_status", "total_sum", "discount_amount", "payment_payload"}
     deferred = [field.name for field in Order._meta.concrete_fields if field.name not in order_fields]
     candidates = list(Order.objects.filter(
         Q(instagram_assignment__client_id=client_id) | Q(instagram_attribution__client_id=client_id)
@@ -341,6 +346,51 @@ def _line_history(item):
     return {"status": "captured", "items": rows, "coverage": coverage, "read_only": True}
 
 
+def _continuation_display_field(item, key, field, *, capture, binding):
+    """Display native adopted wishes without extending generic effect authority."""
+    if key not in {"product_id", "model_query", "size", "fit_option_code", "color", "quantity", "garment_type"}:
+        return None
+    selection = item.get("source_selection") or {}
+    canonical = (item.get("fields") or {}).get(key)
+    evidence = (item.get("evidence") or {}).get(key)
+    if (capture.get("coverage_complete") is not True or not isinstance(canonical, dict)
+        or not isinstance(evidence, dict) or canonical.get("authority") != "assisted_continuation"
+        or canonical.get("status") not in {"confirmed", "ambiguous"}
+        or canonical.get("source") != evidence or canonical != (selection.get("fields") or {}).get(key)
+        or canonical.get("value") != (selection.get("values") or {}).get(key)):
+        return None
+    origin, adoption = evidence.get("origin"), evidence.get("adopted_by")
+    if not isinstance(origin, dict) or not isinstance(adoption, dict):
+        return None
+    source, receipt = adoption.get("source"), adoption.get("receipt")
+    scope = capture.get("scope") or {}
+    if (not isinstance(source, dict) or not isinstance(receipt, dict)
+        or origin.get("recipient_id") != item.get("recipient_id")
+        or not origin.get("line_id") or not origin.get("root_request_id")
+        or not valid_identifier(source.get("message_id"))
+        or source["message_id"] != evidence.get("source_message_id")
+        or source.get("namespace") != scope.get("source_namespace")
+        or not receipt.get("native_mid") or not receipt.get("task_id")):
+        return None
+    adopted_at = evidence.get("observed_at")
+    original_proof = origin.get("proof") or {}
+    original_at = original_proof.get("observed_at") if isinstance(original_proof, dict) else None
+    result = deepcopy(field)
+    result.update(value=deepcopy(canonical["value"]), status=canonical["status"],
+        authority="assisted_continuation", validity="valid", omission_reason="",
+        applicability="unknown", availability="unknown", mandatory=False,
+        observed_at=original_at, adopted_at=adopted_at,
+        freshness={"status": "captured", "as_of": adopted_at}, capture_scope=deepcopy(binding),
+        source_refs=[{"kind": "message", "id": source["message_id"], "digest": source["digest"],
+            "event_at": adopted_at, "authority": "assisted_continuation"},
+            {"kind": "commerce_transition", "id": evidence["transition_id"], "authority": "assisted_continuation"},
+            {"kind": "assisted_original_line", "request_id": origin["root_request_id"],
+                "digest": origin["root_request_digest"], "line_id": origin["line_id"],
+                "recipient_id": origin["recipient_id"], "event_at": original_at}],
+        origin=deepcopy(origin), adopted_by=deepcopy(adoption))
+    return result
+
+
 def _current_lines(capture, client_id, now):
     from storefront.models import Product
     if capture.get("status") != "captured":
@@ -371,6 +421,9 @@ def _current_lines(capture, client_id, now):
             "source_selection_binding": binding}, captured_at=now).as_dict()
         fields = {key.split(".", 1)[1]: value for key, value in state["slots"].items() if key.startswith("choice.")}
         for key, field in fields.items():
+            display = _continuation_display_field(item, key, field, capture=capture, binding=binding)
+            if display is not None:
+                fields[key] = field = display
             evidence = (item.get("evidence") or {}).get(key) or {}
             if field["status"] == "confirmed" and evidence.get("copied_from"):
                 field["copied_from"] = deepcopy(evidence["copied_from"])
@@ -421,8 +474,10 @@ def _capture(client_id, selected_order_id, now):
     active = next((line for line in current["lines"] if line["active"]), None)
     size = (active or {}).get("fields", {}).get("size") or {}
     proven_size = size.get("status") == "confirmed" or (size.get("authority") == "audited_correction" and size.get("omission_reason") == "requirement_explicitly_cleared")
+    bound_continuation = pinned_order is not None and any(
+        field.get("authority") == "assisted_continuation" for line in current["lines"] for field in line["fields"].values())
     current["editable"] = (selected_order_id is None and current.get("status") == "captured" and active is not None
-        and proven_size and current["order_binding"]["status"] in {"unbound", "confirmed"})
+        and proven_size and not bound_continuation and current["order_binding"]["status"] in {"unbound", "confirmed"})
     current["editable_scope"] = {**current.get("scope", {}), "line_id": active["line_id"], "recipient_id": active["recipient_id"],
         "selection_revision": current.get("selection_revision")} if current["editable"] else None
     for line in current["lines"]:

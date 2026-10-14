@@ -136,6 +136,22 @@ def _apply_order_status_update_to_order(
     if require_tracking_number and not (normalized_tracking or order.tracking_number):
         raise ValidationError({"tracking_number": "Вкажіть ТТН"})
 
+    if normalized_tracking or normalized_status in {'ship', 'done'}:
+        from management.services.ig_assisted_partial_shipping import (
+            AssistedShippingError, assert_assisted_shipping_allowed, verify_manual_assisted_tracking,
+        )
+        target_tracking = normalized_tracking or order.tracking_number or ''
+        try:
+            try:
+                assert_assisted_shipping_allowed(order, tracking_number=target_tracking)
+            except AssistedShippingError as exc:
+                if exc.reason not in {'assisted_carrier_evidence_missing', 'assisted_carrier_evidence_owner_changed'}:
+                    raise
+                verify_manual_assisted_tracking(order, tracking_number=target_tracking)
+                assert_assisted_shipping_allowed(order, tracking_number=target_tracking)
+        except AssistedShippingError as exc:
+            raise ValidationError({'tracking_number': str(exc)}) from exc
+
     order.status = normalized_status
     order.cancellation_reason = cancellation_reason_value
     order.cancellation_comment = cancellation_comment_value

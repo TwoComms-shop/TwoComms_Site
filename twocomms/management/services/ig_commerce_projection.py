@@ -237,6 +237,31 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
         before_line = next((row for row in before_lines if isinstance(row, dict) and row.get("line_id") == line["line_id"]), {})
         owned = (source.client_id == client.pk and source.sender_id == current["igsid"]
                  and source.role == "user" and source.source == "webhook")
+        if transition.action == "assisted_residual_adoption":
+            from management.services.ig_assisted_continuation_sources import verify_assisted_adoption_transition
+            cached = _capture.setdefault("assisted_adoption_cache", {}) if _capture is not None else {}
+            if transition.pk not in cached:
+                cached[transition.pk] = verify_assisted_adoption_transition(transition)
+            adoption = cached[transition.pk]
+            mapping = next((item for item in adoption.get("line_map", ()) if item["current_line_id"] == line["line_id"]), None)
+            origin = next((item for item in adoption.get("origins", ()) if mapping and item["line_id"] == mapping["line_id"]), None)
+            if (not owned or not adoption.get("ready") or not mapping or not origin
+                or mapping["recipient_id"] != line.get("recipient_id", "self")
+                or adoption.get("episode_id") != current_episode or adoption.get("session_id") != session.pk
+                or not decision or decision.transition_id != transition.pk or not decision.accepted or decision.is_stale):
+                return {}
+            for key, value in origin["values"].items():
+                if key in values and key not in evidence and key not in withdrawn_keys and str(values[key]) == str(value):
+                    evidence[key] = {"decision_id": decision.pk, "transition_id": transition.pk,
+                        "source_message_id": source.pk, "source_digest": hashlib.sha256(source.text.encode()).hexdigest(),
+                        "observed_at": source.provider_created_at.isoformat(), "authority": "assisted_continuation",
+                        "adopted_by": {"source": deepcopy(adoption["source_proof"]), "card_digest": adoption["card_digest"],
+                                       "receipt": deepcopy(adoption["receipt"])},
+                        "origin": {"root_request_id": adoption["root_request_id"], "root_request_digest": adoption["root_request_digest"],
+                                   "line_id": mapping["line_id"], "original_index": mapping["original_index"],
+                                   "recipient_id": mapping["recipient_id"], "scope": deepcopy(adoption["origin_scope"]),
+                                   "proof": deepcopy(origin["source_evidence"].get(key))}}
+            break
         if transition.action == "manager_size_correction":
             correction_index = transition.previous_snapshot.get("active_index", 0)
             correction_line = before_lines[correction_index] if isinstance(correction_index, int) and 0 <= correction_index < len(before_lines) else {}

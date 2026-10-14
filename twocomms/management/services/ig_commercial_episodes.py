@@ -1361,7 +1361,9 @@ def _fulfillment_projection(order):
             else ""
         ),
     }
-    delivered_at = nova_poshta_delivery_confirmed_at(order)
+    from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+    delivered_at = (nova_poshta_delivery_confirmed_at(order)
+        if assisted_shipping_dispatch_ready(order) else None)
     if delivered_at is not None:
         return (
             IgCommercialEpisode.State.FULFILLED,
@@ -1433,7 +1435,9 @@ def _record_order_funnel_facts(episode, order, *, source: str):
         },
     )
     tracking_number = str(order.tracking_number or "").strip()
-    if tracking_number:
+    from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+    shipping_ready = assisted_shipping_dispatch_ready(order)
+    if shipping_ready and tracking_number:
         record_episode_step_event_in_transaction(
             episode,
             event_type=IgFunnelStepEvent.Type.TTN_CREATED,
@@ -1446,7 +1450,7 @@ def _record_order_funnel_facts(episode, order, *, source: str):
                 "tracking_number": tracking_number,
             },
         )
-    delivered_at = nova_poshta_delivery_confirmed_at(order)
+    delivered_at = nova_poshta_delivery_confirmed_at(order) if shipping_ready else None
     if delivered_at is not None:
         record_episode_step_event_in_transaction(
             episode,

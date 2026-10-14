@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 from django.contrib.auth.decorators import login_required
@@ -748,7 +749,29 @@ def _hosted_assisted_rows(proposal, revision):
         return {"is_assisted": True, "ready": False, "reason": "client_unavailable", "custom_rows": []}
     from management.services.ig_assisted_checkout import validate_assisted_proposal
     result = validate_assisted_proposal(proposal, fresh=False)
-    return {"is_assisted": True, **result}
+    selected_shipping = None
+    if result.get('ready') is True and 'selection' in result:
+        selection = result['selection']
+        try:
+            phase = selection['shipping_scope']
+            term = selection['shipping_terms'][phase]
+            maximum = Decimal(term['customer_maximum'])
+            deferred = selection['deferred_line_ids']
+            if (selection['scope'] != 'partial' or phase not in {'now', 'later', 'together'}
+                or term['payer'] not in {'customer', 'merchant'} or term['currency'] != 'UAH'
+                or not maximum.is_finite() or not Decimal('0') <= maximum <= Decimal('1000000.00')
+                or maximum != maximum.quantize(Decimal('.01'))
+                or (term['payer'] == 'merchant' and maximum != 0)
+                or not isinstance(deferred, list) or len(deferred) > 50
+                or any(not isinstance(line_id, str) or not line_id for line_id in deferred)
+                or len(deferred) != len(set(deferred))):
+                raise ValueError('Invalid native selected shipping presentation')
+            selected_shipping = {'shipping_scope': phase, 'payer': term['payer'],
+                'customer_maximum': f'{maximum:.2f}', 'currency': term['currency'],
+                'deferred_count': len(deferred)}
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            result = {'ready': False, 'reason': 'assisted_selected_shipping_invalid', 'custom_rows': []}
+    return {"is_assisted": True, **result, 'assisted_selected_shipping': selected_shipping}
 
 
 def _hosted_item_context(item, frozen, proposal, assisted):
@@ -913,6 +936,7 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
         "brigade_full_payment_only": brigade_full_only,
         "has_assisted_terms": assisted["is_assisted"] and assisted.get("ready") is True,
         "has_assisted_custom": assisted.get("ready") is True and bool(assisted.get("custom_rows")),
+        "assisted_selected_shipping": assisted.get('assisted_selected_shipping'),
         "customer_name": (
             ""
             if state in locked_retry_states

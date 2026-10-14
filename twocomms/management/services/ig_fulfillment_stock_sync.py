@@ -64,13 +64,26 @@ def _inventory_read(queryset, lock=False, *, skip_locked=False):
 
 def _reservations(source, identity, now, *, lock=False):
     from management.models import IgCheckoutInventoryReservation as Reservation
+    from django.db.models import BooleanField, Case, Value, When
+    from management.services.ig_inventory import protected_inventory_reservation_q
     filters = {"allocation_source": "warehouse", "stock_item_id": identity} if source == "warehouse" else {
         "allocation_source__in": ["catalog_variant", ""], "color_variant_id": identity}
-    rows = list(_inventory_read(Reservation.objects.filter(**filters), lock).order_by("pk").values()[:MAX_RESERVATIONS + 1])
+    rows = list(_inventory_read(Reservation.objects.filter(**filters).annotate(
+        _payment_protected=Case(When(protected_inventory_reservation_q(now), then=Value(True)),
+            default=Value(False), output_field=BooleanField())), lock).order_by("pk").values()[:MAX_RESERVATIONS + 1])
     if len(rows) > MAX_RESERVATIONS:
         raise StockSyncError("reservation_capture_bound")
-    protected = sum(row["quantity"] - (row.get("fulfilled_quantity", 0) if source == "warehouse" else 0) for row in rows if row["state"] == Reservation.State.PAID_COMMITTED
-        or row["state"] == Reservation.State.ACTIVE and row["expires_at"] > now)
+    protected = 0
+    for row in rows:
+        payment_protected = row.pop("_payment_protected")
+        ordinary_protected = (row["state"] == Reservation.State.PAID_COMMITTED
+            or row["state"] == Reservation.State.ACTIVE and row["expires_at"] > now)
+        # Preserve ordinary captured rows/digests. Only the newly protected
+        # uncertain obligation needs an additional fact for size allocation.
+        if payment_protected and not ordinary_protected:
+            row["_uncertain_payment_protected"] = True
+        if payment_protected:
+            protected += row["quantity"] - (row.get("fulfilled_quantity", 0) if source == "warehouse" else 0)
     return protected, _primitive(rows)
 
 
@@ -126,7 +139,7 @@ def _size_protection(pool, reusable_ids, now, *, lock=False):
     from management.models import IgCheckoutProposalItem, IgCheckoutInventoryReservation as Reservation
     from product_catalog.models import VariantSizeRule
     protected = [row for row in pool["reservations"] if row["id"] not in reusable_ids and
-        (row["state"] == Reservation.State.PAID_COMMITTED or row["state"] == Reservation.State.ACTIVE
+        (row.get("_uncertain_payment_protected") is True or row["state"] == Reservation.State.PAID_COMMITTED or row["state"] == Reservation.State.ACTIVE
             and parse_datetime(row["expires_at"]) > now)]
     ids = set()
     for row in protected:

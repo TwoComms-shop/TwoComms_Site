@@ -134,6 +134,33 @@ def _locale(value: str | None) -> str:
     return code if code in {"uk", "ru", "en"} else "uk"
 
 
+def _new_event_locale(order, client, proposal):
+    """Selected paid orders retain their exact native card language.
+
+    Current profile language is not evidence of the language accepted for this
+    shipment. Historical validation deliberately survives checkout expiry and
+    a later choice for the remainder of the same intention.
+    """
+    from management.services import ig_assisted_commerce as commerce
+    from management.services.ig_assisted_checkout import validate_assisted_execution_history
+    from management.services.ig_assisted_partial import selection_reply_language
+
+    execution = commerce._models()[2].objects.filter(proposal_id=proposal.pk, scope="partial").first()
+    if execution is None:
+        return _locale(getattr(client, "language", "uk"))
+    history = validate_assisted_execution_history(execution)
+    selection = history.get("verified_selection")
+    if (not history.get("ready") or history.get("order_id") != order.pk
+            or selection is None or selection.client_id != client.pk):
+        return None
+    try:
+        return selection_reply_language(selection)
+    except (commerce.AssistedDecisionError, KeyError, TypeError, ValueError):
+        # An invalid selected receipt cannot turn the stale profile into
+        # replacement customer language authority.
+        return None
+
+
 def _tracking_digest(value: str) -> str:
     return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()[:24]
 
@@ -726,7 +753,28 @@ def ensure_lifecycle_event(order, kind, *, payload=None, due_at=None):
     if cancellation_reason:
         return None, False
     key = _event_key(order, kind, payload)
-    locale = _locale(getattr(context["client"], "language", "uk"))
+    canonical = (
+        IgLifecycleEvent.objects.select_for_update().filter(event_key=key).first()
+    )
+    previous = None
+    retry_prefix = f"{key}:retry:"
+    if canonical is not None:
+        if canonical.state != IgLifecycleEvent.State.CANCELLED:
+            return canonical, False
+        latest = (
+            IgLifecycleEvent.objects.select_for_update()
+            .filter(event_key__startswith=retry_prefix)
+            .order_by("-pk")
+            .first()
+        )
+        if latest is not None and latest.state != IgLifecycleEvent.State.CANCELLED:
+            return latest, False
+        previous = latest or canonical
+        if previous.last_error not in RECOVERABLE_CANCELLATION_REASONS:
+            return previous, False
+    locale = _new_event_locale(order, context["client"], context["proposal"])
+    if locale is None:
+        return None, False
     if kind == IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED:
         assignment = IgOrderAssignment.objects.filter(
             pk=assignment_snapshot["assignment_id"],
@@ -753,29 +801,11 @@ def ensure_lifecycle_event(order, kind, *, payload=None, due_at=None):
         "payload": payload,
         "due_at": due_at or timezone.now(),
     }
-    canonical = (
-        IgLifecycleEvent.objects.select_for_update().filter(event_key=key).first()
-    )
     if canonical is None:
         return IgLifecycleEvent.objects.get_or_create(
             event_key=key,
             defaults=defaults,
         )
-    if canonical.state != IgLifecycleEvent.State.CANCELLED:
-        return canonical, False
-
-    retry_prefix = f"{key}:retry:"
-    latest = (
-        IgLifecycleEvent.objects.select_for_update()
-        .filter(event_key__startswith=retry_prefix)
-        .order_by("-pk")
-        .first()
-    )
-    if latest is not None and latest.state != IgLifecycleEvent.State.CANCELLED:
-        return latest, False
-    previous = latest or canonical
-    if previous.last_error not in RECOVERABLE_CANCELLATION_REASONS:
-        return previous, False
     replacement = IgLifecycleEvent.objects.create(
         event_key=f"{retry_prefix}{previous.pk}",
         **defaults,
@@ -1328,6 +1358,14 @@ def _business_truth_cancellation_reason(
         return PAYMENT_NOT_VERIFIED_ERROR
     if order is None:
         return ORDER_MISSING_ERROR
+    if kind in {IgLifecycleEvent.Kind.TTN_CREATED, IgLifecycleEvent.Kind.PARCEL_ARRIVED,
+            IgLifecycleEvent.Kind.DELIVERED_REVIEW_REQUESTED}:
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+        if not assisted_shipping_dispatch_ready(order):
+            # A retained document awaiting actual fee/payer verification is
+            # not delivery authority. This existing recoverable reason lets a
+            # new event generation resume after the native shipping proof.
+            return CARRIER_DELIVERY_NOT_CONFIRMED_ERROR
     if kind == IgLifecycleEvent.Kind.PARCEL_ARRIVED:
         # Гонка між оновленням трекінгу і відправкою: якщо клієнт уже забрав,
         # нагадування скасовується БЕЗ звернення до провайдера.

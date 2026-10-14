@@ -241,6 +241,7 @@ def validate_checkout_items(
     allow_promo=False,
     source_cart_binding=None,
     verified_assisted_decision=None,
+    verified_assisted_selection=None,
 ):
     from product_catalog.services import effective_cart_unit_price, variant_allows_purchase
     from product_catalog.size_grid_services import (
@@ -267,6 +268,19 @@ def validate_checkout_items(
         catalog_lines = [line for line in cap.lines if line.item_kind == 'catalog_apparel']
         if len(catalog_lines) != len(item_specs) or len(cap.ready_lines) != len(cap.lines):
             raise CheckoutConfigurationError('assisted_full_ready_required')
+        for approved, item in zip(catalog_lines, item_specs, strict=True):
+            if item != assisted_catalog_spec(approved):
+                raise CheckoutConfigurationError('assisted_catalog_configuration_changed')
+        source_lines = [{'recipient_id': line.recipient_id} for line in catalog_lines]
+    if verified_assisted_selection is not None:
+        from management.services.ig_assisted_scopes import VerifiedAssistedSelection
+        selected = verified_assisted_selection
+        if (verified_assisted_decision is not None or type(selected) is not VerifiedAssistedSelection
+                or selected.client_id != client.pk):
+            raise CheckoutConfigurationError('assisted_selection_requires_native_producer')
+        catalog_lines = [line for line in selected.lines if line.item_kind == 'catalog_apparel']
+        if (len(catalog_lines) != len(item_specs) or any(line.ready_capacity != line.quantity for line in selected.lines)):
+            raise CheckoutConfigurationError('assisted_selected_ready_required')
         for approved, item in zip(catalog_lines, item_specs, strict=True):
             if item != assisted_catalog_spec(approved):
                 raise CheckoutConfigurationError('assisted_catalog_configuration_changed')
@@ -653,13 +667,42 @@ def assisted_item_snapshot(item):
         'assisted_line': dict(item.assisted_line)}
 
 
-def build_assisted_quote(*, client, verified_decision):
+def build_assisted_quote(*, client, verified_decision=None, verified_selection=None):
     """Re-read native approval, price catalogue subset ordinarily, quote all READY."""
+    if verified_selection is not None:
+        if verified_decision is not None:
+            raise CheckoutConfigurationError('assisted_authority_ambiguous')
+        from management.services.ig_assisted_scopes import revalidate_verified_assisted_selection
+        selected = revalidate_verified_assisted_selection(verified_selection, client=client)
+        if selected.proof_scope != 'unconsumed':
+            raise CheckoutConfigurationError('assisted_existing_execution_requires_native_verifier')
+        return _build_assisted_quote(client=client, cap=selected, selected=True)
     from management.services.ig_assisted_commerce import revalidate_verified_assisted_decision
     cap = revalidate_verified_assisted_decision(verified_decision, client=client)
     if cap.proof_scope != 'unconsumed':
         raise CheckoutConfigurationError('assisted_existing_execution_requires_native_verifier')
     return _build_assisted_quote(client=client, cap=cap)
+
+
+def observe_assisted_quote(*, client, verified_decision=None, verified_selection=None):
+    """Read one quote from the enclosing read capture's already verified cap.
+
+    No approval/source/choice graph is re-read here. Callers own the same
+    request-local capture and its final fences. This observation authorizes no
+    proposal, reservation or provider effect; those producers always revalidate.
+    Catalogue rows still pass the ordinary live configuration/pricing resolver.
+    """
+    from management.services import ig_assisted_commerce as commerce
+    from management.services import ig_assisted_scopes as scopes
+    if (verified_decision is None) == (verified_selection is None):
+        raise CheckoutConfigurationError('assisted_authority_ambiguous')
+    selected = verified_selection is not None
+    cap = verified_selection if selected else verified_decision
+    expected, issuer = (scopes.VerifiedAssistedSelection, scopes._ISSUER) if selected else (commerce.VerifiedAssistedDecision, commerce._ISSUER)
+    if (type(cap) is not expected or cap._issuer is not issuer or cap.historical
+        or cap.proof_scope not in {'unconsumed', 'execution'} or not client or cap.client_id != client.pk):
+        raise CheckoutConfigurationError('assisted_observation_requires_native_capture')
+    return _build_assisted_quote(client=client, cap=cap, selected=selected)
 
 
 def rebuild_assisted_quote_from_execution(*, client, verified_execution):
@@ -668,12 +711,14 @@ def rebuild_assisted_quote_from_execution(*, client, verified_execution):
     cap = revalidate_verified_assisted_execution(verified_execution, client=client)
     if cap.proof_scope != 'execution':
         raise CheckoutConfigurationError('assisted_execution_quote_scope_invalid')
-    return _build_assisted_quote(client=client, cap=cap)
+    from management.services.ig_assisted_scopes import VerifiedAssistedSelection
+    return _build_assisted_quote(client=client, cap=cap, selected=type(cap) is VerifiedAssistedSelection)
 
 
-def _build_assisted_quote(*, client, cap):
+def _build_assisted_quote(*, client, cap, selected=False):
     from management.services.ig_revision_cart_binding import assisted_quote_evidence
-    if not cap.lines or len(cap.lines) > MAX_CHECKOUT_ITEMS or len(cap.ready_lines) != len(cap.lines):
+    if (not cap.lines or len(cap.lines) > MAX_CHECKOUT_ITEMS
+            or (any(line.ready_capacity != line.quantity for line in cap.lines) if selected else len(cap.ready_lines) != len(cap.lines))):
         raise CheckoutConfigurationError('assisted_full_ready_required')
     if cap.currency != 'UAH' or sum(line.quantity for line in cap.lines) > MAX_CHECKOUT_QUANTITY:
         raise CheckoutConfigurationError('assisted_cart_bounds')
@@ -682,7 +727,7 @@ def _build_assisted_quote(*, client, cap):
     if catalog_lines:
         catalog_quote = validate_checkout_items(client=client,
             item_specs=[assisted_catalog_spec(line) for line in catalog_lines],
-            verified_assisted_decision=cap)
+            **({"verified_assisted_selection": cap} if selected else {"verified_assisted_decision": cap}))
     catalog_rows = iter(catalog_quote.items if catalog_quote else ())
     normalized = []
     for line in cap.lines:
@@ -719,8 +764,12 @@ def _build_assisted_quote(*, client, cap):
     total = sum((item.catalog_line_total for item in normalized), Decimal('0.00'))
     if not total.is_finite() or not Decimal('0') < total <= MAX_CHECKOUT_VALUE or total != cap.approved_total:
         raise CheckoutConfigurationError('assisted_approved_total_changed')
-    evidence = assisted_quote_evidence(cap)
-    digest = hashlib.sha256(json.dumps({'schema': 'ig-assisted-quote.v1',
+    if selected:
+        from management.services.ig_assisted_scopes import selection_evidence
+        evidence = selection_evidence(cap)
+    else:
+        evidence = assisted_quote_evidence(cap)
+    digest = hashlib.sha256(json.dumps({'schema': 'ig-assisted-selected-quote.v1' if selected else 'ig-assisted-quote.v1',
         'items': [item.digest_payload() for item in normalized], 'assisted_commerce': evidence,
         'quoted_total': str(total), 'pay_type': 'online_full', 'allow_promo': False},
         sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
@@ -947,6 +996,7 @@ def create_or_update_proposal(
     source_cart_capture=None,
     checkout_owner_scope=None,
     verified_assisted_decision=None,
+    verified_selection=None,
 ):
     from management.models import (
         IgCheckoutProposal,
@@ -963,8 +1013,17 @@ def create_or_update_proposal(
     from orders.checkout_series import assisted_checkout_v2_new_proposal_enabled
 
     new_v2_canary = assisted_checkout_v2_new_proposal_enabled(locked_client.pk)
-    assisted = verified_assisted_decision is not None
-    if assisted:
+    assisted = verified_assisted_decision is not None or verified_selection is not None
+    selected = verified_selection is not None
+    if selected:
+        if verified_assisted_decision is not None:
+            raise CheckoutConfigurationError('assisted_authority_ambiguous')
+        from management.services.ig_assisted_scopes import revalidate_verified_assisted_selection
+        from management.services.ig_revision_cart_binding import build_selected_cart_binding, validate_selected_cart_binding
+        verified_selection = revalidate_verified_assisted_selection(verified_selection, client=locked_client)
+        if verified_selection.proof_scope != 'unconsumed':
+            raise CheckoutConfigurationError('assisted_existing_execution_cannot_create_proposal')
+    elif assisted:
         from management.services.ig_assisted_commerce import revalidate_verified_assisted_decision
         from management.services.ig_revision_cart_binding import (
             build_assisted_cart_binding, validate_assisted_cart_binding,
@@ -980,7 +1039,8 @@ def create_or_update_proposal(
             for row in item_specs or ()
         )
     )
-    quote = build_assisted_quote(client=locked_client, verified_decision=verified_assisted_decision) if assisted else validate_checkout_items(
+    quote = build_assisted_quote(client=locked_client,
+        **({'verified_selection': verified_selection} if selected else {'verified_decision': verified_assisted_decision})) if assisted else validate_checkout_items(
         client=locked_client,
         item_specs=item_specs,
         evidence=evidence,
@@ -996,14 +1056,16 @@ def create_or_update_proposal(
     )
     bound_cart = source_cart_binding is not None or source_cart_capture is not None or checkout_owner_scope is not None
     if assisted:
-        expected_binding = build_assisted_cart_binding(verified_decision=verified_assisted_decision,
+        binding_builder = build_selected_cart_binding if selected else build_assisted_cart_binding
+        expected_binding = binding_builder(
+            **({'verified_selection': verified_selection} if selected else {'verified_decision': verified_assisted_decision}),
             quoted_items=[_deal_item_snapshot(item) for item in quote.items],
             bound_episode_id=(source_cart_binding or {}).get('bound_episode_id'))
         if source_cart_binding is not None and source_cart_binding != expected_binding:
             raise CheckoutConfigurationError('assisted_cart_binding_changed')
         source_cart_binding = expected_binding
-        source_cart_capture = verified_assisted_decision.full_capture
-        checked = validate_assisted_cart_binding(source_cart_binding)
+        source_cart_capture = verified_selection.current_capture if selected else verified_assisted_decision.full_capture
+        checked = (validate_selected_cart_binding if selected else validate_assisted_cart_binding)(source_cart_binding)
         if not checked.ok or (source_cart_capture['scope']['episode_id'] is not None
                 and source_cart_capture['scope']['episode_id'] != locked_client.current_commercial_episode_id):
             raise CheckoutConfigurationError('assisted_cart_owner_changed')
@@ -1300,8 +1362,8 @@ def create_or_update_proposal(
         locked_client.current_commercial_episode = episode
         locked_client.save(update_fields=["current_commercial_episode", "updated_at"])
     if assisted:
-        from management.services.ig_revision_cart_binding import rebind_assisted_cart_episode
-        source_cart_binding = rebind_assisted_cart_episode(source_cart_binding, episode.pk)
+        from management.services.ig_revision_cart_binding import rebind_assisted_cart_episode, rebind_selected_cart_episode
+        source_cart_binding = (rebind_selected_cart_episode if selected else rebind_assisted_cart_episode)(source_cart_binding, episode.pk)
     if proposal is None:
         proposal_values = {}
         if activate_v2 and payment_policy is not None:

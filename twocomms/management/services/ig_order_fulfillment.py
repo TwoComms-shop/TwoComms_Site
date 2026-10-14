@@ -221,9 +221,13 @@ def _event_specs(assignment, *, now):
     client = assignment.client
     locale = _locale(client)
     tracking = str(order.tracking_number or "").strip()
+    from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+    shipping_ready = assisted_shipping_dispatch_ready(order)
     from management.models import IgSplitOrderPlan
     split_plan = IgSplitOrderPlan.objects.filter(order_id=order.pk).first()
     if split_plan:
+        if not shipping_ready:
+            return
         from management.services.ig_split_execution import verified_tracking_plan
         verified = verified_tracking_plan(order, now=now)
         if not verified.get("ready"):
@@ -273,7 +277,7 @@ def _event_specs(assignment, *, now):
                 "payment_status": str(order.payment_status or ""),
             },
         }
-    if tracking and order.status not in {"done", "cancelled"}:
+    if shipping_ready and tracking and order.status not in {"done", "cancelled"}:
         # Exactly one outbound kind per current tracking number, so a replacement
         # never produces both «замовлення відправлено» and «заміну відправлено».
         replacement = _exchange_replacement(order, tracking)
@@ -303,7 +307,7 @@ def _event_specs(assignment, *, now):
                 "message": _message("ttn_assigned", locale, order, tracking),
                 "payload": {"tracking_number": tracking, "tracking_url": f"https://novaposhta.ua/tracking/?cargo_number={tracking}"},
             }
-    if nova_poshta_order_fulfillment_confirmed(order):
+    if shipping_ready and nova_poshta_order_fulfillment_confirmed(order):
         invitation, message = post_purchase_invitation_snapshot(
             client, order, locale, assignment=assignment,
         )
@@ -551,6 +555,10 @@ def _inside_response_window(client, *, now) -> bool:
 
 def _matches_current_fulfillment(event, order) -> bool:
     """Return whether the durable snapshot still matches the live order."""
+    if event.kind in {"ttn_assigned", "exchange_shipped", "delivered_review"}:
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+        if not assisted_shipping_dispatch_ready(order):
+            return False
     tracking = str(getattr(order, "tracking_number", "") or "").strip()
     if (event.payload or {}).get("split_dispatch_id"):
         return _is_current_split_event(event, order)

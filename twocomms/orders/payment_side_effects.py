@@ -840,6 +840,7 @@ def _process_attempt_telegram(job, lease_token, *, now):
 
 def _process_order_telegram_notification(job, lease_token, *, now):
     from orders.telegram_notifications import TelegramNotifier
+    from orders.models import Order
 
     notification_type = str(job.payload.get("notification_type") or "")
     if notification_type not in {"status_update", "ttn_added"}:
@@ -850,7 +851,25 @@ def _process_order_telegram_notification(job, lease_token, *, now):
             now=now,
         )
         return "ambiguous"
-    order = job.order
+    # The queued relation may predate a carrier fee review. Reload the actual
+    # Order immediately before consuming its notification authority.
+    order = Order.objects.filter(pk=job.order_id).first()
+    shipping_notification = notification_type == "ttn_added"
+    if notification_type == "status_update":
+        from django.utils.translation import override
+        shipping_statuses = {"ship", "done"}
+        for language in ("uk", "ru", "en"):
+            with override(language):
+                shipping_statuses.update(str(label) for code, label in Order.STATUS_CHOICES
+                    if code in {"ship", "done"})
+        shipping_notification = str(job.payload.get("new_status") or "") in shipping_statuses
+    if shipping_notification and order is not None:
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_dispatch_ready
+        if not assisted_shipping_dispatch_ready(order):
+            # Terminally skip the obsolete intent before its provider marker.
+            # A later verified ship transition owns a fresh normal status job.
+            complete_payment_side_effect(job.pk, lease_token, now=now)
+            return "done"
     user = order.user if order is not None else None
     profile = getattr(user, "userprofile", None) if user is not None else None
     if not getattr(profile, "telegram_id", None):
@@ -863,14 +882,14 @@ def _process_order_telegram_notification(job, lease_token, *, now):
     notifier = TelegramNotifier()
     if notification_type == "status_update":
         outcome = notifier.send_order_status_update(
-            job.order,
+            order,
             job.payload.get("old_status"),
             job.payload.get("new_status"),
             return_outcome=True,
         )
     else:
         outcome = notifier.send_ttn_added_notification(
-            job.order,
+            order,
             return_outcome=True,
         )
     outcome = _normalize_delivery_outcome(outcome)

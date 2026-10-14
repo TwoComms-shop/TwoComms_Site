@@ -123,7 +123,7 @@ def ensure_transactions(apps, schema_editor):
                 raise RuntimeError(f"Assisted child requires InnoDB: {table}")
 
 
-def install_guards(apps, schema_editor):
+def install_guards(apps, schema_editor, *, allow_partial=False):
     connection = schema_editor.connection
     if connection.vendor not in {"mysql", "sqlite"}:
         raise RuntimeError("Assisted guards require MariaDB or SQLite")
@@ -234,6 +234,23 @@ def install_guards(apps, schema_editor):
         OR (NEW.approved_custom_quantity>0 AND NEW.status='approved' AND (NEW.physical_checked_at IS NULL OR NEW.physical_checked_at>=NEW.expires_at))
         OR (NEW.status<>'approved' AND (NEW.approved_total<>0 OR NEW.approved_custom_quantity<>0
             OR NEW.physical_checked_at IS NOT NULL OR NEW.expires_at IS NOT NULL))"""
+    # The released 0233 entry point remains FULL39. Only the additive 0234
+    # migration enables independently manager-priced, customer-chosen scopes.
+    quote_owner = "NEW.quoted_total=d.approved_total AND NEW.quoted_custom_quantity=d.approved_custom_quantity"
+    scope_owner = exact('NEW.scope', "'full'")
+    if allow_partial:
+        selected = "snapshot.scoped_quotes.selected."
+        selected_total = extracted(selected + "total", envelope="d.envelope")
+        native_total = "CAST(NEW.quoted_total AS CHAR)" if mysql else "printf('%.2f',NEW.quoted_total)"
+        partial_quote_owner = " AND ".join((
+            exact('NEW.scope', "'partial'"), "NEW.choice_source_id IS NOT NULL",
+            exact(extracted(selected + "scope", envelope="d.envelope"), "'partial'"),
+            exact(selected_total, native_total),
+            f"{extracted(selected + 'custom_quantity', envelope='d.envelope')}=NEW.quoted_custom_quantity",
+            exact(extracted(selected + "scope_digest", envelope="d.envelope"), "NEW.scope_digest"),
+        ))
+        quote_owner = f"(({exact('NEW.scope', chr(39)+'full'+chr(39))} AND {quote_owner}) OR ({partial_quote_owner}))"
+        scope_owner = f"({scope_owner} OR ({exact('NEW.scope', chr(39)+'partial'+chr(39))} AND NEW.choice_source_id IS NOT NULL))"
     execution_owner = f"""EXISTS (SELECT 1 FROM {request} r JOIN {decision} d ON d.request_id=r.id
         JOIN management_igcheckoutproposal p ON p.id=NEW.proposal_id
         JOIN management_igcommercialepisode e ON e.id=NEW.episode_id
@@ -245,12 +262,11 @@ def install_guards(apps, schema_editor):
             AND d.status='approved' AND d.currency=NEW.currency AND p.currency=NEW.currency
             AND {exact('r.envelope_hmac','NEW.request_digest')} AND {exact('d.envelope_hmac','NEW.decision_digest')}
             AND {exact('r.full_capture_digest','NEW.full_capture_digest')}
-            AND NEW.quoted_total=p.quoted_total AND NEW.quoted_total=d.approved_total
-            AND NEW.quoted_custom_quantity=d.approved_custom_quantity
+            AND NEW.quoted_total=p.quoted_total AND ({quote_owner})
             AND NEW.expires_at<=d.expires_at AND NEW.expires_at<=p.expires_at)"""
     execution_initial = f"""{signed_guard('execution')}
         OR NOT ({open_client}) OR NOT ({execution_owner}) OR NOT ({exact('NEW.currency', chr(39)+'UAH'+chr(39))}) OR NEW.quoted_total<=0 OR NEW.quoted_total>1000000
-        OR NEW.quoted_custom_quantity>50 OR NOT ({exact('NEW.scope', chr(39)+'full'+chr(39))})
+        OR NEW.quoted_custom_quantity>50 OR NOT ({scope_owner})
         OR {hash_invalid('NEW.scope_digest')} OR {hash_invalid('NEW.full_capture_digest')}
         OR {hash_invalid('NEW.request_digest')} OR {hash_invalid('NEW.decision_digest')}
         OR NOT {customer_source('NEW.purchase_source_id')}

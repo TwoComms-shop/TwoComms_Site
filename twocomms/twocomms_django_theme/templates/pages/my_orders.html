@@ -271,6 +271,16 @@
     {% for o in orders %}
       <article class="myo-card" data-order-id="{{ o.id }}" data-status="{{ o.status }}">
         <div class="myo-card__pad">
+          {% if o.assisted_group %}
+            <details class="myo-related-orders">
+              <summary>{% trans 'Частини запиту від' %} {{ o.assisted_group.original_requested_at|date:"d.m.Y H:i" }}</summary>
+              <div>{{ o.assisted_group.shipping_label }}</div>
+              {% if o.assisted_group.shipping_review %}<div>{% trans 'ТТН потребує звірки; відправку заблоковано.' %}</div>{% endif %}
+              {% for related in o.assisted_group.orders %}
+                <div>{% if related.is_current %}<strong>{% endif %}#{{ related.order_number }}{% if related.is_current %}</strong>{% endif %} · {{ related.payment_status_label }} · {{ related.status_label }}{% if related.tracking_number %} · {% trans 'ТТН' %} {{ related.tracking_number }}{% endif %}</div>
+              {% endfor %}
+            </details>
+          {% endif %}
 
           <!-- Head -->
           <div class="myo-head">

@@ -456,7 +456,7 @@ def _configuration_capture(capture):
             for row in capture["lines"]]}
 
 
-def _purchase_extension(original, current, source_id, client, settings_obj, now):
+def _purchase_extension(original, current, source_id, client, settings_obj, now, *, request=None):
     """Permit only a real later canonical purchase with unchanged full choices."""
     from management.models import InstagramBotMessage
     from management.services.ig_commerce_turns import parse_turn
@@ -474,6 +474,13 @@ def _purchase_extension(original, current, source_id, client, settings_obj, now)
         .select_related("commerce_turn_decision").order_by("pk")[:MAX_SOURCES + 1])
     if not 1 <= len(rows) <= MAX_SOURCES or rows[-1].pk != watermark:
         return False
+    if request is not None:
+        from management.services.ig_assisted_partial_delivery import is_authenticated_card_source
+        if all(is_authenticated_card_source(request, row, settings_obj=settings_obj, now=now) for row in rows):
+            # An actual SENT-card response can extend the observed source head.
+            # It does not mark deferred lines as purchased: the native choice
+            # and selected-scope issuers independently decide purchase authority.
+            return True
     for row in rows:
         parsed = parse_turn(row.text)
         hint = extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now)
@@ -493,6 +500,51 @@ def _purchase_extension(original, current, source_id, client, settings_obj, now)
     return all((preferences := source_line_preferences(current, line)).get("values", {}).get("purchase_requested") is True
         and preferences.get("evidence", {}).get("purchase_requested", {}).get("source_message_id") in {row.pk for row in rows}
         for line in current["lines"])
+
+
+def _adoption_completion_extension(original, current, request, continuation, *, now):
+    """Only native R2 source completion may rebind its bookkeeping fence.
+
+    The immutable old capture remains sealed. Reconstructing its entire source
+    fence proves that precisely the verified adoption source moved from pending
+    or processing to done; every byte of source metadata and all cart proofs
+    still match. This grants no new choice or purchase authority.
+    """
+    if (request is None or not _verified(request, "request") or not continuation
+        or not request.envelope["snapshot"].get("ancestry")
+        or _configuration_capture(original) != _configuration_capture(current)):
+        return False
+    source_id = continuation.get("source_id")
+    if (source_id != request.source_id or continuation.get("revision_id") != request.revision_id
+        or current.get("source_watermark") != original.get("source_watermark")
+        or current.get("source_watermark", {}).get("message_id") != source_id):
+        return False
+    rebound = deepcopy(current)
+    rebound["capture_digest"] = original.get("capture_digest")
+    rebound["fence"]["source_digest"] = original.get("fence", {}).get("source_digest")
+    if rebound != original:
+        return False
+    from management.models import InstagramBotMessage
+    from management.services.ig_commerce_projection import _source_fence_row
+    from management.services.ig_assisted_continuation_sources import verify_assisted_adoption_transition
+    native = verify_assisted_adoption_transition(continuation.get("transition_id"), now=now)
+    if not native.get("ready") or native != continuation:
+        return False
+    ids = current.get("fence", {}).get("source_ids") or []
+    rows = list(InstagramBotMessage.objects.filter(client_id=request.client_id, pk__in=ids).order_by("pk"))
+    if [row.pk for row in rows] != ids:
+        return False
+    source = next((row for row in rows if row.pk == source_id), None)
+    if not source or source.status != "done":
+        return False
+    fence = {row.pk: _source_fence_row(row) for row in rows}
+    if _digest(fence) != current["fence"]["source_digest"]:
+        return False
+    for previous_status in ("pending", "processing"):
+        fence[source_id]["status"] = previous_status
+        if _digest(fence) == original["fence"]["source_digest"]:
+            return True
+    return False
 
 
 def _business_owner(client, scope):
@@ -585,7 +637,8 @@ def _catalog_configuration_observations(cart, catalog):
         for row in cart["lines"] if row["line_id"] in result})
 
 
-def _capture(client, revision_id, settings_id, now, *, expected_revision_digest=None, prior_snapshot=None):
+def _capture(client, revision_id, settings_id, now, *, expected_revision_digest=None, prior_snapshot=None,
+        request=None, continuation_proof=None, read_unit=None):
     """Only this native producer reads source/cart/owner facts, never a raw DTO."""
     from management.models import IgCustomerTurnRevision, InstagramBotMessage, IgCommerceSelectionSession
     from management.services.ig_purpose_sources import owned_source
@@ -623,8 +676,21 @@ def _capture(client, revision_id, settings_id, now, *, expected_revision_digest=
             .order_by("pk").values_list("pk", flat=True)) != ids:
         _fail("source_scope_changed")
     cart = capture_current_selection_lines(client.pk, now=now)
+    continuation = continuation_proof
+    if continuation is None and prior_snapshot is not None and prior_snapshot.get("ancestry"):
+        if request is None:
+            _fail("residual_ancestry_required")
+        from management.services.ig_assisted_scopes import validate_request_ancestry
+        checked = validate_request_ancestry(request, client=client, now=now, read_unit=read_unit)
+        if not checked.get("ready"):
+            _fail(checked.get("reason") or "residual_ancestry_unverified")
+        continuation = checked["adoption_proof"]
+    if continuation is not None:
+        from management.services.ig_assisted_scopes import validate_continuation_capture
+        validate_continuation_capture(cart, client=client, proof=continuation, now=now)
     if (cart.get("status") != "captured" or not cart.get("coverage_complete")
-        or not 1 <= len(cart.get("lines") or []) <= MAX_LINES or stable_checkout_source_capture(cart) is None
+        or not 1 <= len(cart.get("lines") or []) <= MAX_LINES
+        or continuation is None and stable_checkout_source_capture(cart) is None
         or not lock_checkout_cart_sources(client, cart)):
         _fail("needs_customer_selection")
     scope = cart["scope"]
@@ -638,7 +704,9 @@ def _capture(client, revision_id, settings_id, now, *, expected_revision_digest=
         _fail("source_head_changed")
     extended = False
     if prior_snapshot is not None and cart != prior_snapshot["full_capture"]:
-        extended = _purchase_extension(prior_snapshot["full_capture"], cart, latest_id, client, settings_obj, now)
+        extended = _adoption_completion_extension(prior_snapshot["full_capture"], cart, request, continuation, now=now)
+        if not extended:
+            extended = _purchase_extension(prior_snapshot["full_capture"], cart, latest_id, client, settings_obj, now, request=request)
         if not extended:
             _fail("source_configuration_or_head_changed")
     if (revision.active_slot != 1 or revision.state not in {"sealed", "claimed", "processed"}
@@ -727,6 +795,8 @@ def _capture(client, revision_id, settings_id, now, *, expected_revision_digest=
         "reply_language": language.as_dict(), "expires_at": (now + REQUEST_TTL).isoformat(),
         "authority": {"stock": False, "price": False, "purchase": False, "payment": False,
             "order": False, "provider_send": False}}
+    if prior_snapshot is not None and prior_snapshot.get("ancestry"):
+        snapshot["ancestry"] = deepcopy(prior_snapshot["ancestry"])
     return json.loads(_json(snapshot))
 
 
@@ -743,6 +813,18 @@ def _task(client, task_id):
 def _head(Request, client_id, intention_id, *, lock=False):
     rows = Request.objects.filter(client_id=client_id, intention_id=intention_id)
     return (rows.select_for_update() if lock else rows).order_by("-version").first()
+
+
+def latest_assisted_request(client_id, *, lock=False):
+    """One native head per intention, ordered by current source on time ties."""
+    from django.db.models import Exists, OuterRef
+    Request = _models()[0]
+    newer = Request.objects.filter(client_id=client_id, intention_id=OuterRef("intention_id"),
+        version__gt=OuterRef("version"))
+    rows = Request.objects.filter(client_id=client_id).filter(~Exists(newer))
+    if lock:
+        rows = rows.select_for_update()
+    return rows.order_by("-created_at", "-source_id", "-version", "-pk").first()
 
 
 def _publish_task_head(task, request, decision=None):
@@ -827,7 +909,74 @@ def create_assisted_request(revision_id, *, settings_id, operation_id, expected_
         return request, True
 
 
-def _current_request(request, client, now):
+def create_residual_assisted_request(verified_adoption, *, settings_id, operation_id, expected_revision_digest,
+        expected_full_capture_digest, expected_request_version, expected_request_digest, task_id=None, now=None):
+    """A real Resume adoption produces fresh residual R2, never old readiness.
+
+    The native source owner created and authenticated the fresh session and
+    transition. This factory consumes that actual capture and keeps immutable
+    parent/root ancestry; it cannot accept raw lines or a copied old snapshot.
+    """
+    from management.models import IgClient, IgCustomerTurnRevision
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
+    from management.services.ig_assisted_continuation_sources import revalidate_verified_assisted_adoption
+    from management.services.ig_assisted_scopes import original_intention_history, intention_coverage
+    Request, _Decision, _Execution, _Image = _models()
+    now, operation = _now(now), _uuid(operation_id)
+    proof = revalidate_verified_assisted_adoption(verified_adoption, now=now)
+    parent = Request.objects.select_related("client").filter(pk=proof["parent_request_id"]).first()
+    if not parent:
+        _fail("adoption_parent_missing")
+    operation_input = {"transition_id": proof["transition_id"], "source_id": proof["source_id"],
+        "revision_id": proof["revision_id"], "parent_request_id": str(parent.pk), "settings_id": settings_id,
+        "expected_revision_digest": expected_revision_digest, "expected_full_capture_digest": expected_full_capture_digest,
+        "expected_request_version": expected_request_version, "expected_request_digest": expected_request_digest, "task_id": task_id}
+    input_digest = _digest(operation_input)
+    with commercial_episode_client_lock(parent.client_id), transaction.atomic():
+        client = IgClient.objects.select_for_update().get(pk=parent.client_id)
+        prior = Request.objects.select_for_update().filter(operation_id=operation).first()
+        if prior:
+            if (not _verified(prior, "request") or prior.client_id != client.pk
+                or prior.envelope.get("operation_input_digest") != input_digest):
+                _fail("operation_conflict")
+            _current_request(prior, client, now)
+            return prior, False
+        head = _head(Request, client.pk, parent.intention_id, lock=True)
+        if (not head or head.pk != parent.pk or head.version != expected_request_version
+            or head.envelope_hmac != expected_request_digest or proof["intention_id"] != str(parent.intention_id)):
+            _fail("request_head_changed")
+        history = original_intention_history(parent, now=now)
+        coverage = intention_coverage(client.pk, parent.intention_id, now=now, lock=True)
+        if (not history.get("ready") or not coverage.get("ready") or not coverage["settled_line_ids"]
+            or coverage["inflight_line_ids"] or proof["coverage_digest"] != coverage["ledger_digest"]
+            or set(entry["line_id"] for entry in proof["line_map"]) != set(coverage["deferred_line_ids"])):
+            _fail("residual_coverage_changed")
+        revision = IgCustomerTurnRevision.objects.filter(pk=proof["revision_id"], client=client).first()
+        if not revision:
+            _fail("adoption_revision_missing")
+        task = _task(client, task_id)
+        snapshot = _capture(client, revision.pk, settings_id, now,
+            expected_revision_digest=expected_revision_digest, continuation_proof=proof)
+        if snapshot["full_capture"]["capture_digest"] != expected_full_capture_digest or snapshot["source_id"] != proof["source_id"]:
+            _fail("adoption_capture_changed")
+        snapshot["ancestry"] = {"schema": "assisted-intention-ancestry.v1", "root_request_id": history["root_request_id"],
+            "root_request_digest": history["root_request_digest"], "root_full_capture_digest": history["root_full_capture_digest"],
+            "parent_request_id": str(parent.pk), "parent_request_digest": parent.envelope_hmac, "parent_version": parent.version,
+            "ledger_coverage_digest": coverage["ledger_digest"], "line_map": deepcopy(proof["line_map"]),
+            "adoption_proof": {key: deepcopy(proof[key]) for key in
+                ("transition_id", "source_id", "revision_id", "parent_request_id", "intention_id", "coverage_digest", "line_map")}}
+        owner = snapshot["owner_scope"]
+        request = _seal(Request(intention_id=parent.intention_id, version=parent.version + 1, operation_id=operation,
+            client=client, task=task, source_id=proof["source_id"], revision_id=revision.pk,
+            episode_id=(owner.get("episode") or {}).get("pk"), deal_id=(owner.get("deal") or {}).get("pk"),
+            source_namespace=snapshot["full_capture"]["scope"]["source_namespace"], reset_floor=snapshot["full_capture"]["scope"]["reset_floor"],
+            client_permission_epoch=snapshot["client_permission_epoch"], full_capture_digest=expected_full_capture_digest),
+            "request", snapshot, operation_input_digest=input_digest)
+        _publish_task_head(task, request)
+        return request, True
+
+
+def _current_request(request, client, now, *, read_unit=None):
     """The same strict source/head, privacy, epoch and owner checks at effects."""
     Request, _Decision, Execution, _Image = _models()
     if not _verified(request, "request") or request.client_id != client.pk:
@@ -841,7 +990,7 @@ def _current_request(request, client, now):
     _permission(client, data["settings_id"], expected_settings_epoch=data["settings_permission_epoch"],
         expected_client_epoch=request.client_permission_epoch)
     actual = _capture(client, request.revision_id, data["settings_id"], now,
-        expected_revision_digest=data["revision_digest"], prior_snapshot=data)
+        expected_revision_digest=data["revision_digest"], prior_snapshot=data, request=request, read_unit=read_unit)
     current_capture = actual["full_capture"]
     # Original immutable sources remain the intention proof. A separately
     # authenticated later purchase source may extend canonical purchase intent
@@ -864,6 +1013,12 @@ def _current_request(request, client, now):
         if head.get("request_id") != str(request.pk) or head.get("request_digest") != request.envelope_hmac:
             _fail("manager_case_head_changed")
     if Execution.objects.filter(intention_id=request.intention_id).exists():
+        if data.get("ancestry"):
+            from management.services.ig_assisted_scopes import validate_request_ancestry
+            checked = validate_request_ancestry(request, client=client, now=now, read_unit=read_unit)
+            if checked.get("ready"):
+                return data, task, current_capture
+            _fail(checked.get("reason") or "residual_ancestry_unverified")
         # Includes provider-paid RESOURCE_REVIEW without a canonical Order.
         # Its active intention hold cannot be cleared by this decision service
         # or by a generic refund/manual-release action. The future continuation
@@ -893,7 +1048,7 @@ def _images(lines, request, now):
 
 def record_assisted_decision(request_id, *, actor, operation_id, status, expected_request_version,
         expected_request_digest, expected_full_capture_digest, expected_decision_version,
-        expected_draft_digest, items=None, rejection_reason="", now=None):
+        expected_draft_digest, items=None, rejection_reason="", shipping_terms=None, now=None):
     """Append DRAFT, approve identical current DRAFT, or reject under full CAS.
 
     Approval never performs commerce. A new draft supersedes the old approved
@@ -910,10 +1065,13 @@ def record_assisted_decision(request_id, *, actor, operation_id, status, expecte
     if type(expected_decision_version) is not int or expected_decision_version < 0:
         _fail("decision_version_invalid")
     authenticated_id = getattr(actor, "pk", None)
-    input_digest = _digest({"request_id": str(request_id), "actor_id": authenticated_id, "status": status,
+    operation_input = {"request_id": str(request_id), "actor_id": authenticated_id, "status": status,
         "expected_request_version": expected_request_version, "expected_request_digest": expected_request_digest,
         "expected_full_capture_digest": expected_full_capture_digest, "expected_decision_version": expected_decision_version,
-        "expected_draft_digest": expected_draft_digest, "items": items, "rejection_reason": rejection_reason})
+        "expected_draft_digest": expected_draft_digest, "items": items, "rejection_reason": rejection_reason}
+    if shipping_terms is not None:
+        operation_input["shipping_terms"] = deepcopy(shipping_terms)
+    input_digest = _digest(operation_input)
     identity = Request.objects.filter(pk=request_id).values("client_id").first()
     if not identity:
         _fail("request_missing")
@@ -960,8 +1118,25 @@ def record_assisted_decision(request_id, *, actor, operation_id, status, expecte
             reason = _text(rejection_reason, limit=350, required=True, reason="rejection_reason_required")
             lines = normalize_assisted_lines(previous_items, source_lines=data["lines"], questions=data["questions"])
         normalized = [line.as_dict() for line in lines]
-        draft_digest = _digest({"schema": DECISION_SCHEMA, "request_digest": request.envelope_hmac,
-            "full_capture_digest": request.full_capture_digest, "items": normalized})
+        previous_scopes = latest.envelope["snapshot"].get("scoped_quotes") if latest else None
+        scope_terms = shipping_terms
+        if status in {"approved", "rejected"} and previous_scopes:
+            scope_terms = previous_scopes["selected"]["shipping_terms"]
+            if shipping_terms is not None and shipping_terms != scope_terms:
+                _fail("approved_draft_changed")
+        scoped_quotes = None
+        if scope_terms is not None:
+            from management.services.ig_assisted_scopes import build_scoped_quotes
+            scoped_quotes = build_scoped_quotes(request, lines, scope_terms)
+            if status == "approved" and scoped_quotes != previous_scopes:
+                _fail("approved_draft_changed")
+        elif data.get("ancestry"):
+            _fail("residual_shipping_terms_required")
+        draft_payload = {"schema": DECISION_SCHEMA, "request_digest": request.envelope_hmac,
+            "full_capture_digest": request.full_capture_digest, "items": normalized}
+        if scoped_quotes is not None:
+            draft_payload["scoped_quotes"] = scoped_quotes
+        draft_digest = _digest(draft_payload)
         if status == "approved" and draft_digest != expected_draft_digest:
             _fail("approved_draft_changed")
         _images(lines, request, now)
@@ -983,6 +1158,8 @@ def record_assisted_decision(request_id, *, actor, operation_id, status, expecte
             "quantity_authority": "exact_approved_quantity_once" if status == "approved" else "none",
             "authority": {"stock_write": False, "purchase": False, "proposal": False, "payment": False,
                 "order": False, "provider_send": False}}
+        if scoped_quotes is not None:
+            snapshot["scoped_quotes"] = scoped_quotes
         decision = _seal(Decision(request=request, client=client, actor=actor, version=expected_decision_version + 1,
             operation_id=operation, status=status, request_digest=request.envelope_hmac, draft_digest=draft_digest,
             full_capture_digest=request.full_capture_digest, currency="UAH", approved_total=total,
@@ -1057,7 +1234,7 @@ class VerifiedAssistedDecision:
 
 
 def load_verified_assisted_decision(request_id, decision_id, *, actor, expected_request_digest,
-        expected_decision_digest, now=None):
+        expected_decision_digest, now=None, read_unit=None):
     """Fresh native row reader. A stale typed object never substitutes this.
 
     Reentrant client barrier + nested transaction permit a future execution
@@ -1077,7 +1254,10 @@ def load_verified_assisted_decision(request_id, decision_id, *, actor, expected_
         executing_actor = _actor(getattr(actor, "pk", None))
         client = IgClient.objects.select_for_update().get(pk=identity["client_id"])
         request = Request.objects.select_for_update().get(pk=request_id, client=client)
-        source_data, task, current_capture = _current_request(request, client, now)
+        if read_unit is not None:
+            from management.services.ig_assisted_scopes import require_selection_read_unit
+            require_selection_read_unit(read_unit, request, now=now)
+        source_data, task, current_capture = _current_request(request, client, now, read_unit=read_unit)
         decision = Decision.objects.select_for_update().filter(pk=decision_id, request=request, client=client).first()
         latest = Decision.objects.filter(request=request).order_by("-version").values_list("pk", flat=True).first()
         if (not decision or decision.pk != latest or not _verified(decision, "decision")
@@ -1239,13 +1419,16 @@ def _editable_items(data):
 
 
 def _decision_dto(decision):
-    return {"id": str(decision.pk), "version": decision.version, "status": decision.status,
+    result = {"id": str(decision.pk), "version": decision.version, "status": decision.status,
         "decision_digest": decision.envelope_hmac, "draft_digest": decision.draft_digest,
         "snapshot_digest": decision.snapshot_digest, "items": deepcopy(decision.envelope["snapshot"]["items"]),
         "physical_checked_at": decision.physical_checked_at.isoformat() if decision.physical_checked_at else None,
         "expires_at": decision.expires_at.isoformat() if decision.expires_at else None,
         "approved_total": format(decision.approved_total, ".2f"), "currency": decision.currency,
         "approved_custom_quantity": decision.approved_custom_quantity}
+    if decision.envelope["snapshot"].get("scoped_quotes") is not None:
+        result["scoped_quotes"] = deepcopy(decision.envelope["snapshot"]["scoped_quotes"])
+    return result
 
 
 def operator_context(client_id, *, actor, request_id=None, now=None):
@@ -1267,7 +1450,7 @@ def operator_context(client_id, *, actor, request_id=None, now=None):
             return {**base, "status": "stale", "reason": "client_unavailable"}
         rows = Request.objects.filter(client=client)
         request = (rows.filter(pk=_uuid(request_id)).first() if request_id is not None
-            else rows.order_by("-created_at", "-version", "pk").first())
+            else latest_assisted_request(client.pk))
         if request is None:
             return base
         if not _verified(request, "request"):

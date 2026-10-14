@@ -48,7 +48,7 @@ def prepare_order_item_presentation(orders, *, audience, actor):
     if audience not in {'staff', 'account'}:
         raise ValueError('Unknown order presentation audience')
     orders = list(orders)
-    candidates, photo_ids = [], set()
+    candidates, photo_ids, checked_orders = [], set(), {}
     for order in orders:
         items = list(order.items.all())
         for item in items:
@@ -70,6 +70,7 @@ def prepare_order_item_presentation(orders, *, audience, actor):
             continue
         if not checked.get('ready'):
             continue
+        checked_orders[order.pk] = checked
         by_id = {item.pk: item for item in items}
         for row in checked['item_map']:
             item = by_id.get(row['order_item_id'])
@@ -78,6 +79,7 @@ def prepare_order_item_presentation(orders, *, audience, actor):
             photo_ids.add(row['photo_asset_id'])
             candidates.append((order, item, row, metadata['request_id']))
 
+    prepare_assisted_order_groups(orders, audience=audience, actor=actor, checked_orders=checked_orders)
     if not candidates:
         return orders
     if audience == 'staff':
@@ -110,4 +112,82 @@ def prepare_order_item_presentation(orders, *, audience, actor):
             # The image route's owner may be temporarily unavailable; keep the
             # branded fallback without exposing asset/storage identifiers.
             continue
+    return orders
+
+
+def prepare_assisted_order_groups(orders, *, audience, actor, checked_orders=None):
+    """Batch related actual Orders; each keeps its own payment, items and TTN."""
+    from management.ig_assisted_commerce_models import (
+        IgAssistedCommerceExecution as Execution, IgAssistedCommerceRequest as Request,
+    )
+    from management.services import ig_assisted_commerce as commerce
+    from management.services.ig_assisted_checkout import validate_assisted_order
+
+    orders = list(orders)
+    for order in orders:
+        order.assisted_group = None
+    if actor is None or audience not in {'staff', 'account'}:
+        return orders
+    if audience == 'account' and (not actor.is_authenticated or not actor.is_active):
+        return orders
+    checked_orders = dict(checked_orders or {})
+    selected, roots = {}, set()
+    for order in orders:
+        if audience == 'account' and order.user_id != actor.pk:
+            continue
+        checked = checked_orders.get(order.pk)
+        if checked is None:
+            continue
+        selection = checked.get('selection')
+        if checked.get('ready') and isinstance(selection, dict):
+            selected[order.pk] = selection
+            roots.add(selection['original_request_id'])
+    if not selected:
+        return orders
+    if audience == 'staff':
+        try:
+            commerce._actor(actor.pk)
+        except commerce.AssistedDecisionError:
+            return orders
+    root_rows = {str(request.pk): request for request in Request.objects.filter(pk__in=roots)
+        if commerce.verify_assisted_evidence(request, 'request')}
+    intentions = {selection['intention_id'] for selection in selected.values()}
+    query = Execution.objects.filter(intention_id__in=intentions, order_id__isnull=False,
+        settled_at__isnull=False, released_at__isnull=True, active_slot__isnull=True).select_related('order')
+    if audience == 'account':
+        query = query.filter(order__user_id=actor.pk)
+    related = {}
+    for execution in query.order_by('settled_at', 'pk'):
+        checked = checked_orders.get(execution.order_id)
+        if checked is None:
+            try:
+                checked = validate_assisted_order(execution.order, execution=execution)
+            except Exception:
+                logger.exception('Could not validate related assisted Order %s', execution.order_id)
+                continue
+            checked_orders[execution.order_id] = checked
+        if not checked.get('ready'):
+            continue
+        selection = checked.get('selection')
+        if (not isinstance(selection, dict) or selection['intention_id'] != str(execution.intention_id)
+            or selection['original_request_id'] not in root_rows
+            or root_rows[selection['original_request_id']].client_id != execution.client_id):
+            continue
+        related.setdefault(str(execution.intention_id), []).append(execution.order)
+    for order in orders:
+        selection = selected.get(order.pk)
+        if selection is None:
+            continue
+        root = root_rows.get(selection['original_request_id'])
+        siblings = related.get(selection['intention_id'], [])
+        if root is None or not any(sibling.pk == order.pk for sibling in siblings):
+            continue
+        accepted = selection['shipping_terms'][selection['shipping_scope']]
+        order.assisted_group = {'original_requested_at': root.created_at,
+            'shipping_review': (order.payment_payload.get('ig_assisted_shipping_review') or {}).get('state') == 'requires_review',
+            'shipping_label': ('Доставку оплачує магазин' if accepted['payer'] == 'merchant' else
+                f"Погоджена доставка: не більше {accepted['customer_maximum']} грн за цю частину"),
+            'orders': [{'order_number': sibling.order_number, 'is_current': sibling.pk == order.pk,
+                'status_label': sibling.get_status_display(), 'payment_status_label': sibling.get_payment_status_display(),
+                'tracking_number': sibling.tracking_number or ''} for sibling in siblings]}
     return orders
