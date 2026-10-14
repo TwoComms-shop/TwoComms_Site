@@ -1,0 +1,53 @@
+{
+  "code_sha": "656732f72233b18ebc0636b45edcf0e410dc5faf",
+  "local_python": "3.14.6",
+  "django": "6.1",
+  "native_backend": "isolated MariaDB 11.4.12",
+  "native_unique_pass": 160,
+  "native_skips": 0,
+  "native_gates": [
+    {
+      "tests": 157,
+      "pass": 157,
+      "skipped": 0,
+      "manifest": "final40-manifest.json"
+    },
+    {
+      "tests": 5,
+      "pass": 5,
+      "skipped": 0,
+      "manifest": "history-final40-manifest.json"
+    },
+    {
+      "tests": 51,
+      "pass": 51,
+      "skipped": 0,
+      "manifest": "payment-final40-manifest.json"
+    }
+  ],
+  "node_pass": 105,
+  "node_skips": 0,
+  "django_check": "PASS",
+  "migration_drift": "no changes in management/orders/storefront",
+  "rendered_inline_js_syntax": 5,
+  "journey_payment_script": "PASS",
+  "ordinary_history_budget": 96,
+  "three_paid_orders_history_within_budget": true,
+  "native_fresh_dialogue_comparison": {
+    "full39_selects": 382,
+    "partial40_selects": 307,
+    "verified_prompt_descriptor_sql": 0
+  },
+  "assisted_envelope_max_bytes": 262144,
+  "native_quote_existing_max_bytes": 1048576,
+  "production_selects": 15,
+  "guards": {
+    "total": 15,
+    "unchanged_from39": 14,
+    "changed": "ig_assist_execution_insert"
+  },
+  "production_provider_probes": 0,
+  "production_test_customer_sends": 0,
+  "natural_partial_paid_cohort": "OPEN",
+  "next_block": 41
+}

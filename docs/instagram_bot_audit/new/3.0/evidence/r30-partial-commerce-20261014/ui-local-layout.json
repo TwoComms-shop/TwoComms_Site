@@ -1,0 +1,34 @@
+{
+  "manager390": {
+    "assets": [
+      "/static/management/ig_commerce_scope.css?v=commerce-scope-v1",
+      "/static/management/css/ig_assisted_commerce.css?v=79f864b3f503",
+      "/static/management/css/ig_assisted_partial.css?v=8e908d88ef84",
+      "/static/management/ig_commerce_scope.js?v=19d27b08a180",
+      "/static/management/js/ig_assisted_commerce.js?v=920aa9c3a0b6",
+      "/static/management/js/ig_assisted_partial.js?v=369002f1ad35"
+    ],
+    "component": 337,
+    "page": 390,
+    "scroll": 337,
+    "viewport": 390
+  },
+  "manager320": {
+    "component": 267,
+    "page": 320,
+    "scroll": 267,
+    "viewport": 320
+  },
+  "checkout390": {
+    "viewport": 375,
+    "page": 375
+  },
+  "checkout320": {
+    "viewport": 305,
+    "page": 305,
+    "component": 249,
+    "scroll": 249
+  },
+  "external_provider_io": 0,
+  "synthetic_fixture": "isolated local MariaDB"
+}

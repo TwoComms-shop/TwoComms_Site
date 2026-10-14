@@ -1,0 +1,35 @@
+{
+  "authenticated": true,
+  "checked_ordinary_paid_card": true,
+  "viewport390": {
+    "width": 390,
+    "page": 390,
+    "component": 337,
+    "scroll": 337
+  },
+  "viewport320": {
+    "assets": [
+      "/static/management/ig_commerce_scope.0439781d8700.css?v=commerce-scope-v1",
+      "/static/management/css/ig_assisted_commerce.6a5c9918b949.css?v=79f864b3f503",
+      "/static/management/css/ig_assisted_partial.eb2353497c37.css?v=8e908d88ef84",
+      "/static/management/ig_commerce_scope.a1b3250f8e0b.js?v=19d27b08a180",
+      "/static/management/js/ig_assisted_commerce.7d34d5ab07cf.js?v=920aa9c3a0b6",
+      "/static/management/js/ig_assisted_partial.c99917324e0e.js?v=369002f1ad35"
+    ],
+    "assisted": [
+      {
+        "client": 267,
+        "emptyCase": true,
+        "scroll": 267
+      }
+    ],
+    "page": 320,
+    "partialVisible": false,
+    "viewport": 320
+  },
+  "new_asset_errors": [],
+  "partial_production_cohort": 0,
+  "partial_e2e": "isolated native MariaDB and browser only",
+  "customer_sends": 0,
+  "provider_probes": 0
+}
