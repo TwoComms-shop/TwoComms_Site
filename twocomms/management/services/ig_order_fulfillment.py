@@ -78,22 +78,20 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
             return (
                 f"A tracking number has been created for {what.lower()}. "
                 f"New Nova Poshta tracking number: {tracking}. "
-                f"Estimated delivery: 1-3 business days. Track it here: {tracking_url}."
+                f"Track it here: {tracking_url}. The exact arrival date depends on the carrier."
             )
         if locale == "ru":
             what = f"Замена на размер {size}" if size else "Замена"
             return (
                 f"Создана ТТН для: {what}. "
                 f"Новый номер ТТН Новой Почты: {tracking}. "
-                "Ориентировочный срок доставки: 1-3 рабочих дня. "
-                f"Отследить: {tracking_url}."
+                f"Отследить: {tracking_url}. Точный день получения зависит от перевозчика."
             )
         what = f"Заміна на розмір {size}" if size else "Заміна"
         return (
             f"Створено ТТН для: {what}. "
             f"Нова ТТН Нової Пошти: {tracking}. "
-            "Орієнтовний термін доставки: 1-3 робочі дні. "
-            f"Відстежити: {tracking_url}."
+            f"Відстежити: {tracking_url}. Точний день отримання залежить від перевізника."
         )
     if kind == "payment_confirmed":
         from management.services.ig_order_amounts import order_amounts
@@ -137,18 +135,16 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
         if locale == "en":
             return (
                 f"Nova Poshta tracking number for order #{number} has been created: {tracking}. "
-                f"Estimated delivery time is 1-3 business days. Track its status here: {tracking_url}"
+                f"Track its status here: {tracking_url}. The exact arrival date depends on the carrier."
             )
         if locale == "ru":
             return (
                 f"Создана ТТН Новой Почты для заказа №{number}: {tracking}. "
-                f"Ориентировочный срок доставки - 1-3 рабочих дня. "
-                f"Следить за статусом: {tracking_url}"
+                f"Следить за статусом: {tracking_url}. Точный день получения зависит от перевозчика."
             )
         return (
             f"Створено ТТН Нової Пошти для замовлення №{number}: {tracking}. "
-            f"Орієнтовний термін доставки - 1-3 робочі дні. "
-            f"Стежити за статусом: {tracking_url}"
+            f"Стежити за статусом: {tracking_url}. Точний день отримання залежить від перевізника."
         )
     return post_purchase_invitation_text(locale, order)
 

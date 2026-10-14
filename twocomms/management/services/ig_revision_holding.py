@@ -497,9 +497,9 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             if not language:
                 return RevisionInputDecision(reason="holding_language_template_unavailable")
             texts = ({
-                "uk": "Не вдалося надійно підготувати відповідь на ваш запит. Передав питання команді для уточнення.",
-                "ru": "Не удалось надёжно подготовить ответ на ваш запрос. Передал вопрос команде для уточнения.",
-                "en": "I could not prepare a reliable answer to your request. I have referred your question to the team for clarification.",
+                "uk": "Уточню це питання з командою 💛",
+                "ru": "Уточню этот вопрос с командой 💛",
+                "en": "I’ll check this with our team 💛",
                 "hi": "मैं आपके अनुरोध का भरोसेमंद जवाब तैयार नहीं कर सकी। मैंने इसे स्पष्टीकरण के लिए हमारी टीम को भेज दिया है।",
             } if positive_request else {
                 "uk": "Дякую за повідомлення.",

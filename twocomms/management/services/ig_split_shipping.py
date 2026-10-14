@@ -214,12 +214,14 @@ def issue_offer(client_id, actor, expected_decision_digest, operation_id, option
         task = IgFollowUpTask.objects.create(client=client, kind="manager_task", reason=ORIGIN,
             due_at=now, status="pending", trigger="event", event_key=f"split-shipping:{identity}",
             event_occurred_at=now, policy_started_at=now, event_payload={"offer_id": str(identity)})
+        payload = {"request_id": str(request.pk), "request_digest": request.envelope_hmac,
+            "decision_id": str(decision.pk), "decision_digest": decision.envelope_hmac,
+            "request": request.envelope, "decision": decision.envelope, "options": normalized,
+            "issued_at": now.isoformat(), "copy_version": 2}
+        payload["rendered_copy"] = _template_offer(payload, CUSTOMER_COPY)
         offer = _seal(Offer(id=identity, decision=decision, client=client, actor=actor,
             operation_id=operation_id, version=version, task=task, expires_at=min(now + reviews.FRESHNESS, decision.created_at + reviews.FRESHNESS)), "offer",
-            {"request_id": str(request.pk), "request_digest": request.envelope_hmac,
-             "decision_id": str(decision.pk), "decision_digest": decision.envelope_hmac,
-             "request": request.envelope, "decision": decision.envelope, "options": normalized,
-             "issued_at": now.isoformat()})
+            payload)
         text, _buttons = render_offer(offer)
         if not text:
             raise SplitShippingError("offer_body_too_large")
@@ -258,20 +260,25 @@ COPY = {
 }
 
 
-def render_offer(offer):
-    from management.services.ig_message_templates import QuickReply
+CUSTOMER_COPY = {
+    "uk": ("Як вам зручніше отримати замовлення?", "Разом", "Окремо", "позиції", "оплата перевізнику окремо: до", "доставку оплачує TwoComms; для вас", "Після оформлення відправимо погоджені позиції. Точний день отримання залежить від перевізника.", "Це погоджені максимуми для вас. Фактичну вартість доставки визначає перевізник.", "Обрано {option}. Далі допоможемо оформити замовлення на погоджених умовах."),
+    "ru": ("Как вам удобнее получить заказ?", "Вместе", "Отдельно", "позиции", "оплата перевозчику отдельно: до", "доставку оплачивает TwoComms; для вас", "После оформления отправим согласованные позиции. Точный день получения зависит от перевозчика.", "Это согласованные максимумы для вас. Фактическую стоимость доставки определяет перевозчик.", "Выбрано {option}. Далее поможем оформить заказ на согласованных условиях."),
+    "en": ("How would you like to receive your order?", "Together", "Separate", "items", "paid separately to the carrier: up to", "TwoComms pays delivery; you pay", "After checkout, we’ll send the agreed items. The exact arrival date depends on the carrier.", "These are your agreed maximum charges. The carrier determines the actual delivery cost.", "Selected {option}. Next, we’ll help you place the order on the agreed terms."),
+}
+
+
+def _template_offer(data, copies):
+    """Create finite copy; legacy copies remain unchanged for signed history."""
     from management.services.ig_fulfillment_delivery import _timing, COPY as TIMING_COPY
-    if not verified_offer(offer):
-        return "", ()
-    data, request = offer.envelope, offer.envelope["request"]
+    request = data["request"]
     locale = request.get("locale") or "uk"
-    copy, timing_copy = COPY.get(locale, COPY["uk"]), TIMING_COPY.get(locale, TIMING_COPY["uk"])
+    copy, timing_copy = copies.get(locale, copies["uk"]), TIMING_COPY.get(locale, TIMING_COPY["uk"])
     numbered = {str(line["line_id"]): index for index, line in enumerate(request["lines"], 1)}
     parts = [copy[0]]
     for index, line in enumerate(request["lines"], 1):
         label = re.sub(r"\s+", " ", str(line.get("label") or "")).strip()
         if not label or re.search(r"https?://|[<>\x00-\x1f]", label, re.I):
-            return "", ()
+            return {"text": "", "buttons": []}
         parts.append(f"{index}. {label}")
     for option, title in (("together", copy[1]), ("separate", copy[2])):
         parts.append(title + ":")
@@ -289,12 +296,37 @@ def render_offer(offer):
             if facts:
                 parts.append(f"{numbered[str(row['line_id'])]}. " + "; ".join(facts) + ".")
     except (KeyError, ValueError, TypeError):
-        return "", ()
-    parts.extend((copy[6], copy[7]))
+        return {"text": "", "buttons": []}
+    parts.append(copy[6])
+    if copies is COPY or any(parcel["payer"] == "customer" for option in data["options"].values() for parcel in option["parcels"]):
+        parts.append(copy[7])
     text = "\n".join(parts)
     if len(text.encode()) > MAX_BYTES:
+        return {"text": "", "buttons": []}
+    return {"text": text, "buttons": [{"action": "together", "title": copy[1]}, {"action": "separate", "title": copy[2]}]}
+
+
+def render_offer(offer):
+    from management.services.ig_message_templates import QuickReply
+    if not verified_offer(offer):
         return "", ()
-    return text, (QuickReply(copy[1], encode_choice(offer, "together")), QuickReply(copy[2], encode_choice(offer, "separate")))
+    data = offer.envelope
+    if "copy_version" not in data and "rendered_copy" not in data:
+        frozen = _template_offer(data, COPY)
+    elif data.get("copy_version") == 2:
+        frozen = data.get("rendered_copy")
+    else:
+        return "", ()
+    if (not isinstance(frozen, dict) or set(frozen) != {"text", "buttons"}
+        or not isinstance(frozen["text"], str) or not frozen["text"] or len(frozen["text"].encode()) > MAX_BYTES
+        or not isinstance(frozen["buttons"], list) or len(frozen["buttons"]) != 2):
+        return "", ()
+    for button, action in zip(frozen["buttons"], ("together", "separate")):
+        if (not isinstance(button, dict) or set(button) != {"action", "title"} or button["action"] != action
+            or not isinstance(button["title"], str) or not 1 <= len(button["title"]) <= 20
+            or button["title"].strip() != button["title"] or any(ord(char) < 32 for char in button["title"])):
+            return "", ()
+    return frozen["text"], tuple(QuickReply(button["title"], encode_choice(offer, button["action"])) for button in frozen["buttons"])
 
 
 def _body_digest(offer):
@@ -448,7 +480,8 @@ def apply_choice(source, revision, settings_obj, now=None):
                 {"offer_id": str(offer.pk), "offer_digest": offer.envelope_hmac, "receipt_id": str(receipt.pk),
                  "receipt_digest": receipt.envelope_hmac, "option": option, "source": proof, "confirmed_at": now.isoformat()})
         locale = offer.envelope["request"].get("locale") or "uk"
-        copy = COPY.get(locale, COPY["uk"])
+        copies = CUSTOMER_COPY if offer.envelope.get("copy_version") == 2 else COPY
+        copy = copies.get(locale, copies["uk"])
         return SplitChoiceResult(True, True, "choice_recorded", copy[8].format(option=copy[1 if option == "together" else 2]), offer_id=str(offer.pk), choice_id=str(choice.pk))
 
 

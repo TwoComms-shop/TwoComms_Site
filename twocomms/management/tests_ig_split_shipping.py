@@ -229,9 +229,16 @@ class NativeSplitShippingTests(_RestockFixture, TransactionTestCase):
         self.assertTrue(all(len(button.title) <= 20 and button.payload.startswith("SS1:") for button in buttons))
         self.assertIn(self.product.title, text)
         self.assertIn(self.products[1].title, text)
-        self.assertIn("70", text)
-        self.assertIn("140", text)
-        self.assertIn({"uk": "ви:", "ru": "вы:", "en": "you:"}[locale], text.lower())
+        self.assertIn({"uk": "разом:", "ru": "вместе:", "en": "together:"}[locale], text.lower())
+        self.assertIn({"uk": "окремо:", "ru": "отдельно:", "en": "separate:"}[locale], text.lower())
+        # Customer liability is separate from the goods payment and bounded
+        # per parcel; together costs one cap, separate costs two caps.
+        self.assertEqual(text.count("70.00 UAH"), 4)
+        self.assertEqual(text.count("140.00 UAH"), 1)
+        self.assertIn({"uk": "оплата перевізнику окремо: до", "ru": "оплата перевозчику отдельно: до",
+            "en": "paid separately to the carrier: up to"}[locale], text.lower())
+        self.assertIn({"uk": "разом для вас: до", "ru": "итого для вас: до", "en": "your total: up to"}[locale], text.lower())
+        self.assertNotIn("TwoComms", text)
         self.no_commerce_effects()
 
     def test_uk_native_card_discloses_two_options_exact_items_customer_cost_and_payer(self):
@@ -246,8 +253,9 @@ class NativeSplitShippingTests(_RestockFixture, TransactionTestCase):
     def test_merchant_payer_discloses_zero_customer_cost_without_order_or_stock_effect(self):
         offer, _receipt = self.sent_offer(payer="merchant")
         text, _buttons = shipping.render_offer(offer)
-        self.assertIn("0", text)
-        self.assertIn("TwoComms", text)
+        self.assertEqual(text.count("0.00 UAH"), 5)
+        self.assertIn("доставку оплачує TwoComms; для вас 0.00 UAH", text)
+        self.assertNotIn("оплата перевізнику окремо", text)
         result, _source, _revision = self.answer(offer)
         self.assertTrue(result.ready, result)
         self.assertTrue(shipping.verified_choice(Choice.objects.get(pk=result.choice_id)))

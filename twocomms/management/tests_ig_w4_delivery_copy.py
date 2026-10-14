@@ -7,136 +7,46 @@ import uuid
 
 from django.test import SimpleTestCase, TestCase
 
-from management.models import IgClient
+from management.models import IgClient, IgDeal
 from management.services import bot_orders
 from management.services import instagram_bot as bot
 from management.services.ig_order_fulfillment import _message
+from management.services.ig_commercial_episodes import ensure_episode_for_deal
+from orders.models import Order, PaymentAttempt
 
 
 class ShipmentCopyTests(SimpleTestCase):
     def setUp(self):
         self.order = SimpleNamespace(order_number="TWC-W4-01", pk=1)
 
-    def test_ttn_copy_sets_delivery_expectations_without_payment_or_exchange_claims(self):
+    def test_tracking_copy_reports_creation_without_inventing_transit_or_shipment(self):
         expected = {
-            "uk": (("вже в дорозі", "1-3 робочі дні"), ("оплачен", "обмін", "розмір")),
-            "ru": (("уже в пути", "1-3 рабочих дня"), ("оплачен", "обмен", "размер")),
-            "en": (("on its way", "1-3 business days"), ("paid", "payment", "exchange", "size")),
+            "uk": ("створено ттн", "отримання залежить від перевізника"),
+            "ru": ("создана ттн", "получения зависит от перевозчика"),
+            "en": ("has been created", "arrival date depends on the carrier"),
         }
+        for kind in ("ttn_assigned", "exchange_shipped"):
+            for locale, phrases in expected.items():
+                with self.subTest(kind=kind, locale=locale):
+                    text = _message(kind, locale, self.order, "20400000000000", exchange_size="M").lower()
+                    for phrase in phrases:
+                        self.assertIn(phrase, text)
+                    self.assertIn("https://novaposhta.ua/tracking/?cargo_number=20400000000000", text)
+                    for forbidden in ("1-3", "1–3", "вже в дорозі", "уже в пути", "on its way", "fully paid", "оплачен"):
+                        self.assertNotIn(forbidden, text)
+                    if kind == "exchange_shipped":
+                        self.assertIn({"uk": "розмір m", "ru": "размер m", "en": "size m"}[locale], text)
+                    else:
+                        for forbidden in ("розмір", "размер", "size", "exchange"):
+                            self.assertNotIn(forbidden, text)
 
-        for locale, (required, forbidden) in expected.items():
+    def test_exchange_without_size_does_not_invent_a_size(self):
+        for locale in ("uk", "ru", "en"):
             with self.subTest(locale=locale):
-                text = _message(
-                    "ttn_assigned",
-                    locale,
-                    self.order,
-                    "20400000000000",
-                ).lower()
-                for phrase in required:
-                    self.assertIn(phrase, text)
-                for phrase in forbidden:
-                    self.assertNotIn(phrase, text)
-
-    def test_exchange_shipped_copy_confirms_replacement_without_payment_claims(self):
-        expected = {
-            "uk": (
-                (
-                    "підтверджена",
-                    "вже в дорозі",
-                    "розмір m",
-                    "нова ттн",
-                    "1-3 робочі дні",
-                ),
-                ("оплат", "сплачен", "доплач", "не підійде"),
-            ),
-            "ru": (
-                (
-                    "подтверждена",
-                    "уже в пути",
-                    "размер m",
-                    "новый номер ттн",
-                    "1-3 рабочих дня",
-                ),
-                ("оплат", "доплач", "не подойдет"),
-            ),
-            "en": (
-                (
-                    "confirmed",
-                    "already on its way",
-                    "size m",
-                    "new nova poshta tracking number",
-                    "1-3 business days",
-                ),
-                ("paid", "payment", "pay", "doesn't fit"),
-            ),
-        }
-
-        for locale, (required, forbidden) in expected.items():
-            with self.subTest(locale=locale):
-                text = _message(
-                    "exchange_shipped",
-                    locale,
-                    self.order,
-                    "20400000000001",
-                    exchange_size="M",
-                ).lower()
-                for phrase in forbidden:
-                    self.assertNotIn(phrase, text)
-                for phrase in required:
-                    self.assertIn(phrase, text)
-                self.assertIn(
-                    "https://novaposhta.ua/tracking/?cargo_number=20400000000001",
-                    text,
-                )
-
-    def test_exchange_shipped_copy_without_size_keeps_shipment_facts(self):
-        expected = {
-            "uk": (
-                (
-                    "заміна підтверджена",
-                    "вже в дорозі",
-                    "нова ттн",
-                    "1-3 робочі дні",
-                ),
-                ("розмір", "оплат", "сплачен", "доплач"),
-            ),
-            "ru": (
-                (
-                    "замена подтверждена",
-                    "уже в пути",
-                    "новый номер ттн",
-                    "1-3 рабочих дня",
-                ),
-                ("размер", "оплат", "доплач"),
-            ),
-            "en": (
-                (
-                    "exchange is confirmed",
-                    "already on its way",
-                    "new nova poshta tracking number",
-                    "1-3 business days",
-                ),
-                ("size", "paid", "payment", "pay"),
-            ),
-        }
-
-        for locale, (required, forbidden) in expected.items():
-            with self.subTest(locale=locale):
-                text = _message(
-                    "exchange_shipped",
-                    locale,
-                    self.order,
-                    "20400000000002",
-                    exchange_size="",
-                ).lower()
-                for phrase in forbidden:
-                    self.assertNotIn(phrase, text)
-                for phrase in required:
-                    self.assertIn(phrase, text)
-                self.assertIn(
-                    "https://novaposhta.ua/tracking/?cargo_number=20400000000002",
-                    text,
-                )
+                text = _message("exchange_shipped", locale, self.order, "20400000000002").lower()
+                for forbidden in ("розмір", "размер", "size", "1-3", "1–3", "paid", "оплат"):
+                    self.assertNotIn(forbidden, text)
+                self.assertIn("20400000000002", text)
 
 
 class OfferCopyTests(SimpleTestCase):
@@ -238,6 +148,12 @@ class FinalizeOfferCopyTests(TestCase):
         self.client_record.save(
             update_fields=["intent", "stage", "language", "updated_at"]
         )
+        # A real current unpaid purchase owner is mandatory. CRM stage alone
+        # cannot authorize a payment link; use the native episode producer.
+        deal = IgDeal.objects.create(client=self.client_record, status=IgDeal.Status.QUOTED,
+            amount=Decimal("1580.00"), requested_payment_amount=Decimal("1580.00"))
+        ensure_episode_for_deal(deal)
+        self.client_record.refresh_from_db()
 
     @patch("management.services.instagram_bot.notify_manager")
     @patch("management.services.bot_orders.create_checkout_proposal_link")
@@ -266,6 +182,9 @@ class FinalizeOfferCopyTests(TestCase):
         self.assertIn("1580 грн", text)
         self.assertIn("Monobank", text)
         self.assertIn("нічого надсилати не треба", text)
+        create_link.assert_called_once()
+        self.assertFalse(PaymentAttempt.objects.exists())
+        self.assertFalse(Order.objects.exists())
 
     @patch("management.services.instagram_bot.notify_manager")
     @patch("management.services.bot_orders.create_checkout_proposal_link")

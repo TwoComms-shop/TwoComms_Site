@@ -135,13 +135,13 @@ def _after_accept(task, subscription):
 
 
 def _cart_native_receipt(task, subscription, binding):
-    from management.services.ig_fulfillment_delivery import render_manager_update
+    from management.services.ig_fulfillment_delivery import render_task_update
     request, decision = binding
     historical = reviews.validated_update_history(task)
     inv = subscription.accepted_answer.invitation
     if not _invited_available_target(request, decision, inv):
         return None
-    text = render_manager_update(historical) if historical.get("ready") else ""
+    text = render_task_update(task, historical) if historical.get("ready") else ""
     if not text or text != task.message_text or not _history_matches(task, inv):
         return None
     return {"purpose": reviews.UPDATE_REASON, "task_id": task.pk,

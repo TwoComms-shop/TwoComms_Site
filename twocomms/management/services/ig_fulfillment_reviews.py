@@ -758,11 +758,11 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
         expected = {"origin": UPDATE_REASON, "request_id": str(request.pk), "request_digest": request.envelope_hmac,
             "decision_id": str(decision.pk), "decision_version": decision.version, "decision_digest": decision.envelope_hmac}
         if update and update.event_payload == expected:
-            from management.services.ig_fulfillment_delivery import render_manager_update
+            from management.services.ig_fulfillment_delivery import render_task_update
             sent = bool(update.status == "sent" and update.attempt_count == 1
                 and normalize_provider_message_id(update.provider_message_id) and update.sent_at
                 and decision.created_at <= update.sent_at <= now and not update.claim_token
-                and update.message_text == render_manager_update(base))
+                and update.message_text == render_task_update(update, base))
             base["customer_update"] = {"state": "sent" if sent else "unknown" if update.status in {"unknown", "ambiguous"} else
                 "cancelled" if update.status in {"cancelled", "skipped"} else "pending",
                 "native_receipt_confirmed": sent,

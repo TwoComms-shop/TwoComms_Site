@@ -15,6 +15,7 @@ import json
 from django.test import SimpleTestCase, TestCase
 from management.models import IgClient, IgFollowUpTask, InstagramBotMessage, InstagramBotSettings
 from management.services import ig_fulfillment_delivery as delivery
+from management.services import ig_fulfillment_reviews as reviews
 from management.services.instagram_bot import ProviderDeliveryReceipt
 
 
@@ -91,6 +92,24 @@ class FulfillmentUpdateCopyTests(SimpleTestCase):
         data["decision"]["lines"][1]["line_id"] = "1"
         self.assertEqual(delivery.render_manager_update(data), "")
 
+    def test_new_frozen_copy_is_bounded_and_exact_for_three_languages_and_two_to_six_lines(self):
+        for locale in ("uk", "ru", "en"):
+            for count in range(2, 7):
+                with self.subTest(locale=locale, lines=count):
+                    data = projection(locale, count=count)
+                    text = delivery.render_manager_update(data, copy_version=2)
+                    self.assertTrue(text)
+                    self.assertLessEqual(len(text.encode("utf-8")), 950)
+                    task = SimpleNamespace(pk=count, client_id=1, event_key=f"native-copy:{locale}:{count}",
+                        event_payload={"request_id": "request-1", "decision_id": "decision-1"}, manager_context={})
+                    # Use the actual production keyring and signer. A frozen
+                    # valid body survives a copy-template change; changing a
+                    # byte without a new signature cannot become valid copy.
+                    delivery._freeze_task_update(task, data, text)
+                    self.assertEqual(delivery.render_task_update(task, data), text)
+                    task.manager_context[delivery.CUSTOMER_COPY_KEY]["body"]["text"] += "!"
+                    self.assertEqual(delivery.render_task_update(task, data), "")
+
     def test_dispatch_is_distinct_and_split_never_asserts_price_or_payer(self):
         data = projection("en", count=1)
         data["decision"]["lines"][0]["dispatch"] = data["decision"]["lines"][0].pop("preparation")
@@ -129,8 +148,13 @@ class FulfillmentNativeDeliveryTests(TestCase):
         self.data["current_request"].update(client_id=self.client_row.pk, source_id=self.source.pk, source_namespace=self.source.provider_namespace)
         self.data["proof"].update(recipient=self.client_row.igsid, source_namespace=self.source.provider_namespace)
         self.task = IgFollowUpTask.objects.create(client=self.client_row, due_at=self.now,
-            reason=delivery.ORIGIN, kind="fulfillment", trigger="event", event_key="ig-fulfillment-update:request-1:1")
-        self.core = SimpleNamespace(_enabled=lambda: True,
+            reason=delivery.ORIGIN, kind="fulfillment", trigger="event", event_key="ig-fulfillment-update:request-1:1",
+            event_payload={"origin": delivery.ORIGIN, "request_id": "request-1", "decision_id": "decision-1",
+                "decision_version": 1})
+        # Only the separately tested manager admission projection is mocked.
+        # Frozen customer copy uses the production keyring and signer, so
+        # recovery and physical-boundary tests retain real HMAC verification.
+        self.core = SimpleNamespace(_enabled=lambda: True, _keys=reviews._keys, _sign=reviews._sign,
             validated_update_task=lambda *args, **kwargs: deepcopy(self.data),
             validated_update_history=lambda task: {**deepcopy(self.data), "recipient": self.client_row.igsid,
                 "source_namespace": "instagram_login:owner-1"})
@@ -323,6 +347,20 @@ class FulfillmentNativeDeliveryTests(TestCase):
         _, sender = self.run_sender(self.successful_sender)
         sender.assert_not_called()
         self.assertIsNone(self.task.sent_message_id)
+
+    def test_sent_memory_repair_refuses_changed_customer_copy_hmac_without_replay(self):
+        with patch.object(delivery, "_history", return_value=False):
+            result, _sender = self.run_sender(self.successful_sender)
+        self.assertEqual(result, 1)
+        self.assertIsNone(self.task.sent_message_id)
+        context = deepcopy(self.task.manager_context)
+        context[delivery.CUSTOMER_COPY_KEY]["hmac"] = "0" * 64
+        self.task.manager_context = context
+        self.task.save(update_fields=["manager_context"])
+        _result, sender = self.run_sender(self.successful_sender, now=self.now + timedelta(days=2))
+        sender.assert_not_called()
+        self.assertIsNone(self.task.sent_message_id)
+        self.assertEqual(self.task.provider_message_id, "fulfillment-native-mid")
 
     def test_disabled_consumer_standing_restock_and_stale_admission_have_no_http(self):
         self.core._enabled = lambda: False

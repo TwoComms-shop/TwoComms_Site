@@ -6,6 +6,7 @@ MID is committed before conversation history; uncertain outcomes never replay.
 from contextlib import contextmanager
 from datetime import timedelta
 import json
+import hmac
 import re
 import uuid
 from zoneinfo import ZoneInfo
@@ -50,6 +51,54 @@ COPY = {
         "clarification": "Let us clarify the details before ordering.", "alternative": "We will agree any substitutions separately."},
 }
 
+# COPY is the legacy renderer used by already delivered tasks. New attempts
+# freeze their copy and original task binding under a separate HMAC.
+CUSTOMER_COPY = {locale: {**copy, "arrival": arrival} for locale, copy, arrival in (
+    ("uk", COPY["uk"], "Допоможемо оформити й відправити замовлення. Точний день отримання залежить від перевізника."),
+    ("ru", COPY["ru"], "Поможем оформить и отправить заказ. Точный день получения зависит от перевозчика."),
+    ("en", COPY["en"], "We’ll help you place and ship the order. The exact arrival date depends on the carrier."),
+)}
+CUSTOMER_COPY_KEY = "fulfillment_customer_copy"
+
+
+def _copy_binding(task):
+    return {"version": 2, "task_id": task.pk, "client_id": task.client_id,
+        "event_key": task.event_key, "event_payload": task.event_payload}
+
+
+def render_task_update(task, projection):
+    """Verify frozen new copy; unmarked historic tasks use the exact old copy."""
+    frozen = (task.manager_context or {}).get(CUSTOMER_COPY_KEY)
+    if frozen is None:
+        return render_manager_update(projection)
+    if (not isinstance(frozen, dict) or set(frozen) != {"body", "key_id", "hmac"}
+        or not isinstance(frozen["key_id"], str) or not isinstance(frozen["hmac"], str)):
+        return ""
+    body = frozen["body"]
+    if not isinstance(body, dict) or set(body) != {*_copy_binding(task), "text"}:
+        return ""
+    if any(body.get(key) != value for key, value in _copy_binding(task).items()):
+        return ""
+    expected = _core()._sign("customer_update_copy", body, frozen["key_id"])
+    text = body["text"]
+    if (not expected or not isinstance(frozen["hmac"], str) or not hmac.compare_digest(expected, frozen["hmac"])
+        or not isinstance(text, str) or not text or len(text.encode()) > MAX_BYTES):
+        return ""
+    request, decision = projection.get("current_request") or {}, projection.get("decision") or {}
+    data = task.event_payload or {}
+    if str(request.get("id")) != data.get("request_id") or str(decision.get("id")) != data.get("decision_id"):
+        return ""
+    return text
+
+
+def _freeze_task_update(task, projection, text):
+    body = {**_copy_binding(task), "text": text}
+    key_id = next(iter(_core()._keys()))
+    task.manager_context = {**(task.manager_context or {}), CUSTOMER_COPY_KEY: {
+        "body": body, "key_id": key_id, "hmac": _core()._sign("customer_update_copy", body, key_id)}}
+    if render_task_update(task, projection) != text:
+        raise ValueError("customer_update_copy_invalid")
+
 
 def _timing(value, phase, copy):
     if value is None:
@@ -67,11 +116,12 @@ def _timing(value, phase, copy):
     return f"{copy[phase]} {days} {copy[unit]} {copy['from']} {anchor.astimezone(KYIV):%d.%m.%Y}"
 
 
-def render_manager_update(projection):
+def render_manager_update(projection, *, copy_version=1):
     """Finite typed facts only; numbering binds compressed groups to cart order."""
     request, decision = projection.get("current_request") or {}, projection.get("decision") or {}
     locale = request.get("locale") or "uk"
-    copy = COPY.get(locale, COPY["uk"])
+    copies = CUSTOMER_COPY if copy_version == 2 else COPY
+    copy = copies.get(locale, copies["uk"])
     lines, decisions = request.get("lines"), decision.get("lines")
     if not isinstance(lines, list) or not 1 <= len(lines) <= 20 or not isinstance(decisions, list):
         return ""
@@ -168,7 +218,8 @@ def _guard(task, settings_obj, *, now):
         return None, "waiting_window"
     if not quiet_time_allowed(now):
         return None, "quiet_hours"
-    text = render_manager_update(projection)
+    text = (render_task_update(task, projection) if CUSTOMER_COPY_KEY in (task.manager_context or {})
+        or task.status != "pending" or task.attempt_count else render_manager_update(projection, copy_version=2))
     if not text:
         return None, "summary_requires_manager_clarification"
     return (projection, text), ""
@@ -232,7 +283,7 @@ def _history(task_id):
             binding = _core().validated_update_history(task)
             if not isinstance(binding, dict) or not binding.get("ready"):
                 return False
-            if render_manager_update(binding) != task.message_text:
+            if render_task_update(task, binding) != task.message_text:
                 return False
             task.sent_message = InstagramBotMessage.objects.create(client_id=task.client_id, sender_id=binding["recipient"],
                 role="model", source="followup", status="done", text=task.message_text,
@@ -317,9 +368,11 @@ def process_due_fulfillment_updates(settings_obj, now=None, limit=20):
                 projection, text = guard
                 # Copy only the finite signed admission proof into this attempt.
                 proof = json.loads(json.dumps(projection["proof"]))
+                if CUSTOMER_COPY_KEY not in (task.manager_context or {}):
+                    _freeze_task_update(task, projection, text)
                 task.status, task.claim_token, task.claim_until = "processing", token, (fixed_clock or timezone.now()) + timedelta(minutes=3)
                 task.attempt_count, task.message_text = 1, text
-                task.save(update_fields=["status", "claim_token", "claim_until", "attempt_count", "message_text", "updated_at"])
+                task.save(update_fields=["status", "claim_token", "claim_until", "attempt_count", "message_text", "manager_context", "updated_at"])
             permission = capture_reply_permission(settings_obj.pk, client.pk)
             admission, receipt = {"admitted": False}, None
             if bot.renew_client_automation_lease(client.pk, lease):

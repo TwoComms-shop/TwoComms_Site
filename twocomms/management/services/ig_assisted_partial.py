@@ -153,19 +153,22 @@ def _fresh_partial(request, decision, *, actor, now, read_unit=None):
 
 COPY = {
     "uk": {"heading": "Готову частину можна оформити окремо", "ready": "Зараз", "later": "Пізніше",
-        "goods": "Товари зараз", "fee": "Доставка: для вас до", "merchant": "Доставку оплачує TwoComms; для вас",
+        "goods": "Товари зараз", "fee": "Оплата доставки перевізнику окремо: до", "merchant": "Доставку оплачує TwoComms; для вас",
         "together": "Доставка всіх разом", "partial": "Оформити готові", "wait": "Дочекатися всіх", "resume": "Продовжити",
-        "notice": "Це погоджена максимальна плата, а не тариф перевізника. Точний день прибуття залежить від перевізника.",
+        "notice": "Після оформлення відправимо готові позиції. Точний день отримання залежить від перевізника.",
+        "maximum": "Це погоджені максимуми для вас. Фактичну вартість доставки визначає перевізник.",
         "continuation": "Залишилися неоплачені позиції. Повернути їх до перевірки? Готовність, ціну й доставку підтвердимо окремо."},
     "ru": {"heading": "Готовую часть можно оформить отдельно", "ready": "Сейчас", "later": "Позже",
-        "goods": "Товары сейчас", "fee": "Доставка: для вас до", "merchant": "Доставку оплачивает TwoComms; для вас",
+        "goods": "Товары сейчас", "fee": "Оплата доставки перевозчику отдельно: до", "merchant": "Доставку оплачивает TwoComms; для вас",
         "together": "Доставка всех вместе", "partial": "Оформить доступное", "wait": "Подождать все", "resume": "Продолжить",
-        "notice": "Это согласованная максимальная плата, а не тариф перевозчика. Точный день доставки зависит от перевозчика.",
+        "notice": "После оформления отправим готовые позиции. Точный день получения зависит от перевозчика.",
+        "maximum": "Это согласованные максимумы для вас. Фактическую стоимость доставки определяет перевозчик.",
         "continuation": "Остались неоплаченные позиции. Вернуть их к проверке? Готовность, цену и доставку подтвердим отдельно."},
     "en": {"heading": "You can order the ready items separately", "ready": "Now", "later": "Later",
-        "goods": "Goods due now", "fee": "Delivery: you pay up to", "merchant": "TwoComms pays delivery; you pay",
+        "goods": "Goods due now", "fee": "Delivery paid separately to the carrier: up to", "merchant": "TwoComms pays delivery; you pay",
         "together": "Delivery of all items together", "partial": "Order ready items", "wait": "Wait for all items", "resume": "Continue",
-        "notice": "This is the agreed maximum charge, not a carrier quote. The exact arrival date depends on the carrier.",
+        "notice": "After checkout, we’ll send the ready items. The exact arrival date depends on the carrier.",
+        "maximum": "These are your agreed maximum charges. The carrier determines the actual delivery cost.",
         "continuation": "Some items remain unpaid. Return them for review? Readiness, price and delivery will be confirmed separately."},
 }
 
@@ -200,6 +203,9 @@ def _template_copy(manifest):
             title = shipment.get(manifest["locale"], shipment["uk"]) if remainder else copy["together"] if phase == "together" else copy["ready" if phase == "now" else "later"]
             payer = copy["fee"] if term["payer"] == "customer" else copy["merchant"]
             parts.append(f"{title} — {payer} {term['customer_maximum']} UAH.")
+        if any(quote["shipping_terms"][scope]["payer"] == "customer" for scope in
+                (("later",) if remainder else ("now", "later", "together"))):
+            parts.append(copy["maximum"])
         parts.append(copy["notice"])
         text = "\n".join(parts)
         buttons = [{"action": action, "title": copy["partial"] if action == "partial" else copy["wait"]}

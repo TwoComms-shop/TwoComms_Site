@@ -6,6 +6,7 @@ model controls, paid receipt text and historical terms cannot create this frame.
 from copy import deepcopy
 from types import SimpleNamespace
 from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 import json
 import re
 
@@ -14,6 +15,62 @@ from management.services.ig_assisted_commerce import VerifiedAssistedDecision
 CLAIM = "assisted_commerce_offer"
 ACTION = "assisted_checkout_proposal_create"
 _ISSUER = object()
+
+_DELIVERY_COMPONENT = re.compile(r"достав\w*|перевізник\w*|перевозчик\w*|\b(?:delivery|shipping|carrier|parcel|shipment)\b", re.I)
+_DELIVERY_PHASES = {
+    "now": re.compile(r"\b(?:зараз|сейчас|now)\b|готов\w*\s+(?:част\w*|позиц\w*|товар\w*)|(?:ready|selected)\s+(?:part|items|goods)|(?:ця|це|эта|этот|this|current)\s+(?:відправ\w*|отправ\w*|посил\w*|посыл\w*|shipment|parcel)", re.I),
+    "later": re.compile(r"пізніш\w*|позже|решт\w*|залишк\w*|оставш\w*|\b(?:later|remaining)\b|(?:наступ\w*|следующ\w*|next)\s+(?:відправ\w*|отправ\w*|посил\w*|посыл\w*|shipment|parcel)", re.I),
+    "together": re.compile(r"\b(?:разом|вместе|together)\b|(?:all|усі|всі|все)\s+(?:items|goods|позиції|товари|позиции|товары)", re.I),
+}
+_DELIVERY_CAP = re.compile(r"\bдо\b|\bup\s+to\b|максим\w*|\bmaximum\b|\bcap\b|не\s+більш\w*|не\s+бол\w*|at\s+most|no\s+more\s+than", re.I)
+_DELIVERY_ACTUAL = re.compile(r"фактич\w*|фактичес\w*|\bactual\b|тариф\w*|\b(?:tariff|quote|quoted|estimate|estimated)\b|(?:достав\w*|delivery|shipping)\s+(?:кошту\w*|стоит|costs?\b)|(?:перевізник\w*|перевозчик\w*|\bcarrier\b)[^,;.]{0,20}(?:стяг\w*|візьм\w*|возьм\w*|charges?\b|bills?\b)", re.I)
+_DELIVERY_PROMOTION = re.compile(r"акці\w*|акци\w*|промо\w*|\b(?:promo\w*|promotion\w*|discount\w*)\b", re.I)
+_DELIVERY_FREE = re.compile(r"безкоштов\w*|бесплат\w*|\bfree\b", re.I)
+_DELIVERY_MERCHANT = re.compile(r"(?:twocomms|магазин\w*|\bstore\b|\bmerchant\b|\bwe\b|\bми\b|\bмы\b)[^,;.]{0,35}(?:опла\w*|спла\w*|плат\w*|бер\w*\s+на\s+себе|\bpay\w*|\bcover\w*)|(?:paid|covered)\s+by\s+(?:twocomms|the\s+store|us)|(?:опла\w*|спла\w*)[^,;.]{0,20}(?:магазин\w*|twocomms)", re.I)
+_DELIVERY_CUSTOMER = re.compile(r"(?:\bви\b|\bвы\b|клієнт\w*|клиент\w*|одержувач\w*|отримувач\w*|получател\w*|\byou\b|\bcustomer\b|\brecipient\b)[^,;.]{0,25}(?:опла\w*|спла\w*|плат\w*|\bpay\w*)|(?:оплат\w*|оплач\w*|сплач\w*|\bpaid\b|\bpay\w*)[^,;.]{0,35}(?:окремо|отдельно|separately)", re.I)
+_DELIVERY_CUSTOMER_ZERO = re.compile(r"для\s+вас|\bfor\s+you\b|\byou\s+pay\b|\bви\s+(?:плат\w*|опла\w*|спла\w*)|\bвы\s+(?:плат\w*|опла\w*)", re.I)
+_DELIVERY_INCLUDED = re.compile(r"(?:включ\w*|вход\w*)[^,;.]{0,35}(?:сум\w*|оплат\w*|цін\w*|цен\w*)|\b(?:prepaid|included|already\s+paid)\b|передоплач\w*|предоплач\w*|вже\s+оплач\w*|уже\s+оплач\w*", re.I)
+
+
+@dataclass(frozen=True)
+class AssistedDeliveryAuthority:
+    """An adopted logistics term; never a goods price or actual carrier bill."""
+    phase: str
+    payer: str
+    customer_maximum: Decimal
+    currency: str
+    source_ref: str
+
+
+def _positive(pattern, text):
+    from management.services.ig_reply_truth import _locally_negated
+    return any(not _locally_negated(text, match.start()) for match in pattern.finditer(text))
+
+
+def _delivery_units(text, lines):
+    """Separate stated money components without splitting decimal commas."""
+    from management.services.ig_reply_truth import _claim_sentences
+    starts = r"достав\w*|ціна\w*|цена\w*|товар\w*|delivery|shipping|price|goods|merchandise|total"
+    starts += "|" + "|".join(re.escape(line.title) for line in lines if line.title)
+    boundary = re.compile(r"(?<!\d),(?!\d)|;|\s+(?:і|й|та|а|и|and|but)\s+(?=(?:" + starts + r")\b)", re.I)
+    for sentence in _claim_sentences(text, ()):
+        delivery_seen = False
+        for unit in boundary.split(sentence):
+            unit = unit.strip()
+            if not unit:
+                continue
+            explicit = bool(_DELIVERY_COMPONENT.search(unit))
+            phased = any(pattern.search(unit) for pattern in _DELIVERY_PHASES.values())
+            goods = re.search(r"ціна\w*|цена\w*|товар\w*|\b(?:price|goods|merchandise|total)\b", unit, re.I)
+            named = any(line.title and re.search(re.escape(line.title), unit, re.I) for line in lines)
+            # Only a plain continuation phase label may inherit "delivery".
+            # A new goods component must never borrow its preceding cap.
+            continuation = phased or any(pattern.search(unit) for pattern in (
+                _DELIVERY_CAP, _DELIVERY_ACTUAL, _DELIVERY_PROMOTION, _DELIVERY_FREE,
+                _DELIVERY_MERCHANT, _DELIVERY_CUSTOMER, _DELIVERY_INCLUDED))
+            is_delivery = explicit or delivery_seen and continuation and not goods and not named
+            delivery_seen = delivery_seen or explicit
+            yield unit, is_delivery
 
 
 def should_capture_assisted_context(plan, client, revision=None):
@@ -95,6 +152,89 @@ class AssistedCommerceContext:
         return line.line_id
 
     @property
+    def delivery_authorities(self):
+        # Only the already verified native selection supplies adopted shipping
+        # terms. Its decision exposes neither carrier bills nor promo approval.
+        if self.selection is None:
+            return ()
+        terms = self.selection.shipping_terms
+        result = []
+        for phase in ("now", "later", "together"):
+            term = terms.get(phase) if isinstance(terms, dict) else None
+            if (not isinstance(term, dict) or term.get("payer") not in {"customer", "merchant"}
+                or term.get("currency") != "UAH" or not isinstance(term.get("customer_maximum"), str)):
+                return ()
+            try:
+                maximum = Decimal(term["customer_maximum"])
+            except InvalidOperation:
+                return ()
+            if not maximum.is_finite() or maximum < 0 or term["payer"] == "merchant" and maximum != 0:
+                return ()
+            result.append(AssistedDeliveryAuthority(phase, term["payer"], maximum, "UAH",
+                self.selection.terms_digest))
+        return tuple(result)
+
+    def _checked_delivery_copy(self, text):
+        """Mask only proven delivery money, leaving every other claim intact."""
+        from management.services.ig_reply_truth import (_MONEY_RE, _PREFIX_MONEY_RE, _RANGE_RE,
+            _currency_code, _decimal, ReplyTruthResult)
+        authorities = {fact.phase: fact for fact in self.delivery_authorities}
+        masked, checked_units, cursor = list(text), [], 0
+        for unit, is_delivery in _delivery_units(text, self.lines):
+            offset = text.find(unit, cursor)
+            if offset < 0:
+                return text, (), ReplyTruthResult(False, ("assisted_delivery_scope_unverified",))
+            cursor = offset + len(unit)
+            money = sorted({(match.start(), match.end()): match for pattern in (_MONEY_RE, _PREFIX_MONEY_RE)
+                for match in pattern.finditer(unit)}.values(), key=lambda match: match.start())
+            delivery_money = []
+            component = _DELIVERY_COMPONENT.search(unit)
+            if is_delivery:
+                for match in money:
+                    if component and match.end() <= component.start():
+                        continue  # A named goods price before the delivery component.
+                    goods = [found for line in self.lines for found in re.finditer(re.escape(line.title), unit[:match.start()], re.I)
+                        if line.title and (not component or found.start() > component.start())]
+                    if goods and re.fullmatch(r"\s*[:—–-]?\s*(?:(?:ціна|цена|price)\s*[:—–-]?\s*)?",
+                            unit[max(goods, key=lambda found: found.start()).end():match.start()], re.I):
+                        continue
+                    delivery_money.append(match)
+                if _positive(_DELIVERY_PROMOTION, unit) or _positive(_DELIVERY_INCLUDED, unit):
+                    return text, (), ReplyTruthResult(False, ("assisted_delivery_terms_unverified",))
+                merchant = _positive(_DELIVERY_MERCHANT, unit) or _positive(_DELIVERY_FREE, unit)
+                customer = _positive(_DELIVERY_CUSTOMER, unit)
+                phases = [phase for phase, pattern in _DELIVERY_PHASES.items() if pattern.search(unit)]
+                needs_phase = bool(delivery_money or merchant or customer and not component and self.selection is not None)
+                if needs_phase and len(phases) != 1:
+                    return text, (), ReplyTruthResult(False, ("assisted_delivery_scope_unverified",))
+                authority = authorities.get(phases[0]) if len(phases) == 1 else None
+                if needs_phase and authority is None:
+                    return text, (), ReplyTruthResult(False, ("assisted_delivery_terms_unverified",))
+                if merchant and authority.payer != "merchant":
+                    return text, (), ReplyTruthResult(False, ("assisted_delivery_payer_unverified",))
+                if customer:
+                    current = authority or authorities.get(getattr(self.selection, "delivery_scope", ""))
+                    zero_for_customer = bool(delivery_money and _DELIVERY_CUSTOMER_ZERO.search(unit)
+                        and all(_decimal(match.group("amount")) == 0 for match in delivery_money))
+                    if current is not None and current.payer != "customer" and not zero_for_customer:
+                        return text, (), ReplyTruthResult(False, ("assisted_delivery_payer_unverified",))
+                if delivery_money:
+                    if (_RANGE_RE.search(unit) or _positive(_DELIVERY_ACTUAL, unit)
+                        or any(re.search(r"\d\s*[-–—]\s*$", unit[:match.start()]) for match in delivery_money)):
+                        return text, (), ReplyTruthResult(False, ("assisted_carrier_fee_unverified",))
+                    cap = bool(_DELIVERY_CAP.search(unit))
+                    customer_zero = authority.payer == "merchant" and bool(_DELIVERY_CUSTOMER_ZERO.search(unit))
+                    if not cap and not customer_zero:
+                        return text, (), ReplyTruthResult(False, ("assisted_carrier_fee_unverified",))
+                    for match in delivery_money:
+                        if (_currency_code(match.group("currency")) != authority.currency
+                            or _decimal(match.group("amount")) != authority.customer_maximum):
+                            return text, (), ReplyTruthResult(False, ("assisted_delivery_amount_unverified",))
+                        masked[offset + match.start():offset + match.end()] = " " * (match.end() - match.start())
+            checked_units.append("".join(masked[offset:offset + len(unit)]))
+        return "".join(masked), tuple(checked_units), ReplyTruthResult(True)
+
+    @property
     def reference(self):
         value = self.verified
         reference = {"request_id": str(value.request_id), "decision_id": str(value.decision_id),
@@ -132,7 +272,10 @@ class AssistedCommerceContext:
         # customer choices, grant a catalogue ID or settle any payment.
         partial = ("\nOnly selected_lines belong to the accepted current purchase and its quoted goods total. "
             "deferred_unpaid_lines remain an unpaid wishlist: no price, payment, reservation, shipment or arrival claim. "
-            "Shipping maxima are agreed customer caps paid to the carrier, not goods prices or carrier quotations. "
+            "For delivery, name its exact phase (now/ready items, later/remaining items, or together). "
+            "Shipping maxima are agreed customer caps paid separately to the carrier, never goods prices or actual carrier fees. "
+            "State a maximum only with its adopted phase, payer and exact value. Merchant-funded delivery needs that phase's merchant term; no promotion or prepayment is implied. "
+            "Offer help with shipping naturally; only the exact arrival date depends on the carrier. "
             "Without native_purchase_accepted there is no selected price or checkout authority."
             if self.selection is not None or self.partial_pending else "")
         return ("[CURRENT VERIFIED MANAGER OFFER]\n" + json.dumps(self.projection, ensure_ascii=False, separators=(",", ":"))
@@ -193,9 +336,12 @@ class AssistedCommerceContext:
             availability_authorities=(), fulfillment_review_status="")
 
     def validate_reply(self, response, base):
-        from management.services.ig_reply_truth import (_claim_sentences, _MONEY_RE, _product_availability_claim,
+        from management.services.ig_reply_truth import (_claim_sentences, _MONEY_RE, _PREFIX_MONEY_RE, _product_availability_claim,
             validate_reply_truth, ReplyTruthResult, _TIMING_RE, _timing_nonclaim)
         lines = self.lines
+        checked_reply, checked_units, delivery_result = self._checked_delivery_copy(response.reply_text)
+        if not delivery_result.valid:
+            return delivery_result
         from management.services.ig_product_inquiries import _SPEC, validate_inquiry_response
         from management.services.ig_reply_language import own_reply_text
         questions = {question["question_id"]: question for question in self.verified.source_proof.get("questions", ())
@@ -229,10 +375,10 @@ class AssistedCommerceContext:
                     SimpleNamespace(control={"manager": True}, reply_text=part))
                 if honest:
                     return ReplyTruthResult(False, ("product_information_unverified",))
-        for clause in _claim_sentences(response.reply_text, ()):
+        for clause in checked_units:
             matched = [line for line in lines if re.search(re.escape(line.title), clause, re.I)
                 or re.search(r"(?:поз\w*|позици\w*|item|position)\s*#?\s*" + str(line.original_index + 1) + r"(?!\d)", clause, re.I)]
-            money = bool(_MONEY_RE.search(clause))
+            money = bool(_MONEY_RE.search(clause) or _PREFIX_MONEY_RE.search(clause))
             stock = _product_availability_claim(clause)
             timing = any(not _timing_nonclaim(clause, match.start()) for match in _TIMING_RE.finditer(clause))
             if not (money or stock or timing):
@@ -283,7 +429,7 @@ class AssistedCommerceContext:
             timing_authorities=tuple(fact for context in contexts for fact in context.timing_authorities),
             authorized_price_ranges=(), approved_timing_claims=(), explicitly_qualified_standard_dispatch_days=None,
             availability_authorities=(), fulfillment_review_status="")
-        return validate_reply_truth(response.reply_text, context=aggregate)
+        return validate_reply_truth(checked_reply, context=aggregate)
 
     def coverage(self, plan, response, revision, original):
         """Credit only current typed offer facts; payment/support debt remains."""
