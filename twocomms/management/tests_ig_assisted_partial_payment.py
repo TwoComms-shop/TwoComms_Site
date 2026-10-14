@@ -28,6 +28,10 @@ class NativeSelectedPaymentTests(PartialCommerceFixture, TransactionTestCase):
         with override_settings(ROOT_URLCONF="twocomms.urls"):
             opened = self.client.get(prepared["checkout_url"], HTTP_HOST="twocomms.shop")
             self.assertEqual(opened.status_code, 302, opened.content)
+            shown = self.client.get(opened["Location"], HTTP_HOST="twocomms.shop")
+            self.assertEqual(shown.status_code, 200, shown.content)
+            self._hosted_revision_payload = generation_fixture.displayed_revision_payload(shown)
+            self.assertEqual(set(self._hosted_revision_payload), {"expected_revision", "expected_digest", "delivery_policy_digest"})
             with patch("storefront.views.monobank._monobank_api_request", return_value={
                     "invoiceId": f"native-selected-payment-{proposal.pk}",
                     "pageUrl": f"https://pay.example/selected-{proposal.pk}"}) as bank:
@@ -95,6 +99,12 @@ class NativeSelectedPaymentTests(PartialCommerceFixture, TransactionTestCase):
     def test_changed_actual_choice_source_blocks_invoice_before_any_bank_request(self):
         case = self.selected_case()
         prepared = self.prepare_selection(case["selection"])
+        with override_settings(ROOT_URLCONF="twocomms.urls"):
+            entry = self.client.get(prepared["checkout_url"], HTTP_HOST="twocomms.shop")
+            self.assertEqual(entry.status_code, 302)
+            shown = self.client.get(entry["Location"], HTTP_HOST="twocomms.shop")
+            self.assertEqual(shown.status_code, 200)
+            self._hosted_revision_payload = generation_fixture.displayed_revision_payload(shown)
         case["source"].text += " Але хочу інший колір."
         case["source"].save(update_fields=["text"])
         with override_settings(ROOT_URLCONF="twocomms.urls"), \

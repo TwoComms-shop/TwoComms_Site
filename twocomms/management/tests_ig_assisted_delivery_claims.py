@@ -61,6 +61,8 @@ class AssistedDeliveryClaimTests(SimpleTestCase):
             "Hoodie: 850 грн; доставка зараз: максимум 120 грн; пізніше: максимум 150 грн.",
             "Hoodie: UAH 850; delivery now: maximum UAH 120.",
             "Hoodie 850 UAH delivery now up to 120 UAH.",
+            "Hoodie в наявності, розмір M, ціна 850 грн. T-shirt залишається в очікуванні, ще не оплачено.",
+            "Hoodie в наявності, розмір M, ціна 850 грн, доставка готової частини до 120 грн.",
         ):
             with self.subTest(text=text):
                 self.assertTrue(self.check(text).valid, self.check(text).reasons)
@@ -148,6 +150,58 @@ class AssistedDeliveryClaimTests(SimpleTestCase):
             with self.subTest(text=text):
                 self.assertTrue(self.check(text).valid, self.check(text).reasons)
         self.assertTrue(self.check("You pay the carrier separately for delivery.", frame=self.frame(selected=False)).valid)
+
+    def full_native_terms(self, *, merchant_phase="later"):
+        """Real immutable model/envelope signing; no database or provider."""
+        from management.ig_assisted_commerce_models import IgAssistedCommerceDecision
+        selected = self.frame(merchant_phase=merchant_phase)
+        verified = selected.verified
+        row = IgAssistedCommerceDecision(id=verified.decision_id, request_id=verified.request_id,
+            client_id=verified.client_id, actor_id=verified.approver_id, version=verified.decision_version,
+            status="approved", request_digest=verified.request_digest,
+            full_capture_digest=verified.full_capture_digest, approved_total=verified.approved_total,
+            approved_custom_quantity=verified.approved_custom_quantity,
+            physical_checked_at=verified.physical_checked_at, expires_at=verified.expires_at)
+        body = {"scoped_quotes": {"selected": selected.selection.quote}}
+        row.key_id = next(iter(commerce._keys()))
+        row.snapshot_digest = commerce._digest(body)
+        row.envelope = {"version": 1, "purpose": commerce.PURPOSE, "kind": "decision",
+            "columns": commerce._columns(row), "snapshot": body, "operation_input_digest": "5" * 64}
+        row.envelope_hmac = commerce._sign("decision", row.envelope, row.key_id)
+        verified = replace(verified, decision_digest=row.envelope_hmac, snapshot_digest=row.snapshot_digest)
+        native = context._native_delivery_terms(row, verified)
+        self.assertIsNotNone(native)
+        return replace(selected, verified=verified, selection=None, partial_pending=True,
+            can_prepare_checkout=False, _delivery_terms_json=json.dumps(native)), row
+
+    def test_full_context_adopts_exact_signed_phases_without_adopting_a_purchase(self):
+        frame, row = self.full_native_terms()
+        for text in (
+            "Доставку решти оплачує TwoComms; доставка решти: для вас 0 грн.",
+            "Доставка оставшихся позиций бесплатная для вас.",
+            "TwoComms covers shipping for remaining items. Shipping for remaining items: you pay 0 UAH.",
+            "Delivery now: up to 120 UAH.",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(self.check(text, frame=frame).valid, self.check(text, frame=frame).reasons)
+        for text in ("Delivery now is free.", "Delivery later: free promotion.",
+            "Delivery later is prepaid.", "Delivery now costs 120 UAH.", "Hoodie: price 120 UAH."):
+            with self.subTest(text=text):
+                self.assertFalse(self.check(text, frame=frame).valid)
+        self.assertIsNone(frame.approved_total)
+        self.assertEqual(frame.reference["delivery_terms"]["source_ref"], row.envelope_hmac)
+        self.assertIsNone(context._native_delivery_terms(row, replace(frame.verified, client_id=2)))
+        row.envelope["snapshot"]["scoped_quotes"]["selected"]["shipping_terms"]["now"]["payer"] = "merchant"
+        self.assertIsNone(context._native_delivery_terms(row, frame.verified))
+
+    def test_ordinary_full_context_customer_rule_is_not_a_fee_or_manager_override(self):
+        frame = self.frame(selected=False)
+        for text in ("Доставку оплачуєте перевізнику окремо.",
+            "Доставка оплачивается перевозчику отдельно.", "You pay the carrier separately for delivery."):
+            self.assertTrue(self.check(text, frame=frame).valid)
+        for text in ("Delivery is free.", "TwoComms covers shipping.",
+            "Delivery costs 120 UAH.", "Delivery now: up to 120 UAH.", "Delivery is prepaid."):
+            self.assertFalse(self.check(text, frame=frame).valid)
 
     def test_masking_a_cap_preserves_stock_spec_timing_payment_and_url_guards(self):
         for text in (

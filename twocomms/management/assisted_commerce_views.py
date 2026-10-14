@@ -40,6 +40,27 @@ def _owner(request, client_id):
 def _source_cas(client):
     from management.models import IgCustomerTurnRevision, InstagramBotSettings
     from management.services.ig_commercial_episodes import commercial_episode_client_lock
+    from management.models import IgCheckoutCartAmendment
+    from management.services.ig_checkout_cart_amendments import verify_pending_amendment, verify_cancelled_amendment
+    pending = IgCheckoutCartAmendment.objects.filter(client=client,
+        proposal__status="manager_review", source_body__pending_review=True).order_by("-created_at", "pk").first()
+    if not pending:
+        pending = IgCheckoutCartAmendment.objects.filter(client=client, proposal__status="cancelled",
+            source_body__cancelled_scope=True).order_by("-created_at", "pk").first()
+    if pending:
+        cancelled = pending.source_body.get("cancelled_scope") is True
+        checked = (verify_cancelled_amendment if cancelled else verify_pending_amendment)(pending.pk)
+        if not checked.get("ready"):
+            return {"ready": False, "reason": checked.get("reason") or "pending_amendment_changed"}
+        original = checked.get("original_execution")
+        if original is None:
+            return {"ready": False, "reason": "native_amendment_requires_manager_source_review"}
+        if cancelled and not checked["body"]["next_snapshot"]["lines"]:
+            return {"ready": False, "reason": "cancelled_amendment_requires_remaining_wait"}
+        return {"ready": True, "revision_id": original.request.revision_id,
+            "expected_revision_digest": original.request.envelope["snapshot"]["revision_digest"],
+            "expected_full_capture_digest": checked["current_capture"]["capture_digest"],
+            "native_amendment_id": str(pending.pk), "source_kind": "checkout_link_holder"}
     revision = IgCustomerTurnRevision.objects.filter(client=client).order_by("-pk").first()
     settings_obj = InstagramBotSettings.objects.order_by("pk").first()
     if not revision or not settings_obj:
@@ -134,7 +155,7 @@ def _context(client, actor, request_id=None):
                     "expected_request_digest": execution.request_digest,
                     "expected_decision_digest": execution.decision_digest,
                     "can_recover_checkout": initiator.get("kind") == "manager" and initiator.get("actor_id") == actor.pk}
-                if execution.scope == "partial":
+                if execution.scope == "partial" and not execution.envelope["snapshot"].get("choice_proof", {}).get("schema", "").startswith("ig-checkout-amendment-"):
                     snapshot = execution.envelope["snapshot"]
                     evidence, choice = snapshot["selection_evidence"], snapshot["choice_proof"]
                     value["prepared_checkout"].update(action="prepare_selected", task_id=choice["task_id"],
@@ -191,6 +212,7 @@ def _request_owned(client, request_id):
     from management.ig_assisted_commerce_models import IgAssistedCommerceRequest
     if not IgAssistedCommerceRequest.objects.filter(pk=request_id, client=client).exists():
         raise Http404
+    return IgAssistedCommerceRequest.objects.get(pk=request_id, client=client)
 
 
 @login_required(login_url="management_login")
@@ -240,10 +262,16 @@ def assisted_commerce_api(request, client_id):
             from management.models import InstagramBotSettings
             settings_obj = InstagramBotSettings.objects.order_by("pk").first()
             commerce._actor(request.user.pk)
-            row, created = commerce.create_assisted_request(native["revision_id"], settings_id=settings_obj.pk,
-                operation_id=operation, expected_revision_digest=native["expected_revision_digest"],
-                expected_full_capture_digest=native["expected_full_capture_digest"],
-                **{key: payload[key] for key in optional if key in payload})
+            if native.get("native_amendment_id"):
+                from management.services.ig_checkout_amendment_successors import create_amendment_review_request
+                if set(payload) & optional:
+                    raise ValueError("native amendment cannot borrow an intention")
+                row, created = create_amendment_review_request(native["native_amendment_id"], operation_id=operation)
+            else:
+                row, created = commerce.create_assisted_request(native["revision_id"], settings_id=settings_obj.pk,
+                    operation_id=operation, expected_revision_digest=native["expected_revision_digest"],
+                    expected_full_capture_digest=native["expected_full_capture_digest"],
+                    **{key: payload[key] for key in optional if key in payload})
             return JsonResponse({"success": True, "created": created, "request_id": str(row.pk),
                 "commerce": _context(client, request.user, row.pk)})
         if action in {"draft", "approve", "reject"}:
@@ -319,8 +347,11 @@ def assisted_commerce_api(request, client_id):
                 raise ValueError("checkout fields invalid")
             request_id = _uuid(payload["request_id"])
             _request_owned(client, request_id)
+            row = _request_owned(client, request_id)
             from management.services.ig_assisted_checkout import prepare_assisted_checkout
-            checkout = prepare_assisted_checkout(client.pk, actor=request.user, request_id=request_id,
+            from management.services.ig_checkout_amendment_successors import prepare_amendment_successor
+            prepare = prepare_amendment_successor if row.envelope["snapshot"].get("checkout_amendment") else prepare_assisted_checkout
+            checkout = prepare(client.pk, actor=request.user, request_id=request_id,
                 decision_id=_uuid(payload["decision_id"]), operation_id=operation,
                 expected_request_digest=payload["expected_request_digest"],
                 expected_decision_digest=payload["expected_decision_digest"])

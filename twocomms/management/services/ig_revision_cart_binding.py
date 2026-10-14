@@ -23,7 +23,7 @@ LIVE_CHECKOUT_ITEM_LIMIT = 8
 CATALOG_CHECKOUT_ITEM_LIMIT = 12
 SCOPE_KEYS = ("client_id", "episode_id", "order_id", "reset_id", "reset_floor", "source_namespace")
 CHOICE_KEYS = ("product_id", "size", "fit_option_code", "color", "quantity", "color_variant_id", "option_values")
-SOURCE_AUTHORITIES = frozenset({"customer_source", "audited_correction", "validated_selection_action"})
+SOURCE_AUTHORITIES = frozenset({"customer_source", "audited_correction", "validated_selection_action", "checkout_link_holder"})
 
 
 def _json(value):
@@ -103,6 +103,21 @@ def _scope_reason(scope, expected):
 
 
 def _proof_reason(proof, reset_floor):
+    if isinstance(proof, dict) and proof.get("source_kind") == "ig-checkout-cart-amendment.v1":
+        from uuid import UUID
+        from datetime import datetime
+        try:
+            if (set(proof) != {"amendment_id", "transition_id", "source_digest", "source_kind", "authority", "observed_at"}
+                    or str(UUID(proof["amendment_id"])) != proof["amendment_id"]
+                    or proof["authority"] != "checkout_link_holder"
+                    or datetime.fromisoformat(proof["observed_at"]).tzinfo is None
+                    or not _positive(proof["transition_id"]) or not _hash(proof["source_digest"])):
+                return "cart_hosted_source_proof_invalid"
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return "cart_hosted_source_proof_invalid"
+        # Shape only. Current ownership/HMAC/transition checks belong to the
+        # native receipt reader and effect owner, never this pure transport.
+        return ""
     if not isinstance(proof, dict) or not _positive(proof.get("source_message_id")) or not _hash(proof.get("source_digest")):
         return "cart_source_proof_missing"
     if proof["source_message_id"] < reset_floor:

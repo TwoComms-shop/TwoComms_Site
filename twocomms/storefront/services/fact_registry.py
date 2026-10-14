@@ -8,7 +8,7 @@ keyword coverage.
 from dataclasses import dataclass
 from decimal import Decimal
 
-from django.conf import settings
+from orders.services.shipping_policy import free_shipping_threshold as _shipping_threshold
 
 
 PUBLIC_FACTS_VERSION = "2026-10-09"
@@ -33,7 +33,7 @@ class PublicFact:
 
 def free_shipping_threshold() -> Decimal:
     """Return the same threshold used by checkout and mini-cart logic."""
-    return Decimal(str(getattr(settings, "FREE_SHIPPING_THRESHOLD", "3000")))
+    return _shipping_threshold()
 
 
 PUBLIC_FACTS = {

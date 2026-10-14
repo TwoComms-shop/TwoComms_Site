@@ -250,17 +250,33 @@ def intention_coverage(client_id, intention_id, *, now=None, exclude_execution_i
             head = Request.objects.filter(client_id=client_id, intention_id=intention_id).order_by("-version").first()
             if not client or not head or client.privacy_erasure_started_at or client.hidden_at:
                 commerce._fail("intention_unavailable")
+            from management.models import IgCheckoutCartAmendmentResolution
             if read_unit is not None:
                 require_selection_read_unit(read_unit, head, now=now)
             root, originals, _ancestry = (read_unit._history(head, now=now) if read_unit is not None else _history(head))
             quantities = {line["line_id"]: line["quantity"] for line in originals}
-            rows = Execution.objects.filter(client_id=client_id, intention_id=intention_id).select_related(
+            from django.db.models import Exists, OuterRef
+            rows = Execution.objects.filter(client_id=client_id, intention_id=intention_id).annotate(
+                _has_amendment_successor=Exists(IgCheckoutCartAmendmentResolution.objects.filter(
+                    client_id=client_id, origin_proposal_id=OuterRef("proposal_id")))).select_related(
                 "request", "decision", "proposal", "client", "episode", "order").order_by("created_at", "pk")
             if lock:
                 rows = rows.select_for_update()
             rows = list(rows[:MAX_HISTORY + 1])
             if len(rows) > MAX_HISTORY:
                 commerce._fail("execution_history_bound")
+            # Presence is read in the existing bounded execution query, never
+            # inferred from a mutable status or cached across an effect. Only
+            # real successor ancestry incurs its exact historical proof read.
+            moved_origins = [row.proposal_id for row in rows if row._has_amendment_successor]
+            if moved_origins:
+                moved = IgCheckoutCartAmendmentResolution.objects.select_related("execution", "request").filter(
+                    client_id=client_id, origin_proposal_id__in=moved_origins).first()
+                if moved is None:
+                    commerce._fail("intention_successor_changed")
+                from management.services.ig_checkout_amendment_successors import _verified_resolution
+                _verified_resolution(moved, now=now)
+                commerce._fail("intention_transferred_to_checkout_successor")
             settled, inflight, cancelled, orders, executions, consumed = [], [], [], [], [], set()
             for execution in rows:
                 from management.services.ig_assisted_checkout import validate_assisted_execution_history
@@ -292,9 +308,13 @@ def intention_coverage(client_id, intention_id, *, now=None, exclude_execution_i
                     if exclude_execution_id is None or str(execution.pk) != str(exclude_execution_id):
                         inflight.extend(ids)
                 else:
-                    # Safe payment release is not customer cancellation of the
-                    # wishlist. No cancellation producer exists in this slice.
-                    commerce._fail("released_intention_requires_review")
+                    from management.services.ig_checkout_amendment_successors import native_cancelled_scope
+                    if native_cancelled_scope(execution, ids):
+                        state = "cancelled_by_checkout_holder"
+                        cancelled.extend(ids)
+                    else:
+                        # Payment release alone is not wishlist cancellation.
+                        commerce._fail("released_intention_requires_review")
                 executions.append({"execution_id": str(execution.pk), "execution_digest": execution.envelope_hmac,
                     "episode_id": execution.episode_id, "request_id": str(execution.request_id),
                     "decision_id": str(execution.decision_id), "scope": execution.scope, "line_ids": ids,
@@ -310,7 +330,7 @@ def intention_coverage(client_id, intention_id, *, now=None, exclude_execution_i
                 "root_request_id": str(root.pk), "root_request_digest": root.envelope_hmac, "original_quantities": quantities,
                 "selected_line_ids": [], "settled_line_ids": [line["line_id"] for line in originals if line["line_id"] in settled],
                 "inflight_line_ids": [line["line_id"] for line in originals if line["line_id"] in inflight],
-                "cancelled_line_ids": cancelled,
+                "cancelled_line_ids": [line["line_id"] for line in originals if line["line_id"] in cancelled],
                 "deferred_line_ids": [line["line_id"] for line in originals if line["line_id"] not in unavailable],
                 "orders": orders, "executions": executions}
             digest = _base_digest(payload)
@@ -369,7 +389,8 @@ def build_scoped_quotes(request, lines, shipping_terms, *, read_unit=None, now=N
     custom = sum(line.quantity for line in selected if line.item_kind == "custom_apparel")
     if not 0 < total <= commerce.MAX_VALUE or sum(line.quantity for line in selected) > commerce.MAX_QUANTITY:
         commerce._fail("selected_scope_checkout_bounds")
-    delivery = "later" if request.envelope["snapshot"].get("ancestry") else "now"
+    amended = request.envelope["snapshot"].get("checkout_amendment") or {}
+    delivery = amended.get("delivery_scope") or ("later" if request.envelope["snapshot"].get("ancestry") else "now")
     proof = {"scope_digest": scope_digest, "total": format(total, ".2f"), "custom_quantity": custom,
         "lines": [line.as_dict() for line in selected], "shipping_terms": terms, "delivery_scope": delivery}
     return {"selected": {"scope": "partial", "selected_line_ids": selected_ids, "deferred_line_ids": deferred_ids,
@@ -646,6 +667,13 @@ def verified_selection_from_evidence(request, decision, execution, *, historical
     actual = Execution.objects.select_related("request", "decision").get(pk=execution.pk)
     if actual.request_id != getattr(request, "pk", None) or actual.decision_id != getattr(decision, "pk", None):
         commerce._fail("selection_execution_owner_changed")
+    if actual.request.envelope["snapshot"].get("checkout_amendment"):
+        from management.services.ig_checkout_amendment_successors import verified_amendment_selection
+        value = verified_amendment_selection(actual.request, actual.decision, actor=actual.decision.actor,
+            historical=historical, execution=actual)
+        if selection_evidence(value) != actual.envelope["snapshot"].get("selection_evidence"):
+            commerce._fail("selection_execution_proof_changed")
+        return value
     cap = commerce.verified_assisted_decision_from_evidence(actual.request, actual.decision, historical=historical)
     quote, lines = _quote_lines(actual.request, actual.decision, parent_lines=cap.lines)
     body = actual.envelope["snapshot"]
@@ -675,6 +703,15 @@ def revalidate_verified_assisted_selection(value, *, client=None, actor=None, no
         Request, Decision, Execution, _Image = commerce._models()
         execution = Execution.objects.select_related("request", "decision").get(pk=value.execution_id, client_id=value.client_id)
         return verified_selection_from_evidence(execution.request, execution.decision, execution)
+    from management.services.ig_checkout_amendment_successors import CHOICE_SCHEMA, verified_amendment_selection
+    if value.choice_proof.get("schema") == CHOICE_SCHEMA:
+        Request, Decision, _Execution, _Image = commerce._models()
+        request = Request.objects.get(pk=value.request_id, client_id=value.client_id)
+        decision = Decision.objects.get(pk=value.decision_id, request=request)
+        fresh = verified_amendment_selection(request, decision, actor=actor or decision.actor, now=now)
+        if selection_evidence(fresh) != selection_evidence(value):
+            commerce._fail("selection_proof_changed")
+        return fresh
     from management.services.ig_assisted_partial import verified_partial_choice_for_source
     choice = verified_partial_choice_for_source(value.choice_source_id, now=now)
     fresh = verified_selection_from_choice(choice, actor=actor, now=now)

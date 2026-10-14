@@ -318,21 +318,33 @@ def _validated_execution(execution, *, now, fresh):
             purchase_revision = IgCustomerTurnRevision.objects.filter(pk=execution.revision_id).first()
             if purchase_revision is None:
                 _fail("checkout_purchase_revision_missing")
-            native = validate_card_choice_source(execution.purchase_source, purchase_revision,
-                settings_obj, now=now, expected_task_id=cap.choice_proof["task_id"], require_current=False)
-            if (native.action != "partial" or native.source_proof != cap.purchase_proof
-                or native.receipt != cap.choice_proof["receipt"]
-                or native.card["proof"]["card_digest"] != cap.choice_proof["card_digest"]):
-                _fail("assisted_execution_choice_changed")
+            from management.services.ig_checkout_amendment_successors import CHOICE_SCHEMA, verify_amendment_request
+            if cap.choice_proof.get("schema") == CHOICE_SCHEMA:
+                # This is a hosted-holder wish and fresh manager offer. The
+                # original IG rows are lineage, never a new delivered card.
+                verify_amendment_request(request, execution.client, now)
+                if not cap.choice_proof.get("fresh_hosted_ack_required"):
+                    _fail("amendment_hosted_ack_required")
+            else:
+                native = validate_card_choice_source(execution.purchase_source, purchase_revision,
+                    settings_obj, now=now, expected_task_id=cap.choice_proof["task_id"], require_current=False)
+                if (native.action != "partial" or native.source_proof != cap.purchase_proof
+                    or native.receipt != cap.choice_proof["receipt"]
+                    or native.card["proof"]["card_digest"] != cap.choice_proof["card_digest"]):
+                    _fail("assisted_execution_choice_changed")
             _admit_selected_scope(cap, now=now, exclude_execution_id=execution.pk)
         else:
             purchase_revision = IgCustomerTurnRevision.objects.filter(pk=execution.revision_id).first()
             owned, reason = owned_source(purchase_revision, execution.purchase_source, settings_obj, require_head=False) if purchase_revision else (None, "source_not_owned")
             if not owned or owned[2] != body.get("purchase_proof"):
                 _fail(reason or "purchase_source_changed")
-        current = capture_current_selection_lines(execution.client_id, now=now)
-        if not same_checkout_source_capture(body.get("current_quote_capture"), current):
-            _fail("assisted_execution_source_changed")
+        if selected and body.get("choice_proof", {}).get("schema") == CHOICE_SCHEMA:
+            from management.services.ig_checkout_amendment_successors import validate_native_payment_capture
+            current = validate_native_payment_capture(execution, now=now)
+        else:
+            current = capture_current_selection_lines(execution.client_id, now=now)
+            if not same_checkout_source_capture(body.get("current_quote_capture"), current):
+                _fail("assisted_execution_source_changed")
         task = commerce._task(execution.client, request.task_id)
         if task:
             head = task.manager_context.get("assisted_commerce") or {}
@@ -639,11 +651,24 @@ def _prepare_selected_assisted_checkout(client_id, *, actor, request_id, decisio
             quote = build_assisted_quote(client=client, verified_selection=cap)
             binding = build_selected_cart_binding(verified_selection=cap,
                 quoted_items=[_deal_item_snapshot(item) for item in quote.items])
-            from management.services.ig_assisted_partial import selection_reply_language
-            proposal = create_or_update_proposal(client=client, pay_type="online_full", item_specs=[],
-                allow_promo=False, evidence={"message_ids": sorted(set(cap.current_capture["fence"]["source_ids"]) | {purchase.pk})},
-                source_cart_binding=binding, source_cart_capture=cap.full_capture,
-                verified_selection=cap, locale=selection_reply_language(cap))
+            from management.services.ig_checkout_amendment_successors import CHOICE_SCHEMA
+            if choice_proof.get("schema") == CHOICE_SCHEMA:
+                from management.services.ig_checkout import create_approved_amendment_successor
+                from management.services.ig_checkout_cart_amendments import verify_pending_amendment, verify_cancelled_amendment
+                native_source = request.envelope["snapshot"]["checkout_amendment"]
+                pending = (verify_cancelled_amendment if native_source.get("cancelled_scope") is True else
+                    verify_pending_amendment)(choice_proof["amendment_id"], now=now)
+                if not pending.get("ready"):
+                    _fail(pending.get("reason") or "pending_amendment_changed")
+                proposal = create_approved_amendment_successor(client=client,
+                    verified_amendment=pending["verified_amendment"], verified_selection=cap,
+                    locale=cap.source_proof.get("reply_language", {}).get("language") or client.language)
+            else:
+                from management.services.ig_assisted_partial import selection_reply_language
+                proposal = create_or_update_proposal(client=client, pay_type="online_full", item_specs=[],
+                    allow_promo=False, evidence={"message_ids": sorted(set(cap.current_capture["fence"]["source_ids"]) | {purchase.pk})},
+                    source_cart_binding=binding, source_cart_capture=cap.full_capture,
+                    verified_selection=cap, locale=selection_reply_language(cap))
             quote_revision = proposal.revisions.get(revision=proposal.revision)
             binding = deepcopy(quote_revision.snapshot["source_cart_binding"])
             rows, _custom = _proposal_rows(proposal, quote_revision, cap)
@@ -956,8 +981,12 @@ def current_assisted_offer(client, revision=None, now=None):
                 "request_digest": request.envelope_hmac, "decision_digest": decision.envelope_hmac}}
             can_prepare, prepare_reason = False, "assisted_full_ready_required"
             if (decision.envelope["snapshot"].get("scoped_quotes") or {}).get("selected"):
-                from management.services.ig_assisted_partial import current_verified_selection
-                selected = current_verified_selection(client, request, decision, revision=revision, now=now)
+                if request.envelope["snapshot"].get("checkout_amendment"):
+                    from management.services.ig_checkout_amendment_successors import verified_amendment_selection
+                    selected = verified_amendment_selection(request, decision, actor=decision.actor, now=now)
+                else:
+                    from management.services.ig_assisted_partial import current_verified_selection
+                    selected = current_verified_selection(client, request, decision, revision=revision, now=now)
                 prepare_reason = "choice_required"
                 if selected is not None:
                     cap = selected

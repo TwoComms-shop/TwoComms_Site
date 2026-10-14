@@ -127,6 +127,292 @@
   const priceDialog = document.querySelector("[data-price-dialog]");
   const priceDetails = document.querySelector("[data-price-details]");
   const checkoutStateBanner = document.querySelector("[data-checkout-state-banner]");
+  const cartProducts = document.querySelector("[data-cart-products]");
+  const cartFeedback = document.querySelector("[data-cart-feedback]");
+  const cartStatus = document.querySelector("[data-cart-status]");
+  const cartRetry = document.querySelector("[data-cart-retry]");
+  const cartCopy = ({
+    uk: { saving: "Зберігаємо зміни…", saved: "Зміни збережено. Сума оновлена.", review: "Зміни збережено. Менеджер перевірить нові умови перед оплатою.", unknown: "Перевіряємо, чи збережено зміни. Оплата тимчасово недоступна. Перевірте збереження перед наступною зміною.", failed: "Не вдалося зберегти зміни. Кошик не змінено.", stale: "Кошик уже оновлено. Перевірте актуальні товари й суму перед оплатою.", blocked: "Зараз змінювати це замовлення не можна. Актуальний стан можна уточнити в Direct.", pendingPrice: "Після погодження", empty: "У кошику немає товарів. Додати товари допоможемо в Direct." },
+    ru: { saving: "Сохраняем изменения…", saved: "Изменения сохранены. Сумма обновлена.", review: "Изменения сохранены. Менеджер проверит новые условия перед оплатой.", unknown: "Проверяем, сохранились ли изменения. Оплата временно недоступна. Проверьте сохранение перед следующим изменением.", failed: "Не удалось сохранить изменения. Корзина не изменена.", stale: "Корзина уже обновлена. Проверьте актуальные товары и сумму перед оплатой.", blocked: "Сейчас изменить этот заказ нельзя. Актуальный статус можно уточнить в Direct.", pendingPrice: "После согласования", empty: "В корзине нет товаров. Добавить товары поможем в Direct." },
+    en: { saving: "Saving changes…", saved: "Changes saved. The total is updated.", review: "Changes saved. A manager will confirm the updated terms before payment.", unknown: "Checking whether your changes were saved. Payment is temporarily unavailable. Check saved changes before editing again.", failed: "Changes could not be saved. Your basket is unchanged.", stale: "Your basket has already been updated. Check the current items and total before paying.", blocked: "This order cannot be edited right now. Contact us in Direct for its current status.", pendingPrice: "After confirmation", empty: "Your basket is empty. We can help you add items in Direct." },
+  }[locale] || null) || {
+    saving: "Saving changes…", saved: "Changes saved.", review: "Changes saved. Awaiting manager confirmation.", unknown: "Checking saved changes. Payment is unavailable.", failed: "Changes could not be saved.", stale: "Basket updated. Check the current total.", blocked: "This order cannot be edited right now.", pendingPrice: "After confirmation", empty: "Your basket is empty.",
+  };
+  const deliveryCopy = ({
+    uk: { free: "Ваша доставка безкоштовна", remaining: "До безкоштовної доставки — ще", goods: "Товари після знижок", threshold: "безкоштовно від", gained: "Тепер доставка безкоштовна — її оплачує TwoComms.", lost: "Кошик оновлено. Доставка тепер оплачується окремо Новій пошті; підтвердьте ці умови, щоб продовжити.", covered: "Доставку оплачує TwoComms", manual: "Доставка за погодженими умовами", manualDetail: "Погоджені з вами умови зберігаються окремо від акції на безкоштовну доставку.", review: "Умови доставки уточнюємо", reviewDetail: "Менеджер перевірить оновлений кошик і підтвердить доставку перед оплатою.", ack: "Підтвердьте нові умови доставки нижче, щоб продовжити з цими товарами." },
+    ru: { free: "Ваша доставка бесплатная", remaining: "До бесплатной доставки — ещё", goods: "Товары после скидок", threshold: "бесплатно от", gained: "Теперь доставка бесплатная — её оплачивает TwoComms.", lost: "Корзина обновлена. Доставка теперь оплачивается отдельно Новой почте; подтвердите эти условия, чтобы продолжить.", covered: "Доставку оплачивает TwoComms", manual: "Доставка по согласованным условиям", manualDetail: "Согласованные с вами условия сохраняются отдельно от акции на бесплатную доставку.", review: "Условия доставки уточняем", reviewDetail: "Менеджер проверит обновлённую корзину и подтвердит доставку перед оплатой.", ack: "Подтвердите новые условия доставки ниже, чтобы продолжить с этими товарами." },
+    en: { free: "Your delivery is free", remaining: "Free delivery is within reach — add", goods: "Items after discounts", threshold: "free from", gained: "Your delivery is now free — TwoComms covers it.", lost: "Your basket is updated. Delivery is now paid separately to Nova Poshta; confirm these terms to continue.", covered: "TwoComms covers delivery", manual: "Delivery under your agreed terms", manualDetail: "Your agreed terms are separate from the free delivery promotion.", review: "Confirming your delivery terms", reviewDetail: "A manager will review your updated basket and confirm delivery before payment.", ack: "Confirm the updated delivery terms below to continue with these items." },
+  }[locale] || null);
+  let cartState = null;
+  try {
+    const initialCart = JSON.parse(document.getElementById("ig-cart-state")?.textContent || "null");
+    if (initialCart && Array.isArray(initialCart.items)) cartState = initialCart;
+  } catch (_error) { /* Missing capability data must not grant edit permission. */ }
+  let cartSaving = false;
+  let cartNeedsReload = false;
+  let removedCartFocus = false;
+  let pendingCartOperation = null;
+  let paymentCreating = false;
+  let previousDeliveryPolicy = null;
+  const operationId = () => window.crypto?.randomUUID?.() || "";
+  const cartStorageKey = `twc-cart-amendment:${root.dataset.proposalUrl || window.location.pathname}`;
+  const rememberCartOperation = (operation) => {
+    try {
+      if (operation) window.sessionStorage.setItem(cartStorageKey, JSON.stringify(operation));
+      else window.sessionStorage.removeItem(cartStorageKey);
+    } catch (_error) { /* Exact replay still works in memory when storage is disabled. */ }
+  };
+  try {
+    const remembered = JSON.parse(window.sessionStorage.getItem(cartStorageKey) || "null");
+    if (remembered?.action === "cart_amendment" && typeof remembered.operation_id === "string"
+      && ["quantity", "remove"].includes(remembered.operation) && typeof remembered.line_id === "string"
+      && Number.isInteger(remembered.expected_revision) && typeof remembered.expected_digest === "string") {
+      pendingCartOperation = remembered;
+    }
+  } catch (_error) { /* Storage is optional. */ }
+
+  const showCartStatus = (message, kind = "") => {
+    if (cartStatus) cartStatus.textContent = message;
+    if (cartFeedback) {
+      cartFeedback.hidden = !message;
+      cartFeedback.classList.toggle("is-error", kind === "error");
+      cartFeedback.classList.toggle("is-review", kind === "review");
+    }
+    if (cartRetry) cartRetry.hidden = !pendingCartOperation || cartSaving;
+  };
+  const cartCanPay = () => !cartSaving && !cartNeedsReload && !pendingCartOperation && !paymentCreating
+    && (!cartState || cartState.can_pay === true) && !checkoutExpired;
+  const syncCartCapabilities = () => {
+    const canEdit = cartState?.can_edit === true && !checkoutExpired && !cartSaving
+      && !cartNeedsReload && !pendingCartOperation && !paymentCreating;
+    cartProducts?.setAttribute("aria-busy", cartSaving ? "true" : "false");
+    cartProducts?.querySelectorAll("[data-cart-action]").forEach((button) => {
+      const row = button.closest("[data-cart-line]");
+      const item = cartState?.items.find((line) => String(line.line_id) === row?.dataset.cartLine);
+      const quantity = Number(item?.quantity);
+      button.disabled = !canEdit || !item
+        || (button.dataset.cartAction === "decrease" && quantity <= 1)
+        || (button.dataset.cartAction === "increase" && quantity >= 50);
+    });
+    if (paymentButton) paymentButton.disabled = !cartCanPay();
+    paymentRail?.classList.toggle("is-cart-blocked", !cartCanPay());
+    if (cartRetry) cartRetry.disabled = cartSaving || paymentCreating || checkoutExpired;
+    renderDeliveryPolicy(cartState, true);
+  };
+  const validCartState = (value) => value && Array.isArray(value.items)
+    && Number.isInteger(value.revision) && typeof value.digest === "string"
+    && typeof value.can_edit === "boolean" && typeof value.can_pay === "boolean";
+  const renderDeliveryPolicy = (state, quiet = false) => {
+    const card = document.querySelector("[data-delivery-benefit]");
+    if (!card || !deliveryCopy || !state) return;
+    const candidate = state.free_delivery;
+    const policy = candidate?.schema === "shipping-policy.v1" && candidate.automatic === true
+      && candidate.authority === "automatic_threshold" && typeof candidate.eligible === "boolean"
+      && Number.isInteger(candidate.progress) && candidate.progress >= 0 && candidate.progress <= 100
+      && [candidate.remaining, candidate.threshold, candidate.basis_total].every((value) => typeof value === "string" && Number.isFinite(Number(value)))
+      ? candidate : null;
+    const money = (value) => `${new Intl.NumberFormat(locale === "uk" ? "uk-UA" : locale === "ru" ? "ru-UA" : "en-GB", {
+      maximumFractionDigits: 2,
+    }).format(Number(value))} ${policy?.currency || "UAH"}`;
+    const title = card.querySelector("[data-delivery-benefit-title]");
+    const detail = card.querySelector("[data-delivery-benefit-detail]");
+    const meter = card.querySelector("[data-delivery-benefit-meter]");
+    const update = card.querySelector("[data-delivery-benefit-update]");
+    const ackWrap = card.querySelector("[data-delivery-policy-ack-wrap]");
+    const ack = card.querySelector("[data-delivery-policy-ack]");
+    const digest = card.querySelector("[data-delivery-policy-digest]");
+    const pending = state.review_needed === true;
+    const editable = state.can_edit === true && !paymentCreating && !checkoutExpired;
+    const recipientCopy = { uk: "Доставку оплачуєте окремо Новій пошті", ru: "Доставку оплачиваете отдельно Новой почте", en: "You pay Nova Poshta for delivery separately" };
+    card.hidden = !policy && !pending && !card.dataset.manualPayer;
+    card.classList.toggle("is-achieved", policy?.eligible === true);
+    card.classList.toggle("is-review", pending);
+    if (meter) meter.hidden = !policy || !editable;
+    if (title) title.textContent = policy ? policy.eligible ? deliveryCopy.free
+      : editable ? `${deliveryCopy.remaining} ${money(policy.remaining)}` : recipientCopy[locale] || recipientCopy.en
+      : pending ? deliveryCopy.review : card.dataset.manualPayer === "merchant" ? deliveryCopy.covered : deliveryCopy.manual;
+    if (detail) detail.textContent = policy ? `${deliveryCopy.goods}: ${money(policy.basis_total)}${editable ? ` · ${deliveryCopy.threshold} ${money(policy.threshold)}` : ""}`
+      : pending ? deliveryCopy.reviewDetail : deliveryCopy.manualDetail;
+    if (policy) {
+      const bar = card.querySelector("[data-delivery-benefit-bar]");
+      if (bar) bar.style.width = `${policy.progress}%`;
+      const progress = card.querySelector("[data-delivery-benefit-progress]");
+      progress?.setAttribute("aria-valuenow", String(policy.progress));
+      progress?.setAttribute("aria-valuetext", `${title?.textContent || ""}. ${detail?.textContent || ""}`);
+      const threshold = card.querySelector("[data-delivery-benefit-threshold]");
+      if (threshold) threshold.textContent = money(policy.threshold);
+    }
+    const requiresAck = policy?.ack_required === true && typeof policy.ack_digest === "string" && state.can_pay === true;
+    if (ackWrap) ackWrap.hidden = !requiresAck;
+    if (ack) {
+      if (!requiresAck || digest?.value !== policy.ack_digest) ack.checked = false;
+      ack.required = requiresAck;
+      ack.disabled = !requiresAck;
+      if (!requiresAck) ack.removeAttribute("aria-invalid");
+    }
+    if (digest) {
+      digest.value = policy?.ack_digest || "";
+      // Every automatic policy is bound to the displayed economics, even
+      // when delivery is free and no new consent checkbox is needed.
+      digest.disabled = !policy;
+    }
+    if (update) {
+      if (!editable) update.textContent = "";
+      else if (policy?.ack_required) update.textContent = deliveryCopy.lost;
+      else if (!quiet) update.textContent = policy?.eligible && previousDeliveryPolicy?.eligible === false ? deliveryCopy.gained : "";
+    }
+    if (!quiet) previousDeliveryPolicy = policy;
+  };
+  const applyCartState = (state) => {
+    if (!validCartState(state)) return false;
+    const changed = cartState && (cartState.digest !== state.digest || cartState.revision !== state.revision);
+    cartState = state;
+    renderDeliveryPolicy(state);
+    const renderedLines = new Set([...cartProducts?.querySelectorAll("[data-cart-line]") || []].map((row) => row.dataset.cartLine));
+    // A concurrent bot update can add a line. Reload the server-rendered
+    // product facts before allowing payment for any item not visible here.
+    cartNeedsReload = state.items.some((item) => !renderedLines.has(String(item.line_id)));
+    document.documentElement.dataset.proposalRevision = String(state.revision);
+    const money = (value) => value === null || value === undefined || value === ""
+      ? cartCopy.pendingPrice : `${value} ${state.currency || "UAH"}`;
+    const setText = (selector, value) => {
+      document.querySelectorAll(selector).forEach((node) => { node.textContent = value; });
+    };
+    cartProducts?.querySelectorAll("[data-cart-line]").forEach((row) => {
+      const item = state.items.find((line) => String(line.line_id) === row.dataset.cartLine);
+      if (!item) {
+        if (row.contains?.(document.activeElement)) removedCartFocus = true;
+        row.remove();
+        return;
+      }
+      row.querySelectorAll("[data-cart-quantity], [data-cart-stepper-quantity]").forEach((node) => { node.textContent = String(item.quantity); });
+      const amount = row.querySelector("[data-cart-line-total]");
+      if (amount) amount.textContent = money(item.line_total);
+      const unitPrice = row.querySelector("[data-cart-unit-price]");
+      if (unitPrice) {
+        unitPrice.textContent = `${item.quantity} × ${money(item.unit_price)}`;
+        unitPrice.hidden = Number(item.quantity) <= 1 || item.unit_price === null;
+      }
+    });
+    const count = document.querySelector("[data-cart-count]");
+    if (count) count.textContent = `${state.items.length} ${state.items.length === 1 ? count.dataset.singular : count.dataset.plural}`;
+    setText("[data-cart-total]", money(state.total));
+    setText("[data-cart-catalog-total]", money(state.catalog_total));
+    setText("[data-cart-discount]", `−${money(state.discount)}`);
+    setText("[data-cart-charge-now]", money(state.charge_now));
+    document.querySelectorAll("[data-cart-discount-row]").forEach((node) => { node.hidden = !(Number(state.discount) > 0); });
+    const isPrepayment = state.is_prepayment === true;
+    document.querySelectorAll("[data-cart-charge-row]").forEach((node) => { node.hidden = !isPrepayment || root.dataset.checkoutState === "paid"; });
+    const paymentAmount = state.payment_preview || isPrepayment ? state.charge_now : state.total;
+    setText("[data-payment-amount] strong", money(paymentAmount));
+    const paymentAmountLabels = document.querySelector("[data-payment-amount]")?.dataset;
+    if (paymentAmountLabels) setText("[data-payment-amount] span", isPrepayment ? paymentAmountLabels.chargeLabel : paymentAmountLabels.totalLabel);
+    root.dataset.analyticsValue = String(paymentAmount || "0");
+    root.dataset.analyticsCurrency = state.currency || "UAH";
+    document.querySelectorAll('[name="expected_revision"]').forEach((field) => { field.value = String(state.revision); });
+    document.querySelectorAll('[name="expected_digest"]').forEach((field) => { field.value = state.digest; });
+    if (changed) {
+      const terms = checkoutForm?.elements.namedItem("assisted_terms_accepted");
+      if (terms) { terms.checked = false; terms.dispatchEvent(new Event("change", { bubbles: true })); }
+    }
+    if (state.review_needed || !state.can_pay) {
+      priceDetails?.setAttribute("aria-disabled", "true");
+      if (priceDetails) priceDetails.disabled = true;
+      closeCheckoutDialog(priceDialog);
+      if (priceDetails) priceDetails.hidden = true;
+    } else if (priceDetails) {
+      priceDetails.hidden = false;
+      priceDetails.disabled = false;
+      priceDetails.removeAttribute("aria-disabled");
+    }
+    syncCartCapabilities();
+    if (cartNeedsReload) window.location.reload();
+    return true;
+  };
+  const submitCartOperation = async () => {
+    if (!pendingCartOperation || cartSaving || paymentCreating || checkoutExpired) return;
+    cartSaving = true;
+    showCartStatus(cartCopy.saving);
+    syncCartCapabilities();
+    try {
+      const body = new FormData();
+      Object.entries(pendingCartOperation).forEach(([key, value]) => body.set(key, String(value)));
+      const response = await fetch(root.dataset.proposalUrl || window.location.href, {
+        method: "POST", body, credentials: "same-origin", cache: "no-store",
+        headers: { Accept: "application/json", "X-CSRFToken": csrfToken() },
+      });
+      const payload = await readJsonResponse(response);
+      if (typeof payload.redirect === "string" && payload.redirect.startsWith("/")) {
+        pendingCartOperation = null;
+        rememberCartOperation(null);
+        cartNeedsReload = true;
+        window.location.assign(payload.redirect);
+        return;
+      }
+      const state = payload.cart_state || payload.current;
+      const authoritative = applyCartState(state);
+      if (!authoritative || response.status >= 500 || payload.error === "operation_unknown") {
+        showCartStatus(cartCopy.unknown, "error");
+        return;
+      }
+      pendingCartOperation = null;
+      rememberCartOperation(null);
+      if (state.items.length === 0) showCartStatus(cartCopy.empty, "review");
+      else if (state.review_needed) {
+        showCartStatus(cartCopy.review, "review");
+        window.location.reload();
+      }
+      else if (!response.ok) showCartStatus(response.status === 409 ? cartCopy.stale : cartCopy.failed, "error");
+      else showCartStatus(cartCopy.saved);
+    } catch (_error) {
+      // A lost response may follow a committed operation. Keep its exact CAS
+      // and UUID, and block new edits/payment until that operation is replayed.
+      showCartStatus(cartCopy.unknown, "error");
+    } finally {
+      cartSaving = false;
+      syncCartCapabilities();
+      if (cartRetry) cartRetry.hidden = !pendingCartOperation;
+      if (removedCartFocus) {
+        cartStatus?.focus?.({ preventScroll: true });
+        removedCartFocus = false;
+      }
+    }
+  };
+  cartProducts?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-cart-action]");
+    if (!button || button.disabled || cartState?.can_edit !== true || cartSaving
+      || pendingCartOperation || paymentCreating || checkoutExpired) return;
+    const row = button.closest("[data-cart-line]");
+    const item = cartState.items.find((line) => String(line.line_id) === row?.dataset.cartLine);
+    const id = operationId();
+    if (!item || !id) { showCartStatus(cartCopy.blocked, "error"); return; }
+    const remove = button.dataset.cartAction === "remove";
+    pendingCartOperation = {
+      action: "cart_amendment", operation_id: id, operation: remove ? "remove" : "quantity",
+      line_id: String(item.line_id), expected_revision: cartState.revision,
+      expected_digest: cartState.digest, expected_selection_revision: cartState.selection_revision || 0,
+    };
+    if (!remove) pendingCartOperation.quantity = Number(item.quantity) + (button.dataset.cartAction === "increase" ? 1 : -1);
+    rememberCartOperation(pendingCartOperation);
+    void submitCartOperation();
+  });
+  cartRetry?.addEventListener("click", () => { void submitCartOperation(); });
+  if (cartProducts?.querySelector("[data-cart-controls]")) root.classList.add("has-cart-controls");
+  syncCartCapabilities();
+  renderDeliveryPolicy(cartState);
+  document.querySelector("[data-delivery-policy-ack]")?.addEventListener("change", (event) => {
+    const ack = event.target;
+    if (ack.checked) {
+      ack.removeAttribute("aria-invalid");
+      const error = checkoutForm?.querySelector("[data-form-error]");
+      if (error?.textContent === deliveryCopy?.ack) error.hidden = true;
+    }
+  });
+  checkoutForm?.elements.namedItem("promo_code")?.addEventListener("input", () => {
+    const ack = document.querySelector("[data-delivery-policy-ack]");
+    if (ack) ack.checked = false;
+  });
+  if (pendingCartOperation) showCartStatus(cartCopy.unknown, "error");
   let dialogTrigger = null;
 
   const showCheckoutDialog = (dialog, trigger) => {
@@ -253,6 +539,7 @@
   const expireCheckout = () => {
     if (checkoutExpired) return;
     checkoutExpired = true;
+    syncCartCapabilities();
     root.classList.add("is-expired");
     root.dataset.checkoutState = "expired";
     countdownWrap?.classList.add("is-expired");
@@ -337,7 +624,8 @@
     window.addEventListener("beforeunload", () => window.clearInterval(countdownTimer), { once: true });
   }
 
-  if (root.dataset.checkoutState === "pending" && root.dataset.statusUrl) {
+  if (["pending", "amendment_review"].includes(root.dataset.checkoutState) && root.dataset.statusUrl) {
+    const waitingForReview = root.dataset.checkoutState === "amendment_review";
     const generationExpiresAt = Date.parse(root.dataset.generationExpiresAt || "");
     let generationExpiryTimer;
     if (Number.isFinite(generationExpiresAt)) {
@@ -353,7 +641,7 @@
     let pollCount = 0;
     const pollDelays = [3000, 5000, 8000, 12000, 18000, 25000, 30000, 30000];
     const pollStatus = async () => {
-      if (polling || document.visibilityState !== "visible" || pollCount >= pollDelays.length) return;
+      if (polling || document.visibilityState !== "visible" || (!waitingForReview && pollCount >= pollDelays.length)) return;
       pollCount += 1;
       polling = true;
       try {
@@ -364,7 +652,7 @@
         });
         if (!response.ok) return;
         const payload = await readJsonResponse(response);
-        if (payload.state === "verified" && payload.redirect) {
+        if (["verified", "amendment_approved"].includes(payload.state) && payload.redirect) {
           window.location.assign(payload.redirect);
           return;
         }
@@ -379,11 +667,11 @@
     };
     let pendingTimer;
     const schedulePoll = () => {
-      if (pollCount >= pollDelays.length) return;
+      if (!waitingForReview && pollCount >= pollDelays.length) return;
       pendingTimer = window.setTimeout(async () => {
         await pollStatus();
         schedulePoll();
-      }, pollDelays[pollCount]);
+      }, pollDelays[pollCount] || 60000);
     };
     schedulePoll();
     window.addEventListener("beforeunload", () => window.clearTimeout(pendingTimer), { once: true });
@@ -582,10 +870,14 @@
         showFormError(paymentErrorMessage("expired"));
         return;
       }
+      if (!cartCanPay()) {
+        showCartStatus(pendingCartOperation ? cartCopy.unknown : cartState?.review_needed ? cartCopy.review : cartCopy.blocked, "review");
+        return;
+      }
       if (!form.checkValidity()) {
         const firstInvalid = invalidField();
         const invalidName = firstInvalid?.getAttribute("name") || "default";
-        showFormError(paymentErrorMessage(invalidName), invalidName);
+        showFormError(invalidName === "delivery_policy_ack" ? deliveryCopy?.ack : paymentErrorMessage(invalidName), invalidName);
         return;
       }
       const bridge = window.TwoCommsNovaPoshta;
@@ -594,9 +886,33 @@
         return;
       }
 
-      const result = await bridge.validateForm(form);
+      // Reserve the action before asynchronous delivery validation. A second
+      // click or a basket edit must not race with invoice creation.
+      submitted = true;
+      paymentCreating = true;
+      syncCartCapabilities();
+      let result;
+      try {
+        result = await bridge.validateForm(form);
+      } catch (_error) {
+        submitted = false;
+        paymentCreating = false;
+        syncCartCapabilities();
+        showFormError(fallbackErrors[locale] || fallbackErrors.uk);
+        return;
+      }
       if (!result.ok) {
+        submitted = false;
+        paymentCreating = false;
+        syncCartCapabilities();
         showFormError(result.message, result.field);
+        return;
+      }
+      if (checkoutExpired || pendingCartOperation || cartNeedsReload || cartState?.can_pay === false) {
+        submitted = false;
+        paymentCreating = false;
+        syncCartCapabilities();
+        showFormError(paymentErrorMessage(checkoutExpired ? "expired" : "unavailable"));
         return;
       }
 
@@ -611,15 +927,28 @@
           paymentButton.dataset.loadingLabel || defaultPaymentLabel,
         );
       }
+      let paymentResponseKnown = false;
       try {
+        const paymentBody = new FormData(form);
+        if (cartState) {
+          paymentBody.set("expected_revision", String(cartState.revision));
+          paymentBody.set("expected_digest", cartState.digest);
+        }
         const response = await fetch(form.action, {
           method: "POST",
-          body: new FormData(form),
+          body: paymentBody,
           credentials: "same-origin",
           cache: "no-store",
           headers: { Accept: "application/json" },
         });
         const payload = await readJsonResponse(response);
+        paymentResponseKnown = Boolean(payload.invoice_url || typeof payload.error === "string");
+        if (typeof payload.redirect === "string" && payload.redirect.startsWith("/")) {
+          cartNeedsReload = true;
+          window.location.assign(payload.redirect);
+          return;
+        }
+        if (validCartState(payload.cart_state || payload.current)) applyCartState(payload.cart_state || payload.current);
         if (!response.ok || !payload.invoice_url) {
           throw new Error(typeof payload.error === "string" ? payload.error : "payment_unavailable");
         }
@@ -629,18 +958,42 @@
         submitted = true;
         window.location.assign(payload.invoice_url);
       } catch (error) {
-        submitted = false;
-        if (paymentButton) {
-          paymentButton.disabled = false;
-          setActionLabel(paymentButton, defaultPaymentLabel);
-        }
+        const errorCode = error instanceof Error ? error.message : "";
+        const uncertain = !paymentResponseKnown || ["provider_ambiguous", "in_progress", "operation_unknown"].includes(errorCode);
+        submitted = uncertain;
+        paymentCreating = uncertain;
+        syncCartCapabilities();
+        if (paymentButton && !uncertain) setActionLabel(paymentButton, defaultPaymentLabel);
         if (errorBox) {
-          const errorCode = error instanceof Error ? error.message : "";
-          showFormError(paymentErrorMessage(errorCode), paymentErrorField(errorCode));
+          if (uncertain) showFormError(paymentErrorMessage("provider_ambiguous"));
+          else if (errorCode === "delivery_policy_ack") showFormError(deliveryCopy?.ack, "delivery_policy_ack");
+          else if (errorCode === "delivery_policy_changed") {
+            const needsAck = cartState?.free_delivery?.ack_required === true;
+            const changedCopy = { uk: "Умови доставки оновлено. Перевірте їх перед оплатою.", ru: "Условия доставки обновлены. Проверьте их перед оплатой.", en: "Delivery terms are updated. Check them before paying." };
+            showFormError(needsAck ? deliveryCopy?.ack : changedCopy[locale] || changedCopy.en, needsAck ? "delivery_policy_ack" : "");
+          }
+          else showFormError(paymentErrorMessage(errorCode), paymentErrorField(errorCode));
         }
       }
     });
   }
+
+  const reissueForm = document.querySelector("[data-generation-reissue-form]");
+  let reissueSubmitted = false;
+  reissueForm?.addEventListener("submit", (event) => {
+    if (reissueSubmitted || cartSaving || pendingCartOperation || checkoutExpired) {
+      event.preventDefault();
+      return;
+    }
+    reissueSubmitted = true;
+    paymentCreating = true;
+    syncCartCapabilities();
+    const button = reissueForm.querySelector("[data-generation-reissue-submit]");
+    if (button) {
+      button.disabled = true;
+      button.textContent = button.dataset.loadingLabel || button.textContent;
+    }
+  });
 
   const exitDialog = document.querySelector("[data-exit-dialog]");
   let exitTrigger = null;

@@ -1,13 +1,43 @@
 """Human-facing selection fields, separate from checkout permission gates."""
 
+from datetime import datetime
+
 
 GARMENT_LABELS = {'tshirt': 'Футболка', 'hoodie': 'Худі', 'longsleeve': 'Лонгслів',
                   'sweatshirt': 'Світшот', 'pants': 'Штани', 'shorts': 'Шорти'}
 
 
+def _checkout_ref(selection, key, field):
+    """Display exact typed fields from the caller's validated native capture.
+
+    The canonical adapter owns receipt verification and capture-clock fences.
+    This pure display adapter neither discovers receipts nor grants actions.
+    """
+    source, scope = field.get('source'), selection.get('scope')
+    if (selection.get('schema') != 'source-selection.v1' or not isinstance(scope, dict)
+        or any(type(scope.get(name)) is not int or scope[name] <= 0 for name in ('client_id', 'session_id'))
+        or not isinstance(selection.get('evidence'), dict) or not isinstance(selection.get('values'), dict)
+        or not isinstance(source, dict) or field.get('authority') != 'checkout_link_holder'
+        or source != (selection.get('evidence') or {}).get(key)
+        or field.get('value') != (selection.get('values') or {}).get(key)
+        or field.get('status') not in {'confirmed', 'ambiguous'}):
+        return None
+    try:
+        observed = datetime.fromisoformat(str(source.get('observed_at')).replace('Z', '+00:00'))
+        from management.services.ig_turn_intelligence import _checkout_holder_proof
+        if observed.tzinfo is None or not _checkout_holder_proof(source, seal_at=observed):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return {'kind': 'checkout_cart_amendment', 'id': source['transition_id'],
+        'amendment_id': source['amendment_id'], 'digest': source['source_digest'],
+        'authority': 'checkout_link_holder', 'event_at': source['observed_at']}
+
+
 def source_selection_fields(selection):
     """Partial customer choice remains visible before catalogue applicability."""
-    if not selection or not selection.get('fields'):
+    if (not isinstance(selection, dict) or not isinstance(selection.get('scope'), dict)
+        or not isinstance(selection.get('fields'), dict) or not selection['fields']):
         return None
     labels = {'garment_type': 'Тип речі', 'model_query': 'Товар / принт', 'product_id': 'Товар каталогу',
               'fit_option_code': 'Посадка', 'color': 'Колір', 'size': 'Розмір',
@@ -15,25 +45,41 @@ def source_selection_fields(selection):
     keys = {'garment_type': 'kind', 'model_query': 'product', 'product_id': 'product', 'fit_option_code': 'fit'}
     rows = []
     for key, field in selection['fields'].items():
-        if key not in labels:
+        if key not in labels or not isinstance(field, dict) or not isinstance(field.get('source'), dict):
             continue
         if key == 'model_query' and 'product_id' in selection['fields']:
             continue
+        source = field['source']
+        native = field.get('authority') == 'checkout_link_holder'
+        if native:
+            ref = _checkout_ref(selection, key, field)
+            if ref is None:
+                continue
+        else:
+            identity = source.get('source_message_id')
+            if type(identity) is not int or identity <= 0:
+                continue
+            ref = {'kind': 'message', 'id': identity}
+        if 'value' not in field or 'status' not in field:
+            continue
         rows.append({'key': keys.get(key, key), 'label': labels[key],
-                     'value': ('Так' if key == 'purchase_requested' else
+                     'value': (('Так' if field['value'] else 'Ні') if key == 'purchase_requested' else
                                f"#{field['value']}" if key == 'product_id' else
                                GARMENT_LABELS.get(field['value'], str(field['value'])) if key == 'garment_type' else str(field['value'])),
                      'required': False, 'status': 'partial', 'choice_status': field['status'],
                      'applicability': 'unknown', 'availability': 'unknown',
-                     'evidence_refs': [{'kind': 'message', 'id': field['source']['source_message_id']}],
-                     'source': field['source'],
-                     'note': 'Побажання клієнта. Застосовність і наявність ще не підтверджено.'})
+                     'evidence_refs': [ref],
+                     'source': source,
+                     'note': ('Змінено за посиланням оформлення. ' if native else 'Побажання клієнта. ')
+                         + 'Застосовність і наявність ще не підтверджено.'})
     if not rows:
         return None
-    return {'schema': 'journey-selection.v1', 'label': 'Побажання клієнта',
+    return {'schema': 'journey-selection.v1', 'label': 'Поточний вибір · зміни в оформленні' if any(
+                row['evidence_refs'][0]['kind'] == 'checkout_cart_amendment' for row in rows) else 'Побажання клієнта',
             'completed': 0, 'total': None, 'items': rows,
             'scope': selection['scope'],
-            'evidence_refs': list({row['evidence_refs'][0]['id']: row['evidence_refs'][0] for row in rows}.values()),
+            'evidence_refs': list({(row['evidence_refs'][0]['kind'], row['evidence_refs'][0]['id'],
+                row['evidence_refs'][0].get('amendment_id')): row['evidence_refs'][0] for row in rows}.values()),
             'note': 'Повний набір вимог уточнюється після вибору товару. Намір замовити не є оформленим замовленням.'}
 
 

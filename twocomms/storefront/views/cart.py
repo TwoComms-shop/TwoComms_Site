@@ -112,13 +112,14 @@ def _cart_brigade_pricing(cart, products=None, variants=None):
 
 
 def _cart_shipping_metadata(approved_total, *, json_safe=False):
-    total = Decimal(approved_total).quantize(Decimal('0.01'))
-    threshold = Decimal(str(getattr(settings, 'FREE_SHIPPING_THRESHOLD', '3000')))
-    remaining = max(threshold - total, Decimal('0.00'))
+    from orders.services.shipping_policy import build_shipping_snapshot
+    snapshot = build_shipping_snapshot(merchandise_total=approved_total)
+    total, threshold = Decimal(snapshot['basis_total']), Decimal(snapshot['threshold'])
+    remaining = Decimal(snapshot['remaining'])
     convert = float if json_safe else lambda value: value
     return {'shipping_total': convert(total), 'shipping_threshold': convert(threshold),
-            'shipping_remaining': convert(remaining), 'shipping_free': total >= threshold,
-            'shipping_progress': min(100, max(0, int((total / threshold * 100).quantize(Decimal('1'))))) if threshold > 0 else 100}
+            'shipping_remaining': convert(remaining), 'shipping_free': snapshot['eligible'],
+            'shipping_progress': snapshot['progress']}
 
 
 def _load_cart_variants(variant_ids, *, include_images=False):

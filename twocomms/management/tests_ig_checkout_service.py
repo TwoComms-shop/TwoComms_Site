@@ -859,6 +859,8 @@ class InstagramCheckoutLinkBoundaryTests(TestCase):
             "phone": "+380501234567",
             "email": "private-marker@example.test",
         }
+        shown_revision = proposal.revisions.get(revision=proposal.revision)
+        payload.update(expected_revision=shown_revision.revision, expected_digest=shown_revision.digest)
         with (
             patch(
                 "management.services.ig_checkout_payment.resolve_delivery_selection",
@@ -942,6 +944,8 @@ class InstagramCheckoutLinkBoundaryTests(TestCase):
             "phone": "+380501234567",
             "email": "alert-failure@example.test",
         }
+        shown_revision = proposal.revisions.get(revision=proposal.revision)
+        payload.update(expected_revision=shown_revision.revision, expected_digest=shown_revision.digest)
         with patch(
             "management.services.ig_checkout_payment.resolve_delivery_selection",
             return_value=delivery,

@@ -119,8 +119,11 @@ def historical_admin_state(client_id, revision_id, *, now=None):
         revision=revision_id, reads=2, historical=True)
 
 
-def _owner_fence(client_id):
-    from management.models import IgClient, IgCommerceSelectionSession, IgFunnelResetAudit, IgCommercialEpisode
+def _owner_fence(client_id, *, _native_head_out=None):
+    from management.models import IgClient, IgCommerceSelectionSession, IgCommerceSelectionTransition, IgFunnelResetAudit, IgCommercialEpisode
+    if _native_head_out is not None:
+        _native_head_out.clear()
+        _native_head_out.update(has_native_head=False, session_id=None, revision=None)
     owner = IgClient.objects.filter(pk=client_id).values("pk", "igsid", "current_commercial_episode_id",
         "privacy_erasure_started_at", "reply_permission_epoch").first()
     if owner is None:
@@ -129,9 +132,19 @@ def _owner_fence(client_id):
         return {"owner": owner, "episode": None, "session": None, "reset": None}
     episode = IgCommercialEpisode.objects.filter(pk=owner["current_commercial_episode_id"], client_id=client_id).values(
         "pk", "intended_order_id", "deal_id", "primary_payment_review_id", "updated_at").first()
-    session = IgCommerceSelectionSession.objects.filter(client_id=client_id, open_slot=1,
-        state="open", commercial_episode_id=owner["current_commercial_episode_id"]).order_by("-generation").values(
-            "pk", "generation", "revision", "active_index", "lines", "query_constraints", "selection_constraints").first()
+    sessions = IgCommerceSelectionSession.objects.filter(client_id=client_id, open_slot=1,
+        state="open", commercial_episode_id=owner["current_commercial_episode_id"]).order_by("-generation")
+    fields = ["pk", "generation", "revision", "active_index", "lines", "query_constraints", "selection_constraints"]
+    if _native_head_out is not None:
+        from django.db.models import Exists, OuterRef
+        sessions = sessions.annotate(_native_checkout_head=Exists(IgCommerceSelectionTransition.objects.filter(
+            session_id=OuterRef("pk"), to_revision=OuterRef("revision"), checkout_amendment__isnull=False)))
+        fields.append("_native_checkout_head")
+    session = sessions.values(*fields).first()
+    if session is not None and _native_head_out is not None:
+        # Query routing metadata must never enter persisted owner digests.
+        _native_head_out.update(has_native_head=session.pop("_native_checkout_head"),
+            session_id=session["pk"], revision=session["revision"])
     reset = IgFunnelResetAudit.objects.filter(client_id=client_id).order_by("-pk").values("pk", "reset_after_message_id").first()
     return {"owner": owner, "episode": episode, "session": session, "reset": reset}
 
@@ -227,9 +240,21 @@ def capture_payment_context(boundary, *, now=None):
             "source_refs": refs, "scope": deepcopy(scope), "capture_scope": deepcopy(binding),
             "observed_at": now.isoformat(), "source_watermark": deepcopy(watermark),
             "validity": "untrusted_context", "mandatory": False}
+    # Actual paid basket has its own native receipt and economics. Reuse the
+    # joined episode/order; never infer it from the older conversation quote.
+    from management.services.ig_reply_authority import capture_checkout_order_authority
+    checkout_order = capture_checkout_order_authority(client,
+        episode=client.current_commercial_episode,
+        order=client.current_commercial_episode.intended_order if client.current_commercial_episode else None,
+        now=now) if scope["order_id"] else None
+    checkout_snapshot = checkout_order.as_dict() if checkout_order is not None else None
+    if checkout_snapshot is not None:
+        if checkout_order.order_id != scope["order_id"]:
+            return result, "payment_order_scope_mismatch", ""
+        result["checkout_order"] = {"scope": deepcopy(binding), "capture": checkout_snapshot}
     # Source rows remain local to the read fence. No raw text/provider IDs enter
     # the slot or request manifest through this digest-only observation.
-    fence = _digest({"agreement": agreement, "receipt": receipt, "payment": payment, "payment_reason": payment_reason})
+    fence = _digest({"agreement": agreement, "receipt": receipt, "payment": payment, "payment_reason": payment_reason, "checkout_order": checkout_snapshot})
     return result, payment_reason, fence
 
 
@@ -294,19 +319,27 @@ def _current_capture(client_id, expected_selection_revision, now):
         # into missing legacy data while the enclosing read continues.
         raise AdminStateReadError("current_state_changed")
     canonical_cart = cart.get("status") == "captured"
+    native_cart_admitted = False
     selection = {}
     if canonical_cart:
         head_boundary = {**scope, "source_namespace": namespace, "reset_id": (reset or {}).get("pk"),
             "watermark": cart.get("source_watermark"), "selection_session_id": session["pk"] if session else None,
             "selection_generation": session["generation"] if session else None, "selection_revision": revision}
         try:
-            cart = validate_source_cart_capture(cart, head_boundary)
+            cart = validate_source_cart_capture(cart, head_boundary, native_as_of=now)
         except TurnContextError as exc:
             if exc.reason == "source_cart_line_scope_changed":
                 raise AdminStateReadError("current_selection_scope_changed") from None
             raise AdminStateReadError(exc.reason) from None
         active = cart["lines"][cart["active_index"]] if cart["lines"] else {}
         selection = deepcopy(active.get("source_selection") or {})
+        # This cart came from the actual native reader above, which verifies
+        # immutable receipts, original message rows and both owner fences.
+        # Repeating that complete reader twice adds no authority. The final
+        # owner/source/payment fences below still detect a changed head, source
+        # or winning Order in this same atomic read; raw callers cannot enter
+        # this branch by submitting a capture or a claimed verification flag.
+        native_cart_admitted = bool(cart.get("fence", {}).get("native_amendment_id"))
     elif len(lines) > 1:
         raise AdminStateReadError("source_cart_unavailable")
     else:
@@ -329,7 +362,7 @@ def _current_capture(client_id, expected_selection_revision, now):
     if len(ids) > (MAX_CART_SOURCE_REFS if canonical_cart else MAX_SOURCE_REFS):
         raise AdminStateReadError("state_source_budget_exceeded")
     messages = _source_rows(ids)
-    if canonical_cart:
+    if canonical_cart and not native_cart_admitted:
         try:
             validate_current_source_cart_sources(cart, source_rows=messages)
         except TurnContextError:
@@ -338,6 +371,12 @@ def _current_capture(client_id, expected_selection_revision, now):
     proof = {row["pk"]: row for row in messages}
     source_reason = ""
     for item in evidence.values():
+        if (canonical_cart and isinstance(item, dict)
+            and item.get("source_kind") == "ig-checkout-cart-amendment.v1"
+            and item.get("authority") == "checkout_link_holder"):
+            # The cart adapter above has verified this exact native receipt,
+            # field and transition. It has no Instagram message identity.
+            continue
         source = proof.get(item.get("source_message_id")) if isinstance(item, dict) else None
         if (source is None or isinstance(item.get("source_message_id"), bool) or not namespace
             or source["client_id"] != client_id or source["sender_id"] != owner["igsid"]
@@ -388,7 +427,7 @@ def _current_capture(client_id, expected_selection_revision, now):
     if _digest(first) != _digest(final):
         raise AdminStateReadError("current_state_changed")
     final_messages = _source_rows(ids)
-    if canonical_cart:
+    if canonical_cart and not native_cart_admitted:
         try:
             validate_current_source_cart_sources(cart, source_rows=final_messages)
         except TurnContextError:

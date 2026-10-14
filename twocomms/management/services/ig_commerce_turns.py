@@ -21,6 +21,9 @@ _COLOR_WORDS = {
     "orange": "orange", "оранжев": "orange", "помаранчев": "orange",
     "red": "red", "красн": "red", "червон": "red", "yellow": "yellow", "желт": "yellow", "жовт": "yellow",
     "brown": "brown", "коричнев": "brown",
+    # A customer wish only. Product-scoped catalog resolution must still match
+    # an actual configured variant before granting configuration authority.
+    "coyote": "coyote", "koyote": "coyote", "койот": "coyote", "коёт": "coyote",
 }
 _FIT_WORDS = {
     "classic": "classic", "классик": "classic", "классич": "classic", "класик": "classic",

@@ -151,7 +151,40 @@ def _project_part(client, effect):
     text = content.get("text") or ""
     attachments = ""
     shown = None
-    if effect.group == "catalog_media":
+    metadata = effect.projection_metadata or {}
+    if "catalog_chart" in metadata:
+        from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
+        if (effect.projection_digest != _digest(metadata) or effect.payload_digest != _digest(effect.payload)
+            or not validate_catalog_chart_metadata(metadata, payload=effect.payload, group=effect.group, kind=effect.kind)):
+            raise ReplyProjectionError("catalog_choice_chart_projection_changed")
+        chart = metadata["catalog_chart"]
+        text = f"(таблиця розмірів: product_id={chart['product_id']}, grid_id={chart['grid_id']})"
+        attachments = json.dumps([chart["image_url"]], ensure_ascii=False)
+    elif "catalog_choice" in metadata:
+        from management.services.ig_catalog_choice_presentations import validate_catalog_choice_metadata
+        if (effect.projection_digest != _digest(metadata) or effect.payload_digest != _digest(effect.payload)
+            or not validate_catalog_choice_metadata(metadata, payload=effect.payload, group=effect.group, kind=effect.kind)):
+            raise ReplyProjectionError("catalog_choice_projection_changed")
+        cards = metadata["catalog_choice"]["cards"]
+        products = metadata["catalog_choice"]["presentation_kind"] == "products"
+        if metadata["delivery"] == "native" and products:
+            text = "(картки товарів: " + " | ".join(row["title"] for row in cards) + ")"
+            attachments = json.dumps([row["image_url"] for row in cards], ensure_ascii=False)
+        elif metadata["delivery"] == "native":
+            text = content.get("text") or (((content.get("attachment") or {}).get("payload") or {}).get("text")) or ""
+            text += "\n" + " / ".join(row["label"] for row in metadata["catalog_choice"]["actions"])
+        elif products and metadata["delivery"] == "fallback" and effect.kind == "image":
+            card = cards[metadata["part_index"]]
+            text = f"(фото товару: {card['title']})"
+            attachments = json.dumps([card["image_url"]], ensure_ascii=False)
+            shown = {"position": metadata["part_index"] + 1,
+                "product_id": card["product_id"], "title": card["title"]}
+        # Only a native carousel or a genuinely delivered fallback photo
+        # contributes pictured product identity. Final fallback text is text.
+        if products and metadata["delivery"] == "native":
+            shown = [{"position": index + 1, "product_id": row["product_id"], "title": row["title"]}
+                for index, row in enumerate(cards)]
+    elif effect.group == "catalog_media":
         metadata = effect.projection_metadata or {}
         text = f"(фото товару: {metadata['title']})" if metadata.get("title") else "(фото товару)"
         url = ((content.get("attachment") or {}).get("payload") or {}).get("url") or ""
@@ -224,7 +257,7 @@ def project_sent_reply(revision_id):
             message, product = _project_part(client, effect)
             messages[effect.pk] = message.pk
             if product:
-                shown.append(product)
+                shown.extend(product if isinstance(product, list) else [product])
         if shown:
             context = dict(client.sales_context or {})
             previous = context.get("shown_products") or {}

@@ -42,8 +42,8 @@ CLAIM_LEASE_SECONDS = 60
 GROUP_KINDS = {
     "catalog_media": frozenset({"image"}),
     "substantive_text": frozenset({"text"}),
-    "template": frozenset({"template"}),
-    "template_fallback": frozenset({"fallback"}),
+    "template": frozenset({"template", "image", "text"}),
+    "template_fallback": frozenset({"fallback", "image"}),
 }
 _FORBIDDEN_PAYLOAD_KEYS = frozenset({
     "access_token", "accesstoken", "api_key", "apikey", "authorization",
@@ -417,10 +417,24 @@ def _normalize_specs(specs, recipient: str) -> list[dict]:
         if not isinstance(projection, Mapping):
             raise ValueError("effect_projection_invalid")
         projection = dict(projection)
+        if ((group == "template" and kind in {"image", "text"})
+            or (group == "template_fallback" and kind == "image")) and not (
+                "catalog_choice" in projection or "catalog_chart" in projection):
+            raise ValueError("effect_projection_invalid")
         if projection:
-            if group != "catalog_media" or set(projection) != {"part_index", "product_id", "title"}:
+            if "catalog_chart" in projection:
+                from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
+                if not validate_catalog_chart_metadata(projection, payload=payload, group=group, kind=kind):
+                    raise ValueError("effect_projection_invalid")
+            elif "catalog_choice" in projection:
+                from management.services.ig_catalog_choice_presentations import validate_catalog_choice_metadata
+                if not validate_catalog_choice_metadata(projection, payload=payload, group=group, kind=kind):
+                    raise ValueError("effect_projection_invalid")
+                if projection.get("part_index", 0) != part_index:
+                    raise ValueError("effect_projection_invalid")
+            elif group != "catalog_media" or set(projection) != {"part_index", "product_id", "title"}:
                 raise ValueError("effect_projection_invalid")
-            if (
+            elif (
                 isinstance(projection["product_id"], bool)
                 or not isinstance(projection["product_id"], int)
                 or projection["product_id"] <= 0
@@ -1051,11 +1065,22 @@ def project_legacy_message(revision_id: int) -> bool:
         return False
     states = {effect.state for effect in effects}
     sent = [effect for effect in effects if effect.state == effect.State.SENT]
+    from management.services.ig_revision_execution import _completion_decision, _verified_replaced_failure_ids, _whole_sent_proof
+
+    replaced = _verified_replaced_failure_ids(effects)
+    replacement_complete = bool(replaced
+        and _completion_decision(effects) == (True, False, "delivered"))
+    if replacement_complete:
+        from management.models import IgCustomerTurnRevision
+
+        revision = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision_id).first()
+        replacement_complete = bool(revision is not None and not revision.client.privacy_erasure_started_at
+            and _whole_sent_proof(revision, effects)[0])
     if IgRevisionDeliveryEffect.State.UNKNOWN in states:
         aggregate = "unknown"
     elif IgRevisionDeliveryEffect.State.PROVIDER_STARTED in states:
         aggregate = "sending"
-    elif states <= {IgRevisionDeliveryEffect.State.SENT}:
+    elif states <= {IgRevisionDeliveryEffect.State.SENT} or replacement_complete:
         aggregate = "sent"
     elif sent and states.intersection(_TERMINAL_STATES - {"sent"}):
         aggregate = "unknown"
@@ -1078,7 +1103,8 @@ def project_legacy_message(revision_id: int) -> bool:
         effect.provider_started_at for effect in effects if effect.provider_started_at
     ]
     terminal_values = [effect.terminal_at for effect in effects if effect.terminal_at]
-    failure = next((effect.failure_code for effect in effects if effect.failure_code), "")
+    failure = next((effect.failure_code for effect in effects if effect.failure_code
+        and not (replacement_complete and effect.pk in replaced)), "")
     return bool(InstagramBotMessage.objects.filter(pk=source_id).update(
         send_state=aggregate,
         # Legacy reconciliation selects UNKNOWN rows with send_started_at and

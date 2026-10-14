@@ -101,6 +101,11 @@ def dispatch_postback(row: InstagramBotMessage) -> PostbackOutcome | None:
     from management.services.ig_payment_reminders import PAYMENT_REMINDER_PREFIX, handle_reply
     from management.services.ig_restock_subscriptions import RESTOCK_SUBSCRIPTION_PREFIX, handle_reply as handle_restock_reply
 
+    if str(getattr(row, "quick_reply_payload", "") or "").startswith("CC1:"):
+        # The ingress reducer owns this source; a contextual reply and chart
+        # effects require the sealed revision rather than a legacy direct send.
+        return None
+
     if str(getattr(row, "quick_reply_payload", "") or "").startswith(RESTOCK_SUBSCRIPTION_PREFIX):
         result = handle_restock_reply(row)
         if result.handled:

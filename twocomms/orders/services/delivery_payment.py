@@ -24,6 +24,150 @@ LABELS = {
 ZERO = Decimal("0.00")
 MAX_AMOUNT = Decimal("9999999999.99")
 CUSTOM_PRINT_INCLUDED_SCHEMA = "custom-print-delivery-included.v1"
+THRESHOLD_SCHEMA = "order-threshold-shipping.v1"
+
+
+def build_threshold_delivery_contract(attempt, *, proposal, generation=None):
+    """Bind a server-frozen ordinary checkout promotion to native identities.
+
+    Writers persist the returned value in both Attempt.cart_snapshot under
+    threshold_delivery_contract and Order.payment_payload under delivery_payment.
+    Neither a copied Order JSON flag nor a live threshold grants this authority.
+    """
+    from orders.services.shipping_policy import ShippingPolicyError, verify_shipping_snapshot
+    snapshot = getattr(attempt, 'cart_snapshot', None)
+    if (not isinstance(snapshot, dict) or snapshot.get('checkout_surface') != 'instagram_proposal'
+            or snapshot.get('proposal_id') != str(proposal.public_id)
+            or not _id(getattr(attempt, 'pk', None)) or not _id(getattr(proposal, 'pk', None))
+            or any(key in snapshot for key in ('assisted_execution', 'assisted_commerce', 'custom_print_creation',
+                'delivery_payment', 'instagram_delivery_contract', 'ig_assisted_shipping'))):
+        raise DeliveryPaymentError('threshold_shipping_owner_invalid')
+    if (generation is not None and (generation.proposal_id != proposal.pk
+            or generation.payment_attempt_id != attempt.pk
+            or generation.proposal_revision != proposal.revision)):
+        raise DeliveryPaymentError('threshold_shipping_generation_invalid')
+    try:
+        shipping = verify_shipping_snapshot(snapshot.get('shipping'))
+    except ShippingPolicyError as exc:
+        raise DeliveryPaymentError(exc.reason) from exc
+    items = _items(snapshot.get('cart'))
+    digest = threshold_shipping_cart_digest(snapshot.get('cart'))
+    gross, discount = _money(attempt.gross_amount), _money(attempt.discount_amount)
+    net = gross - discount
+    if (items is None or gross != items['gross_total'] or net <= ZERO
+            or _money(attempt.payable_amount) != net
+            or _money(shipping['gross_total']) != gross
+            or _money(shipping['discount_amount']) != discount
+            or _money(shipping['basis_total']) != net
+            or shipping['cart_digest'] != digest):
+        raise DeliveryPaymentError('threshold_shipping_goods_changed')
+    owner = {'attempt_id': attempt.pk, 'proposal_id': str(proposal.public_id),
+        'proposal_pk': proposal.pk, 'revision': proposal.revision,
+        'items_digest': proposal.items_digest, 'client_id': proposal.client_id,
+        'episode_id': proposal.commercial_episode_id,
+        'generation_id': generation.pk if generation is not None else None}
+    for key, value in shipping['owner'].items():
+        if key not in owner or owner[key] != value:
+            raise DeliveryPaymentError('threshold_shipping_owner_changed')
+    shipping = {**shipping, 'owner': owner}
+    return {'schema': THRESHOLD_SCHEMA, 'authority': 'automatic_threshold',
+        'mode': shipping['mode'], 'payer_type': shipping['payer_type'],
+        'merchandise_total': f'{net:.2f}', 'delivery_amount': '0.00', 'payable_total': f'{net:.2f}',
+        'items_digest': digest, 'quantity_total': items['quantity_total'],
+        'shipping': shipping}
+
+
+def threshold_shipping_cart_digest(item_rows):
+    """Use the same actual goods identity for admission and Order validation."""
+    if item_rows is None:
+        raise DeliveryPaymentError('threshold_shipping_items_missing')
+    rows = list(islice(item_rows, 201))
+    items = _items(rows)
+    if items is None:
+        raise DeliveryPaymentError('threshold_shipping_items_missing')
+    # Unlike historical manager contracts, new automatic terms also bind the
+    # configuration axes. Preserve the historic manager digest unchanged.
+    configured = []
+    for row in rows:
+        values = _get(row, 'option_values', {}) or {}
+        if not isinstance(values, dict):
+            raise DeliveryPaymentError('threshold_shipping_items_invalid')
+        identity = {key: str(_get(row, key, '') or '') for key in
+            ('product_id', 'color_variant_id', 'title', 'size', 'fit_option_code')}
+        identity.update(qty=_get(row, 'qty'), unit_price=f"{_money(_get(row, 'unit_price')):.2f}",
+            option_values=values, is_custom=bool(_get(row, 'is_custom', False)))
+        configured.append(identity)
+    try:
+        encoded = sorted(json.dumps(row, sort_keys=True, ensure_ascii=True, separators=(',', ':'),
+            allow_nan=False) for row in configured)
+        body = json.dumps({'goods': items['digest'], 'configurations': encoded}, separators=(',', ':'))
+    except (TypeError, ValueError, RecursionError):
+        raise DeliveryPaymentError('threshold_shipping_items_invalid') from None
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _threshold_shipping_snapshot(order, contract, merchandise, *, item_rows):
+    """Read native checkout backreferences before accepting automatic terms."""
+    from orders.models import PaymentAttempt
+    from management.models import IgCheckoutInvoiceGeneration, IgCheckoutProposal
+    try:
+        if item_rows is not None:
+            item_rows = list(islice(item_rows, 201))
+        if not isinstance(contract, dict) or not isinstance(contract.get('shipping'), dict):
+            raise DeliveryPaymentError('threshold_shipping_contract_invalid')
+        owner = contract['shipping'].get('owner')
+        if (not isinstance(owner, dict) or set(owner) != {'attempt_id', 'proposal_id', 'proposal_pk',
+                'revision', 'items_digest', 'client_id', 'episode_id', 'generation_id'}
+                or any(not _id(owner.get(key)) for key in
+                    ('attempt_id', 'proposal_pk', 'revision', 'client_id', 'episode_id'))
+                or not isinstance(owner.get('proposal_id'), str)
+                or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', owner['proposal_id'])
+                or not isinstance(owner.get('items_digest'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', owner['items_digest'])
+                or owner.get('generation_id') is not None and not _id(owner['generation_id'])
+                or not _id(getattr(order, 'pk', None))):
+            raise DeliveryPaymentError('threshold_shipping_owner_invalid')
+        # The Order payload is only a locator. Require the persisted native
+        # attempt's reverse Order reference and its pre-provider frozen copy.
+        attempt = PaymentAttempt.objects.filter(pk=owner['attempt_id'], order_id=order.pk).first()
+        if attempt is None or (attempt.cart_snapshot or {}).get('threshold_delivery_contract') != contract:
+            raise DeliveryPaymentError('threshold_shipping_native_binding_changed')
+        proposal = IgCheckoutProposal.objects.select_related('deal', 'commercial_episode').filter(pk=owner.get('proposal_pk'),
+            public_id=owner.get('proposal_id'), client_id=owner.get('client_id'),
+            commercial_episode_id=owner.get('episode_id')).first()
+        if proposal is None:
+            raise DeliveryPaymentError('threshold_shipping_proposal_missing')
+        if (proposal.deal.client_id != proposal.client_id
+                or proposal.commercial_episode.client_id != proposal.client_id
+                or proposal.commercial_episode.deal_id != proposal.deal_id):
+            raise DeliveryPaymentError('threshold_shipping_episode_changed')
+        generation = None
+        if owner.get('generation_id') is not None:
+            generation = IgCheckoutInvoiceGeneration.objects.filter(pk=owner['generation_id'],
+                proposal_id=proposal.pk, payment_attempt_id=attempt.pk,
+                proposal_revision=owner.get('revision')).first()
+            if (generation is None or proposal.winner_invoice_generation_id != generation.pk
+                    or generation.winner_slot != 1
+                    or generation.state not in {'winner_claimed', 'paid_winner'}):
+                raise DeliveryPaymentError('threshold_shipping_winner_changed')
+        elif proposal.payment_attempt_id != attempt.pk:
+            raise DeliveryPaymentError('threshold_shipping_attempt_changed')
+        if proposal.revision != owner.get('revision') or proposal.items_digest != owner.get('items_digest'):
+            raise DeliveryPaymentError('threshold_shipping_revision_changed')
+        normalized = build_threshold_delivery_contract(attempt, proposal=proposal, generation=generation)
+        items = _items(item_rows)
+        if (normalized != contract or items is None
+                or threshold_shipping_cart_digest(item_rows) != contract.get('items_digest')
+                or items['quantity_total'] != contract.get('quantity_total')
+                or _money(order.total_sum) != _money(attempt.gross_amount)
+                or _money(order.discount_amount or '0') != _money(attempt.discount_amount)
+                or merchandise != _money(contract.get('merchandise_total'))):
+            raise DeliveryPaymentError('threshold_shipping_order_changed')
+        result = _snapshot(merchandise, contract=contract, valid=True, source='automatic_threshold')
+        return {**result, 'source_locked': True, 'shipping': dict(contract['shipping'])}
+    except (DeliveryPaymentError, TypeError, ValueError, KeyError, AttributeError) as exc:
+        return {**_snapshot(merchandise, valid=False, reason=getattr(exc, 'reason', 'threshold_shipping_contract_invalid'),
+            source='automatic_threshold'), 'source_locked': True}
 
 
 def build_custom_print_delivery_contract(*, gross_total, discount_amount, creation_data, order_id=None):
@@ -287,6 +431,8 @@ def delivery_payment_snapshot(order, *, item_rows=None):
         return _snapshot(merchandise)
     source = "delivery_payment" if "delivery_payment" in payload else "legacy_instagram_review"
     raw_contract = payload.get("delivery_payment")
+    if isinstance(raw_contract, dict) and raw_contract.get('schema') == THRESHOLD_SCHEMA:
+        return _threshold_shipping_snapshot(order, raw_contract, merchandise, item_rows=item_rows)
     if isinstance(raw_contract, dict) and raw_contract.get("schema") == CUSTOM_PRINT_INCLUDED_SCHEMA:
         return _custom_print_included_snapshot(order, payload, raw_contract, gross, discount)
     lock_hint = {"authority": "payment_review"} if isinstance(raw_contract, dict) and raw_contract.get("authority") == "payment_review" else None

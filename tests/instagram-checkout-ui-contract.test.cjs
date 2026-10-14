@@ -60,7 +60,7 @@ test('checkout template uses isolated assets and semantic delivery controls', ()
   assert.match(template, /name="email"[^>]*data-optional-field/);
   assert.doesNotMatch(template, /name="email"[^>]*\srequired(?:\s|=|>)/);
   assert.match(template, /\{% if customer_name %\}<h1[^>]*>\{\{ copy\.greeting \}\}, <strong>\{\{ customer_name \}\}<\/strong>/);
-  assert.match(template, /\{\% if item\.quantity > 1 \%\}[\s\S]*item\.unit_price/);
+  assert.match(template, /data-cart-unit-price[\s\S]*item\.unit_price/);
   assert.match(template, /aria-label="\{\{ copy\.analytics_consent_label \}\}"/);
   assert.doesNotMatch(template, /<style[\s>]/i);
   assert.doesNotMatch(template, /<script>(?!\s*\{\{)/i);
@@ -119,8 +119,8 @@ test('checkout CSS restores the approved C3 Brand Night surfaces and restrained 
   assert.match(css, /@media \(max-width:\s*350px\)[\s\S]*?\.ig-icon-button\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/s);
   assert.doesNotMatch(css, /@media \(max-width:\s*350px\)[\s\S]*?\.ig-language-switcher__link img[^}]*display:\s*none/s);
   assert.match(css, /\.ig-field input::placeholder\s*\{[^}]*color:\s*#706b65/s);
-  assert.match(css, /\.ig-consent\s*\{[^}]*bottom:\s*calc\(118px \+ env\(safe-area-inset-bottom\)\)/s);
-  assert.match(css, /@media \(min-width:\s*960px\)[\s\S]*\.ig-consent\s*\{[^}]*bottom:\s*max\(16px, env\(safe-area-inset-bottom\)\)/s);
+  assert.match(css, /\.ig-consent\s*\{[^}]*position:\s*static/s);
+  assert.match(css, /\.has-cart-controls \.ig-payment-rail\s*\{[^}]*position:\s*static/s);
   assert.doesNotMatch(css, /max-height:\s*650px/);
   assert.doesNotMatch(css, /\.is-field-focused\s+\.ig-payment-rail\s*\{[^}]*(display:\s*none|visibility:\s*hidden|opacity:\s*0|transform:)/s);
   assert.doesNotMatch(css, /animation[^;]*infinite/i);
@@ -271,4 +271,37 @@ test('checkout trust copy describes the Monobank handoff without a fake badge', 
   assert.match(source, /"uk": \{[\s\S]*?"secure_payment": "Дані картки вводяться на захищеній сторінці Monobank"/);
   assert.match(source, /"ru": \{[\s\S]*?"secure_payment": "Данные карты вводятся на защищенной странице Monobank"/);
   assert.match(source, /"en": \{[\s\S]*?"secure_payment": "Card details are entered on Monobank's secure page"/);
+});
+
+test('delivery benefit precedes totals and keeps consent bound to the native form', () => {
+  const css = fs.readFileSync(cssPath, 'utf8');
+  assert.ok(template.indexOf('data-cart-feedback') < template.indexOf('data-delivery-benefit'));
+  assert.ok(template.indexOf('data-delivery-benefit') < template.indexOf('data-cart-totals'));
+  assert.match(template, /role="progressbar"[^>]*aria-valuemin="0"[^>]*aria-valuemax="100"/);
+  assert.match(template, /data-delivery-benefit-update/);
+  assert.match(template, /name="delivery_policy_ack"[^>]*form="[^"]*ig-checkout-delivery-form/);
+  assert.match(template, /name="delivery_policy_digest"[^>]*form="[^"]*ig-checkout-delivery-form/);
+  assert.match(template, /data-delivery-benefit-meter\{% if not cart_state\.free_delivery or not cart_state\.can_edit %\} hidden/);
+  assert.match(template, /cart_state\.free_delivery and not cart_state\.can_edit[\s\S]*Доставку оплачуєте окремо Новій пошті/);
+  assert.match(css, /\.ig-delivery-benefit[\s\S]*min-width:\s*0/);
+  assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*\.ig-delivery-benefit__track span\s*\{\s*transition:\s*none/);
+});
+
+test('editable basket copy explains native edits while read-only offers retain their original terms', () => {
+  assert.match(template, /\{% if cart_state\.can_edit %\}[\s\S]*Ваш кошик можна змінити[\s\S]*\{% else %\}\{\{ copy\.fixed_price_title \}\}/);
+  assert.match(template, /Вашу корзину можно изменить/);
+  assert.match(template, /You can update your basket/);
+  assert.match(template, /data-direct-help[\s\S]*Кількість змінюйте кнопками \+\/−[\s\S]*\{% else %\}\{\{ copy\.direct_help \}\}/);
+  assert.match(template, /Other changes — in Direct/);
+  assert.match(template, /id="ig-price-title"[\s\S]*Оновлюйте кошик тут[\s\S]*\{% else %\}\{\{ copy\.price_dialog_title \}\}/);
+});
+
+test('paid summary separates goods value from the factual amount received on this invoice', () => {
+  assert.match(template, /ig-totals__final[\s\S]*\{% if checkout_state == 'paid' %\}[\s\S]*Вартість замовлення[\s\S]*\{% else %\}\{\{ copy\.total \}\}/);
+  assert.match(template, /Стоимость заказа/);
+  assert.match(template, /Order total/);
+  assert.match(template, /\{% if checkout_state == 'paid' and paid_via_invoice %\}[\s\S]*data-paid-via-invoice[\s\S]*Сплачено за цим рахунком[\s\S]*\{\{ paid_via_invoice \}\}/);
+  assert.match(template, /Оплачено по этому счёту/);
+  assert.match(template, /Paid on this invoice/);
+  assert.match(template, /data-cart-charge-row\{% if[^%]*checkout_state == 'paid' %\} hidden/);
 });

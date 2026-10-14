@@ -14917,7 +14917,12 @@ def _process_one_inside_reply_boundary(
                 and commerce_delivery_marker.get("delivery_owner")
                 == LIVE_MEDIA_COMMERCE_OWNER
             )
-            if turn_media_parts or live_media_already_owns:
+            from management.services.ig_response_plan import _requested_topics
+
+            source_presentation_requested = bool(
+                s.ai_enabled and "info:presentation" in _requested_topics(row.text)
+            )
+            if turn_media_parts or live_media_already_owns or source_presentation_requested:
                 live_commerce_decision = _claim_durable_commerce_for_live_media(
                     s,
                     row,

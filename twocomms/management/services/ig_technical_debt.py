@@ -25,6 +25,8 @@ MAX_LIMIT = 500
 # walk from turning health polling into an unbounded request.
 DEFAULT_MEDIA_SCAN_CAP = 5000
 MAX_MEDIA_SCAN_CAP = 10000
+DEFAULT_DELIVERY_PROOF_SCAN_CAP = 100
+MAX_DELIVERY_PROOF_SCAN_CAP = 500
 STALE_CLAIM = timedelta(minutes=5)
 TRANSIENT_DEBT_GRACE = timedelta(minutes=5)
 RECONCILER_SCHEMA_VERSION = "ig-technical-debt-reconcile-v1"
@@ -265,7 +267,67 @@ def _case(reason, scope, *, count, oldest=None, ids=(), sampled=False, has_more=
     }
 
 
-def _query_case(query, *, reason, scope, now, limit, time_field, id_field="id"):
+def filter_verified_replacement_candidates(revisions):
+    """Pure filter over bounded native rows with prefetched effects/client.
+
+    Processed/DONE labels never substitute for immutable plan and receipt
+    verification. Missing, corrupt, unrelated or UNKNOWN receipts stay debt.
+    """
+    from management.services.ig_revision_execution import (
+        _completion_decision, _verified_replaced_failure_ids, _whole_sent_proof,
+    )
+    from management.models import IgCustomerTurnRevision
+    retained = []
+    for revision in revisions:
+        if (type(revision) is not IgCustomerTurnRevision or revision.get_deferred_fields()
+                or "client" not in revision._state.fields_cache
+                or not hasattr(revision, "_delivery_proof_effects")):
+            retained.append(revision)
+            continue
+        effects = revision._delivery_proof_effects
+        try:
+            verified = bool(_verified_replaced_failure_ids(effects)
+                and _completion_decision(effects) == (True, False, "delivered")
+                and _whole_sent_proof(revision, effects)[0])
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError, OverflowError, RecursionError):
+            verified = False
+        if not verified:
+            retained.append(revision)
+    return retained
+
+
+def _verified_delivery_case(query, *, reason, scope, now, limit):
+    from django.db.models import Case, When, Prefetch
+    from management.models import IgRevisionDeliveryEffect
+    from management.services.ig_revision_outbox import MAX_EFFECTS
+
+    try:
+        cap = int(getattr(settings, "IG_TECHNICAL_DEBT_DELIVERY_PROOF_SCAN_CAP", DEFAULT_DELIVERY_PROOF_SCAN_CAP))
+    except (TypeError, ValueError):
+        cap = DEFAULT_DELIVERY_PROOF_SCAN_CAP
+    cap = max(1, min(cap, MAX_DELIVERY_PROOF_SCAN_CAP))
+    # Two SELECTs, independent of candidate count. The per-owner window also
+    # bounds corrupt oversized plans; they cannot pass full-plan validation.
+    rows = list(query.select_related("client").order_by(
+        Case(When(state="processed", then=1), default=0), "created_at", "pk",
+    ).prefetch_related(Prefetch("delivery_effects", to_attr="_delivery_proof_effects",
+        queryset=IgRevisionDeliveryEffect.objects.order_by("order_index", "pk")[:MAX_EFFECTS + 1]))[:cap + 1])
+    capped = len(rows) > cap
+    retained = sorted(filter_verified_replacement_candidates(rows[:cap]), key=lambda row: (row.created_at, row.pk))
+    case = _case(reason, scope, count=len(retained), oldest=_age(now, retained[0].created_at) if retained else None,
+        ids=[row.pk for row in retained[:limit]], sampled=capped or len(retained) > limit,
+        has_more=capped or len(retained) > limit)
+    if capped:
+        # An unexamined candidate might be a valid replacement, so neither
+        # an exact zero nor an all-table debt count would be honest.
+        case.update(count_is_lower_bound=True, coverage_complete=False,
+            coverage_reason="delivery_candidate_scan_capped")
+    return case
+
+
+def _query_case(query, *, reason, scope, now, limit, time_field, id_field="id", verify_replacements=False):
+    if verify_replacements:
+        return _verified_delivery_case(query, reason=reason, scope=scope, now=now, limit=limit)
     total = query.count()
     rows = list(query.order_by(time_field, id_field).values(time_field, id_field)[:limit])
     oldest = _age(now, rows[0].get(time_field)) if rows else None
@@ -356,7 +418,7 @@ def _collect_db(now, limit):
     cases.append(_query_case(
         incomplete_revision_deliveries(),
         reason="canonical_delivery_incomplete", scope="turn_revision", now=now,
-        limit=limit, time_field="created_at"))
+        limit=limit, time_field="created_at", verify_replacements=True))
     cases.append(_query_case(
         IgDeferredEcho.objects.filter(
             state__in=("waiting_receipt", "ambiguous"),
@@ -476,7 +538,12 @@ def technical_debt_snapshot(*, now=None, limit=DEFAULT_LIMIT):
     coverage_reasons = []
     complete = True
     try:
-        cases.extend(_collect_db(now, limit))
+        db_cases = _collect_db(now, limit)
+        cases.extend(db_cases)
+        for case in db_cases:
+            if case.get("coverage_complete") is False:
+                complete = False
+                coverage_reasons.append(case.get("coverage_reason") or "delivery_proof_coverage_unknown")
     except Exception as exc:
         complete = False
         errors.append(type(exc).__name__[:64])

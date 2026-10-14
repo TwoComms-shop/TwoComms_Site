@@ -28,6 +28,7 @@ _SELECTOR_WORDS = {
     "option": r"варіант|вариант|опці|опци|option|variant",
 }
 CHOICE_ALIASES = {
+    "coyote": ("coyote", "koyote", "койот", "коёт", "койота", "койотовий", "койотовый"),
     "oversize": ("oversize", "оверсайз"), "classic": ("classic", "класичн", "классическ"),
     "black": ("black", "чорний", "чорна", "чорне", "чорну", "чорні", "чорного", "чорної",
               "чёрный", "чёрная", "чёрное", "чёрную", "чёрные", "чёрного", "чёрной",
@@ -250,7 +251,7 @@ def _topic_covered(kind, response, plan):
         _RECRUITMENT_STATUS_RE, _RECRUITMENT_UNCERTAINTY_RE,
     )
     authority = plan.authority
-    if kind == "info:presentation" and (response.control.get("show_products") or response.control.get("catalog_link")):
+    if kind == "info:presentation" and response.control.get("show_products"):
         return True
     prices = tuple(Decimal(value) for value in authority["prices"])
     days = authority.get("standard_dispatch_days")
@@ -306,6 +307,9 @@ class ResponsePlan:
     source_cart_capture: dict = field(default_factory=dict)
     line_plans: tuple = ()
     plan_gap: str = ""
+    # In-process frozen communication input. Business authority and dispatch
+    # remain with the separately captured native payment/source fences.
+    communication_context: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def digest(self):
@@ -771,7 +775,8 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
         next_selector = ""
     scope = {key: preferences[key] for key in ("session_id", "generation", "revision", "line_id", "active_index") if key in preferences}
     return ResponsePlan(choices, evidence, scope, configuration, next_selector, authority, obligations,
-        payment_observation=payment_observation, payment_claim_source_ids=tuple(sorted(payment_claim_ids)))
+        payment_observation=payment_observation, payment_claim_source_ids=tuple(sorted(payment_claim_ids)),
+        communication_context=context)
 
 
 def _capture_payment_context(client, revision, sources, session, line):
@@ -905,7 +910,8 @@ def _provided_source_cart(client, revision, capture):
         if not isinstance(rows, list) or type(index) is not int or not 0 <= index < len(rows) or not isinstance(rows[index], dict):
             raise TurnContextError("response_plan_provided_cart_invalid")
         boundary.update(line_id=rows[index].get("line_id"), recipient_id=rows[index].get("recipient_id"))
-        return validate_source_cart_capture(detached, boundary), ""
+        from django.utils import timezone
+        return validate_source_cart_capture(detached, boundary, native_as_of=timezone.now()), ""
     except TurnContextError as exc:
         return {}, exc.reason
     except (AttributeError, KeyError, TypeError, ValueError, RecursionError):

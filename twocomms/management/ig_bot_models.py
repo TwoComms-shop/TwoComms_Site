@@ -2930,6 +2930,7 @@ class IgCheckoutRevision(models.Model):
         BOT_CREATE = "bot_create", _("Створено ботом")
         BOT_UPDATE = "bot_update", _("Оновлено ботом")
         SYSTEM_SUPERSEDE = "system_supersede", _("Системна заміна")
+        CHECKOUT_HOLDER = "checkout_holder", _("Змінено на сторінці оформлення")
 
     proposal = models.ForeignKey(
         "management.IgCheckoutProposal",
@@ -2973,6 +2974,7 @@ class IgCheckoutAccessToken(models.Model):
         BOT = "bot", _("Посилання бота")
         SHARE = "share", _("Посилання для оплати іншою людиною")
         REPLACEMENT = "replacement", _("Посилання заміни")
+        MANAGER = "manager", _("Посилання менеджера")
 
     proposal = models.ForeignKey(
         "management.IgCheckoutProposal",
@@ -7764,6 +7766,11 @@ class IgCommerceSelectionTransition(models.Model):
         on_delete=models.DO_NOTHING,
         related_name="commerce_selection_transitions",
         db_constraint=False,
+        null=True, blank=True,
+    )
+    checkout_amendment = models.OneToOneField(
+        "management.IgCheckoutCartAmendment", on_delete=models.PROTECT,
+        related_name="selection_transition", db_constraint=False, null=True, blank=True,
     )
     action = models.CharField(max_length=80, db_index=True)
     correction_operation_id = models.UUIDField(

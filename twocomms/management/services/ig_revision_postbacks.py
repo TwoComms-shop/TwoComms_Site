@@ -58,6 +58,8 @@ def _candidate(snapshot, client_id):
     raw = str(snapshot.get("quick_reply_payload") or snapshot.get("text") or "").strip()
     if not raw or len(raw) > 1000:
         return None
+    if str(snapshot.get("quick_reply_payload") or "").startswith("CC1:"):
+        return {"action": "catalog_choice", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith("AC1:"):
         return {"action": "assisted_card_choice", "order_id": 0, "payload_digest": _digest(raw)}
     if str(snapshot.get("quick_reply_payload") or "").startswith(SPLIT_PREFIX):
@@ -263,6 +265,14 @@ def apply_revision_postback(
             source = revision.sources.select_for_update().select_related("message").filter(message_id=source_message_id, message__client_id=client.pk, message__role=InstagramBotMessage.Role.USER).first()
             if source is None or source.source_digest != selected.get("source_digest") or source.text != selected.get("text") or source.quick_reply_payload != selected.get("quick_reply_payload"):
                 raise _Rollback("postback_source_changed")
+            if candidate["action"] == "catalog_choice":
+                from management.services.ig_catalog_choice_actions import consume_catalog_choice
+                choice = consume_catalog_choice(client, source.message, revision_id=revision.pk)
+                # Source persistence has its own authenticated, idempotent
+                # receipt. Conversation adaptation stays with the whole bundle.
+                return RevisionPostbackResult(handled=True, ready=True,
+                    reason=choice.get("reason") or "catalog_choice", requires_model=True,
+                    receipt={"catalog_choice": choice})
             if candidate["action"] == "split_shipping_choice":
                 from management.services.ig_split_shipping import _pure_bundle
 

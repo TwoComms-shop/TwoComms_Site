@@ -74,6 +74,9 @@ def _line_source_request(source, client, request, *, original=None):
     if (source.client_id != client.pk or source.sender_id != client.igsid or source.role != "user"
         or source.source != "webhook" or source.status == "failed" or client.privacy_erasure_started_at):
         return None
+    if request.source_binding.get("producer") == "catalog-choice-source-v1":
+        from management.services.ig_catalog_choice_actions import validate_native_choice_request
+        return request if validate_native_choice_request(client, source, request) else None
     raw = original if original is not None else parse_turn(source.text)
     original = raw
     if raw.line_operations or raw.pending_line_clarification:
@@ -668,8 +671,50 @@ def apply_turn(
     prior = IgCommerceTurnDecision.objects.filter(source_message_id=source.pk).first()
     if prior is not None:
         return prior
+    # Native website choices have their own actual observation time. A delayed
+    # older Instagram event remains transcript evidence but cannot overwrite a
+    # later website basket. Never fabricate a provider timestamp or permission.
+    if (source.role == "user" and source.source == "webhook"
+            and source.sender_id == locked_client.igsid and source.status != "failed"):
+        from management.models import IgCommerceSelectionTransition
+        from management.services.ig_checkout_cart_amendments import verify_native_transition, CheckoutAmendmentError
+        native = (IgCommerceSelectionTransition.objects.filter(session__client=locked_client,
+            session__commercial_episode_id=locked_client.current_commercial_episode_id,
+            session__open_slot=1, session__state="open", checkout_amendment__isnull=False)
+            .select_related("session", "checkout_amendment").order_by("-to_revision").first())
+        if native is not None:
+            try:
+                verify_native_transition(native, historical=True)
+            except CheckoutAmendmentError as exc:
+                raise CommerceRevisionConflict("hosted_source_unverified") from exc
+            source_at = source.provider_created_at or source.created_at
+            if timezone.is_naive(source_at):
+                source_at = timezone.make_aware(source_at, dt_timezone.utc)
+            if source_at < native.checkout_amendment.created_at:
+                return _create_decision(source_message=source, session=native.session,
+                    request_payload=_request_payload(request), result_payload={
+                        "reason": "source_before_hosted_checkout_edit", "native_fact_source": {
+                            "amendment_id": str(native.checkout_amendment_id), "transition_id": native.pk,
+                            "observed_at": native.checkout_amendment.created_at.isoformat(),
+                            "source_hmac": native.checkout_amendment.source_hmac}},
+                    reply_payload={}, effects_payload={}, accepted=False, is_stale=True,
+                    delivery_required=False, delivery_state=IgCommerceTurnDecision.DeliveryState.NOT_REQUIRED)
+            from management.services.ig_checkout_cart_amendments import native_neutral_question
+            if native_neutral_question(source.text):
+                return _create_decision(source_message=source, session=native.session,
+                    request_payload=_request_payload(request),
+                    result_payload={"reason": "hosted_checkout_question_observed", "classification": "neutral_commerce"},
+                    reply_payload={}, effects_payload={}, accepted=False, is_stale=False,
+                    delivery_required=False, delivery_state=IgCommerceTurnDecision.DeliveryState.NOT_REQUIRED)
     from management.services.ig_commerce_turns import parse_turn
-    source_request = parse_turn(source.text)
+    native_source = str(source.quick_reply_payload or "").startswith("CC1:")
+    if native_source:
+        from management.services.ig_catalog_choice_actions import native_choice_request, validate_native_choice_request
+        source_request = native_choice_request(locked_client, source)
+        if source_request is None or not validate_native_choice_request(locked_client, source, request):
+            raise CommerceRevisionConflict("catalog_choice_source_unverified")
+    else:
+        source_request = parse_turn(source.text)
     if request.full_cart_purchase_requested:
         supplied, original = _request_payload(request), _request_payload(source_request)
         binding = dict(request.source_binding)
@@ -695,7 +740,7 @@ def apply_turn(
         if not owned_full_source or not source_request.full_cart_purchase_requested or supplied != original:
             raise CommerceRevisionConflict("full_cart_purchase_source_unverified")
     from management.services.ig_commerce_turns import is_neutral_commerce_source
-    if is_neutral_commerce_source(source.text):
+    if not native_source and is_neutral_commerce_source(source.text):
         requested, original_payload = _request_payload(request), _request_payload(source_request)
         requested.pop("source_binding", None)
         original_payload.pop("source_binding", None)

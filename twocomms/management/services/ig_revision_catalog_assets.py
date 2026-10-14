@@ -80,10 +80,27 @@ def _requested(client, control, used):
 
 
 def _selected_variant(client, requested):
-    """Bounded version of the catalog selector's current color-name resolver."""
+    """An admitted current native color wins; raw variant hints never do."""
     from productcolors.models import ProductColorVariant
 
-    if len(requested) != 1 or client.current_product_id != requested[0]:
+    if len(requested) != 1:
+        return 0
+    if getattr(client, "pk", None):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.services.ig_catalog_choice_actions import admitted_native_color_variants
+
+        capture = capture_current_selection_lines(client.pk)
+        active = capture.get("active_line_id")
+        rows = [row for row in capture.get("lines") or [] if row.get("line_id") == active
+            and (row.get("fields", {}).get("product_id") or {}).get("status") == "confirmed"
+            and (row.get("fields", {}).get("product_id") or {}).get("value") == requested[0]]
+        if capture.get("status") == "captured" and capture.get("coverage_complete") and len(rows) == 1:
+            native = admitted_native_color_variants(capture, rows).get(active)
+            if native is not None:
+                if native.get("status") != "verified":
+                    raise _Unavailable("catalog_asset_native_variant_unverified")
+                return _id(native["variant_id"])
+    if client.current_product_id != requested[0]:
         return 0
     color_text = str(client.current_color or "").strip().casefold()
     if not color_text:
@@ -141,7 +158,7 @@ def _variant_mode(product, image, selected):
     raise _Unavailable("catalog_asset_variant_unavailable")
 
 
-def _find_asset(product, name, selected):
+def _find_asset(product, name, selected, *, allow_generic=False):
     from productcolors.models import ProductColorImage
     from storefront.models import ProductImage
 
@@ -153,14 +170,14 @@ def _find_asset(product, name, selected):
     for image in variants:
         if (selected and image.variant_id == selected) or (not selected and image.variant.stock > 0):
             return "variant_image", image.pk, image.variant_id, _variant_mode(product, image, selected), image.image
-    if not _product_fallback_allowed(product.pk, selected):
+    if not allow_generic and not _product_fallback_allowed(product.pk, selected):
         raise _Unavailable("catalog_asset_fallback_unavailable")
     if images:
-        return "product_image", images[0].pk, 0, "product", images[0].image
+        return "product_image", images[0].pk, 0, "presentation_generic" if allow_generic else "product", images[0].image
     for name_key in ("main_image", "home_card_image"):
         field = getattr(product, name_key)
         if str(field.name or "") == name:
-            return name_key, product.pk, 0, "product", field
+            return name_key, product.pk, 0, "presentation_generic" if allow_generic else "product", field
     for image in variants:
         if not product.main_image and _display_fallback(product.pk, image):
             return "variant_image", image.pk, image.variant_id, "display_fallback", image.image
@@ -172,17 +189,17 @@ def _load_asset(product, descriptor, selected):
     from storefront.models import ProductImage
 
     kind, asset_id = descriptor["asset_kind"], _id(descriptor["asset_id"])
-    if kind in {"main_image", "home_card_image", "product_image"} and not _product_fallback_allowed(product.pk, selected):
+    if kind in {"main_image", "home_card_image", "product_image"} and descriptor.get("mode") != "presentation_generic" and not _product_fallback_allowed(product.pk, selected):
         raise _Unavailable("catalog_asset_fallback_unavailable")
     if kind in {"main_image", "home_card_image"}:
         if asset_id != product.pk or descriptor["variant_id"] != 0:
             raise _Unavailable("catalog_asset_owner_changed")
-        return kind, asset_id, 0, "product", getattr(product, kind)
+        return kind, asset_id, 0, "presentation_generic" if descriptor.get("mode") == "presentation_generic" else "product", getattr(product, kind)
     if kind == "product_image":
         image = ProductImage.objects.filter(pk=asset_id, product_id=product.pk).first()
         if image is None or descriptor["variant_id"] != 0:
             raise _Unavailable("catalog_asset_owner_changed")
-        return kind, asset_id, 0, "product", image.image
+        return kind, asset_id, 0, "presentation_generic" if descriptor.get("mode") == "presentation_generic" else "product", image.image
     if kind == "variant_image":
         image = ProductColorImage.objects.filter(pk=asset_id, variant_id=descriptor["variant_id"], variant__product_id=product.pk).select_related("variant").first()
         if image is None:
@@ -213,6 +230,33 @@ def _descriptor(client, product, asset, index, legacy):
 
 def prepare_catalog_asset_control(client, effects, *, control=None):
     """Bind only prepared catalog parts; a response without images needs no claim."""
+    charts = [row for row in effects or () if isinstance(row, Mapping)
+        and "catalog_chart" in (row.get("projection_metadata") or {})]
+    if charts:
+        from management.services.ig_catalog_choice_presentations import catalog_chart_reference, validate_catalog_chart_metadata
+        if len(charts) != 1 or any("catalog_choice" in (row.get("projection_metadata") or {}) for row in effects or ()):
+            return {}, ("catalog_choice_chart_effect_invalid",)
+        row = charts[0]
+        if not validate_catalog_chart_metadata(row["projection_metadata"], payload=row.get("payload"), group=row.get("group"), kind=row.get("kind")):
+            return {}, ("catalog_choice_chart_effect_invalid",)
+        return {"catalog_chart_reference": catalog_chart_reference(row["projection_metadata"]["catalog_chart"])}, ()
+    choices = [row for row in effects or () if isinstance(row, Mapping)
+        and "catalog_choice" in (row.get("projection_metadata") or {})]
+    if choices:
+        from management.services.ig_catalog_choice_presentations import SCHEMA_V1, validate_catalog_choice_metadata
+
+        if not choices or any(not validate_catalog_choice_metadata(row["projection_metadata"],
+            payload=row.get("payload"), group=row.get("group"), kind=row.get("kind")) for row in choices):
+            return {}, ("catalog_choice_effects_invalid",)
+        manifests = [row["projection_metadata"]["catalog_choice"] for row in choices]
+        manifest = manifests[0]
+        expected_fallback = 1 if manifest["schema"] == SCHEMA_V1 else len(manifest["fallback_payload_digests"])
+        native = [row for row in choices if row["projection_metadata"]["delivery"] == "native"]
+        fallback = [row for row in choices if row["projection_metadata"]["delivery"] == "fallback"]
+        if (any(value != manifest for value in manifests) or len(native) != 1 or len(fallback) != expected_fallback
+            or [row["projection_metadata"].get("part_index", 0) for row in fallback] != list(range(expected_fallback))):
+            return {}, ("catalog_choice_effects_invalid",)
+        return {"catalog_choice_presentation": manifest}, ()
     rows = [row for row in effects or () if isinstance(row, Mapping) and row.get("group") == "catalog_media"]
     if not rows:
         return {}, ()
@@ -254,6 +298,51 @@ def prepare_catalog_asset_control(client, effects, *, control=None):
 def build_catalog_asset_reference_binding(client, control):
     """Rebuild one claim from exact DB rows without reading asset bytes."""
     from management.services.ig_revision_authority import _base_binding
+
+    if "catalog_chart_reference" in control:
+        from management.models import InstagramBotSettings
+        from management.services.ig_catalog_choice_presentations import validate_catalog_chart_reference
+        reference = control["catalog_chart_reference"]
+        try:
+            settings_row = InstagramBotSettings.objects.select_related("active_instruction_publication").filter(pk=reference["scope"]["settings_id"]).first()
+            if settings_row is None:
+                return None, "catalog_choice_settings_missing"
+            reason = validate_catalog_chart_reference(reference, client, settings_row)
+            if reason:
+                return None, reason
+            return _base_binding(CLAIM, client, None, {"catalog_chart_reference": reference}, reference,
+                product_ids=[reference["product_id"]], part_count=1,
+                asset_reference_digest=reference["chart_digest"]), ""
+        except (KeyError, TypeError, ValueError):
+            return None, "catalog_choice_chart_invalid"
+
+    if "catalog_choice_presentation" in control or "catalog_choice_reference" in control:
+        from management.models import InstagramBotSettings
+        from management.services.ig_catalog_choice_presentations import (
+            SCHEMA_V1, build_catalog_choice_effects, catalog_choice_reference, current_catalog_choice_scope, validate_catalog_choice_assets,
+        )
+
+        try:
+            if "catalog_choice_presentation" in control:
+                manifest = control["catalog_choice_presentation"]
+                rebuilt = build_catalog_choice_effects(manifest["invitation_id"], manifest["scope"], manifest["cards"],
+                    presentation_kind=manifest["presentation_kind"], actions=manifest["actions"], _legacy=manifest["schema"] == SCHEMA_V1)
+                if rebuilt.manifest != manifest:
+                    return None, "catalog_choice_manifest_changed"
+                reference = catalog_choice_reference(manifest)
+            else:
+                reference = control["catalog_choice_reference"]
+            settings_row = InstagramBotSettings.objects.select_related("active_instruction_publication").filter(pk=reference["scope"]["settings_id"]).first()
+            if settings_row is None:
+                return None, "catalog_choice_settings_missing"
+            reason = current_catalog_choice_scope(reference, client, settings_row) or validate_catalog_choice_assets(reference, client)
+            if reason:
+                return None, reason
+            return _base_binding(CLAIM, client, None, {"catalog_choice_reference": reference}, reference,
+                product_ids=[row["product_id"] for row in reference["cards"]], part_count=1,
+                asset_reference_digest=_digest([row["asset_ref"] for row in reference["cards"]])), ""
+        except (KeyError, TypeError, ValueError):
+            return None, "catalog_choice_manifest_invalid"
 
     refs = control.get("catalog_asset_refs")
     requested = control.get("catalog_requested_products")

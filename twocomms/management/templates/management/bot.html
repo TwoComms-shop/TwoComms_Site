@@ -3315,6 +3315,35 @@ body.bot-drawer-open{overflow:hidden;}
       allFollowups.forEach(item=>{(isFollowupDeliveryReview(item)?deliveryReviews:ordinary).push(item);});
       return deliveryReviews.concat(ordinary.slice(0,Math.max(0,8-deliveryReviews.length)));
     }
+    function appendCapturedCheckoutOrder(row,key,item){
+      if(!item||item.status!=='confirmed'||item.authority!=='payment_ledger'||!item.value)return;
+      const historical=key==='order.completed_history';
+      if(historical&&item.historical!==true||!historical&&item.confirmation_semantics!=='verified_native_checkout_order_snapshot')return;
+      const orders=historical?(Array.isArray(item.value)?item.value:[]):[item.value];
+      const money=value=>typeof value==='string'&&/^(?:0|[1-9][0-9]*)\.[0-9]{2}$/.test(value)?value.split('.')[0].replace(/\B(?=(\d{3})+(?!\d))/g,' ')+','+value.split('.')[1]+' грн':'Не підтверджено';
+      const dated=value=>{if(typeof value!=='string')return '';const date=new Date(value);return Number.isFinite(date.getTime())?new Intl.DateTimeFormat('uk-UA',{timeZone:'Europe/Kyiv',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(date)+' (Київ)':'';};
+      const note=text=>{const element=node('div','bot-hint',text);element.style.fontSize='12px';element.style.overflowWrap='anywhere';return element;};
+      row.style.minWidth='0';row.style.maxWidth='100%';row.style.overflowWrap='anywhere';
+      if(historical)row.appendChild(note('Попередні замовлення. Їхня оплата не підтверджує оплату поточного кошика.'));
+      orders.forEach(order=>{
+        const card=node('div','');card.style.minWidth='0';card.style.marginTop='10px';
+        card.appendChild(node('b','',order.order_number?'Замовлення '+order.order_number:'Фактичне замовлення'));
+        if(dated(order.observed_at))card.appendChild(note('Знімок замовлення: '+dated(order.observed_at)));if(dated((order.source_ref||{}).paid_at))card.appendChild(note('Оплату зафіксовано: '+dated(order.source_ref.paid_at)));
+        const goods=node('ul','');goods.style.margin='9px 0';goods.style.paddingLeft='18px';goods.style.overflowWrap='anywhere';
+        (Array.isArray(order.items)?order.items:[]).forEach(product=>{
+          const good=node('li','');good.style.marginBottom='8px';good.appendChild(node('b','',product.title||'Назву не підтверджено'));
+          good.appendChild(note([product.size&&('Розмір '+product.size),product.color&&('Колір '+product.color),product.fit&&('Фасон '+product.fit),Number.isSafeInteger(product.quantity)?product.quantity+' шт.':'Кількість не підтверджена'].filter(Boolean).join(' · ')));
+          good.appendChild(note(money(product.unit_price)+' / шт. · разом '+money(product.line_total)));goods.appendChild(good);
+        });card.appendChild(goods);
+        const amounts=order.money||{},totals=node('dl','');totals.style.display='grid';totals.style.gridTemplateColumns='minmax(0,1fr) minmax(0,1fr)';totals.style.gap='5px 10px';totals.style.margin='10px 0';
+        [['Товари до знижки','gross'],['Знижка','discount'],['Товари після знижки','merchandise_payable'],['До оплати','payable'],['Підтверджено оплачено','confirmed_paid'],['Залишок','balance']].forEach(([title,name])=>{const term=node('dt','',title),value=node('dd','',money(amounts[name]));term.style.minWidth='0';value.style.minWidth='0';value.style.margin='0';value.style.textAlign='right';value.style.fontWeight='600';value.style.overflowWrap='anywhere';totals.append(term,value);});card.appendChild(totals);
+        if(!historical)card.appendChild(note(item.fully_paid===true?'Повна оплата підтверджена. Доставку перевіряйте окремо.':amounts.confirmed_paid==null||amounts.balance==null?'Оплату або залишок ще не підтверджено.':'Підтверджено часткову оплату. Залишок до сплати: '+money(amounts.balance)));
+        (Array.isArray(order.shipping_authorities)?order.shipping_authorities:[]).forEach(shipping=>{if(shipping.mode==='merchant_free')card.appendChild(note('Доставку оплачує TwoComms.'));else if(shipping.mode==='carrier_recipient')card.appendChild(note('Доставка оплачується клієнтом перевізнику окремо.'+(shipping.customer_maximum!=null?' Погоджений максимум: '+money(shipping.customer_maximum):'')));else if(shipping.mode==='customer_prepaid')card.appendChild(note(shipping.delivery_prepaid===true?'Доставку передплачено окремо; перевізнику платить відправник.':'Погоджена окрема передплата за доставку; її підтвердження звірте окремо.'));else if(shipping.mode==='customer_paid_included')card.appendChild(note('Вартість доставки включена в оформлення; перевізнику платить відправник.'+(shipping.customer_charge!=null?' Вартість доставки: '+money(shipping.customer_charge):'')));});
+        const changes=Array.isArray(order.checkout_changes)?order.checkout_changes:[];
+        if(changes.length){card.appendChild(note('Зміни за посиланням оформлення до оплати:'));changes.forEach(change=>{const before=(Array.isArray(change.before)?change.before:[]).find(product=>product.line_id===change.line_id),after=(Array.isArray(change.after)?change.after:[]).find(product=>product.line_id===change.line_id);const title=(after||before||{}).title||'Позиція';const description=change.operation==='remove'?'Видалено: '+title:change.operation==='quantity'?title+' · кількість '+(before&&Number.isSafeInteger(before.quantity)?before.quantity:'невідома')+' → '+(after&&Number.isSafeInteger(after.quantity)?after.quantity:'невідома'):'';if(description)card.appendChild(note((dated(change.changed_at)?dated(change.changed_at)+' · ':'')+description));});}
+        row.appendChild(card);
+      });
+    }
     function renderCapturedState(root,id){
       const block=section(root,'Стан із підтверджених джерел');const disclosure=node('details','bot-analysis-disclosure');
       disclosure.appendChild(node('summary','','Дані, джерела та актуальність'));const body=node('div','bot-analysis-body');disclosure.appendChild(body);block.appendChild(disclosure);let loaded=false;
@@ -3325,21 +3354,22 @@ body.bot-drawer-open{overflow:hidden;}
           if(!response.ok||!data.success||data.status!=='captured'){body.appendChild(node('div','bot-hint','Поточний знімок недоступний. Оновіть картку після завершення змін.'));return;}
           if(sizeCorrectionController&&Number(sizeCorrectionClientId)===Number(id))sizeCorrectionController.render(id,data);
           body.appendChild(node('div','bot-hint','Поточне спостереження: '+new Date(data.as_of).toLocaleString()+'. Історичні запити відкриваються окремо.'));
-          const slots=(data.state||{}).slots||{};Object.entries(slots).forEach(([key,item])=>{const row=node('div','bot-deal');const label=key.startsWith('choice.')?(choiceLabels[key.slice(7)]||key.slice(7)):(key==='payment.reminder'?'Нагадування про оплату':key==='payment.current'?'Оплата':key==='configuration.readiness'?'Готовність замовлення':key.startsWith('consent.')?'Дозвіл: '+({marketing:'Маркетинг',payment_reminder:'Нагадування про оплату',restock:'Повернення в наявність'}[key.slice(8)]||key.slice(8)):key);
+          const slots=(data.state||{}).slots||{};Object.entries(slots).forEach(([key,item])=>{const row=node('div','bot-deal');const completed=key==='order.completed'||key==='order.completed_history';const label=key.startsWith('choice.')?(choiceLabels[key.slice(7)]||key.slice(7)):(key==='order.completed'?'Фактичне замовлення':key==='order.completed_history'?'Попередні оформлення':key==='payment.reminder'?'Нагадування про оплату':key==='payment.current'?'Оплата':key==='configuration.readiness'?'Готовність замовлення':key.startsWith('consent.')?'Дозвіл: '+({marketing:'Маркетинг',payment_reminder:'Нагадування про оплату',restock:'Повернення в наявність'}[key.slice(8)]||key.slice(8)):key);
             let value=item.value==null?'—':typeof item.value==='boolean'?(item.value?'Так':'Ні'):String(item.value);
             if(key==='choice.garment_type')value=({tshirt:'Футболка',hoodie:'Худі',sweatshirt:'Світшот'}[item.value]||value);
             if(key==='payment.reminder'){value=item.status==='confirmed'&&item.value?String(item.value.state_label||'Стан невідомий'):'Стан невідомий';row.style.overflowWrap='anywhere';row.style.minWidth='0';row.style.maxWidth='100%';row.dataset.paymentReminderVersion='payment-reminder-v1';}
             else if(key==='configuration.readiness'&&item.value){const missing=(item.value.missing||[]).map(code=>({product:'товар',size:'розмір',color:'колір',fit:'фасон',options:'варіант',quantity:'кількість'}[code]||'вибір'));value=item.value.can_issue_link?'Готове до посилання на оплату':missing.length?'Потрібно уточнити: '+missing.join(', '):'Потрібна перевірка';}
             else if(typeof item.value==='object'&&item.value!==null)value=item.status==='confirmed'?'Є підтверджені дані — відкрийте джерела':'Підтверджених даних ще немає';
-            row.append(node('b','',label+': '+value),node('div','bot-hint',statusLabels[item.status]||'Невідомо'));
+            row.append(node('b','',completed?label:label+': '+value),node('div','bot-hint',completed&&item.status==='confirmed'?'Підтверджений знімок оформлення':statusLabels[item.status]||'Невідомо'));
+            if(completed)appendCapturedCheckoutOrder(row,key,item);
             if(key==='payment.reminder'){
               if(item.status==='confirmed'&&item.value){if(item.value.scheduled_for_label)row.appendChild(node('div','bot-hint','Час: '+String(item.value.scheduled_for_label)));if(item.value.purchase_label)row.appendChild(node('div','bot-hint',String(item.value.purchase_label)));}
               row.appendChild(node('div','bot-hint','Домовленість про одне нагадування для цієї покупки. Не підтверджує оплату або дозвіл Meta на майбутні повідомлення.'));
             }
             if(key==='choice.size'&&item.authority==='audited_correction')row.appendChild(node('div','bot-hint','Уточнення менеджера. Початкове повідомлення клієнта збережено.'));
-            const refs=(item.source_refs||[]).map(ref=>(ref.kind==='message'?'повідомлення №':'джерело №')+String(ref.id||ref.source_message_id||'—'));if(refs.length)row.appendChild(node('div','bot-hint',refs.join(' · ')));
+            const refs=(item.source_refs||[]).map(ref=>(ref.kind==='message'?'повідомлення №':'джерело №')+String(ref.id||ref.source_message_id||'—'));if(refs.length&&!completed)row.appendChild(node('div','bot-hint',refs.join(' · ')));
             if(key.startsWith('choice.'))row.appendChild(node('div','bot-hint','Застосовність: '+(statusLabels[item.applicability]||'Невідомо')+' · Наявність: '+(statusLabels[item.availability]||'Невідомо')));
-            if(key!=='payment.reminder'){const detail=node('details');detail.appendChild(node('summary','','Область, джерело й актуальність'));const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.style.overflowWrap='anywhere';pre.textContent=JSON.stringify(item,null,2);detail.appendChild(pre);row.appendChild(detail);}body.appendChild(row);
+            if(key!=='payment.reminder'){const detail=node('details'),summary=node('summary','','Область, джерело й актуальність');if(completed){summary.style.minHeight='44px';summary.style.fontSize='12px';}detail.appendChild(summary);const pre=node('pre');pre.style.whiteSpace='pre-wrap';pre.style.overflowWrap='anywhere';pre.textContent=JSON.stringify(item,null,2);detail.appendChild(pre);row.appendChild(detail);}body.appendChild(row);
           });
           if((data.state.omissions||[]).length)body.appendChild(node('div','bot-hint','Частина даних недоступна або не має підтвердженого джерела.'));
         }catch(error){body.replaceChildren(node('div','bot-hint','Не вдалося прочитати стан клієнта.'));}

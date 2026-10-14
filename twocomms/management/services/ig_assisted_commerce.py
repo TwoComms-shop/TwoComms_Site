@@ -982,6 +982,9 @@ def _current_request(request, client, now, *, read_unit=None):
     if not _verified(request, "request") or request.client_id != client.pk:
         _fail("request_unverified")
     data = request.envelope["snapshot"]
+    if data.get("checkout_amendment"):
+        from management.services.ig_checkout_amendment_successors import verify_amendment_request
+        return verify_amendment_request(request, client=client, now=now)
     if request.created_at > now or now >= _date(data.get("expires_at")):
         _fail("request_expired")
     head = _head(Request, client.pk, request.intention_id)
@@ -1037,7 +1040,9 @@ def _images(lines, request, now):
             identities[line.image_id] = line.image_digest
     if not identities:
         return
-    rows = list(Image.objects.filter(pk__in=identities, request=request, client_id=request.client_id).order_by("pk"))
+    from management.services.ig_checkout_amendment_successors import image_request_owners
+    rows = list(Image.objects.filter(pk__in=identities, request_id__in=image_request_owners(request),
+        client_id=request.client_id).order_by("pk"))
     if {row.pk for row in rows} != set(identities):
         _fail("image_owner_changed")
     for image in rows:
@@ -1130,7 +1135,7 @@ def record_assisted_decision(request_id, *, actor, operation_id, status, expecte
             scoped_quotes = build_scoped_quotes(request, lines, scope_terms)
             if status == "approved" and scoped_quotes != previous_scopes:
                 _fail("approved_draft_changed")
-        elif data.get("ancestry"):
+        elif data.get("ancestry") or data.get("checkout_amendment"):
             _fail("residual_shipping_terms_required")
         draft_payload = {"schema": DECISION_SCHEMA, "request_digest": request.envelope_hmac,
             "full_capture_digest": request.full_capture_digest, "items": normalized}
@@ -1491,6 +1496,7 @@ def operator_context(client_id, *, actor, request_id=None, now=None):
             except AssistedDecisionError as exc:
                 return {**base, "status": "stale", "reason": exc.reason, "can_prepare_reason": exc.reason}
             base["approved_head"] = _decision_dto(latest)
-            base["can_prepare"] = bool(verified.lines and all(line.availability == "ready" for line in verified.lines))
+            base["can_prepare"] = bool(verified.ready_lines) if data.get("checkout_amendment") else bool(
+                verified.lines and all(line.availability == "ready" for line in verified.lines))
             base["can_prepare_reason"] = "" if base["can_prepare"] else "full_ready_required"
         return base

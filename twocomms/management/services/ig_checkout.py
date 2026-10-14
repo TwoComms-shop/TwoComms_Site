@@ -14,6 +14,68 @@ from django.utils import timezone
 MAX_CHECKOUT_ITEMS = 12
 MAX_CHECKOUT_QUANTITY = 50
 MAX_CHECKOUT_VALUE = Decimal("1000000.00")
+_AMENDMENT_SUCCESSOR_ISSUER = object()
+
+
+@dataclass(frozen=True)
+class _RetiredAmendmentProposal:
+    client_id: int
+    deal_id: int
+    proposal_id: int
+    amendment_id: object
+    source_hmac: str
+    expires_at: object
+    origin_status: str
+    successor_id: int
+    issuer: object
+
+
+def validate_checkout_grant_revision_bridge(proposal, *, token, from_revision):
+    """Read bridge through exact native revisions; never authorizes a mutation."""
+    from management.models import IgCheckoutRevision, IgCheckoutCartAmendment
+    from management.services.ig_checkout_cart_amendments import verify_native_transition, CheckoutAmendmentError
+    if (type(from_revision) is not int or not 0 < proposal.revision - from_revision <= 64
+            or token.proposal_id != proposal.pk or token.revoked_at or token.expires_at <= timezone.now()
+            or proposal.client.privacy_erasure_started_at or proposal.client.hidden_at
+            or proposal.deal.client_id != proposal.client_id
+            or proposal.commercial_episode.client_id != proposal.client_id):
+        return False
+    revisions = {row.revision: row for row in IgCheckoutRevision.objects.filter(proposal=proposal,
+        revision__gte=from_revision, revision__lte=proposal.revision).order_by("revision")[:65]}
+    if len(revisions) != proposal.revision - from_revision + 1:
+        return False
+    receipts = list(IgCheckoutCartAmendment.objects.filter(proposal=proposal,
+        from_revision__gte=from_revision, to_revision__lte=proposal.revision).select_related(
+            "selection_transition__session", "token").order_by("from_revision")[:65])
+    if len(receipts) != proposal.revision - from_revision:
+        return False
+    for number, receipt in enumerate(receipts, from_revision):
+        try:
+            body = verify_native_transition(receipt.selection_transition, historical=True)
+        except (CheckoutAmendmentError, AttributeError):
+            return False
+        target = revisions.get(number + 1)
+        native = (target.snapshot.get("source_cart_capture") or {}).get("fence", {}) if target else {}
+        if (receipt.from_revision != number or receipt.to_revision != number + 1
+                or receipt.client_id != proposal.client_id or receipt.token.proposal_id != proposal.pk
+                or body.get("episode_id") != proposal.commercial_episode_id
+                or body.get("pending_review") is not False or body.get("cancelled_scope") is not False
+                or body.get("expected_digest") != revisions[number].digest
+                or target.source != IgCheckoutRevision.Source.CHECKOUT_HOLDER
+                or native.get("native_amendment_id") != str(receipt.pk)
+                or native.get("native_source_hmac") != receipt.source_hmac):
+            return False
+    if revisions[proposal.revision].digest != proposal.items_digest:
+        return False
+    if proposal.payment_attempt_id:
+        attempt = proposal.payment_attempt
+        owner = (attempt.cart_snapshot or {}).get("source_cart_provenance", {}).get("owner", {})
+        if (attempt.created < receipts[-1].created_at
+                or (attempt.cart_snapshot or {}).get("proposal_id") != str(proposal.public_id)
+                or owner.get("proposal_pk") != proposal.pk or owner.get("revision") != proposal.revision
+                or owner.get("revision_id") != revisions[proposal.revision].pk):
+            return False
+    return True
 
 
 class CheckoutConfigurationError(ValueError):
@@ -997,6 +1059,8 @@ def create_or_update_proposal(
     checkout_owner_scope=None,
     verified_assisted_decision=None,
     verified_selection=None,
+    verified_checkout_amendment=None,
+    _retired_amendment_proposal=None,
 ):
     from management.models import (
         IgCheckoutProposal,
@@ -1007,6 +1071,14 @@ def create_or_update_proposal(
     )
 
     locked_client = IgClient.objects.select_for_update().get(pk=client.pk)
+    if verified_checkout_amendment is not None and (verified_assisted_decision is not None or verified_selection is not None):
+        raise CheckoutConfigurationError("checkout_amendment_authority_ambiguous")
+    if _retired_amendment_proposal is not None:
+        retired = _retired_amendment_proposal
+        if (type(retired) is not _RetiredAmendmentProposal or retired.issuer is not _AMENDMENT_SUCCESSOR_ISSUER
+                or retired.client_id != locked_client.pk or deal is None or retired.deal_id != deal.pk
+                or (verified_assisted_decision is None and verified_selection is None)):
+            raise CheckoutConfigurationError("checkout_successor_requires_native_factory")
     locale_code = str(locale or getattr(locked_client, "language", "") or "uk").lower().replace("_", "-").split("-", 1)[0]
     if locale_code not in {"uk", "ru", "en"}:
         locale_code = "uk"
@@ -1072,6 +1144,15 @@ def create_or_update_proposal(
         if allow_promo or negotiated_total is not None or requested_payment_amount is not None:
             raise CheckoutConfigurationError('assisted_terms_override_forbidden')
         bound_cart = True
+    elif verified_checkout_amendment is not None:
+        from management.services.ig_checkout_cart_amendments import verify_prepared_amendment
+        if assisted:
+            raise CheckoutConfigurationError("checkout_amendment_authority_ambiguous")
+        receipt = verify_prepared_amendment(verified_checkout_amendment, client=locked_client,
+            item_specs=item_specs, binding=source_cart_binding, capture=source_cart_capture,
+            pay_type=pay_type, allow_promo=allow_promo)
+        if deal is None or receipt.proposal.deal_id != deal.pk:
+            raise CheckoutConfigurationError("checkout_amendment_owner_changed")
     elif bound_cart:
         # Reconstruct all selectors from the canonical capture while the client
         # is locked. This is not an optional caller-authenticated cart payload.
@@ -1160,6 +1241,16 @@ def create_or_update_proposal(
         previous_proposal = IgCheckoutProposal.objects.filter(
             deal_id=deal.pk,
         ).order_by("-pk").values("pk", "status", "commercial_episode_id", "client_id").first()
+        if previous_proposal is not None:
+            retired_match = (_retired_amendment_proposal is not None
+                and previous_proposal["pk"] == _retired_amendment_proposal.successor_id
+                and previous_proposal["status"] == IgCheckoutProposal.Status.READY
+                and previous_proposal["client_id"] == locked_client.pk
+                and previous_proposal["commercial_episode_id"] == current_episode_id)
+            if retired_match:
+                # Only the native wrapper can mint this per-call witness after
+                # verifying fresh approval and retiring this exact pre-bank P.
+                previous_proposal = None
         if previous_proposal is not None:
             if (previous_proposal["client_id"] != locked_client.pk
                     or previous_proposal["commercial_episode_id"] != current_episode_id
@@ -1384,19 +1475,30 @@ def create_or_update_proposal(
                 "expires_at": timezone.now()
                 + timedelta(seconds=PROPOSAL_TTL_SECONDS),
             }
-        proposal = IgCheckoutProposal.objects.create_current(
-            deal=deal,
-            commercial_episode=episode,
-            catalog_total=quote.catalog_total,
-            negotiated_discount=quote.negotiated_discount,
-            quoted_total=quote.quoted_total,
-            requested_payment_amount=quote.requested_payment_amount,
-            pay_type=quote.pay_type,
-            allow_promo=bool(allow_promo),
-            items_digest=quote.digest,
-            locale=locale_code,
-            **proposal_values,
-        )
+        values = {"commercial_episode": episode, "catalog_total": quote.catalog_total,
+            "negotiated_discount": quote.negotiated_discount, "quoted_total": quote.quoted_total,
+            "requested_payment_amount": quote.requested_payment_amount, "pay_type": quote.pay_type,
+            "allow_promo": bool(allow_promo), "items_digest": quote.digest, "locale": locale_code,
+            **({**proposal_values, "expires_at": min(proposal_values.get("expires_at", _retired_amendment_proposal.expires_at),
+                _retired_amendment_proposal.expires_at)} if _retired_amendment_proposal is not None else proposal_values)}
+        if _retired_amendment_proposal is None:
+            proposal = IgCheckoutProposal.objects.create_current(deal=deal, **values)
+        else:
+            proposal = IgCheckoutProposal.objects.select_for_update().get(pk=_retired_amendment_proposal.successor_id,
+                client=locked_client, deal=deal, commercial_episode=episode, status=IgCheckoutProposal.Status.READY)
+            origin = IgCheckoutProposal.objects.select_for_update().get(pk=_retired_amendment_proposal.proposal_id,
+                client=locked_client, deal=deal, commercial_episode=episode)
+            if (proposal.items.exists() or proposal.revisions.exists() or proposal.payment_attempt_id
+                    or proposal.invoice_generations.exists() or origin.status != _retired_amendment_proposal.origin_status
+                    or (origin.status == IgCheckoutProposal.Status.SUPERSEDED and origin.superseded_by_id != proposal.pk)
+                    or proposal.items_digest != quote.digest or proposal.catalog_total != quote.catalog_total
+                    or proposal.quoted_total != quote.quoted_total):
+                raise CheckoutConfigurationError("checkout_reserved_successor_changed")
+            for field, value in values.items():
+                setattr(proposal, field, value)
+            proposal.save(update_fields=[*values, "updated_at"])
+            deal.active_checkout_proposal = proposal
+            deal.save(update_fields=["active_checkout_proposal", "updated_at"])
         revision_number = 1
         revision_source = IgCheckoutRevision.Source.BOT_CREATE
     else:
@@ -1446,7 +1548,8 @@ def create_or_update_proposal(
             ),
         ])
         revision_number = proposal.revision
-        revision_source = IgCheckoutRevision.Source.BOT_UPDATE
+        revision_source = (IgCheckoutRevision.Source.CHECKOUT_HOLDER
+            if verified_checkout_amendment is not None else IgCheckoutRevision.Source.BOT_UPDATE)
 
     _replace_proposal_items(proposal=proposal, quote=quote)
     from product_catalog.models import ProductInventoryPolicy
@@ -1535,3 +1638,78 @@ def build_proposal(client, *, items, **kwargs):
         pay_type=kwargs.pop("pay_type", "online_full"),
         **kwargs,
     )
+
+
+@transaction.atomic
+def create_approved_amendment_successor(*, client, verified_amendment,
+        verified_assisted_decision=None, verified_selection=None, locale=None):
+    """Retire one untouched approval only after a fresh native decision exists.
+
+    Original proposal items/revisions and D/E stay immutable. Current Deal and
+    episode projections move through the existing proposal/quote engine.
+    """
+    from management.models import IgClient, IgDeal, IgCheckoutProposal, IgCheckoutCartAmendment
+    from management.services.ig_checkout_cart_amendments import (
+        VerifiedPendingCheckoutAmendment, VerifiedCancelledCheckoutAmendment,
+        verify_pending_amendment, verify_cancelled_amendment, _ISSUER,
+    )
+    if (type(verified_amendment) not in {VerifiedPendingCheckoutAmendment, VerifiedCancelledCheckoutAmendment}
+            or verified_amendment._issuer is not _ISSUER or verified_amendment.client_id != client.pk
+            or (verified_assisted_decision is None) == (verified_selection is None)):
+        raise CheckoutConfigurationError("checkout_successor_requires_native_approval")
+    locked_client = IgClient.objects.select_for_update().get(pk=client.pk)
+    cancelled = type(verified_amendment) is VerifiedCancelledCheckoutAmendment
+    checked = (verify_cancelled_amendment if cancelled else verify_pending_amendment)(verified_amendment.amendment_id)
+    if checked.get("ready") is not True or checked["amendment"].source_hmac != verified_amendment.source_hmac:
+        raise CheckoutConfigurationError(checked.get("reason") or "checkout_amendment_changed")
+    receipt = IgCheckoutCartAmendment.objects.select_for_update().get(pk=verified_amendment.amendment_id)
+    # Revalidate exact new manager terms/configuration before retiring anything.
+    quote = build_assisted_quote(client=locked_client, **({"verified_selection": verified_selection}
+        if verified_selection is not None else {"verified_decision": verified_assisted_decision}))
+    cap = verified_selection if verified_selection is not None else verified_assisted_decision
+    request_id = getattr(cap, "request_id", None)
+    from management.services.ig_checkout_amendment_successors import verify_amendment_request
+    from management.models import IgAssistedCommerceRequest
+    request = IgAssistedCommerceRequest.objects.get(pk=request_id, client=locked_client)
+    native_request = verify_amendment_request(request, client=locked_client, now=timezone.now())
+    if not native_request:
+        raise CheckoutConfigurationError("checkout_successor_amendment_request_unverified")
+    deal = IgDeal.objects.select_for_update().get(pk=receipt.proposal.deal_id, client=locked_client)
+    origin = IgCheckoutProposal.objects.select_for_update().get(pk=receipt.proposal_id, deal=deal)
+    from management.services.ig_checkout_cart_amendments import assert_pending_prebank
+    if cancelled:
+        if verify_cancelled_amendment(receipt.pk).get("ready") is not True:
+            raise CheckoutConfigurationError("checkout_cancelled_scope_changed")
+    else:
+        assert_pending_prebank(origin, receipt)
+    execution = getattr(origin, "assisted_commerce_execution", None)
+    if execution is not None:
+        execution = type(execution).objects.select_for_update().get(pk=execution.pk)
+    successor = IgCheckoutProposal.objects.create(client=locked_client, deal=deal,
+        commercial_episode=origin.commercial_episode, catalog_total=quote.catalog_total,
+        negotiated_discount=quote.negotiated_discount, quoted_total=quote.quoted_total,
+        requested_payment_amount=quote.requested_payment_amount, pay_type=quote.pay_type,
+        allow_promo=False, items_digest=quote.digest, expires_at=origin.expires_at,
+        locale=origin.locale)
+    if not cancelled:
+        origin.status = origin.Status.SUPERSEDED
+        origin.superseded_by = successor
+        origin.save(update_fields=["status", "superseded_by", "updated_at"])
+    if execution is not None and not cancelled:
+        if execution.active_slot != 1 or execution.order_id or execution.released_at or execution.settled_at:
+            raise CheckoutConfigurationError("checkout_original_execution_terminal")
+        execution.active_slot = None
+        execution.released_at = timezone.now()
+        execution.release_reason = "superseded"
+        execution.save(update_fields=["active_slot", "released_at", "release_reason"])
+    from management.services.ig_inventory import release_proposal_inventory
+    release_proposal_inventory(origin, reason=f"amendment_successor:{receipt.pk}")
+    deal.active_checkout_proposal = None
+    deal.save(update_fields=["active_checkout_proposal", "updated_at"])
+    retired = _RetiredAmendmentProposal(locked_client.pk, deal.pk, origin.pk, receipt.pk,
+        receipt.source_hmac, origin.expires_at, origin.status, successor.pk, _AMENDMENT_SUCCESSOR_ISSUER)
+    # The ordinary engine proves the new request/decision, prices, options and
+    # stock again; the private witness only admits the exact retired predecessor.
+    return create_or_update_proposal(client=locked_client, deal=deal, pay_type="online_full", item_specs=[],
+        verified_assisted_decision=verified_assisted_decision, verified_selection=verified_selection,
+        _retired_amendment_proposal=retired, allow_promo=False, locale=locale)

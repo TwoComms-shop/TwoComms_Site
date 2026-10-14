@@ -291,6 +291,12 @@ def resolve_line_operation_identities(source_text, request, *, catalog_graph):
 
 def resolve_source_product_request(client, source, request, *, catalog_graph=None):
     """Resolve exact names or a customer's selection of one current presentation."""
+    if request.source_binding.get("producer") == "catalog-choice-source-v1":
+        from management.services.ig_catalog_choice_actions import validate_native_choice_request
+        if validate_native_choice_request(client, source, request):
+            return request
+        from management.services.ig_commerce_types import CommerceTurnRequest
+        return CommerceTurnRequest(pending_line_clarification="line_source_unverified")
     binding = {"source_message_id": source.pk, "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest()}
     if request.line_operations or request.pending_line_clarification:
         if (source.client_id != client.pk or source.sender_id != client.igsid

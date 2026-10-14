@@ -1,7 +1,8 @@
 """Bounded current-catalog authority for an already owned source-cart capture.
 
-No source read, owner recapture, checkout effect, or provider call is performed.
-The effect owner must retain its normal source/permission/catalog fences.
+The isolated native-color branch reads authenticated source receipts to retain
+an exact chosen variant when color names coincide. It performs no checkout
+effect or provider call. Effect owners retain source/permission/catalog fences.
 """
 from __future__ import annotations
 
@@ -189,6 +190,8 @@ def _resolve(capture, *, _catalog_readback=None):
     preferences = {row["line_id"]: source_line_preferences(capture, row) for row in capture["lines"]}
     if any(not row for row in preferences.values()):
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_source_unknown"},))
+    from management.services.ig_catalog_choice_actions import admitted_native_color_variants
+    native_variants = admitted_native_color_variants(capture, capture["lines"])
     product_ids = {row.get("values", {}).get("product_id") for row in preferences.values()}
     product_ids.discard(None)
     if len(product_ids) > MAX_PRODUCTS or any(not _positive(value) for value in product_ids):
@@ -223,7 +226,12 @@ def _resolve(capture, *, _catalog_readback=None):
             continue
         product_variants = variant_groups[product_id]
         wish = values.get("color")
-        matches = [variant for variant in product_variants if _color_matches(wish, variant)] if wish else product_variants
+        native = native_variants.get(line_id)
+        if native is not None:
+            matches = [variant for variant in product_variants if native.get("status") == "verified"
+                and variant.pk == native.get("variant_id") and _color_matches(wish, variant)]
+        else:
+            matches = [variant for variant in product_variants if _color_matches(wish, variant)] if wish else product_variants
         selected_variant = matches[0] if len(matches) == 1 else None
         color_gap = bool((wish and len(matches) != 1) or (not wish and len(product_variants) > 1))
         fit = str(values.get("fit_option_code") or "").strip().lower()

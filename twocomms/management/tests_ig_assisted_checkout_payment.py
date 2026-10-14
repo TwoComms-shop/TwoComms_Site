@@ -20,7 +20,7 @@ from management.services import ig_assisted_checkout as checkout
 from management.services.ig_assisted_commerce_media import upload_assisted_image
 from management.tests_ig_assisted_commerce import AssistedCommerceFixture
 from management.tests_ig_assisted_commerce_media import raster
-from management.tests_ig_checkout_generation_runtime import CheckoutGenerationRuntimeTests
+from management import tests_ig_checkout_generation_runtime as generation_fixture
 from orders.models import Order, PaymentAttempt
 from productcolors.models import ProductColorVariant
 from storefront.models import Product
@@ -28,8 +28,8 @@ from storefront.models import Product
 
 class AssistedCheckoutPaymentFixture(AssistedCommerceFixture):
     """Reusable native producer; only external transports and the clock are replaced."""
-    _delivery_payload = CheckoutGenerationRuntimeTests._delivery_payload
-    _open = CheckoutGenerationRuntimeTests._open
+    _delivery_payload = generation_fixture.CheckoutGenerationRuntimeTests._delivery_payload
+    _open = generation_fixture.CheckoutGenerationRuntimeTests._open
 
     def setUp(self):
         super().setUp()
@@ -89,12 +89,14 @@ class AssistedCheckoutPaymentFixture(AssistedCommerceFixture):
     def _invoice_custom(self, result, *, payload=None, invoice_id=None):
         proposal = result["proposal"]
         self._open(proposal)
+        submitted = (self._delivery_payload(payment_choice="online_full", assisted_terms_accepted="1")
+            if payload is None else {**self._hosted_revision_payload, **payload})
         with patch("storefront.views.monobank._monobank_api_request", return_value={
             "invoiceId": invoice_id or f"assisted-native-{proposal.pk}",
             "pageUrl": "https://pay.example/assisted-native",
         }) as bank:
             response = self.client.post(reverse("ig_checkout_proposal", kwargs={"proposal_id": proposal.public_id}),
-                payload if payload is not None else self._delivery_payload(payment_choice="online_full", assisted_terms_accepted="1"),
+                submitted,
                 HTTP_ACCEPT="application/json")
         return response, bank
 
@@ -299,7 +301,7 @@ class NativeAssistedCheckoutPaymentTests(AssistedCheckoutPaymentFixture, Transac
         self.assertEqual(first.state, first.State.CANCELLED)
         # The canonical reissue payload contains no recipient or checkbox.
         response, bank = self._invoice_custom(result, invoice_id="assisted-native-reissue",
-            payload={"reissue_generation": str(first.generation)})
+            payload={**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(first.generation)})
         self.assertEqual(response.status_code, 200, response.content)
         bank.assert_called_once()
         second = IgCheckoutInvoiceGeneration.objects.get(proposal=result["proposal"], generation=2)
@@ -316,7 +318,7 @@ class NativeAssistedCheckoutPaymentTests(AssistedCheckoutPaymentFixture, Transac
         self.assertEqual(response.status_code, 400, response.content)
         bank.assert_called_once()
         with patch("storefront.views.monobank._monobank_api_request") as retry:
-            repeated = self.client.post(url, {"reissue_generation": "1"}, HTTP_ACCEPT="application/json")
+            repeated = self.client.post(url, {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": "1"}, HTTP_ACCEPT="application/json")
         self.assertEqual(repeated.status_code, 400, repeated.content)
         retry.assert_not_called()
         self.assertEqual(IgCheckoutInvoiceGeneration.objects.count(), 1)

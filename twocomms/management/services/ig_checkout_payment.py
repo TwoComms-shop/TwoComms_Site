@@ -64,6 +64,13 @@ def _prelock_assisted_proposal(proposal):
         candidate = bool(getattr(proposal, "custom_print_full_only", False)
             or getattr(proposal, "_ig_assisted_execution_id", None) is not None)
     if not candidate:
+        # A native standard amendment owns a canonical selection head too.
+        # Preserve Client -> Deal -> Proposal order for mutation/payment races.
+        from management.models import IgClient, IgCommerceSelectionSession
+        if proposal.cart_amendments.exists():
+            IgClient.objects.select_for_update().get(pk=proposal.client_id)
+            list(IgCommerceSelectionSession.objects.select_for_update().filter(client_id=proposal.client_id,
+                commercial_episode_id=proposal.commercial_episode_id, open_slot=1, state="open").values_list("pk", flat=True))
         return None
     from management.services.ig_assisted_checkout import lock_assisted_checkout_owner
     execution = lock_assisted_checkout_owner(proposal.pk)
@@ -263,7 +270,27 @@ def _proposal_brigade_policy(proposal):
     return full_only, eligible
 
 
-def _validate_payload(proposal, payload, *, user=None):
+def _displayed_checkout_shipping(proposal, request):
+    """Read only the server-signed native grant's actual rendered policy."""
+    from django.core import signing
+    from management.models import IgCheckoutAccessToken
+    session = getattr(request, "session", None)
+    value = session.get(f"ig_checkout_grant:{proposal.public_id}") if session is not None else None
+    if not value:
+        return None
+    try:
+        grant = signing.loads(value, salt="twocomms.instagram-checkout.grant.v1", max_age=12 * 60 * 60)
+        if (grant.get("proposal_id") != str(proposal.public_id) or grant.get("revision") != proposal.revision
+                or grant.get("expires_at", 0) <= timezone.now().timestamp()
+                or not IgCheckoutAccessToken.objects.filter(pk=grant.get("token_id"), proposal=proposal,
+                    revoked_at__isnull=True, expires_at__gt=timezone.now()).exists()):
+            raise signing.BadSignature
+        return grant.get("displayed_shipping")
+    except (signing.BadSignature, TypeError, ValueError) as exc:
+        raise CheckoutPaymentError("delivery_policy_changed", "Оновіть умови доставки перед оплатою.") from exc
+
+
+def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=None, displayed_shipping=None):
     from storefront.services.brigade_commerce import brigade_payment_error
     brigade_full_only, promo_eligible_total = _proposal_brigade_policy(proposal)
     if brigade_full_only and proposal.pay_type != proposal.PayType.ONLINE_FULL:
@@ -347,6 +374,75 @@ def _validate_payload(proposal, payload, *, user=None):
     )
     if payment_amount <= 0:
         raise CheckoutPaymentError("invalid_amount", "Сумма платежа должна быть больше нуля.")
+    shipping_ack = None
+    shipping = None
+    if not hasattr(proposal, "assisted_commerce_execution"):
+        from management.services.ig_checkout_cart_amendments import checkout_cart_state
+        from orders.services.shipping_policy import build_shipping_snapshot, loses_automatic_free_shipping
+        displayed = displayed_shipping or checkout_cart_state(proposal).get("free_delivery")
+        frozen_shipping = None
+        frozen_ack = None
+        if shipping_source_attempt is not None:
+            from orders.services.delivery_payment import build_threshold_delivery_contract, DeliveryPaymentError
+            actual = PaymentAttempt.objects.select_for_update().get(pk=shipping_source_attempt.pk)
+            try:
+                source_generation = actual.instagram_checkout_generation
+                stored = (actual.cart_snapshot or {}).get("threshold_delivery_contract")
+                if (build_threshold_delivery_contract(actual, proposal=proposal, generation=source_generation) != stored
+                        or actual.payable_amount != order_payable
+                        or actual.gross_amount != proposal.catalog_total
+                        or actual.discount_amount != Decimal(proposal.negotiated_discount or 0) + promo_discount):
+                    raise DeliveryPaymentError("delivery_policy_changed")
+                frozen_shipping = stored["shipping"]
+                frozen_ack = (actual.cart_snapshot or {}).get("delivery_policy_ack")
+            except (DeliveryPaymentError, AttributeError, TypeError, KeyError) as exc:
+                raise CheckoutPaymentError("delivery_policy_changed", "Потрібна перевірка умов доставки.") from exc
+        shipping = build_shipping_snapshot(merchandise_total=order_payable,
+            gross_total=proposal.catalog_total,
+            discount_amount=Decimal(proposal.negotiated_discount or 0) + promo_discount,
+            currency=proposal.currency, cart_digest=proposal.items_digest,
+            owner={"proposal_id": str(proposal.public_id), "revision": proposal.revision,
+                "items_digest": proposal.items_digest},
+            threshold=frozen_shipping["threshold"] if frozen_shipping else None,
+            evaluated_at=frozen_shipping["evaluated_at"] if frozen_shipping else None)
+        shipping["ack_required"] = (bool(frozen_ack) if frozen_shipping is not None else
+            bool((displayed or {}).get("ack_required") or loses_automatic_free_shipping(displayed, shipping)))
+        shipping["ack_digest"] = checkout_shipping_ack_digest(proposal, shipping, promo_code=promo_code)
+        display_changed = bool(frozen_shipping is None and displayed_shipping is not None and (
+            not isinstance(payload.get("delivery_policy_digest"), str)
+            or not secrets.compare_digest(payload["delivery_policy_digest"], displayed_shipping.get("ack_digest", ""))
+            or any(displayed_shipping.get(key) != shipping.get(key) for key in
+                ("threshold", "policy_version", "basis", "authority", "currency"))))
+        if display_changed:
+            error = CheckoutPaymentError("delivery_policy_changed", "Умови доставки змінилися. Перевірте їх перед оплатою.",
+                field="delivery_policy_ack")
+            error.free_delivery = shipping
+            error.payment_preview = {"total": str(order_payable), "catalog_total": str(proposal.catalog_total),
+                "discount": str(Decimal(proposal.negotiated_discount or 0) + promo_discount), "charge_now": str(payment_amount)}
+            raise error
+        if shipping["ack_required"]:
+            frozen_ack_valid = bool(frozen_ack and frozen_ack.get("digest") == shipping["ack_digest"]
+                and frozen_ack.get("revision") == proposal.revision
+                and frozen_ack.get("items_digest") == proposal.items_digest
+                and frozen_ack.get("proposal_id") == str(proposal.public_id)
+                and frozen_ack.get("basis_total") == str(order_payable)
+                and frozen_ack.get("promo_code") == promo_code)
+            if not frozen_ack_valid and (payload.get("delivery_policy_ack") not in (True, "1", "true", "on")
+                    or not isinstance(payload.get("delivery_policy_digest"), str)
+                    or not secrets.compare_digest(payload["delivery_policy_digest"], shipping["ack_digest"])):
+                error = CheckoutPaymentError("delivery_policy_ack",
+                    "Безкоштовна доставка більше не діє. Підтвердьте оплату доставки отримувачем.",
+                    field="delivery_policy_ack")
+                error.free_delivery = shipping
+                error.payment_preview = {"total": str(order_payable), "catalog_total": str(proposal.catalog_total),
+                    "discount": str(Decimal(proposal.negotiated_discount or 0) + promo_discount),
+                    "charge_now": str(payment_amount)}
+                raise error
+            shipping_ack = {"schema": "ig-checkout-delivery-policy-ack.v1",
+                "digest": shipping["ack_digest"], "proposal_id": str(proposal.public_id),
+                "revision": proposal.revision, "items_digest": proposal.items_digest,
+                "basis_total": str(order_payable), "promo_code": promo_code,
+                "mode": shipping["mode"], "payer_type": shipping["payer_type"]}
     return {
         "full_name": full_name,
         "phone": phone,
@@ -358,6 +454,8 @@ def _validate_payload(proposal, payload, *, user=None):
         "promo_event_state": promo_event_state,
         "order_payable": order_payable,
         "payment_amount": payment_amount,
+        "shipping_ack": shipping_ack,
+        "shipping_policy": shipping,
     }
 
 
@@ -488,6 +586,52 @@ def _snapshot(proposal):
     }
 
 
+def checkout_shipping_ack_digest(proposal, shipping, *, promo_code=""):
+    """Consent names the exact displayed policy and discounted goods revision."""
+    from django.utils.crypto import salted_hmac
+    body = {"proposal_id": str(proposal.public_id), "revision": proposal.revision,
+        "items_digest": proposal.items_digest, "promo_code": promo_code,
+        "policy": {key: shipping[key] for key in ("schema", "policy_version", "basis", "threshold",
+            "basis_total", "gross_total", "discount_amount", "currency", "authority", "mode", "payer_type")}}
+    return salted_hmac("management.ig_checkout.shipping_ack.v1",
+        json.dumps(body, sort_keys=True, separators=(",", ":")), algorithm="sha256").hexdigest()
+
+
+def freeze_checkout_shipping(attempt, proposal, *, generation=None, shipping_ack=None, shipping_policy=None):
+    """Seal ordinary goods delivery policy on the native pre-provider attempt."""
+    from orders.services.delivery_payment import DeliveryPaymentError, build_threshold_delivery_contract, threshold_shipping_cart_digest
+    from orders.services.shipping_policy import ShippingPolicyError, build_shipping_snapshot
+    snapshot = dict(attempt.cart_snapshot or {})
+    if any(key in snapshot for key in ("assisted_execution", "assisted_commerce", "custom_print_creation")):
+        return
+    try:
+        snapshot["shipping"] = build_shipping_snapshot(merchandise_total=attempt.payable_amount,
+            gross_total=attempt.gross_amount, discount_amount=attempt.discount_amount,
+            currency=proposal.currency, cart_digest=threshold_shipping_cart_digest(snapshot["cart"]),
+            threshold=shipping_policy["threshold"] if shipping_policy is not None else None,
+            evaluated_at=shipping_policy["evaluated_at"] if shipping_policy is not None else None)
+        attempt.cart_snapshot = snapshot
+        snapshot["threshold_delivery_contract"] = build_threshold_delivery_contract(
+            attempt, proposal=proposal, generation=generation)
+        if shipping_ack is not None:
+            snapshot["delivery_policy_ack"] = dict(shipping_ack)
+    except (DeliveryPaymentError, ShippingPolicyError) as exc:
+        raise CheckoutPaymentError("delivery_policy_changed", "Потрібна перевірка умов доставки.") from exc
+    attempt.save(update_fields=["cart_snapshot", "updated"])
+
+
+def require_checkout_revision(proposal, payload):
+    """The displayed economic revision must match after the proposal lock."""
+    import secrets
+    raw = payload.get("expected_revision")
+    digest = payload.get("expected_digest")
+    if (not isinstance(raw, (str, int)) or isinstance(raw, bool)
+            or not 1 <= len(str(raw)) <= 10 or not str(raw).isdigit() or int(raw) != proposal.revision
+            or not isinstance(digest, str) or len(digest) != 64
+            or not secrets.compare_digest(digest, proposal.items_digest)):
+        raise CheckoutPaymentError("revision_changed", "Кошик змінився. Оновіть сторінку перед оплатою.")
+
+
 def _revalidate_frozen_proposal(proposal):
     """Reject catalog drift before recipient data or an invoice is locked."""
     from management.models import IgCheckoutRevision
@@ -518,6 +662,11 @@ def _revalidate_frozen_proposal(proposal):
         # provider effects. Current source/CAS authorization belongs to the
         # checkout effect owner; this reads only the frozen proposal graph.
         _snapshot(proposal)
+        capture = revision.snapshot.get("source_cart_capture") or {}
+        if capture.get("fence", {}).get("native_amendment_id"):
+            from management.services.ig_checkout_cart_amendments import validate_native_payment_capture
+            if not validate_native_payment_capture(capture):
+                raise CheckoutPaymentError("revision_changed", "Кошик змінився. Оновіть пропозицію перед оплатою.")
 
     item_specs = [
         {
@@ -736,6 +885,7 @@ def lock_proposal_details(proposal, *, payload, request, grant_id=""):
     locked = IgCheckoutProposal.objects.select_for_update().select_related(
         "client", "commercial_episode"
     ).get(pk=proposal.pk, deal_id=deal.pk)
+    require_checkout_revision(locked, payload)
     locked_attempt = None
     if locked.payment_attempt_id:
         locked_attempt = PaymentAttempt.objects.select_for_update().get(
@@ -783,7 +933,8 @@ def lock_proposal_details(proposal, *, payload, request, grant_id=""):
         raise CheckoutPaymentError("unavailable", "Это предложение больше нельзя оплатить.")
 
     _revalidate_frozen_proposal(locked)
-    values = _validate_payload(locked, payload, user=request.user)
+    values = _validate_payload(locked, payload, user=request.user,
+        displayed_shipping=_displayed_checkout_shipping(locked, request))
     if not request.session.session_key:
         request.session.save()
     fingerprint = _fingerprint(
@@ -837,6 +988,7 @@ def lock_proposal_details(proposal, *, payload, request, grant_id=""):
         attempt.tracking_payload = tracking
         attempt.save(update_fields=["tracking_payload", "updated"])
     locked.payment_attempt = attempt
+    freeze_checkout_shipping(attempt, locked, shipping_ack=values.get("shipping_ack"), shipping_policy=values.get("shipping_policy"))
     locked.status = locked.Status.DETAILS_LOCKED
     locked.details_locked_at = now
     deal.np_full_name = values["full_name"]
@@ -1771,6 +1923,14 @@ def bind_verified_payment(attempt_id, order):
         attempt.save(update_fields=["status", "updated"])
     deal.order_id = order.pk
     deal.status = deal.Status.ORDER_CREATED
+    # Browser payment choice belongs to the winning Attempt. The Proposal's
+    # original full goods quote is not the amount this attached Order charged.
+    deal.requested_payment_amount = attempt.payment_amount
+    deal.pay_type = {
+        PaymentAttempt.PayType.ONLINE_FULL: IgDeal.PayType.ONLINE_FULL,
+        PaymentAttempt.PayType.PREPAYMENT: IgDeal.PayType.PREPAYMENT,
+        PaymentAttempt.PayType.PREPAY_200: IgDeal.PayType.PREPAY_200,
+    }[attempt.pay_type]
     deal.payment_status = (
         "prepaid"
         if attempt.pay_type in {
@@ -1785,7 +1945,7 @@ def bind_verified_payment(attempt_id, order):
     deal.payment_truth_updated_at = now
     deal.save(update_fields=[
         "order", "status", "payment_status", "payment_truth", "paid_amount", "paid_at",
-        "payment_truth_updated_at", "updated_at",
+        "requested_payment_amount", "pay_type", "payment_truth_updated_at", "updated_at",
     ])
     proposal.status = proposal.Status.PAID
     proposal.paid_at = proposal.paid_at or verified_at
@@ -1852,6 +2012,13 @@ def bind_verified_payment(attempt_id, order):
         if not isinstance(attached, dict) or attached.get("ready") is not True:
             raise CheckoutPaymentError((attached or {}).get("reason") or "assisted_order_attach_failed",
                 "Оплату зафіксовано; потрібна перевірка прив’язки замовлення.")
+    threshold_contract = (attempt.cart_snapshot or {}).get("threshold_delivery_contract")
+    if threshold_contract is not None:
+        from orders.services.delivery_payment import build_threshold_delivery_contract
+        if build_threshold_delivery_contract(attempt, proposal=proposal, generation=generation) != threshold_contract:
+            raise CheckoutPaymentError("delivery_policy_changed", "Потрібна перевірка умов доставки.")
+        order.payment_payload = {**(order.payment_payload or {}), "delivery_payment": threshold_contract}
+        order.save(update_fields=["payment_payload"])
     event, _created = ensure_lifecycle_event(
         order,
         IgLifecycleEvent.Kind.PAYMENT_VERIFIED,

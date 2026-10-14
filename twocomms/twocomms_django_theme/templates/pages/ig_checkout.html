@@ -11,16 +11,7 @@
   <title>TwoComms · {{ copy.page_title }}</title>
   <link rel="preload" href="{% static 'fonts/Inter-Regular.woff2' %}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{% static 'fonts/Inter-Bold.woff2' %}" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="{% static 'css/instagram-checkout.css' %}?v=06ff10b27d9e">
-  {% if has_assisted_terms %}
-  <style>
-    html,body,.ig-page{min-width:0;}
-    .ig-assisted-terms{display:flex;align-items:flex-start;gap:11px;min-height:44px;margin:4px 0 14px;padding:13px;border:1px solid #726042;border-radius:10px;background:#211d17;color:#eee6d7;font-size:13px;line-height:1.55;cursor:pointer;}
-    .ig-assisted-terms input{flex:0 0 20px;width:20px;height:20px;min-height:20px;margin:2px 0 0;accent-color:#efaa4c;}.ig-assisted-terms span{min-width:0;overflow-wrap:anywhere;}.ig-assisted-terms input:focus-visible{outline:2px solid #efaa4c;outline-offset:4px;}.ig-assisted-terms.is-invalid{border-color:#e68181;}
-    .ig-item--assisted .ig-facts dt,.ig-item--assisted .ig-facts dd,.ig-item--assisted .ig-item__heading strong,.ig-item--assisted .ig-item__unit-price{font-size:12px;}.ig-assisted-kind{display:inline-block;color:#d8b986;font-size:12px;font-weight:500;line-height:1.4;}.ig-assisted-fallback{gap:6px;line-height:1.25;}.ig-assisted-fallback svg{width:36px;height:40px;justify-self:center;}
-    .ig-assisted-shipping{min-width:0;margin:0 0 12px;padding:13px;border:1px solid #554a36;border-radius:10px;background:linear-gradient(135deg,#242017,#181a1c);color:#eee6d7;}.ig-assisted-shipping h3{margin:0;font-size:14px;line-height:1.4;overflow-wrap:anywhere;}.ig-assisted-shipping__phase{display:block;margin-top:4px;font-size:12px;color:#cdbb99;}.ig-assisted-shipping dl{display:grid;gap:7px;margin:11px 0;}.ig-assisted-shipping dl>div{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:3px 12px;}.ig-assisted-shipping dt{min-width:0;font-size:12px;line-height:1.5;color:#c9c3b8;overflow-wrap:anywhere;}.ig-assisted-shipping dd{margin:0;font-size:14px;font-weight:650;line-height:1.5;white-space:nowrap;}.ig-assisted-shipping p{margin:7px 0 0;font-size:12px;line-height:1.55;color:#c9c3b8;overflow-wrap:anywhere;}.ig-assisted-shipping__deferred{padding-top:9px;border-top:1px solid #3d382e;}
-  </style>
-  {% endif %}
+  <link rel="stylesheet" href="{% static 'css/instagram-checkout.css' %}?v=20261014-cart-delivery-v4">
 </head>
 <body>
   <svg class="ig-icon-sprite" aria-hidden="true" focusable="false">
@@ -41,7 +32,7 @@
     <symbol id="ig-icon-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z"></path><path d="M12 9v5M12 17.5v.1"></path></symbol>
   </svg>
 
-  <main class="ig-page" data-ig-checkout data-proposal-url="{{ proposal_url }}" data-status-url="{{ status_url }}" data-checkout-state="{{ checkout_state }}" data-created-at="{{ proposal.created_at_iso }}" data-expires-at="{{ proposal.expires_at_iso }}" data-generation-expires-at="{{ generation_expires_at_iso }}" data-analytics-value="{{ analytics.value }}" data-analytics-currency="{{ analytics.currency }}">
+  <main class="ig-page{% if cart_state.can_edit %} has-cart-controls{% endif %}" data-ig-checkout data-proposal-url="{{ proposal_url }}" data-status-url="{{ status_url }}" data-checkout-state="{{ checkout_state }}" data-created-at="{{ proposal.created_at_iso }}" data-expires-at="{{ proposal.expires_at_iso }}" data-generation-expires-at="{{ generation_expires_at_iso }}" data-analytics-value="{{ analytics.value }}" data-analytics-currency="{{ analytics.currency }}">
     <header class="ig-topbar">
       <a class="ig-brand" href="/" aria-label="TwoComms" data-checkout-exit>
         <img src="{% static 'img/logo.svg' %}" alt="" width="28" height="28">
@@ -86,8 +77,8 @@
           <button class="ig-state ig-state--ready" type="button" data-price-details data-expired-title="{{ copy.state_expired_title }}" data-expired-body="{{ copy.state_expired_body }}" aria-haspopup="dialog" aria-controls="ig-price-dialog">
             <span class="ig-state__icon" aria-hidden="true"><svg data-state-icon="success"><use href="#ig-icon-check-badge"></use></svg></span>
             <span class="ig-state__copy">
-              <strong>{{ copy.fixed_price_title }}</strong>
-              <small><span class="ig-proposal-reference">{{ copy.proposal_label }} #{{ proposal.reference }}</span><span aria-hidden="true"> · </span>{{ copy.fixed_price_hint }}</small>
+              <strong>{% if cart_state.can_edit %}{% if html_lang == 'ru' %}Вашу корзину можно изменить{% elif html_lang == 'en' %}You can update your basket{% else %}Ваш кошик можна змінити{% endif %}{% else %}{{ copy.fixed_price_title }}{% endif %}</strong>
+              <small><span class="ig-proposal-reference">{{ copy.proposal_label }} #{{ proposal.reference }}</span><span aria-hidden="true"> · </span>{% if cart_state.can_edit %}{% if html_lang == 'ru' %}Как изменить корзину{% elif html_lang == 'en' %}How to update your basket{% else %}Як змінити кошик{% endif %}{% else %}{{ copy.fixed_price_hint }}{% endif %}</small>
             </span>
             <span class="ig-state__countdown" data-countdown-wrap aria-label="{{ copy.expires_label }}">
               <svg class="ig-countdown__visual" viewBox="0 0 42 42" aria-hidden="true" focusable="false">
@@ -126,11 +117,11 @@
 
         <div class="ig-section-head">
           <h2>{{ copy.order_label }}</h2>
-          <span>{{ items|length }} {% if items|length == 1 %}{{ copy.item_singular }}{% else %}{{ copy.item_plural }}{% endif %}</span>
+          <span data-cart-count data-singular="{{ copy.item_singular }}" data-plural="{{ copy.item_plural }}">{{ items|length }} {% if items|length == 1 %}{{ copy.item_singular }}{% else %}{{ copy.item_plural }}{% endif %}</span>
         </div>
-        <div class="ig-products" aria-label="{{ copy.order_label }}">
+        <div class="ig-products" aria-label="{{ copy.order_label }}" data-cart-products>
           {% for item in items %}
-            <article class="ig-item{% if item.is_assisted %} ig-item--assisted{% endif %}">
+            <article class="ig-item{% if item.is_assisted %} ig-item--assisted{% endif %}" data-cart-line="{{ item.line_id }}">
               <div class="ig-item__media{% if not item.image_url %} is-fallback{% endif %}" data-product-media>
                 {% if item.image_url %}
                   <img src="{{ item.image_url }}" alt="{{ item.title }} · {{ item.color_label }}" width="640" height="800" loading="{% if forloop.first %}eager{% else %}lazy{% endif %}" decoding="async" data-product-image>
@@ -145,8 +136,8 @@
                 <div class="ig-item__heading">
                   <h3>{{ item.title }}</h3>
                   {% if item.is_custom %}<span class="ig-assisted-kind">{% if html_lang == 'ru' %}Индивидуальный товар{% elif html_lang == 'en' %}Custom item{% else %}Індивідуальний товар{% endif %}</span>{% endif %}
-                  <strong>{{ item.line_total }} {{ proposal.currency }}</strong>
-                  {% if item.quantity > 1 %}<span class="ig-item__unit-price">{{ item.quantity }} × {{ item.unit_price }} {{ proposal.currency }}</span>{% endif %}
+                  <strong data-cart-line-total>{% if item.line_total == None %}{% if html_lang == 'ru' %}После согласования{% elif html_lang == 'en' %}After confirmation{% else %}Після погодження{% endif %}{% else %}{{ item.line_total }} {{ proposal.currency }}{% endif %}</strong>
+                  <span class="ig-item__unit-price" data-cart-unit-price{% if item.quantity <= 1 or item.unit_price == None %} hidden{% endif %}>{{ item.quantity }} × {{ item.unit_price }} {{ proposal.currency }}</span>
                 </div>
                 <dl class="ig-facts">
                   {% if item.color_label %}<div data-product-fact><dt>{{ copy.color_label }}</dt><dd>{% if not item.is_custom %}<span class="ig-swatch" style="--swatch: {{ item.color_code|default:'#171717' }}" aria-hidden="true"></span>{% endif %}{{ item.color_label }}</dd></div>{% endif %}
@@ -157,8 +148,18 @@
                     {% for option in item.option_facts %}<div data-product-fact><dt>{{ option.code }}</dt><dd>{{ option.label }}</dd></div>{% endfor %}
                   {% endif %}
                   {% if item.size %}<div data-product-fact><dt>{{ copy.size_label }}</dt><dd>{{ item.size }}</dd></div>{% endif %}
-                  <div data-product-fact><dt>{{ copy.quantity_label }}</dt><dd>{{ item.quantity }}</dd></div>
+                  <div data-product-fact><dt>{{ copy.quantity_label }}</dt><dd data-cart-quantity>{{ item.quantity }}</dd></div>
                 </dl>
+                {% if cart_state.can_edit %}
+                  <div class="ig-cart-controls" data-cart-controls>
+                    <div class="ig-cart-stepper" role="group" aria-label="{{ copy.quantity_label }} · {{ item.title }}">
+                      <button type="button" data-cart-action="decrease" aria-label="{% if html_lang == 'ru' %}Уменьшить количество{% elif html_lang == 'en' %}Decrease quantity{% else %}Зменшити кількість{% endif %} · {{ item.title }}"{% if item.quantity <= 1 %} disabled{% endif %}>−</button>
+                      <span data-cart-stepper-quantity aria-hidden="true">{{ item.quantity }}</span>
+                      <button type="button" data-cart-action="increase" aria-label="{% if html_lang == 'ru' %}Увеличить количество{% elif html_lang == 'en' %}Increase quantity{% else %}Збільшити кількість{% endif %} · {{ item.title }}"{% if item.quantity >= 50 %} disabled{% endif %}>+</button>
+                    </div>
+                    <button type="button" class="ig-cart-remove" data-cart-action="remove" aria-label="{% if html_lang == 'ru' %}Удалить{% elif html_lang == 'en' %}Remove{% else %}Видалити{% endif %} · {{ item.title }}">{% if html_lang == 'ru' %}Удалить{% elif html_lang == 'en' %}Remove{% else %}Видалити{% endif %}</button>
+                  </div>
+                {% endif %}
               </div>
             </article>
           {% empty %}
@@ -166,13 +167,35 @@
           {% endfor %}
         </div>
 
-        <div class="ig-totals">
-          {% if proposal.has_discount %}
-            <div><span>{{ copy.catalog_total }}</span><span>{{ proposal.catalog_total }} {{ proposal.currency }}</span></div>
-            <div class="ig-totals__discount"><span>{{ copy.discount }}</span><span>−{{ proposal.discount }} {{ proposal.currency }}</span></div>
-          {% endif %}
-          {% if proposal.is_prepayment %}<div><span>{{ copy.charge_now }}</span><span>{{ proposal.charge_now }} {{ proposal.currency }}</span></div>{% endif %}
-          <div class="ig-totals__final"><span>{{ copy.total }}</span><strong>{{ proposal.total }} {{ proposal.currency }}</strong></div>
+        <div class="ig-cart-feedback" data-cart-feedback{% if not cart_state.review_needed %} hidden{% endif %}>
+          <p role="status" aria-live="polite" aria-atomic="true" tabindex="-1" data-cart-status>{% if cart_state.review_needed %}{% if html_lang == 'ru' %}Изменения сохранены. Менеджер проверит новые условия перед оплатой.{% elif html_lang == 'en' %}Changes saved. A manager will confirm the updated terms before payment.{% else %}Зміни збережено. Менеджер перевірить нові умови перед оплатою.{% endif %}{% endif %}</p>
+          <button type="button" class="ig-cart-retry" data-cart-retry hidden>{% if html_lang == 'ru' %}Проверить сохранение{% elif html_lang == 'en' %}Check saved changes{% else %}Перевірити збереження{% endif %}</button>
+        </div>
+
+        <section class="ig-delivery-benefit{% if cart_state.free_delivery.eligible %} is-achieved{% endif %}" data-delivery-benefit data-manual-payer="{{ assisted_selected_shipping.payer }}" aria-label="{% if html_lang == 'ru' %}Условия доставки{% elif html_lang == 'en' %}Delivery terms{% else %}Умови доставки{% endif %}"{% if not cart_state.free_delivery and not cart_state.review_needed and not assisted_selected_shipping %} hidden{% endif %}>
+          <span class="ig-delivery-benefit__icon" aria-hidden="true"><svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9h8M1 14h5M3 19h5M12 7h19v17H12zM31 13h7l7 7v4H31zM38 13v7h7M18 28a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM38 28a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg></span>
+          <div class="ig-delivery-benefit__copy">
+            <strong data-delivery-benefit-title>{% if cart_state.free_delivery.eligible %}{% if html_lang == 'ru' %}Ваша доставка бесплатная{% elif html_lang == 'en' %}Your delivery is free{% else %}Ваша доставка безкоштовна{% endif %}{% elif cart_state.free_delivery and not cart_state.can_edit %}{% if html_lang == 'ru' %}Доставку оплачиваете отдельно Новой почте{% elif html_lang == 'en' %}You pay Nova Poshta for delivery separately{% else %}Доставку оплачуєте окремо Новій пошті{% endif %}{% elif cart_state.free_delivery %}{% if html_lang == 'ru' %}До бесплатной доставки — ещё{% elif html_lang == 'en' %}Free delivery is within reach — add{% else %}До безкоштовної доставки — ще{% endif %} {{ cart_state.free_delivery.remaining|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% elif cart_state.review_needed %}{% if html_lang == 'ru' %}Условия доставки уточняем{% elif html_lang == 'en' %}Confirming your delivery terms{% else %}Умови доставки уточнюємо{% endif %}{% elif assisted_selected_shipping.payer == 'merchant' %}{% if html_lang == 'ru' %}Доставку оплачивает TwoComms{% elif html_lang == 'en' %}TwoComms covers delivery{% else %}Доставку оплачує TwoComms{% endif %}{% else %}{% if html_lang == 'ru' %}Доставка по согласованным условиям{% elif html_lang == 'en' %}Delivery under your agreed terms{% else %}Доставка за погодженими умовами{% endif %}{% endif %}</strong>
+            <p data-delivery-benefit-detail>{% if cart_state.free_delivery %}{% if html_lang == 'ru' %}Товары после скидок{% elif html_lang == 'en' %}Items after discounts{% else %}Товари після знижок{% endif %}: {{ cart_state.free_delivery.basis_total|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% if cart_state.can_edit %} · {% if html_lang == 'ru' %}бесплатно от{% elif html_lang == 'en' %}free from{% else %}безкоштовно від{% endif %} {{ cart_state.free_delivery.threshold|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% endif %}{% elif cart_state.review_needed %}{% if html_lang == 'ru' %}Менеджер проверит обновлённую корзину и подтвердит доставку перед оплатой.{% elif html_lang == 'en' %}A manager will review your updated basket and confirm delivery before payment.{% else %}Менеджер перевірить оновлений кошик і підтвердить доставку перед оплатою.{% endif %}{% else %}{% if html_lang == 'ru' %}Согласованные с вами условия сохраняются отдельно от акции на бесплатную доставку.{% elif html_lang == 'en' %}Your agreed terms are separate from the free delivery promotion.{% else %}Погоджені з вами умови зберігаються окремо від акції на безкоштовну доставку.{% endif %}{% endif %}</p>
+          </div>
+          <div class="ig-delivery-benefit__meter" data-delivery-benefit-meter{% if not cart_state.free_delivery or not cart_state.can_edit %} hidden{% endif %}>
+            <div class="ig-delivery-benefit__track" role="progressbar" aria-label="{% if html_lang == 'ru' %}До бесплатной доставки{% elif html_lang == 'en' %}Progress towards free delivery{% else %}До безкоштовної доставки{% endif %}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ cart_state.free_delivery.progress|default:0 }}" data-delivery-benefit-progress><span style="width:{{ cart_state.free_delivery.progress|default:0 }}%" data-delivery-benefit-bar></span></div>
+            <span class="ig-delivery-benefit__threshold" data-delivery-benefit-threshold>{{ cart_state.free_delivery.threshold|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}</span>
+          </div>
+          <p class="ig-delivery-benefit__update" role="status" aria-live="polite" aria-atomic="true" data-delivery-benefit-update></p>
+          <label class="ig-delivery-ack" data-delivery-policy-ack-wrap{% if not cart_state.free_delivery.ack_required or not cart_state.can_pay %} hidden{% endif %}>
+            <input type="checkbox" name="delivery_policy_ack" value="1" form="{% if reissue_allowed %}ig-checkout-reissue-form{% else %}ig-checkout-delivery-form{% endif %}" data-delivery-policy-ack{% if cart_state.free_delivery.ack_required and cart_state.can_pay %} required{% else %} disabled{% endif %}>
+            <span>{% if html_lang == 'ru' %}Продолжить с этим составом заказа. Доставку оплачу отдельно Новой почте.{% elif html_lang == 'en' %}Continue with these items. I will pay Nova Poshta for delivery separately.{% else %}Продовжити з цим складом замовлення. Доставку оплачу окремо Новій пошті.{% endif %}</span>
+          </label>
+          <input type="hidden" name="delivery_policy_digest" value="{{ cart_state.free_delivery.ack_digest }}" form="{% if reissue_allowed %}ig-checkout-reissue-form{% else %}ig-checkout-delivery-form{% endif %}" data-delivery-policy-digest>
+        </section>
+
+        <div class="ig-totals" data-cart-totals>
+          <div data-cart-discount-row{% if not proposal.has_discount or cart_state.review_needed %} hidden{% endif %}><span>{{ copy.catalog_total }}</span><span data-cart-catalog-total>{{ proposal.catalog_total }} {{ proposal.currency }}</span></div>
+          <div class="ig-totals__discount" data-cart-discount-row{% if not proposal.has_discount or cart_state.review_needed %} hidden{% endif %}><span>{{ copy.discount }}</span><span data-cart-discount>−{{ proposal.discount }} {{ proposal.currency }}</span></div>
+          <div data-cart-charge-row{% if not proposal.is_prepayment or cart_state.review_needed or checkout_state == 'paid' %} hidden{% endif %}><span>{{ copy.charge_now }}</span><span data-cart-charge-now>{{ proposal.charge_now }} {{ proposal.currency }}</span></div>
+          <div class="ig-totals__final"><span>{% if checkout_state == 'paid' %}{% if html_lang == 'ru' %}Стоимость заказа{% elif html_lang == 'en' %}Order total{% else %}Вартість замовлення{% endif %}{% else %}{{ copy.total }}{% endif %}</span><strong data-cart-total>{% if cart_state.total == None %}{% if html_lang == 'ru' %}После согласования{% elif html_lang == 'en' %}After confirmation{% else %}Після погодження{% endif %}{% else %}{{ proposal.total }} {{ proposal.currency }}{% endif %}</strong></div>
+          {% if checkout_state == 'paid' and paid_via_invoice %}<div data-paid-via-invoice><span>{% if html_lang == 'ru' %}Оплачено по этому счёту{% elif html_lang == 'en' %}Paid on this invoice{% else %}Сплачено за цим рахунком{% endif %}</span><strong>{{ paid_via_invoice }} {{ proposal.currency }}</strong></div>{% endif %}
         </div>
 
         {% if share_allowed %}
@@ -193,6 +216,8 @@
 
           <form class="ig-form" method="post" action="{{ proposal_url }}" id="ig-checkout-delivery-form" novalidate data-np-form="instagram" data-np-city-search-url="{{ np_city_search_url }}" data-np-warehouse-search-url="{{ np_warehouse_search_url }}" data-locale="{{ html_lang }}">
             {% csrf_token %}
+            <input type="hidden" name="expected_revision" value="{{ cart_state.revision }}">
+            <input type="hidden" name="expected_digest" value="{{ cart_state.digest }}">
             <div class="ig-form-error" id="ig-form-error" role="alert" tabindex="-1" data-form-error data-validation-summary{% if not form_error %} hidden{% endif %}>{{ form_error }}</div>
             {% if assisted_selected_shipping %}
               <section class="ig-assisted-shipping" aria-labelledby="ig-assisted-shipping-title">
@@ -204,7 +229,7 @@
                 </dl>
                 <p>{% if assisted_selected_shipping.payer == 'merchant' %}{% if html_lang == 'ru' %}Доставку полностью оплачивает TwoComms. Вы оплачиваете здесь только товары.{% elif html_lang == 'en' %}TwoComms covers the full delivery cost. You pay only for the items here.{% else %}Доставку повністю оплачує TwoComms. Тут ви оплачуєте лише товари.{% endif %}{% else %}{% if html_lang == 'ru' %}Доставка оплачивается перевозчику отдельно и не входит в оплату товаров здесь. Фактическая стоимость может быть ниже этого максимума. Превышение требует вашего нового согласия.{% elif html_lang == 'en' %}Delivery is paid to the carrier separately and is not included in the item payment here. The actual cost may be lower than this maximum. Any increase requires your new consent.{% else %}Доставка оплачується перевізнику окремо й не входить в оплату товарів тут. Фактична вартість може бути нижчою за цей максимум. Перевищення потребує вашої нової згоди.{% endif %}{% endif %}</p>
                 {% if assisted_selected_shipping.deferred_count > 0 %}<p class="ig-assisted-shipping__deferred">{% if html_lang == 'ru' %}Остальные позиции остаются пожеланиями и ещё не оплачены. Для них позже потребуется отдельное согласование и оформление.{% elif html_lang == 'en' %}The remaining items are still wishes and have not been paid for. They will need separate agreement and checkout later.{% else %}Решта позицій залишається побажаннями й ще не оплачена. Для них пізніше потрібні окреме погодження та оформлення.{% endif %}</p>{% endif %}
-                <p>{% if html_lang == 'ru' %}Срок прибытия зависит от перевозчика и не гарантируется.{% elif html_lang == 'en' %}Arrival timing depends on the carrier and is not guaranteed.{% else %}Строк прибуття залежить від перевізника й не гарантується.{% endif %}</p>
+                <p>{% if html_lang == 'ru' %}После оформления отправим выбранные позиции. Точный день получения зависит от перевозчика.{% elif html_lang == 'en' %}After checkout, we’ll send the selected items. The exact arrival date depends on the carrier.{% else %}Після оформлення відправимо вибрані позиції. Точний день отримання залежить від перевізника.{% endif %}</p>
               </section>
             {% endif %}
             {% if has_assisted_terms %}
@@ -284,8 +309,8 @@
           </form>
 
           <aside class="ig-direct-help" data-direct-help>
-            <p>{{ copy.direct_help }}</p>
-            <a href="{{ direct_url }}" target="_blank" rel="noopener noreferrer">{{ copy.change_order }}</a>
+            <p>{% if cart_state.can_edit %}{% if html_lang == 'ru' %}Количество меняйте кнопками +/−, ненужные товары удаляйте здесь. Сумма и условия доставки обновятся. Другой размер, цвет или новый товар согласуем в том же Direct.{% elif html_lang == 'en' %}Use +/− to change quantities and remove items here. Your total and delivery terms will update. For another size, colour or a new item, message us in the same Direct chat.{% else %}Кількість змінюйте кнопками +/−, зайві товари видаляйте тут. Сума й умови доставки оновляться. Інший розмір, колір або новий товар погодимо в тому самому Direct.{% endif %}{% else %}{{ copy.direct_help }}{% endif %}</p>
+            <a href="{{ direct_url }}" target="_blank" rel="noopener noreferrer">{% if cart_state.can_edit %}{% if html_lang == 'ru' %}Другие изменения — в Direct{% elif html_lang == 'en' %}Other changes — in Direct{% else %}Інші зміни — у Direct{% endif %}{% else %}{{ copy.change_order }}{% endif %}</a>
           </aside>
 
           <details class="ig-direct-help" data-approved-policy-copy>
@@ -295,7 +320,7 @@
           </details>
 
           <div class="ig-payment-rail" data-payment-rail>
-            <div class="ig-payment-rail__amount" data-payment-amount>
+            <div class="ig-payment-rail__amount" data-payment-amount data-total-label="{{ copy.total }}" data-charge-label="{{ copy.charge_now }}">
               <span>{% if proposal.is_prepayment %}{{ copy.charge_now }}{% else %}{{ copy.total }}{% endif %}</span>
               <strong>{% if proposal.is_prepayment %}{{ proposal.charge_now }}{% else %}{{ proposal.total }}{% endif %} {{ proposal.currency }}</strong>
             </div>
@@ -314,6 +339,8 @@
             {% if reissue_allowed %}
               <form method="post" action="{{ proposal_url }}" id="ig-checkout-reissue-form" data-generation-reissue-form>
                 {% csrf_token %}
+                <input type="hidden" name="expected_revision" value="{{ cart_state.revision }}">
+                <input type="hidden" name="expected_digest" value="{{ cart_state.digest }}">
                 <input type="hidden" name="reissue_generation" value="{{ reissue_generation }}">
                 <button class="ig-action ig-action--primary" type="submit" data-generation-reissue-submit data-loading-label="{{ copy.pay_loading }}">{{ copy.reissue_invoice }}</button>
               </form>
@@ -322,7 +349,7 @@
           </div>
           {% if payment_url %}
             <div class="ig-payment-rail" data-payment-rail data-payment-continue-rail>
-              <div class="ig-payment-rail__amount" data-payment-amount>
+              <div class="ig-payment-rail__amount" data-payment-amount data-total-label="{{ copy.total }}" data-charge-label="{{ copy.charge_now }}">
                 <span>{% if proposal.is_prepayment %}{{ copy.charge_now }}{% else %}{{ copy.total }}{% endif %}</span>
                 <strong>{% if proposal.is_prepayment %}{{ proposal.charge_now }}{% else %}{{ proposal.total }}{% endif %} {{ proposal.currency }}</strong>
               </div>
@@ -352,8 +379,8 @@
     <dialog class="ig-sheet-dialog" id="ig-price-dialog" data-price-dialog aria-labelledby="ig-price-title" aria-describedby="ig-price-description">
       <form method="dialog" class="ig-sheet-dialog__body">
         <span class="ig-sheet-dialog__mark" aria-hidden="true"><svg><use href="#ig-icon-check-badge"></use></svg></span>
-        <h2 id="ig-price-title">{{ copy.price_dialog_title }}</h2>
-        <p id="ig-price-description">{{ copy.price_dialog_body }}</p>
+        <h2 id="ig-price-title">{% if cart_state.can_edit %}{% if html_lang == 'ru' %}Обновляйте корзину здесь{% elif html_lang == 'en' %}Update your basket here{% else %}Оновлюйте кошик тут{% endif %}{% else %}{{ copy.price_dialog_title }}{% endif %}</h2>
+        <p id="ig-price-description">{% if cart_state.can_edit %}{% if html_lang == 'ru' %}Меняйте количество кнопками +/− или удаляйте товары. После каждого изменения проверяем сумму и условия доставки. Если понадобится новое согласование, покажем это перед оплатой. Другие параметры согласуем в Direct.{% elif html_lang == 'en' %}Use +/− to change quantities or remove items. We check the total and delivery terms after each change. If fresh approval is needed, we will show that before payment. Other options can be agreed in Direct.{% else %}Змінюйте кількість кнопками +/− або видаляйте товари. Після кожної зміни перевіряємо суму й умови доставки. Якщо потрібне нове погодження, покажемо це перед оплатою. Інші параметри погодимо в Direct.{% endif %}{% else %}{{ copy.price_dialog_body }}{% endif %}</p>
         <div class="ig-sheet-dialog__note"><svg aria-hidden="true"><use href="#ig-icon-timer"></use></svg><span>{{ expires_explanation }}</span></div>
         <button type="submit" class="ig-action ig-action--primary" data-dialog-close>{{ copy.price_dialog_close }}</button>
       </form>
@@ -391,6 +418,7 @@
 
   <script type="module" src="{% static 'js/modules/nova-poshta-form-bridge.js' %}?v=20260801c3"></script>
   <script defer src="{% static 'js/analytics-loader.js' %}?v=20261009-analytics-v14"></script>
-  <script defer src="{% static 'js/instagram-checkout.js' %}?v=20260801c3"></script>
+  {{ cart_state|json_script:"ig-cart-state" }}
+  <script defer src="{% static 'js/instagram-checkout.js' %}?v=20261014-cart-delivery-v4"></script>
 </body>
 </html>

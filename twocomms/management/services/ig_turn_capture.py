@@ -56,6 +56,7 @@ def validate_current_source_cart_sources(capture, *, source_rows=None):
     from management.models import InstagramBotMessage
     from management.services.ig_commerce_projection import _source_fence_row
     capture = detached_payload(capture)
+    _validate_checkout_holder_sources(capture)
     fence = capture.get("fence") or {}
     identities = fence.get("source_ids")
     if (not isinstance(identities, list) or len(identities) > 64
@@ -83,6 +84,55 @@ def validate_current_source_cart_sources(capture, *, source_rows=None):
         if legacy_digest != fence.get("source_digest"):
             raise TurnContextError("source_cart_sources_changed")
     return True
+
+
+def _validate_checkout_holder_sources(capture):
+    """Native site edits must point to their exact persisted selection witness."""
+    from management.models import IgCommerceSelectionTransition
+    from management.services.ig_checkout_cart_amendments import (
+        AUTHORITY, SCHEMA, CheckoutAmendmentError, verify_native_transition, validate_native_capture,
+    )
+    if (capture.get("fence") or {}).get("native_amendment_id"):
+        if not validate_native_capture(capture):
+            raise TurnContextError("source_cart_hosted_source_changed")
+    facts = []
+    for line in capture.get("lines") or []:
+        for field, fact in (line.get("fields") or {}).items():
+            if isinstance(fact, dict) and fact.get("authority") == AUTHORITY:
+                facts.append((line, field, fact))
+    if not facts:
+        return
+    identities = {fact.get("source", {}).get("transition_id") for _, _, fact in facts}
+    if len(identities) > 64 or any(type(value) is not int or value <= 0 for value in identities):
+        raise TurnContextError("source_cart_hosted_source_invalid")
+    transitions = {row.pk: row for row in IgCommerceSelectionTransition.objects.filter(
+        pk__in=identities, session_id=capture.get("session_id"), checkout_amendment__isnull=False,
+    ).select_related("session", "checkout_amendment")}
+    if set(transitions) != identities:
+        raise TurnContextError("source_cart_hosted_source_changed")
+    verified = {}
+    for line, field, fact in facts:
+        proof = fact.get("source") or {}
+        row = transitions[proof["transition_id"]]
+        try:
+            if row.pk not in verified:
+                verified[row.pk] = verify_native_transition(row, historical=True)
+            body = verified[row.pk]
+        except CheckoutAmendmentError:
+            raise TurnContextError("source_cart_hosted_source_changed") from None
+        receipt = row.checkout_amendment
+        expected = {"amendment_id": str(receipt.pk), "transition_id": row.pk,
+            "source_digest": receipt.source_hmac, "source_kind": SCHEMA,
+            "authority": AUTHORITY, "observed_at": receipt.created_at.isoformat()}
+        scoped = [item for item in body["next_snapshot"]["lines"]
+            if item.get("line_id") == line.get("line_id")
+            and item.get("recipient_id") == line.get("recipient_id")]
+        if (proof != expected or body["client_id"] != capture["scope"]["client_id"]
+            or body["episode_id"] != capture["scope"]["episode_id"]
+            or body["generation"] != capture["generation"]
+            or row.to_revision > capture["selection_revision"] or len(scoped) != 1
+            or field not in scoped[0] or fact.get("value") != scoped[0][field]):
+            raise TurnContextError("source_cart_hosted_source_changed")
 
 
 def _stamp(value):
@@ -451,7 +501,7 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         boundary.update(selection_session_id=source_cart.get("session_id"),
             selection_generation=source_cart.get("generation"), selection_revision=source_cart.get("selection_revision"),
             selection_line_count=len(source_cart.get("lines") or []), source_cart_capture_digest=source_cart.get("capture_digest"))
-        source_cart = validate_source_cart_capture(source_cart, boundary)
+        source_cart = validate_source_cart_capture(source_cart, boundary, native_as_of=captured_at)
         if plan.scope.get("session_id") is not None and any(plan.scope.get(key) != source_cart.get(value)
                 for key, value in (("session_id", "session_id"), ("generation", "generation"), ("revision", "selection_revision"))):
             raise TurnContextError("capture_selection_changed")
@@ -519,6 +569,8 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     from management.services.ig_fulfillment_context import SLOT as FULFILLMENT_SLOT, capture_fulfillment_context
     components["slots"]["capture"][FULFILLMENT_SLOT] = capture_fulfillment_context(
         client, boundary=boundary, captured_at=captured_at, current_source_cart=source_cart)
+    if payment_context.get("checkout_order"):
+        components["checkout_order"] = deepcopy(payment_context["checkout_order"])
     components["observation_omissions"] = dict(scope=scope, capture=deepcopy(payment_context.get("omissions") or []))
     omissions.extend({"block_id": "state:" + item["component"], "reason": item["reason"]}
         for item in payment_context.get("omissions") or [])

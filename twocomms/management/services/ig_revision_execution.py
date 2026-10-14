@@ -351,6 +351,102 @@ def prepare_next_due_revision(
     return prepare_revision(ids[0], capture_callback, now=now)
 
 
+def _verified_replaced_failure_ids(effects):
+    """Pure receipt proof for an exact, fully delivered conditional replacement.
+
+    Rebuild the immutable native plan rather than treating an unrelated SENT
+    row, a mutable activation pointer, or a failed-state label as coverage.
+    Source-preference recovery is a separate revision lane and is not involved.
+    """
+    from management.services.ig_revision_outbox import _digest, _normalize_specs
+
+    state = IgRevisionDeliveryEffect.State
+    if (not effects or any(type(row) is not IgRevisionDeliveryEffect or row.get_deferred_fields() for row in effects)
+            or not any(row.state == state.DEFINITE_FAILED for row in effects)):
+        return frozenset()
+    try:
+        rows = sorted(effects, key=lambda row: (row.order_index, row.pk))
+        first = rows[0]
+        positive = ("pk", "revision_id", "source_message_id", "settings_id_snapshot", "publication_id", "publication_version", "part_count")
+        nonnegative = ("order_index", "part_index", "settings_permission_epoch", "client_permission_epoch")
+        if any(any(type(getattr(row, key)) is not int or getattr(row, key) <= 0 for key in positive)
+                or any(type(getattr(row, key)) is not int or getattr(row, key) < 0 for key in nonnegative) for row in rows):
+            return frozenset()
+        shared = ("revision_id", "source_message_id", "actor", "purpose", "recipient_igsid",
+            "provider_namespace", "settings_id_snapshot", "settings_permission_epoch",
+            "client_permission_epoch", "revision_snapshot_digest", "plan_digest", "publication_id",
+            "publication_version", "publication_hash", "authority_context_digest", "fact_bindings", "offer_bindings")
+        if (first.actor != "bot" or first.purpose != "normal_reply" or not first.recipient_igsid
+            or not first.provider_namespace or len(first.plan_digest) != 64
+            or any(any(getattr(row, key) != getattr(first, key) for key in shared) for row in rows)
+            or [row.order_index for row in rows] != list(range(len(rows)))):
+            return frozenset()
+        specs = []
+        for row in rows:
+            activation = {}
+            if row.group == "template_fallback":
+                if (not row.activation_group or type(row.activation_part_index) is not int
+                    or row.activation_part_index < 0
+                    or row.activation_failure_code not in {"provider_rejected", "link_rejected"}):
+                    return frozenset()
+                activation = {"group": row.activation_group, "part_index": row.activation_part_index,
+                    "failure_code": row.activation_failure_code}
+            elif row.activation_group or row.activation_part_index is not None or row.activation_failure_code:
+                return frozenset()
+            specs.append({"group": row.group, "kind": row.kind, "payload": row.payload,
+                "projection_metadata": row.projection_metadata, "activation": activation})
+        normalized = _normalize_specs(specs, first.recipient_igsid)
+        for row, spec in zip(rows, normalized, strict=True):
+            if (any(getattr(row, key) != spec[key] for key in ("part_index", "part_count", "payload_digest",
+                    "activation_group", "activation_part_index", "activation_failure_code"))
+                or row.projection_digest != spec["projection_digest"]):
+                return frozenset()
+            manifest = (row.projection_metadata or {}).get("catalog_choice")
+            if manifest is not None:
+                scope = manifest["scope"]
+                if (manifest["invitation_id"] != row.revision_id
+                    or row.source_message_id not in scope["source_message_ids"]
+                    or any(scope[key] != getattr(row, field) for key, field in (
+                        ("igsid", "recipient_igsid"), ("namespace", "provider_namespace"),
+                        ("revision_snapshot_digest", "revision_snapshot_digest"),
+                        ("settings_id", "settings_id_snapshot"), ("settings_epoch", "settings_permission_epoch"),
+                        ("client_epoch", "client_permission_epoch"), ("publication_id", "publication_id"),
+                        ("publication_version", "publication_version"), ("publication_hash", "publication_hash")))):
+                    return frozenset()
+        material = {"revision_id": first.revision_id, "revision_snapshot_digest": first.revision_snapshot_digest,
+            "actor": first.actor, "purpose": first.purpose, "effects": normalized,
+            "publication": {"id": first.publication_id, "version": first.publication_version, "hash": first.publication_hash},
+            "authority_context_digest": first.authority_context_digest,
+            "fact_bindings": first.fact_bindings, "offer_bindings": first.offer_bindings}
+        if _digest(material) != first.plan_digest:
+            return frozenset()
+        fallback = [row for row in rows if row.group == "template_fallback"]
+        if not fallback or any(row.state != state.SENT or not row.provider_message_id
+                or len(row.provider_message_id) > 255
+                or any(ord(char) < 32 or ord(char) == 127 for char in row.provider_message_id) or row.terminal_at is None
+                or row.provider_started_at is None for row in fallback):
+            return frozenset()
+        if len({row.provider_message_id for row in rows if row.state == state.SENT}) != sum(row.state == state.SENT for row in rows):
+            return frozenset()
+        replaced = set()
+        for row in fallback:
+            parent = next((candidate for candidate in rows if candidate.group == row.activation_group
+                and candidate.part_index == row.activation_part_index), None)
+            if (parent is None or parent.state != state.DEFINITE_FAILED
+                or parent.failure_code != row.activation_failure_code
+                or type(parent.provider_http_status) is not int or not 400 <= parent.provider_http_status < 500
+                or parent.provider_started_at is None or parent.terminal_at is None or parent.provider_message_id
+                or not parent.provider_started_at <= parent.terminal_at <= row.provider_started_at <= row.terminal_at):
+                return frozenset()
+            parent_manifest = (parent.projection_metadata or {}).get("catalog_choice")
+            if parent_manifest is not None and (row.projection_metadata or {}).get("catalog_choice") != parent_manifest:
+                return frozenset()
+            replaced.add(parent.pk)
+        return frozenset(replaced)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return frozenset()
+
+
 def _completion_decision(effects) -> tuple[bool, bool, str]:
     states = {effect.state for effect in effects}
     state = IgRevisionDeliveryEffect.State
@@ -361,7 +457,8 @@ def _completion_decision(effects) -> tuple[bool, bool, str]:
     if state.CLAIMED in states or state.PLANNED in states:
         return False, False, "effects_pending"
     sent = sum(effect.state == state.SENT for effect in effects)
-    failed = sum(effect.state == state.DEFINITE_FAILED for effect in effects)
+    replaced = _verified_replaced_failure_ids(effects)
+    failed = sum(effect.state == state.DEFINITE_FAILED and effect.pk not in replaced for effect in effects)
     if failed:
         return (
             False,
@@ -411,6 +508,10 @@ def complete_revision_from_effects(
                 revision.pk, False, False, "effects_missing", states
             )
         completed, debt, reason = _completion_decision(effects)
+        if completed and _verified_replaced_failure_ids(effects):
+            proof, proof_reason = _whole_sent_proof(revision, effects)
+            if not proof:
+                return RevisionCompletionResult(revision.pk, False, True, proof_reason, states)
         from management.services.ig_response_debt import response_coverage
 
         if completed and response_coverage(revision).get("remaining"):
@@ -537,6 +638,12 @@ def _whole_sent_proof(revision, effects):
     sent = [row for row in effects if row.state == row.State.SENT]
     if len(settings_ids) != 1 or len(namespaces) != 1 or "" in namespaces:
         return False, "delivery_receipt_scope_invalid"
+    if _verified_replaced_failure_ids(effects):
+        if (namespaces != {row.get("source_namespace") for row in revision.bundle_snapshot.get("sources", ())}
+            or any(row.revision_id != revision.pk for row in effects)
+            or any((row.projection_metadata or {}).get("catalog_choice", {}).get("scope", {}).get("client_id", revision.client_id)
+                != revision.client_id for row in effects)):
+            return False, "delivery_receipt_scope_invalid"
     if len({row.provider_message_id for row in sent}) != len(sent):
         return False, "delivery_provider_receipt_duplicate"
     groups = {}
@@ -561,15 +668,27 @@ def finalization_due_ids(*, now=None, limit=25):
     from management.services.ig_revision_reply_projection import VERSION as PROJECTION_VERSION
 
     owed = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk")).exclude(state=IgRevisionDeliveryEffect.State.SENT).exclude(group="template_fallback", state__in=("cancelled", "superseded"))
+    # Candidate discovery only. A prior erroneous manual hold can be repaired
+    # after a conditional group has actual receipts; every transition below
+    # still requires the pure immutable-plan and whole-source proof under lock.
+    failed_parent = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("revision_id"),
+        group=OuterRef("activation_group"), part_index=OuterRef("activation_part_index"),
+        failure_code=OuterRef("activation_failure_code"), state="definite_failed",
+        provider_http_status__gte=400, provider_http_status__lt=500,
+        failure_code__in=("provider_rejected", "link_rejected"))
+    possible_replacement = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"),
+        group="template_fallback", state="sent", provider_message_id__gt="", terminal_at__isnull=False
+    ).annotate(exact_failed_parent=Exists(failed_parent)).filter(exact_failed_parent=True)
     candidates = IgCustomerTurnRevision.objects.filter(
         state__in=(IgCustomerTurnRevision.State.CLAIMED, IgCustomerTurnRevision.State.PROCESSED),
         client__privacy_erasure_started_at__isnull=True,
         delivery_effects__state=IgRevisionDeliveryEffect.State.SENT,
     ).exclude(action_receipts__has_key="technical_holding_delivery").exclude(
         action_receipts__has_key="semantic_delivery_finalized",
-    ).annotate(owed_parts=Exists(owed)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
+    ).annotate(owed_parts=Exists(owed), possible_replacement=Exists(possible_replacement)).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now)).filter(
         (~Q(claim_token__startswith=DEBT_PREFIX) & ~Q(action_receipts__has_key="response_debt"))
         | Q(owed_parts=False)
+        | Q(possible_replacement=True)
     ).filter(
         Q(state=IgCustomerTurnRevision.State.CLAIMED)
         | Q(sources__message__status__in=("pending", "processing"))

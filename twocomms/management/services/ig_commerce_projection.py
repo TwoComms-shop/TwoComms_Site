@@ -25,6 +25,22 @@ def _choice_digest(value):
 
 def _original_choice_request(source, capture):
     from management.services.ig_commerce_turns import parse_turn
+    if str(source.quick_reply_payload or "").startswith("CC1:"):
+        from management.models import IgClient
+        from management.services.ig_catalog_choice_actions import native_choice_request, _source, _digest
+        from management.services.ig_commerce_types import CommerceTurnRequest
+        key = ("native_catalog_choice", source.pk, _digest(_source(source)))
+        cached = capture.setdefault("parsed_sources", {}) if capture is not None else {}
+        if key in cached:
+            return cached[key]
+        if capture is not None:
+            from types import SimpleNamespace
+            owner = SimpleNamespace(pk=source.client_id, igsid=capture["current"]["igsid"])
+        else:
+            owner = IgClient.objects.filter(pk=source.client_id).first()
+        # A failed native witness cannot be recast as the button's display text.
+        cached[key] = (native_choice_request(owner, source, historical=True) if owner else None) or CommerceTurnRequest()
+        return cached[key]
     if capture is None:
         return parse_turn(source.text)
     key = (source.pk, hashlib.sha256(source.text.encode()).hexdigest())
@@ -107,12 +123,21 @@ def _validated_copy_projection(client, scope, capture):
             if row.session_id == head.session_id and row.to_revision <= head.to_revision),
             key=lambda row: row.to_revision, reverse=True), "copy_depth": capture.get("copy_depth", 0) + 1,
         "allow_order_line_copy": False}
-    if any(row.source_message.client_id != client.pk or row.source_message.sender_id != capture["current"]["igsid"]
-        or row.source_message.role != "user" or row.source_message.source != "webhook"
-        or row.source_message.status == "failed" or row.source_message.provider_namespace != capture["namespace"]
-        for row in old["transitions"]):
-        cache[key] = {}
-        return {}
+    for row in old["transitions"]:
+        if row.source_message_id is None:
+            from management.services.ig_checkout_cart_amendments import verify_native_transition, CheckoutAmendmentError
+            try:
+                native = verify_native_transition(row, historical=True)
+                if native["client_id"] != client.pk:
+                    raise CheckoutAmendmentError("native_copy_owner_changed")
+            except CheckoutAmendmentError:
+                cache[key] = {}
+                return {}
+        elif (row.source_message.client_id != client.pk or row.source_message.sender_id != capture["current"]["igsid"]
+                or row.source_message.role != "user" or row.source_message.source != "webhook"
+                or row.source_message.status == "failed" or row.source_message.provider_namespace != capture["namespace"]):
+            cache[key] = {}
+            return {}
     result = source_preferences_for(client, episode_id=scope["episode_id"], line_id=scope.get("line_id"), _capture=old)
     cache[key] = result
     return result
@@ -126,6 +151,11 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
     Product changes and resets bound the provenance search to the current line.
     """
     from management.models import IgClient, IgCommerceSelectionTransition
+    if _capture is None:
+        from management.services.ig_checkout_cart_amendments import native_preferences_for
+        native = native_preferences_for(client, episode_id=episode_id, line_id=line_id)
+        if native is not None:
+            return native
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     from management.services.ig_commerce_turns import parse_turn
     current = _capture["current"] if _capture is not None else IgClient.objects.filter(pk=client.pk).values(
@@ -185,10 +215,11 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
     correction_reset_id = None
     correction_order_id = None
     withdrawn_keys = set()
+    from django.db.models import Q
     transitions = _capture["transitions"] if _capture is not None else list(IgCommerceSelectionTransition.objects.filter(
+        Q(source_message__pk__gte=reset_floor) | Q(checkout_amendment__isnull=False),
         session=session, to_revision__lte=session.revision,
-        source_message__pk__gte=reset_floor,
-    ).select_related("session", "source_message__commerce_turn_decision").order_by("-to_revision")[:64])
+    ).select_related("session", "source_message__commerce_turn_decision", "checkout_amendment").order_by("-to_revision")[:64])
     if "garment_type" not in values and index == 0 and not line.get("garment_type"):
         # A legacy category lived in shared constraints while this was the
         # only position. Keep its exact last single-position value when a
@@ -235,7 +266,23 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             break
         before_lines = (transition.previous_snapshot or {}).get("lines") or []
         before_line = next((row for row in before_lines if isinstance(row, dict) and row.get("line_id") == line["line_id"]), {})
-        owned = (source.client_id == client.pk and source.sender_id == current["igsid"]
+        if transition.checkout_amendment_id is not None:
+            from management.services.ig_checkout_cart_amendments import verify_native_transition, CheckoutAmendmentError, SCHEMA, AUTHORITY
+            try:
+                native = verify_native_transition(transition, historical=True)
+            except CheckoutAmendmentError:
+                return {}
+            if native["episode_id"] != current_episode:
+                return {}
+            for key, value in values.items():
+                if key not in evidence and after_line.get(key) == value:
+                    evidence[key] = {"amendment_id": native["amendment_id"], "transition_id": transition.pk,
+                        "source_digest": transition.checkout_amendment.source_hmac, "source_kind": SCHEMA, "authority": AUTHORITY,
+                        "observed_at": transition.checkout_amendment.created_at.isoformat()}
+            # This signed native snapshot witnesses the exact displayed quote
+            # selectors; it neither invents a webhook nor consults old wishes.
+            break
+        owned = (source is not None and source.client_id == client.pk and source.sender_id == current["igsid"]
                  and source.role == "user" and source.source == "webhook")
         if transition.action == "assisted_residual_adoption":
             from management.services.ig_assisted_continuation_sources import verify_assisted_adoption_transition
@@ -309,6 +356,8 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
                 or copy_capture is None or source.provider_namespace != copy_capture["namespace"]):
                 return {}
             original = _original_choice_request(source, copy_capture)
+            if original is None:
+                return {}
             from management.services.ig_commerce_state import _jsonable
             source_digest = hashlib.sha256(source.text.encode()).hexdigest()
             if (line_facts.get("schema") != "line-source-facts.v1"
@@ -532,7 +581,8 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             or final_session.snapshot() != snapshot):
         return {}
     from management.models import InstagramBotMessage
-    proof_sources = {evidence[key]["source_message_id"]: evidence[key]["source_digest"] for key in confirmed}
+    proof_sources = {evidence[key]["source_message_id"]: evidence[key]["source_digest"] for key in confirmed
+        if evidence[key].get("source_kind") != "ig-checkout-cart-amendment.v1"}
     final_sources = {row["pk"]: hashlib.sha256(row["text"].encode()).hexdigest()
                      for row in InstagramBotMessage.objects.filter(
                          pk__in=proof_sources, client_id=client.pk, sender_id=current["igsid"],
@@ -753,9 +803,11 @@ def _selection_history(client, capture, line_id, *, limit=8):
             for field, value in values.items():
                 evidence = proof["evidence"][field]
                 records.append({"field": field, "value": value, "authority": evidence.get("authority", "customer_source"),
-                    "transition_id": transition.pk, "source_message_id": source.pk,
-                    "source_digest": hashlib.sha256(source.text.encode()).hexdigest(),
-                    "event_at": (source.provider_created_at or source.created_at).isoformat(),
+                    "transition_id": transition.pk,
+                    **({"source_message_id": source.pk} if source is not None else {}),
+                    "source_digest": hashlib.sha256(source.text.encode()).hexdigest() if source is not None else evidence["source_digest"],
+                    "event_at": (source.provider_created_at or source.created_at).isoformat() if source is not None else transition.created_at.isoformat(),
+                    **({"amendment_id": evidence["amendment_id"], "source_kind": evidence["source_kind"]} if source is None else {}),
                     "recipient_id": after_line.get("recipient_id", "self"),
                     "product_id": after_line.get("product_id"), "copied_from": evidence.get("copied_from"),
                     "previous": None, "previous_source": None, "superseded_by": None})
@@ -767,7 +819,10 @@ def _selection_history(client, capture, line_id, *, limit=8):
         previous = by_field.get((row["field"], row["recipient_id"], row["product_id"]))
         if previous:
             row["previous"] = previous["value"]
-            row["previous_source"] = {key: previous[key] for key in ("source_message_id", "source_digest", "transition_id")}
+            keys = (("amendment_id", "source_kind", "source_digest", "transition_id")
+                if previous.get("source_kind") == "ig-checkout-cart-amendment.v1"
+                else ("source_message_id", "source_digest", "transition_id"))
+            row["previous_source"] = {key: previous[key] for key in keys}
             previous["superseded_by"] = row["transition_id"]
         by_field[(row["field"], row["recipient_id"], row["product_id"])] = row
     return records
@@ -793,7 +848,27 @@ def capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None
         return execute(sql, params, many, context)
     try:
         with connection.execute_wrapper(bounded):
-            return _capture_current_selection_lines(client_id, now=now, _owner_snapshot=_owner_snapshot,
+            from management.services.ig_checkout_cart_amendments import native_capture_for
+            from management.services.ig_admin_state_capture import _owner_fence, valid_identifier
+            first = _owner_snapshot
+            native_head = None
+            if first is None and valid_identifier(client_id):
+                native_head = {}
+                first = _owner_fence(client_id, _native_head_out=native_head)
+            # A supplied snapshot contains no routing proof. Retain its fresh
+            # native-head query; absence from caller data grants no shortcut.
+            if native_head is None or native_head["has_native_head"]:
+                native = native_capture_for(client_id, now=now)
+                if native is not None:
+                    if native.get("status") == "captured" and first is not None:
+                        owner_digest = hashlib.sha256(json.dumps(first, ensure_ascii=False, sort_keys=True,
+                            separators=(",", ":"), default=str).encode()).hexdigest()
+                        if native.get("fence", {}).get("owner_digest") != owner_digest:
+                            raise SelectionCaptureReadError("selection_capture_changed")
+                    return native
+                if native_head is not None and native_head["has_native_head"]:
+                    raise SelectionCaptureReadError("native_selection_head_changed")
+            return _capture_current_selection_lines(client_id, now=now, _owner_snapshot=first,
                 _catalog_readback=_catalog_readback)
     except SelectionCaptureReadError as exc:
         reason = str(exc)
@@ -848,9 +923,11 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         # A reset can leave an old session with no source inside the current
         # scope. It supplies no cart authority or valid capture watermark.
         return unavailable("selection_source_unavailable")
-    transitions = list(IgCommerceSelectionTransition.objects.filter(session=session,
-        to_revision__lte=session.revision, source_message_id__gte=reset_floor)
-        .select_related("session", "source_message__commerce_turn_decision").order_by("-to_revision")[:64])
+    from django.db.models import Q
+    transitions = list(IgCommerceSelectionTransition.objects.filter(
+        Q(source_message_id__gte=reset_floor) | Q(checkout_amendment__isnull=False), session=session,
+        to_revision__lte=session.revision)
+        .select_related("session", "source_message__commerce_turn_decision", "checkout_amendment").order_by("-to_revision")[:64])
     needs_copy = any(any(fact.get("copy_scope") for fact in ((getattr(row.source_message,
         "commerce_turn_decision", None).result_payload or {}).get("line_source_facts") or {}).get("lines", []))
         for row in transitions if getattr(row.source_message, "commerce_turn_decision", None))
@@ -861,8 +938,8 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
     product_ids = _captured_product_ids(rows)
     if product_ids is None:
         return unavailable("selection_identity_bound_exceeded")
-    sources = {row.source_message_id: row.source_message for row in rows}
-    for source in {row.source_message_id: row.source_message for row in transitions}.values():
+    sources = {row.source_message_id: row.source_message for row in rows if row.source_message_id is not None}
+    for source in {row.source_message_id: row.source_message for row in transitions if row.source_message_id is not None}.values():
         if (source.client_id != client_id or source.sender_id != owner["igsid"] or source.role != "user"
             or source.source != "webhook" or source.status == "failed" or source.provider_namespace != namespace
             or (source.provider_created_at or source.created_at) > now):

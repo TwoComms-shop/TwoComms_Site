@@ -276,7 +276,9 @@ def _delete_direct_bot_records(
     # first and becomes deletion debt, or this fence wins before any CDN I/O.
     fence_at = timezone.now()
     with transaction.atomic():
-        pre_clients_query = IgClient.objects.select_for_update()
+        from management.services.ig_fulfillment_privacy import CHECKOUT_PRIVACY_TOMBSTONE
+        pre_clients_query = IgClient.objects.select_for_update().exclude(
+            hidden_reason=CHECKOUT_PRIVACY_TOMBSTONE, privacy_erasure_started_at__isnull=False)
         if frozen_targets and not locked_ids:
             pre_clients = []
         elif locked_ids:
@@ -535,7 +537,9 @@ def _delete_direct_bot_records(
         # Attribution rows are append-only and already contain only a
         # non-reversible identity digest; no mutable profile snapshot is kept.
         clients_count = len(clients)
-        IgClient.objects.filter(id__in=[c.id for c in clients]).delete()
+        from management.services.ig_fulfillment_privacy import retain_checkout_privacy_tombstone
+        deletable_ids = [client.pk for client in clients if not retain_checkout_privacy_tombstone(client)]
+        IgClient.objects.filter(id__in=deletable_ids).delete()
 
     result.update({
         "status": (

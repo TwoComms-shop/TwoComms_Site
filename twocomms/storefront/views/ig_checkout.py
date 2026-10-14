@@ -135,7 +135,7 @@ CHECKOUT_COPY = {
         "state_locked_body": "Ми зафіксували отримувача. Зміни можна узгодити в Instagram Direct.",
         "state_pending_title": "Очікуємо оплату",
         "state_pending_body": "Рахунок уже створено. Не створюйте новий платіж, доки ми перевіряємо поточний.",
-        "state_paid_title": "Замовлення оплачено",
+        "state_paid_title": "Оплату отримано",
         "state_paid_body": "Дякуємо. Після формування ТТН ми продублюємо її в Instagram Direct.",
         "state_failed_title": "Оплата не завершилась",
         "state_failed_body": "Платіж не підтверджено. Напишіть нам у Direct, щоб безпечно повторити оплату.",
@@ -255,7 +255,7 @@ CHECKOUT_COPY = {
         "state_locked_body": "Мы зафиксировали получателя. Изменения можно согласовать в Instagram Direct.",
         "state_pending_title": "Ожидаем оплату",
         "state_pending_body": "Счет уже создан. Не создавайте новый платеж, пока мы проверяем текущий.",
-        "state_paid_title": "Заказ оплачен",
+        "state_paid_title": "Оплата получена",
         "state_paid_body": "Спасибо. После формирования ТТН мы продублируем ее в Instagram Direct.",
         "state_failed_title": "Оплата не завершилась",
         "state_failed_body": "Платеж не подтвержден. Напишите нам в Direct, чтобы безопасно повторить оплату.",
@@ -375,7 +375,7 @@ CHECKOUT_COPY = {
         "state_locked_body": "The recipient is locked. Ask for changes in Instagram Direct.",
         "state_pending_title": "Waiting for payment",
         "state_pending_body": "An invoice already exists. Do not start another payment while we verify it.",
-        "state_paid_title": "Order paid",
+        "state_paid_title": "Payment received",
         "state_paid_body": "Thank you. We will send the tracking number in Instagram Direct.",
         "state_failed_title": "Payment was not completed",
         "state_failed_body": "The payment is not confirmed. Contact us in Direct before trying again.",
@@ -510,6 +510,14 @@ def _save_grant(request, proposal, token):
     return payload
 
 
+def _record_displayed_shipping(request, proposal, cart_state):
+    """Bind the visible ordinary policy to the existing signed link grant."""
+    grant, _token = _load_grant(request, proposal)
+    grant["displayed_shipping"] = cart_state.get("free_delivery")
+    request.session[_grant_session_key(proposal)] = signing.dumps(grant, salt=GRANT_SALT, compress=True)
+    request.session.modified = True
+
+
 def _load_grant(request, proposal):
     value = request.session.get(_grant_session_key(proposal))
     if not value:
@@ -532,7 +540,10 @@ def _load_grant(request, proposal):
         raise Http404("proposal token unavailable")
     if int(payload.get("revision") or 0) != proposal.revision:
         if proposal.payment_attempt_id:
-            raise Http404("proposal revision changed after payment started")
+            from management.services.ig_checkout import validate_checkout_grant_revision_bridge
+            if not validate_checkout_grant_revision_bridge(proposal, token=token,
+                    from_revision=int(payload.get("revision") or 0)):
+                raise Http404("proposal revision changed after payment started")
         payload["revision"] = proposal.revision
         request.session[_grant_session_key(proposal)] = signing.dumps(
             payload,
@@ -541,6 +552,30 @@ def _load_grant(request, proposal):
         )
         request.session.modified = True
     return payload, token
+
+
+def _approved_successor(request, proposal, grant, token):
+    """Keep original links useful without extending or upgrading their grant."""
+    if proposal.status not in {proposal.Status.SUPERSEDED, proposal.Status.CANCELLED} or not proposal.cart_amendments.exists():
+        return None
+    from management.services.ig_checkout_amendment_successors import resolve_amendment_successor
+    from management.services.ig_assisted_commerce import AssistedDecisionError
+    try:
+        resolved = resolve_amendment_successor(proposal, token)
+    except AssistedDecisionError:
+        raise Http404("checkout successor unavailable")
+    if resolved.get("ready") is not True:
+        return None
+    child, child_token = resolved["proposal"], resolved["token"]
+    if token.kind == "share" and child_token.kind != "share":
+        raise Http404("checkout shared grant cannot gain edit scope")
+    delegated = _save_grant(request, child, child_token)
+    delegated["expires_at"] = min(int(grant["expires_at"]), delegated["expires_at"])
+    if delegated["expires_at"] <= int(timezone.now().timestamp()):
+        raise Http404("checkout successor grant expired")
+    request.session[_grant_session_key(child)] = signing.dumps(delegated, salt=GRANT_SALT, compress=True)
+    request.session.modified = True
+    return child
 
 
 def _locale(value):
@@ -923,7 +958,50 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
     if brigade_partial_blocked:
         from storefront.services.brigade_presentation import brigade_text
         state_body = brigade_text("full_payment", language)
+    from management.services.ig_checkout_cart_amendments import checkout_cart_state
+    _cart_grant, cart_token = _load_grant(request, proposal)
+    cart_state = checkout_cart_state(proposal, cart_token)
+    _record_displayed_shipping(request, proposal, cart_state)
+    rendered_items = ([_hosted_item_context(item, frozen_items[index] if index < len(frozen_items) else {}, proposal, assisted)
+        for index, item in enumerate(proposal.items.order_by('position', 'id'))]
+        if assisted.get("ready") is True else [])
+    for index, item in enumerate(rendered_items):
+        if index < len(cart_state["items"]):
+            item["line_id"] = cart_state["items"][index]["line_id"]
+    if cart_state["review_needed"] and proposal.cart_amendments.filter(source_body__pending_review=True).exists():
+        state = "amendment_review"
+        payable, reissue_allowed, share_allowed, payment_url = False, False, False, ""
+        labels = {
+            "uk": ("Зміни передано на погодження", "Менеджер перевірить склад, кількість і умови. Оплата стане доступною після нового погодження."),
+            "ru": ("Изменения переданы на согласование", "Менеджер проверит состав, количество и условия. Оплата станет доступна после нового согласования."),
+            "en": ("Changes sent for review", "A manager will review the items, quantity and terms. Payment becomes available after fresh approval."),
+        }
+        copy["state_amendment_review_title"], copy["state_amendment_review_body"] = labels[language]
+        state_body = copy["state_amendment_review_body"]
+        old_rows = list(proposal.items.order_by("position", "id"))
+        from management.services.ig_checkout_cart_amendments import _rows as amendment_origin_rows
+        origin_rows = {row["line_id"]: old for row, old in zip(amendment_origin_rows(proposal, revision), old_rows, strict=True)}
+        rendered_items = []
+        for requested in cart_state["items"]:
+            old = origin_rows.get(requested["line_id"])
+            if old is None:
+                continue
+            row = _item_context(old)
+            row.update(line_id=requested["line_id"], quantity=requested["quantity"], unit_price=None, line_total=None,
+                is_custom=bool(requested.get("is_custom")))
+            rendered_items.append(row)
+    elif cart_state["blocked_reason"] == "empty_cart":
+        state = "empty_cart"
+        rendered_items = []
+        payable, reissue_allowed, share_allowed, payment_url = False, False, False, ""
+        labels = {"uk": ("Кошик порожній", "У цьому кошику більше немає товарів для оплати."),
+            "ru": ("Корзина пуста", "В этой корзине больше нет товаров для оплаты."),
+            "en": ("Your basket is empty", "There are no items left to pay for in this basket.")}
+        copy["state_empty_cart_title"], copy["state_empty_cart_body"] = labels[language]
+        state_body = copy["state_empty_cart_body"]
     return {
+        "cart_state": cart_state,
+        "paid_via_invoice": cart_state["paid_via_invoice"],
         "copy": copy,
         "approved_policy": approved_policy["text"],
         # Kept for server-side review/parity checks; never rendered to buyers.
@@ -947,21 +1025,19 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
             "reference": str(proposal.public_id).split("-", 1)[0].upper(),
             "revision": proposal.revision,
             "currency": proposal.currency,
-            "catalog_total": _money(proposal.catalog_total),
-            "discount": _money(proposal.negotiated_discount),
-            "total": _money(proposal.quoted_total),
-            "charge_now": _money(proposal.requested_payment_amount),
-            "is_prepayment": proposal.pay_type == IgCheckoutProposal.PayType.PREPAYMENT,
+            "catalog_total": cart_state["catalog_total"],
+            "discount": cart_state["discount"],
+            "total": cart_state["total"],
+            "charge_now": cart_state["charge_now"],
+            "is_prepayment": cart_state["is_prepayment"],
             "is_v2": proposal.assisted_checkout_v2,
-            "has_discount": proposal.negotiated_discount > 0,
+            "has_discount": cart_state["has_discount"],
             "allow_promo": proposal.allow_promo,
             "expires_at": proposal.expires_at,
             "expires_at_iso": proposal.expires_at.isoformat(),
             "created_at_iso": proposal.created_at.isoformat(),
         },
-        "items": [_hosted_item_context(item, frozen_items[index] if index < len(frozen_items) else {}, proposal, assisted)
-                  for index, item in enumerate(proposal.items.order_by('position', 'id'))]
-                  if assisted.get("ready") is True else [],
+        "items": rendered_items,
         "expires_explanation": (
             copy["expires_explanation_v2"]
             if proposal.assisted_checkout_v2
@@ -1082,10 +1158,48 @@ def ig_checkout_proposal(request, proposal_id):
         public_id=proposal_id,
     )
     grant, _token = _load_grant(request, proposal)
+    child = _approved_successor(request, proposal, grant, _token)
+    if child is not None:
+        child_url = reverse("ig_checkout_proposal", kwargs={"proposal_id": child.public_id})
+        if request.method == "POST":
+            from management.services.ig_checkout_cart_amendments import checkout_cart_state
+            _child_grant, child_token = _load_grant(request, child)
+            return _private_headers(JsonResponse({"error": "revision_changed", "redirect": child_url,
+                "cart_state": checkout_cart_state(child, child_token)}, status=409))
+        return _private_headers(redirect(child_url))
     if request.method == "POST":
+        from management.services.ig_checkout_payment import CheckoutPaymentError
+        payload = request.POST
+        if request.content_type == "application/json":
+            import json
+            try:
+                payload = json.loads(request.body)
+                if not isinstance(payload, dict):
+                    raise ValueError
+            except (ValueError, UnicodeDecodeError):
+                return _private_headers(JsonResponse({"error": "invalid_payload"}, status=400))
+        if payload.get("action") == "cart_amendment":
+            from management.services.ig_checkout import CheckoutConfigurationError
+            from management.services.ig_inventory import InventoryReservationError
+            from management.services.ig_checkout_cart_amendments import (
+                amend_checkout_cart, checkout_cart_state, CheckoutAmendmentError,
+            )
+            if _rate_limited(request, "cart_amendment", identity=str(proposal.public_id), limit=120, window=60):
+                return _private_headers(JsonResponse({"error": "rate_limited",
+                    "cart_state": checkout_cart_state(proposal, _token)}, status=429))
+            try:
+                state = amend_checkout_cart(proposal, request=request, grant=grant, payload=payload)
+            except (CheckoutAmendmentError, CheckoutPaymentError, CheckoutConfigurationError, InventoryReservationError) as exc:
+                proposal.refresh_from_db()
+                state = checkout_cart_state(proposal, _token)
+                _record_displayed_shipping(request, proposal, state)
+                reason = getattr(exc, "reason", None) or getattr(exc, "code", "amendment_unavailable")
+                return _private_headers(JsonResponse({"error": reason, "reason": reason,
+                    "cart_state": state, "review_needed": state["review_needed"]}, status=409))
+            _record_displayed_shipping(request, proposal, state)
+            return _private_headers(JsonResponse({**state, "cart_state": state}))
         if _rate_limited(request, "submit", identity=str(proposal.public_id), limit=12, window=300):
             return _private_headers(HttpResponse("Спробуйте оформити платіж трохи пізніше.", status=429))
-        from management.services.ig_checkout_payment import CheckoutPaymentError
 
         if proposal.assisted_checkout_v2:
             from management.services.ig_checkout_generation import (
@@ -1109,18 +1223,30 @@ def ig_checkout_proposal(request, proposal_id):
             _attempt, invoice_url, _reused = create_invoice(
                 proposal,
                 request=request,
-                payload=request.POST,
+                payload=payload,
                 grant_id=grant.get("grant_id", ""),
             )
         except CheckoutPaymentError as exc:
             proposal.refresh_from_db()
             language = _checkout_language(request, proposal)
+            from management.services.ig_checkout_cart_amendments import checkout_cart_state
+            error_cart_state = checkout_cart_state(proposal, _token)
+            if hasattr(exc, "free_delivery"):
+                error_cart_state["free_delivery"] = exc.free_delivery
+            if hasattr(exc, "payment_preview"):
+                error_cart_state.update(exc.payment_preview)
+                if proposal.assisted_checkout_v2 and payload.get("payment_choice") == "prepay_200_cod":
+                    error_cart_state["charge_now"] = str(min(Decimal("200.00"), Decimal(error_cart_state["total"])))
+                    error_cart_state["is_prepayment"] = Decimal(error_cart_state["charge_now"]) < Decimal(error_cart_state["total"])
+                error_cart_state["payment_preview"] = True
+            _record_displayed_shipping(request, proposal, error_cart_state)
             if "application/json" in request.headers.get("Accept", ""):
                 return _private_headers(JsonResponse({
                     "error": exc.code,
                     "message": _localized_error(language, exc.code, exc.message),
                     "field": exc.field,
-                }, status=409 if exc.code == "in_progress" else 400))
+                    "cart_state": error_cart_state,
+                }, status=409 if exc.code in {"in_progress", "revision_changed"} else 400))
             context = _proposal_context(
                 proposal,
                 request=request,
@@ -1129,7 +1255,9 @@ def ig_checkout_proposal(request, proposal_id):
                 form_error_field=exc.field,
                 form_values=request.POST,
             )
-            status = 409 if exc.code == "in_progress" else 400
+            context["cart_state"] = error_cart_state
+            _record_displayed_shipping(request, proposal, error_cart_state)
+            status = 409 if exc.code in {"in_progress", "revision_changed"} else 400
             return _private_headers(render(request, "pages/ig_checkout.html", context, status=status))
         if "application/json" in request.headers.get("Accept", ""):
             return _private_headers(JsonResponse({
@@ -1184,7 +1312,14 @@ def ig_checkout_status(request, proposal_id):
         IgCheckoutProposal.objects.select_related("current_invoice_generation"),
         public_id=proposal_id,
     )
-    _load_grant(request, proposal)
+    _grant, cart_token = _load_grant(request, proposal)
+    child = _approved_successor(request, proposal, _grant, cart_token)
+    if child is not None:
+        from management.services.ig_checkout_cart_amendments import checkout_cart_state
+        _child_grant, child_token = _load_grant(request, child)
+        return _private_headers(JsonResponse({"state": "amendment_approved", "ui_state": "ready",
+            "revision": child.revision, "cart_state": checkout_cart_state(child, child_token),
+            "redirect": reverse("ig_checkout_proposal", kwargs={"proposal_id": child.public_id})}))
     generation = _checkout_generation(proposal)
     ui_state = _checkout_state(proposal, generation)
     public_state = (
@@ -1197,7 +1332,9 @@ def ig_checkout_status(request, proposal_id):
         "failed" if ui_state in {"failed", "unavailable", "cancelled", "superseded"} else
         "pending"
     )
+    from management.services.ig_checkout_cart_amendments import checkout_cart_state
     response = JsonResponse({
+        "cart_state": checkout_cart_state(proposal, cart_token),
         "state": public_state,
         "ui_state": ui_state,
         "revision": proposal.revision,

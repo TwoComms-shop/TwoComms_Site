@@ -206,8 +206,9 @@ def _approved_photo(execution, photo_row):
         and str(line.get("image_id")) == str(image_id) and line.get("image_digest") == digest]
     if len(matching) != 1:
         _fail("image_approval_binding_changed")
+    from management.services.ig_checkout_amendment_successors import image_request_owners
     image = Image.objects.select_related("request", "client").filter(pk=image_id,
-        request_id=execution.request_id, client_id=execution.client_id, content_digest=digest).first()
+        request_id__in=image_request_owners(execution.request), client_id=execution.client_id, content_digest=digest).first()
     if not image:
         _fail("image_owner_changed")
     return image

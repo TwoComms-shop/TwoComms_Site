@@ -26,7 +26,7 @@ def source_producer_owned_q():
     from django.db.models import Q, Subquery
 
     sources = IgTurnRevisionSource.objects.filter(
-        message__commerce_turn_decision__request_payload__source_binding__producer=INGRESS_SOURCE_PRODUCER,
+        message__commerce_turn_decision__request_payload__source_binding__producer__in=(INGRESS_SOURCE_PRODUCER, "catalog-choice-source-v1"),
         message__commerce_turn_decision__delivery_required=False,
     )
     return Q(pk__in=Subquery(sources.values("revision_id"))) | Q(
@@ -130,6 +130,15 @@ def reduce_inbound_commerce_source(client, source, *, expected_provider_namespac
     reset_floor = conversation_route_reset_floor(current.pk)
     if owned.pk < reset_floor:
         return RevisionCommerceResult(reason="commerce_source_before_scope")
+    if str(owned.quick_reply_payload or "").startswith("CC1:"):
+        from management.services.ig_catalog_choice_actions import consume_catalog_choice
+        result = consume_catalog_choice(current, owned)
+        decisions = ()
+        if result.get("ready") and result.get("decision_id"):
+            decision = IgCommerceTurnDecision.objects.select_related("session", "transition").get(pk=result["decision_id"])
+            decisions = (_decision_metadata(decision, hashlib.sha256(owned.text.encode()).hexdigest()),)
+        # Rejected/obsolete menus still flow to a contextual model answer.
+        return RevisionCommerceResult(True, result.get("reason") or "native_catalog_choice", decisions, bool(result.get("replayed")))
     if owned.quick_reply_payload:
         return RevisionCommerceResult(True, "native_source_owned")
     existing = IgCommerceTurnDecision.objects.filter(source_message=owned).select_related("session", "transition").first()
@@ -300,6 +309,14 @@ def reduce_revision_commerce(revision_id, token, *, settings_id, settings_permis
             catalog_graph = None
             for snapshot in revision.bundle_snapshot.get("sources") or []:
                 # Native button mutation has a separate global source ledger.
+                if str(snapshot.get("quick_reply_payload") or "").startswith("CC1:"):
+                    from management.services.ig_catalog_choice_actions import consume_catalog_choice
+                    native_source = _validated_sealed_source(client, revision, snapshot)
+                    native = consume_catalog_choice(client, native_source)
+                    if native.get("ready") and native.get("decision_id"):
+                        decision = IgCommerceTurnDecision.objects.select_related("session", "transition").get(pk=native["decision_id"])
+                        decisions.append(_decision_metadata(decision, snapshot["source_digest"]))
+                    continue
                 if snapshot.get("quick_reply_payload"):
                     continue
                 if int(snapshot.get("message_id") or 0) < floor:

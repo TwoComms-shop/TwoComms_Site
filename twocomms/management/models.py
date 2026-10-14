@@ -4983,3 +4983,5 @@ from .ig_split_shipping_models import *  # noqa: E402,F401,F403
 from .ig_assisted_commerce_models import (IgAssistedCommerceRequest,
     IgAssistedCommerceDecision, IgAssistedCommerceExecution,
     IgAssistedCommerceImage, IgAssistedCommerceStockSync)  # noqa: E402,F401
+from .ig_checkout_cart_amendment_models import IgCheckoutCartAmendment  # noqa: E402,F401
+from .ig_checkout_cart_amendment_resolution_models import IgCheckoutCartAmendmentResolution  # noqa: E402,F401

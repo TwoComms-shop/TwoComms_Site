@@ -599,6 +599,31 @@ def _payment_review_reason(
     return ""
 
 
+def _current_legacy_revision_rows(proposal, candidate_rows):
+    """Historical revision holds cannot become this revision's paid basket."""
+    from management.models import IgCheckoutInventoryReservation as Reservation
+    from product_catalog.models import ProductInventoryPolicy
+    all_rows = Reservation.objects.filter(proposal=proposal, invoice_generation__isnull=True)
+    keys = list(all_rows.order_by().values_list("allocation_key", flat=True).distinct()[:201])
+    if len(keys) > 200:
+        raise InventoryReservationError("inventory_revision_scope_unbounded")
+    fingerprints = [_fingerprint(proposal, key) for key in keys]
+    current = candidate_rows.filter(invoice_generation__isnull=True,
+        reservation_fingerprint__in=fingerprints)
+    if not current.exists():
+        # A repeated paid commit is idempotent; a missing current hold for a
+        # tracked basket must not borrow a released older revision's evidence.
+        committed = all_rows.filter(reservation_fingerprint__in=fingerprints,
+            state__in=[Reservation.State.PAID_COMMITTED, Reservation.State.FULFILLED, Reservation.State.CONSUMED]).exists()
+        products = list(proposal.items.filter(product_id__isnull=False).values_list("product_id", flat=True))
+        policies = {row.product_id: row.source for row in ProductInventoryPolicy.objects.filter(product_id__in=products)}
+        tracked = any(source != ProductInventoryPolicy.Source.UNTRACKED for source in policies.values())
+        legacy_tracked = proposal.items.filter(color_variant_id__isnull=False).exclude(product_id__in=policies).exists()
+        if not committed and (tracked or legacy_tracked):
+            raise InventoryReservationError("inventory_current_revision_hold_missing")
+    return current
+
+
 @transaction.atomic
 def commit_proposal_inventory(
     proposal,
@@ -632,7 +657,7 @@ def commit_proposal_inventory(
             invoice_generation_id=generation_id
         )
     else:
-        candidate_rows = candidate_rows.filter(invoice_generation__isnull=True)
+        candidate_rows = _current_legacy_revision_rows(proposal, candidate_rows)
     variants, stock_items = _payment_inventory_targets(candidate_rows)
     reservations = list(
         candidate_rows.select_for_update().order_by("pk")
@@ -761,6 +786,14 @@ def mark_overbooked_proposal_inventory(
             IgCheckoutInventoryReservation.State.OVERBOOKED_REVIEW,
         ],
     )
+    missing_current = False
+    try:
+        candidate_rows = _current_legacy_revision_rows(proposal, candidate_rows)
+    except InventoryReservationError as exc:
+        if exc.reason != "inventory_current_revision_hold_missing":
+            raise
+        missing_current = True
+        candidate_rows = candidate_rows.none()
     variants, stock_items = _payment_inventory_targets(candidate_rows)
     rows = list(
         candidate_rows.select_for_update().order_by("pk")
@@ -791,7 +824,7 @@ def mark_overbooked_proposal_inventory(
                 else str(reason or review_reason)[:128]
             )
             review_rows.append(row)
-    if not review_rows:
+    if not review_rows and not missing_current:
         return 0
     for row in review_rows:
         row.state = IgCheckoutInventoryReservation.State.OVERBOOKED_REVIEW
@@ -815,6 +848,7 @@ def mark_overbooked_proposal_inventory(
             "event_payload": {
                 "proposal_id": proposal.pk,
                 "reservation_ids": [row.pk for row in review_rows],
+                "inventory_reason": "inventory_current_revision_hold_missing" if missing_current else "inventory_overbooked_review",
             },
             "skip_reason": "human_agent_required",
             "message_text": (
@@ -846,7 +880,7 @@ def mark_overbooked_proposal_inventory(
     # The event key and notification dedupe keep side effects idempotent. The
     # return value must remain positive on replay so payment binders cannot
     # mistake an existing review state for permission to attach the order.
-    return len(review_rows)
+    return max(len(review_rows), int(missing_current))
 
 
 def fulfill_split_parcel_inventory(parcel, dispatch, actor, now=None):

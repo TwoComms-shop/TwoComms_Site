@@ -745,6 +745,8 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
     locked = IgCheckoutProposal.objects.select_for_update().select_related(
         "client", "commercial_episode"
     ).get(pk=proposal.pk, deal_id=deal.pk)
+    from management.services.ig_checkout_payment import require_checkout_revision
+    require_checkout_revision(locked, payload)
     if assisted_owner is not None:
         locked._ig_assisted_execution_id = assisted_owner.pk
     from storefront.services.brigade_commerce import brigade_payment_error
@@ -1026,9 +1028,12 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
             locked,
             _server_owned_recipient_payload(recipient_source_attempt, deal),
             user=recipient_source_user,
+            shipping_source_attempt=recipient_source_attempt,
         )
     else:
-        values = _validate_payload(locked, payload, user=request.user)
+        from management.services.ig_checkout_payment import _displayed_checkout_shipping
+        values = _validate_payload(locked, payload, user=request.user,
+            displayed_shipping=_displayed_checkout_shipping(locked, request))
     if (
         payment_choice
         == IgCheckoutInvoiceGeneration.PaymentChoice.PREPAY_200_COD
@@ -1147,6 +1152,9 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
         attempt.save(update_fields=["tracking_payload", "updated"])
     generation.payment_attempt = attempt
     generation.save(update_fields=["payment_attempt", "updated_at"])
+    from management.services.ig_checkout_payment import freeze_checkout_shipping
+    freeze_checkout_shipping(attempt, locked, generation=generation,
+        shipping_ack=values.get("shipping_ack"), shipping_policy=values.get("shipping_policy"))
     locked.current_invoice_generation = generation
     locked.payment_attempt = attempt
     locked.status = locked.Status.DETAILS_LOCKED
@@ -1221,6 +1229,8 @@ def _persist_provider_dispatch_evidence(attempt_id, invoice_payload):
     if getattr(proposal, "_ig_assisted_execution_id", None):
         _assisted_proposal_validation(proposal, fresh=True)
         _snapshot(proposal)
+    elif proposal.cart_amendments.exists():
+        _revalidate_frozen_proposal(proposal)
     encoded = json.dumps(
         invoice_payload,
         ensure_ascii=True,

@@ -2,8 +2,82 @@
 from django.db import connections
 
 
+CHECKOUT_PRIVACY_TOMBSTONE = "privacy_erased_financial_retention"
+
+
+def retain_checkout_privacy_tombstone(client, *, using="default"):
+    """Retain protected economic ownership, erase its operational identity.
+
+    A proposal's client/deal/episode graph is protected financial history even
+    before payment. It cannot be deleted or reparented to another customer.
+    The original erasure owner calls this after bytes and private ledgers have
+    gone, within its final atomic phase; ordinary clients still use deletion.
+    """
+    import uuid
+    from django.db.models.deletion import CASCADE
+    from django.utils import timezone
+    from management.models import (IgClient, IgCheckoutProposal, IgDeal,
+        IgCommercialEpisode, IgCheckoutAccessToken, IgCommerceSelectionSession,
+        IgCommerceSelectionTransition, IgCommerceTurnDecision, IgCommerceManagerReview)
+
+    connection = connections[using]
+    if not connection.in_atomic_block:
+        raise ValueError("Checkout retention requires the atomic privacy phase")
+    owner = IgClient.objects.using(using).select_for_update().get(pk=client.pk)
+    if owner.privacy_erasure_started_at is None:
+        raise ValueError("Checkout retention requires the exact persisted owner fence")
+    if not IgCheckoutProposal.objects.using(using).filter(client_id=owner.pk).exists():
+        return False
+    now = timezone.now()
+    IgCheckoutAccessToken.objects.using(using).filter(proposal__client_id=owner.pk,
+        revoked_at__isnull=True).update(revoked_at=now)
+
+    # Delete the same operational CASCADE dependants that physical client
+    # deletion would collect. Financial owner graphs remain in place. Clear
+    # decisions before transitions so SET_NULL never mutates immutable proof.
+    IgCommerceManagerReview.objects.using(using).filter(
+        client_id=owner.pk, session__client_id=owner.pk).delete()
+    session_table = connection.ops.quote_name(IgCommerceSelectionSession._meta.db_table)
+    with connection.cursor() as cursor:
+        for model in (IgCommerceTurnDecision, IgCommerceSelectionTransition):
+            cursor.execute(f"DELETE FROM {connection.ops.quote_name(model._meta.db_table)} "
+                f"WHERE session_id IN (SELECT id FROM {session_table} WHERE client_id=%s)", [owner.pk])
+    # Sessions use DO_NOTHING for their client/episode references, so neither
+    # physical client deletion nor the CASCADE pass removes their private cart.
+    # Native receipts have already gone in the bytes-first fulfilment phase.
+    IgCommerceSelectionSession.objects.using(using).filter(client_id=owner.pk).delete()
+    financial = {IgCheckoutProposal, IgDeal, IgCommercialEpisode}
+    for relation in IgClient._meta.related_objects:
+        if getattr(relation.field.remote_field, "on_delete", None) is CASCADE and relation.related_model not in financial:
+            relation.related_model._base_manager.using(using).filter(
+                **{relation.field.attname: owner.pk}).delete()
+
+    # These are mutable display/contact caches, not verified payment amounts,
+    # provider receipts or the legally retained Order delivery record.
+    IgDeal.objects.using(using).filter(client_id=owner.pk).update(
+        np_full_name="", np_phone="", np_city="", np_office="",
+        np_settlement_ref="", np_city_ref="", np_warehouse_ref="",
+        delivery_source="", delivery_error="")
+    retained = {"id", "created_at", "updated_at", "privacy_erasure_started_at", "reply_permission_epoch"}
+    updates = {}
+    for field in IgClient._meta.concrete_fields:
+        if field.name in retained:
+            continue
+        if field.has_default():
+            updates[field.attname] = field.get_default()
+        elif field.null:
+            updates[field.attname] = None
+    updates.update(igsid=f"erased:{uuid.uuid4().hex}", hidden_at=now,
+        hidden_reason=CHECKOUT_PRIVACY_TOMBSTONE, bot_paused=True,
+        paused_reason="privacy_erased", is_blocked=True, updated_at=now)
+    IgClient.objects.using(using).filter(pk=owner.pk,
+        privacy_erasure_started_at__isnull=False).update(**updates)
+    return True
+
+
 def purge_fulfillment_data(client_ids, *, using="default"):
-    from management.models import IgClient
+    from management.models import (IgClient, IgCheckoutCartAmendment,
+        IgCheckoutCartAmendmentResolution, IgCommerceSelectionTransition)
     from management.ig_restock_subscription_models import (
         IgRestockAvailabilityEvent, IgRestockSubscription, IgRestockAnswer,
         IgRestockReceipt, IgRestockInvitation,
@@ -43,10 +117,16 @@ def purge_fulfillment_data(client_ids, *, using="default"):
     split_offer_table = connection.ops.quote_name(IgSplitShippingOffer._meta.db_table)
     split_plan_table = connection.ops.quote_name(IgSplitOrderPlan._meta.db_table)
     split_parcel_table = connection.ops.quote_name(IgSplitParcel._meta.db_table)
+    amendment_table = connection.ops.quote_name(IgCheckoutCartAmendment._meta.db_table)
     split_parcels = f"SELECT p.id FROM {split_parcel_table} p JOIN {split_plan_table} sp ON sp.id=p.plan_id WHERE sp.client_id IN ({placeholders})"
     # Normal ORM collectors must never bypass immutable evidence guards. Raw
     # deletions here still execute the database's owner/privacy triggers.
     steps = (
+        # Successors protect both the holder receipt and assisted approval.
+        # Its native selection transition in turn protects that receipt.
+        (IgCheckoutCartAmendmentResolution, f"client_id IN ({placeholders})"),
+        (IgCommerceSelectionTransition, f"checkout_amendment_id IN (SELECT id FROM {amendment_table} WHERE client_id IN ({placeholders}))"),
+        (IgCheckoutCartAmendment, f"client_id IN ({placeholders})"),
         (IgAssistedCommerceImage, f"client_id IN ({placeholders})"),
         (IgAssistedCommerceExecution, f"client_id IN ({placeholders})"),
         (IgAssistedCommerceStockSync, f"client_id IN ({placeholders})"),

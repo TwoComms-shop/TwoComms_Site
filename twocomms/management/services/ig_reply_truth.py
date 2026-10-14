@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from itertools import islice
+import json
 import re
 from typing import Iterable, Literal
 from zoneinfo import ZoneInfo
@@ -26,6 +27,8 @@ REASON_CODES = (
     "configuration_mismatch",
     "unverified_availability",
     "unauthorized_action",
+    "unverified_shipping",
+    "unverified_paid_basket",
 )
 
 CORRECTED_REQUIREMENT_RE = re.compile(
@@ -60,6 +63,65 @@ class TimingAuthority:
     line_label: str = ""
     source_ref: str = ""
     review_line_labels: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class CheckoutLineAuthority:
+    line_id: str
+    title: str
+    quantity: int
+    unit_price: Decimal
+    line_total: Decimal
+    size: str = ""
+    fit: str = ""
+    color: str = ""
+
+
+@dataclass(frozen=True)
+class ShippingAuthority:
+    """Verified payer/policy facts; thresholds never enter goods price pools."""
+    source_ref: str
+    mode: str
+    payer_type: str
+    authority: str
+    currency: str = "UAH"
+    phase: str = ""
+    customer_maximum: Decimal | None = None
+    customer_charge: Decimal | None = None
+    delivery_prepaid: bool = False
+    policy_version: str = ""
+    threshold: Decimal | None = None
+    basis_total: Decimal | None = None
+    eligible: bool | None = None
+
+
+@dataclass(frozen=True)
+class CheckoutOrderAuthority:
+    """Detached native winning Order, with the complete signed wire snapshot."""
+    client_id: int
+    episode_id: int
+    order_id: int
+    order_number: str
+    winner_generation_id: int | None
+    attempt_id: int
+    observed_at: str
+    items: tuple[CheckoutLineAuthority, ...]
+    gross: Decimal
+    discount: Decimal
+    merchandise_payable: Decimal
+    payable: Decimal
+    confirmed_paid: Decimal | None
+    balance: Decimal | None
+    shipping_authorities: tuple[ShippingAuthority, ...] = ()
+    _snapshot_json: str = "{}"
+
+    @property
+    def fully_paid(self):
+        return bool(self.confirmed_paid is not None and self.balance == 0 and self.payable > 0
+            and self.confirmed_paid >= self.payable)
+
+    def as_dict(self):
+        return json.loads(self._snapshot_json)
 
 
 @dataclass(frozen=True)
@@ -117,6 +179,9 @@ class ReplyTruthContext:
     timing_authorities: tuple[TimingAuthority, ...] = ()
     fulfillment_review_status: Literal["", "pending", "reviewed"] = ""
     availability_authorities: tuple[AvailabilityAuthority, ...] = ()
+    checkout_authority: CheckoutOrderAuthority | None = None
+    full_payment_confirmed: bool | None = None
+    shipping_authorities: tuple[ShippingAuthority, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -256,6 +321,155 @@ _CONDITIONAL_PAYMENT_RE = re.compile(
     r"payment[^.!?]{0,50}opens?)",
     re.I,
 )
+_FULL_PAYMENT_RE = re.compile(r"повніст\w*\s+(?:оплач\w*|сплач\w*)|полностью\s+оплач\w*|fully\s+paid|paid\s+in\s+full|full\s+payment[^,;.!?]{0,20}(?:confirmed|received)|(?:замовлен\w*|заказ\w*|order)[^,;.!?]{0,25}\b(?:paid|оплачен\w*|оплачен\w*|оплачено)\b", re.I)
+_PARTIAL_PAYMENT_RE = re.compile(r"передоплат\w*|предоплат\w*|частков\w*|частич\w*|\b(?:deposit|prepayment|prepaid|partially)\b", re.I)
+_EXPLICIT_FULL_RE = re.compile(r"повніст\w*|полностью|fully|in\s+full|full\s+payment", re.I)
+_CHECKOUT_COMPONENT_RE = re.compile(
+    r"(?P<balance>залиш\w*[^,;.!?]{0,25}(?:сплат\w*|оплат\w*)|оста[тл]\w*[^,;.!?]{0,25}(?:оплат\w*|доплат\w*)|доплат\w*|remaining|balance|still\s+due|cash\s+on\s+delivery)|"
+    r"(?P<paid>оплатили|сплатили|внес\w*\s+(?:передоплат\w*|предоплат\w*)|отримали\s+оплату|получили\s+оплату|paid|deposit|prepayment|received\s+payment)|"
+    r"(?P<gross>до\s+зниж\w*|до\s+скид\w*|before\s+discounts?|gross|subtotal)|"
+    r"(?P<merchandise>після\s+зниж\w*|после\s+скид\w*|after\s+discounts?|merchandise)|"
+    r"(?P<discount>зниж\w*|скид\w*|discount)|"
+    r"(?P<payable>разом|всього|итого|до\s+сплати|к\s+оплате|payable|total)", re.I)
+_SHIPPING_CONTEXT_RE = re.compile(r"достав\w*|перевізник\w*|перевозчик\w*|\b(?:shipping|delivery|carrier)\b", re.I)
+_SHIPPING_FREE_RE = re.compile(r"безкоштов\w*|бесплат\w*|\bfree\b", re.I)
+_SHIPPING_MERCHANT_RE = re.compile(r"(?:twocomms|магазин\w*|\bstore\b|\bmerchant\b|\bwe\b|\bми\b|\bмы\b)[^,;.!?]{0,35}(?:опла\w*|спла\w*|плат\w*|\bpay\w*|\bcover\w*)|(?:paid|covered)\s+by\s+(?:twocomms|the\s+store|us)|(?:опла\w*|спла\w*)[^,;.!?]{0,20}(?:магазин\w*|twocomms)", re.I)
+_SHIPPING_RECIPIENT_RE = re.compile(r"(?:одержувач\w*|отримувач\w*|получател\w*|\byou\b|\bcustomer\b|\brecipient\b|\bви\b|\bвы\b)[^,;.!?]{0,25}(?:опла\w*|спла\w*|плат\w*|\bpay\w*)|(?:paid|опла\w*|спла\w*)[^,;.!?]{0,30}(?:окремо|отдельно|separately)", re.I)
+_SHIPPING_INCLUDED_RE = re.compile(r"включ\w*|вход\w*\s+(?:у|в)\s+(?:сум\w*|оплат\w*)|\b(?:included|prepaid)\b|передоплач\w*|предоплач\w*", re.I)
+_SHIPPING_THRESHOLD_RE = re.compile(r"(?:\bвід|\bот|\bfrom|at\s+least|threshold|поріг|порог)\s*(?:суми\s+|суммы\s+|\w{3}\s+)?$", re.I)
+_SHIPPING_CAP_RE = re.compile(r"\bдо\b|up\s+to|максим\w*|maximum|\bcap\b|at\s+most", re.I)
+_SHIPPING_ACTUAL_RE = re.compile(r"фактич\w*|фактичес\w*|\bactual\b|тариф\w*|\b(?:tariff|quote|estimated)\b|кошту\w*|\bстоит\b|\bcosts?\b|carrier[^,;.!?]{0,15}charges?", re.I)
+_SHIPPING_PHASES = {"now": re.compile(r"зараз|сейчас|\bnow\b|готов\w*\s+(?:част\w*|позиц\w*|товар\w*)|ready\s+(?:part|items)", re.I),
+    "later": re.compile(r"пізніш\w*|позже|решт\w*|залишк\w*|оставш\w*|\b(?:later|remaining)\b", re.I),
+    "together": re.compile(r"разом|вместе|\btogether\b", re.I)}
+
+
+def _shipping_facts(sentence, context):
+    phases = [phase for phase, pattern in _SHIPPING_PHASES.items() if pattern.search(sentence)]
+    if len(phases) > 1:
+        return ()
+    facts = tuple(fact for fact in context.shipping_authorities if isinstance(fact, ShippingAuthority) and fact.source_ref)
+    if phases:
+        return tuple(fact for fact in facts if fact.phase == phases[0] or not fact.phase and phases[0] != "later")
+    if context.checkout_authority is not None:
+        return facts
+    return tuple(fact for fact in facts if not fact.phase)
+
+
+def _shipping_positive(pattern, sentence):
+    for match in pattern.finditer(sentence):
+        if _locally_negated(sentence, match.start()):
+            continue
+        if re.search(r"\b(?:не|not|don['’]?t|doesn['’]?t|won['’]?t)\b[^,;.!?]{0,15}(?:опла\w*|спла\w*|плат\w*|pay|cover|free|included)", match.group(), re.I):
+            continue
+        return True
+    return False
+
+
+def _shipping_money_allowed(sentence, match, context):
+    component = _SHIPPING_CONTEXT_RE.search(sentence)
+    if component is None:
+        return None
+    prefix = sentence[:match.start()]
+    threshold = bool(_SHIPPING_THRESHOLD_RE.search(prefix) and _shipping_positive(_SHIPPING_FREE_RE, sentence))
+    if match.end() <= component.start() and not threshold:
+        return None
+    # A subsequent explicitly named goods component has its own money domain.
+    after = prefix[component.end():]
+    if re.search(r"(?:ціна|цена|\bprice\b|\bgoods\b|товар\w*)[^,;.!?]*$", after, re.I):
+        return None
+    amount, currency = _decimal(match.group("amount")), _currency_code(match.group("currency"))
+    facts = _shipping_facts(sentence, context)
+    if threshold:
+        return any(fact.authority == "automatic_threshold" and fact.policy_version == "threshold-after-discounts.v1"
+            and fact.threshold == amount and fact.currency == currency for fact in facts)
+    if _shipping_positive(_SHIPPING_ACTUAL_RE, sentence):
+        return False
+    if not facts and context.checkout_authority is None and _agreed_amount_allowed(sentence, match, context):
+        return True  # Attributed seller arrangement, never an actual carrier bill.
+    if _SHIPPING_CAP_RE.search(prefix.split(";")[-1]):
+        return any(fact.customer_maximum == amount and fact.currency == currency for fact in facts)
+    customer_amount = bool(re.search(r"для\s+вас|for\s+you|you\s+pay|ви\s+плат|вы\s+плат|included|включ", prefix, re.I))
+    return bool(customer_amount and any(fact.customer_charge == amount and fact.currency == currency for fact in facts))
+
+
+def _checkout_money_allowed(sentence, match, context):
+    fact = context.checkout_authority
+    if fact is None:
+        return None
+    prefix = sentence[:match.start()]
+    labels = list(_CHECKOUT_COMPONENT_RE.finditer(prefix))
+    named = [item for item in fact.items if re.search(re.escape(item.title), prefix, re.I)]
+    if named and re.search(r"(?:ціна|цена|price)\s*[:—–-]?\s*$", prefix, re.I):
+        return any(_decimal(match.group("amount")) in {item.unit_price, item.line_total} for item in named)
+    if not labels:
+        return None
+    kind = labels[-1].lastgroup
+    value = {"paid": fact.confirmed_paid, "balance": fact.balance, "gross": fact.gross,
+        "merchandise": fact.merchandise_payable, "payable": fact.payable, "discount": fact.discount}[kind]
+    return value is not None and value == _decimal(match.group("amount")) and _currency_code(match.group("currency")) == "UAH"
+
+
+def _shipping_claim_unit_verified(sentence, context):
+    if not _SHIPPING_CONTEXT_RE.search(sentence):
+        return True
+    facts = _shipping_facts(sentence, context)
+    free = _shipping_positive(_SHIPPING_FREE_RE, sentence)
+    threshold_rule = any(_SHIPPING_THRESHOLD_RE.search(sentence[:match.start()])
+        and _shipping_money_allowed(sentence, match, context) is True
+        for pattern in (_MONEY_RE, _PREFIX_MONEY_RE) for match in pattern.finditer(sentence))
+    if free and not threshold_rule and not any(fact.mode == "merchant_free" and fact.payer_type == "Sender" for fact in facts):
+        return False
+    if _shipping_positive(_SHIPPING_MERCHANT_RE, sentence) and not any(fact.payer_type == "Sender" for fact in facts):
+        return False
+    if _shipping_positive(_SHIPPING_INCLUDED_RE, sentence) and not any(fact.delivery_prepaid and fact.mode in {"customer_prepaid", "customer_paid_included"} for fact in facts):
+        return False
+    if _shipping_positive(_SHIPPING_RECIPIENT_RE, sentence):
+        zero = any(_decimal(match.group("amount")) == 0 and _shipping_money_allowed(sentence, match, context) is True
+            for pattern in (_MONEY_RE, _PREFIX_MONEY_RE) for match in pattern.finditer(sentence))
+        if not zero and not any(fact.payer_type == "Recipient" for fact in facts):
+            return False
+    return True
+
+
+def _shipping_claims_verified(sentence, context):
+    shipping_seen = False
+    for clause in re.split(r"(?<!\d),(?!\d)|;", sentence):
+        explicit = bool(_SHIPPING_CONTEXT_RE.search(clause))
+        shipping_seen = shipping_seen or explicit
+        if not explicit and shipping_seen and any(pattern.search(clause) for pattern in (
+                _SHIPPING_FREE_RE, _SHIPPING_MERCHANT_RE, _SHIPPING_RECIPIENT_RE, _SHIPPING_INCLUDED_RE)):
+            clause = "delivery " + clause
+        if not _shipping_claim_unit_verified(clause, context):
+            return False
+    return True
+
+
+def _checkout_basket_verified(sentence, context):
+    fact = context.checkout_authority
+    if fact is None:
+        return True
+    for clause in re.split(r"[,;]|\s+(?:and|та|и)\s+", sentence, flags=re.I):
+        for item in fact.items:
+            if not re.search(re.escape(item.title), clause, re.I):
+                continue
+            quantities = [int(first or second) for first, second in _STOCK_QUANTITY_RE.findall(clause)]
+            quantities.extend(int(match) for match in re.findall(r"[×x]\s*(\d{1,3})\b", clause, re.I))
+            if quantities and any(value != sum(row.quantity for row in fact.items if row.title == item.title) for value in quantities):
+                return False
+    if re.search(r"paid\s+for|your\s+order|у\s+замовлен\w*|в\s+заказ\w*|оплатили|сплатили", sentence, re.I):
+        current_titles = {item.title for item in fact.items}
+        for change in fact.as_dict().get("checkout_changes", []):
+            if change.get("operation") != "remove":
+                continue
+            after = {row.get("title") for row in change.get("after", [])}
+            for row in change.get("before", []):
+                title = row.get("title")
+                if title and title not in after and title not in current_titles:
+                    for match in re.finditer(re.escape(title), sentence, re.I):
+                        if not _locally_negated(sentence, match.start()) and not re.search(r"removed|вилуч\w*|видал\w*|удален\w*|убран\w*", sentence, re.I):
+                            return False
+    return True
 _ORDER_CLAIM_RE = re.compile(
     r"(?:замовлен\w*|заказ\w*|order)[^.!?\n]{0,70}"
     r"(?:створен\w*|создан\w*|оформлен\w*|placed|created|confirmed)"
@@ -879,6 +1093,13 @@ def validate_reply_truth(
     discount_amounts = {_decimal(value) for value in context.authorized_discount_amounts}
 
     for sentence in _claim_sentences(reply_text, context.quoted_data):
+        if not _shipping_claims_verified(sentence, context):
+            _add(reasons, "unverified_shipping")
+        if not _checkout_basket_verified(sentence, context):
+            _add(reasons, "unverified_paid_basket")
+        if (context.full_payment_confirmed is False and _has_positive_claim(_FULL_PAYMENT_RE, sentence)
+            and (_EXPLICIT_FULL_RE.search(sentence) or not _PARTIAL_PAYMENT_RE.search(sentence))):
+            _add(reasons, "unverified_payment")
         for recruitment_status in _recruitment_claims(sentence):
             if context.recruitment_status != recruitment_status:
                 _add(reasons, "unverified_recruitment")
@@ -892,7 +1113,9 @@ def validate_reply_truth(
                 _add(reasons, "unsupported_currency")
                 continue
             pair = (_decimal(match.group("low")), _decimal(match.group("high")))
-            if pair not in ranges:
+            if _SHIPPING_CONTEXT_RE.search(sentence):
+                _add(reasons, "unverified_shipping")
+            elif pair not in ranges:
                 _add(reasons, "unverified_price")
 
         is_discount = bool(_DISCOUNT_RE.search(sentence))
@@ -911,7 +1134,15 @@ def validate_reply_truth(
                 _add(reasons, "unsupported_currency")
                 continue
             amount = _decimal(match.group("amount"))
-            if is_discount and not discount_negated:
+            shipping_money = _shipping_money_allowed(sentence, match, context)
+            checkout_money = _checkout_money_allowed(sentence, match, context)
+            if shipping_money is not None:
+                if not shipping_money:
+                    _add(reasons, "unverified_shipping")
+            elif checkout_money is not None:
+                if not checkout_money:
+                    _add(reasons, "unverified_paid_basket")
+            elif is_discount and not discount_negated:
                 if amount not in discount_amounts:
                     _add(reasons, "unverified_discount")
             elif discount_negated:
@@ -1076,5 +1307,8 @@ __all__ = [
     "ReplyTruthContext",
     "ReplyTruthResult",
     "TimingAuthority",
+    "CheckoutLineAuthority",
+    "CheckoutOrderAuthority",
+    "ShippingAuthority",
     "validate_reply_truth",
 ]

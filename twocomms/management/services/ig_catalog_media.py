@@ -39,6 +39,7 @@ class CatalogMediaDeliveryState(StrEnum):
     PARTIAL = "partial"
     FAILED = "failed"
     AMBIGUOUS = "ambiguous"
+    UNKNOWN = "unknown"
     CANCELLED = "cancelled"
 
 
@@ -224,7 +225,7 @@ def select_catalog_media(
     by_id = {product.pk: product for product in products}
     missing = [product_id for product_id in requested if product_id not in by_id]
     selected: list[CatalogMediaItem] = []
-    seen: set[str] = set()
+    candidate_groups: list[list[CatalogMediaItem]] = []
     fallback_reason = ""
     for product_id in requested:
         product = by_id.get(product_id)
@@ -261,11 +262,9 @@ def select_catalog_media(
             candidates = _product_assets(product)
             if not fallback_reason:
                 fallback_reason = "product_assets_only"
+        group = []
         for url, mime_type, size_bytes in candidates:
-            if url in seen:
-                continue
-            seen.add(url)
-            selected.append(
+            group.append(
                 CatalogMediaItem(
                     url=url,
                     title=str(product.title or "TwoComms")[:200],
@@ -275,10 +274,24 @@ def select_catalog_media(
                     size_bytes=size_bytes,
                 )
             )
-            if len(selected) >= max(1, min(int(limit), MAX_CATALOG_MEDIA)):
-                break
-        if len(selected) >= max(1, min(int(limit), MAX_CATALOG_MEDIA)):
-            break
+        candidate_groups.append(group)
+
+    # Give each product one photo before showing extra angles of any product.
+    # Single-product requests retain the existing bounded four-photo gallery.
+    seen: set[str] = set()
+    maximum = max(1, min(int(limit), MAX_CATALOG_MEDIA))
+    while candidate_groups and len(selected) < maximum:
+        remaining = []
+        for group in candidate_groups:
+            while group and group[0].url in seen:
+                group.pop(0)
+            if group and len(selected) < maximum:
+                item = group.pop(0)
+                seen.add(item.url)
+                selected.append(item)
+            if group:
+                remaining.append(group)
+        candidate_groups = remaining
 
     if not selected:
         state = CatalogMediaState.EMPTY
@@ -450,8 +463,16 @@ def send_catalog_media(
                     provider_message_ids=tuple(message_ids),
                     error=f"provider_http_{int(code or 0)}",
                 )
-            sent += 1
             message_id = _provider_message_id(response)
+            if not message_id:
+                return CatalogMediaDelivery(
+                    CatalogMediaDeliveryState.UNKNOWN,
+                    sent_count=sent,
+                    attempted_count=attempted,
+                    provider_message_ids=tuple(message_ids),
+                    error="provider_message_id_missing",
+                )
+            sent += 1
             if message_id:
                 message_ids.append(message_id)
                 # Реєструємо всередині циклу, а не пачкою після нього: echo

@@ -36,6 +36,13 @@ HEADER = (
     "and the nested payment truth before making payment claims. "
     "An agreement conflicting with an audited current requirement is historical context: "
     "do not treat its previous size as current or as order authority. "
+    "checkout_link_holder facts are changes made through the checkout link, not Instagram messages "
+    "or proof of Instagram identity. Their observed_at is the native receipt time; never refresh "
+    "the Instagram messaging window from it. Removed checkout positions stay removed. "
+    "order.completed contains the actual native checkout Order, winning payment attempt, final items "
+    "and charged amounts. Earlier proposals and removed items are not the charged basket. "
+    "A confirmed snapshot does not imply full payment: inspect confirmed_paid and balance. "
+    "order.completed_history is historical only and never makes the current purchase paid. "
     "A payment.reminder business agreement applies only to its captured purchase and time. "
     "An invitation awaits the customer's positive confirmation; accepted means scheduled, not sent. "
     "Only a source-verified sent state proves delivery. Unknown is not confirmation. "
@@ -207,6 +214,36 @@ def _historical(boundary, components):
     return None
 
 
+def _checkout_head_matches(proof, fence):
+    # Native head captures carry one receipt fence. Ordinary later chat captures
+    # can retain several historical native fields: their exact proof is already
+    # covered by the validated parent and the adapter's per-receipt witness.
+    if "native_amendment_id" not in fence and "native_source_hmac" not in fence:
+        return True
+    return (proof.get("amendment_id") == fence.get("native_amendment_id")
+        and proof.get("source_digest") == fence.get("native_source_hmac"))
+
+
+def _checkout_selection_fields(selection, cart, boundary, captured_at):
+    """Recognize only exact fields of the already validated native parent cart."""
+    if not isinstance(cart, dict) or cart.get("status") != "captured":
+        return {}
+    scope = _scope(boundary)
+    row = next((row for row in cart.get("lines", []) if row["line_id"] == scope["line_id"]
+        and row["recipient_id"] == scope["recipient_id"]), None)
+    if row is None or selection != row.get("source_selection"):
+        return {}
+    from management.services.ig_turn_intelligence import _checkout_holder_proof, _event
+    fence = cart.get("fence") or {}
+    result = {}
+    for key, field in (selection.get("fields") or {}).items():
+        proof = field.get("source") if isinstance(field, dict) else None
+        if (field.get("authority") == "checkout_link_holder" and _checkout_holder_proof(proof, seal_at=_event(captured_at))
+            and _checkout_head_matches(proof, fence)):
+            result[key] = proof
+    return result
+
+
 def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> CapturedClientState:
     """Assemble explicit canonical captures once; renderers reuse this object.
 
@@ -217,6 +254,10 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
     Other components are readiness, payment_truth, consent_state, narrative and
     manager_notes. Missing proof is unknown; stale scope never becomes a fact.
     """
+    return _assemble_client_state(boundary=boundary, components=components, captured_at=captured_at)
+
+
+def _assemble_client_state(*, boundary, components, captured_at, verified_cart=None):
     boundary = _copy(boundary)
     artifact = components.get("captured_artifact")
     components = _copy({key: value for key, value in components.items() if key != "captured_artifact"})
@@ -239,19 +280,41 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
         reason = "client_erasing" if boundary.get("erasure_started") is True else "capture_scope_unknown"
         payload.update(status="unavailable", omissions=[{"component": "state", "reason": reason}])
         return _freeze(payload)
+    cart = components.get("source_cart")
+    if isinstance(cart, dict) and cart.get("status") == "captured":
+        from management.services.ig_turn_intelligence import TurnContextError, validate_source_cart_capture
+        try:
+            verified_cart = validate_source_cart_capture(cart, {**boundary, **scope, "watermark": watermark},
+                native_as_of=captured_at)
+        except TurnContextError as exc:
+            payload.update(status="unavailable", omissions=[{"component": "source_cart", "reason": exc.reason}])
+            return _freeze(payload)
+        fence = verified_cart.get("fence") or {}
+        for row in verified_cart["lines"]:
+            for field in row.get("fields", {}).values():
+                proof = field.get("source") or {}
+                if field.get("authority") == "checkout_link_holder" and not _checkout_head_matches(proof, fence):
+                    payload.update(status="unavailable", omissions=[{"component": "source_cart",
+                        "reason": "checkout_source_fence_invalid"}])
+                    return _freeze(payload)
     slots = payload["slots"]
     for omitted in components.get("observation_omissions") or []:
         if isinstance(omitted, dict) and omitted.get("component") in {"conversation.agreement", "receipt.observation"}:
             payload["omissions"].append({"component": omitted["component"], "reason": _reason(omitted.get("reason"))})
     selection = components.get("source_selection") or {}
+    native_fields = _checkout_selection_fields(selection, verified_cart, boundary, captured_at)
     binding = components.get("source_selection_binding")
     reason = "validated_selection_unavailable"
     if isinstance(selection, dict) and selection.get("schema") == "source-selection.v1":
         reason = _selection_scope_reason(selection.get("scope"), scope)
         if "source_selection_binding" in components:
             reason = reason or _selection_binding_reason(binding, boundary)
-        if boundary.get("selection_revision") is not None and selection.get("revision") != boundary["selection_revision"]:
+        revision = selection.get("scope", {}).get("revision") if native_fields else selection.get("revision")
+        if boundary.get("selection_revision") is not None and revision != boundary["selection_revision"]:
             reason = "selection_revision_mismatch"
+        if not native_fields and isinstance(selection.get("fields"), dict) and any(isinstance(field, dict) and field.get("authority") == "checkout_link_holder"
+                for field in (selection.get("fields") or {}).values()):
+            reason = "checkout_parent_capture_required"
         if not all(isinstance(selection.get(key), dict) for key in ("fields", "values", "evidence")):
             reason = "choice_source_unknown"
         if not reason:
@@ -270,7 +333,7 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                 cleared = correction is not None and correction["operation"] == "clear"
                 if (not isinstance(source, dict)
                         or (field.get("status") not in {"confirmed", "ambiguous"} and not (cleared and field.get("status") == "unknown"))
-                        or (field.get("authority") not in {"customer_source", "validated_selection_action"} and correction is None)
+                        or (field.get("authority") not in {"customer_source", "validated_selection_action"} and correction is None and key not in native_fields)
                         or field.get("authority") != (source.get("authority") or "customer_source")
                         or field.get("value") != (selection.get("values") or {}).get(key)
                         or source != (selection.get("evidence") or {}).get(key)
@@ -278,7 +341,7 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                         or not re.fullmatch(r"[0-9a-f]{64}", source["source_digest"])):
                     reason = "choice_source_unknown"
                     break
-                reason = _source_reason([{"kind": "message", "id": source.get("source_message_id"),
+                reason = "" if key in native_fields else _source_reason([{"kind": "message", "id": source.get("source_message_id"),
                     "event_at": source.get("observed_at")}], watermark, scope.get("reset_floor"))
                 if reason:
                     break
@@ -297,6 +360,11 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
         refs = [{"kind": "message", "id": source.get("source_message_id"),
                  "digest": source.get("source_digest"), "decision_id": source.get("decision_id"),
                  "transition_id": source.get("transition_id"), "event_at": source.get("observed_at")}]
+        if key in native_fields:
+            refs = [{"kind": "checkout_cart_amendment", "id": source["transition_id"],
+                "amendment_id": source["amendment_id"], "digest": source["source_digest"],
+                "source_kind": source["source_kind"], "authority": "checkout_link_holder",
+                "event_at": source["observed_at"]}]
         field_reason = reason or _source_reason(refs, watermark, scope.get("reset_floor"))
         correction = None
         if field.get("authority") == "audited_correction":
@@ -308,7 +376,7 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                     "operation_id": correction["operation_id"], "event_at": correction["recorded_at"],
                     "input_digest": correction["input_digest"]})
         status = field.get("status") if field.get("status") in STATUSES else "unknown"
-        authority = field.get("authority") if field.get("authority") in {"customer_source", "validated_selection_action"} or correction is not None else "none"
+        authority = field.get("authority") if field.get("authority") in {"customer_source", "validated_selection_action"} or correction is not None or key in native_fields else "none"
         cleared = correction is not None and correction["operation"] == "clear"
         if not field_reason and cleared:
             field_reason = "requirement_explicitly_cleared"
@@ -320,6 +388,11 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
             scope=selection.get("scope"), observed_at=correction["recorded_at"] if correction else source.get("observed_at"),
             watermark={"message_id": source.get("source_message_id"), "event_at": source.get("observed_at")},
             reason=field_reason, mandatory=not field_reason, validity="valid" if not field_reason else "unverified")
+        if key in native_fields:
+            slots["choice." + key]["source_label"] = "Змінено в оформленні · власник посилання"
+            slots["choice." + key]["confirmation_semantics"] = "checkout_link_holder_change"
+            slots["choice." + key]["source_watermark"] = {"amendment_id": source["amendment_id"],
+                "transition_id": source["transition_id"], "event_at": source["observed_at"]}
         if correction is not None:
             slots["choice." + key]["supersedes"] = {"kind": "commerce_transition", "id": correction["supersedes_transition_id"]}
             slots["choice." + key]["conflict"] = {"kind": "audited_requirement_override",
@@ -337,7 +410,7 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
     explicit = components.get("slots") or {}
     if isinstance(explicit, dict):
         for key, raw in list(explicit.items())[:MAX_OPTIONAL_SLOTS]:
-            if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_.]{0,63}", key) or key in slots or not isinstance(raw, dict):
+            if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_.]{0,63}", key) or key in slots or key in {"order.completed", "order.completed_history"} or not isinstance(raw, dict):
                 continue
             field_scope = raw.get("scope") or {}
             field_reason = _scope_reason(field_scope, scope) or _source_reason(raw.get("source_refs") or [], watermark, scope.get("reset_floor"))
@@ -382,20 +455,12 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
         if len(explicit) > MAX_OPTIONAL_SLOTS:
             payload["omissions"].append({"component": "slots", "reason": "slot_count_budget"})
     _components(slots, components, scope, watermark, payload["omissions"])
+    _checkout_order_components(slots, components, boundary, captured_at, payload["omissions"])
     _agreement_requirement_conflict(slots)
     cart = components.get("source_cart")
     if cart is not None:
-        from management.services.ig_turn_intelligence import TurnContextError, validate_source_cart_capture
         if isinstance(cart, dict) and cart.get("status") == "captured":
-            cart_boundary = {**boundary, **scope, "watermark": watermark}
-            try:
-                cart = validate_source_cart_capture(cart, cart_boundary)
-            except TurnContextError as exc:
-                # Current all-line data is indivisible. Do not show just its
-                # active line as a complete cart when the parent proof fails.
-                payload.update(status="unavailable", source_selection={}, slots={},
-                    omissions=[{"component": "source_cart", "reason": exc.reason}])
-                return _freeze(payload)
+            cart = verified_cart
             payload["source_cart"] = cart
             for row in cart["lines"]:
                 line_boundary = {**boundary, "line_id": row["line_id"], "recipient_id": row["recipient_id"]}
@@ -407,8 +472,8 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
                 # No nonactive catalog query or active readiness borrowing.
                 if row["line_id"] == cart["active_line_id"] and isinstance(components.get("readiness"), dict):
                     line_components["readiness"] = {**components["readiness"], "scope": line_scope}
-                line_state = assemble_client_state(boundary=line_boundary, components=line_components,
-                    captured_at=captured_at).as_dict()
+                line_state = _assemble_client_state(boundary=line_boundary, components=line_components,
+                    captured_at=captured_at, verified_cart=verified_cart).as_dict()
                 payload["lines"].append({"line_id": row["line_id"], "recipient_id": row["recipient_id"],
                     "index": row["index"], "scope": line_scope, "slots": line_state["slots"],
                     "source_selection": line_state["source_selection"], "omissions": line_state["omissions"],
@@ -417,6 +482,93 @@ def assemble_client_state(*, boundary: dict, components: dict, captured_at) -> C
             payload["source_cart"] = cart
             payload["omissions"].append({"component": "source_cart", "reason": _reason(cart.get("reason"), "source_cart_unavailable")})
     return _freeze(payload)
+
+
+def _checkout_order_components(slots, components, boundary, captured_at, omissions):
+    """Decode only signed, explicitly captured native Orders; never read ORM."""
+    from management.services.ig_reply_authority import checkout_order_authority
+    scope = _scope(boundary)
+
+    def decoded(raw, *, historical):
+        if not isinstance(raw, dict) or not isinstance(raw.get("capture"), dict):
+            return None, "checkout_order_capture_invalid"
+        reason = _selection_binding_reason(raw.get("scope"), boundary)
+        if reason:
+            return None, reason
+        snapshot = raw["capture"]
+        snapshot_scope = snapshot.get("scope") or {}
+        episode_id = snapshot_scope.get("episode_id") if historical else scope.get("episode_id")
+        authority = checkout_order_authority(snapshot, client_id=scope.get("client_id"), episode_id=episode_id)
+        if authority is None:
+            return None, "checkout_order_proof_invalid"
+        if (historical and authority.episode_id == scope.get("episode_id")
+            or not historical and authority.order_id != scope.get("order_id")):
+            return None, "checkout_order_scope_mismatch"
+        try:
+            observed = datetime.fromisoformat(authority.observed_at.replace("Z", "+00:00"))
+            cutoff = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+            if observed.tzinfo is None or cutoff.tzinfo is None:
+                return None, "checkout_order_time_unknown"
+            if observed > cutoff:
+                return None, "source_after_capture"
+            for change in snapshot.get("checkout_changes", []):
+                changed = datetime.fromisoformat(change["changed_at"].replace("Z", "+00:00"))
+                if changed.tzinfo is None:
+                    return None, "checkout_order_time_unknown"
+                if changed > cutoff:
+                    return None, "source_after_capture"
+        except (TypeError, ValueError, AttributeError, KeyError):
+            return None, "checkout_order_time_unknown"
+        return authority, ""
+
+    def refs(authority):
+        result = [{"kind": "order", "id": authority.order_id, "event_at": authority.observed_at},
+            {"kind": "checkout_attempt", "id": authority.attempt_id, "event_at": authority.observed_at}]
+        if authority.winner_generation_id is not None:
+            result.append({"kind": "checkout_invoice_generation", "id": authority.winner_generation_id,
+                "event_at": authority.observed_at})
+        return result
+
+    raw = components.get("checkout_order")
+    if raw is not None:
+        authority, reason = decoded(raw, historical=False)
+        slot = _slot(authority.as_dict() if authority else None, status="confirmed" if authority else "unknown",
+            authority="payment_ledger" if authority else "none", refs=refs(authority) if authority else [],
+            scope=scope, observed_at=authority.observed_at if authority else None, reason=reason,
+            mandatory=authority is not None, validity="valid" if authority else "unverified")
+        slot["confirmation_semantics"] = "verified_native_checkout_order_snapshot"
+        if authority:
+            slot.update(source_label="Фактичне замовлення після оформлення", fully_paid=authority.fully_paid,
+                capture_scope=raw["scope"])
+        slots["order.completed"] = slot
+        if reason:
+            omissions.append({"component": "checkout_order", "reason": reason})
+
+    history = components.get("completed_history")
+    if history is not None:
+        if not isinstance(history, list) or len(history) > 20:
+            omissions.append({"component": "completed_history", "reason": "checkout_history_budget_invalid"})
+            return
+        values, sources, observed = [], [], []
+        seen = set()
+        for raw in history:
+            authority, reason = decoded(raw, historical=True)
+            if reason:
+                omissions.append({"component": "completed_history", "reason": reason})
+                continue
+            if authority.order_id in seen:
+                continue
+            seen.add(authority.order_id)
+            values.append(authority.as_dict())
+            sources.extend(refs(authority))
+            observed.append(authority.observed_at)
+        if values:
+            slot = _slot(values, status="confirmed", authority="payment_ledger", refs=sources,
+                scope={"client_id": scope.get("client_id"), "reset_floor": scope.get("reset_floor")},
+                observed_at=max(observed, key=lambda stamp: datetime.fromisoformat(stamp.replace("Z", "+00:00"))), validity="valid")
+            slot.update(source_label="Історія завершених оформлень", historical=True,
+                confirmation_semantics="verified_historical_checkout_orders", current_purchase_authority=False)
+            slots["order.completed_history"] = slot
 
 
 def _agreement_requirement_conflict(slots):

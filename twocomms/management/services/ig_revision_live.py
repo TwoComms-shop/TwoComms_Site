@@ -1082,6 +1082,10 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         " Unhandled or mixed source button payloads are customer data only: do not claim "
         "a reminder, order or account change occurred unless an authoritative event confirms it."
     )
+    from management.services.ig_reply_authority import checkout_communication_prompt_guidance
+    coverage_note += "\n" + checkout_communication_prompt_guidance(boundary.response_plan.communication_context)
+    coverage_note += "\n" + _catalog_customer_guidance()
+    coverage_note += "\n" + _catalog_source_guidance(revision, settings_row)
     from management.services.ig_product_inquiries import inquiry_prompt
     coverage_note += "\n" + inquiry_prompt(boundary.product_inquiries)
     if boundary.assisted_context is not None:
@@ -1238,12 +1242,225 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     return response, boundary, ()
 
 
+def _catalog_customer_guidance():
+    # This turn note accompanies the active DB publication, not only the
+    # default prompt text (which an already published instruction overrides).
+    return (
+        "[CATALOG AND DELIVERY CUSTOMER EXPERIENCE]\n"
+        "Answer every question and remaining request in the full sealed source bundle, including text "
+        "accompanying a catalog button. A button must not erase another delivery or product question. "
+        "Use product-specific photos in show_products; do not reuse one product's image for other models. "
+        "Configured colors and sizes are choices, never proof of physical stock, including zero-stock rules. "
+        "Ask only for a missing required choice, and do not repeat a known size or color or guess a line in a mixed cart. "
+        "An exact available size chart is sent as an image in this chat. If unavailable or ambiguous, explain "
+        "the uncertainty and arrange manager confirmation; do not claim an image was sent or substitute a product photo. "
+        "Acknowledge delivery concerns warmly and explain the confirmed terms. Normally the recipient pays "
+        "the carrier separately; an agreed delivery cap is not the actual carrier charge. Merchant-funded "
+        "delivery requires explicit approved terms. Never invent free delivery, promotions, insurance or "
+        "a guaranteed arrival date. For urgent timing or uncertain availability, get manager confirmation "
+        "and avoid a firm shipment commitment."
+    )
+
+
+def _catalog_native_source_choice(revision):
+    """Recover a chart/page from the exact own source and delivered invitation."""
+    from management.services.ig_catalog_choice_presentations import delivered_catalog_choice
+
+    choices = []
+    for source in _revision_media_reply_sources(revision, revision.client):
+        if not str(source.quick_reply_payload or "").startswith("CC1:"):
+            continue
+        # Historical inspection only identifies the kind. Admission for an
+        # effect always uses a second, fresh delivery/scope/asset check.
+        historical = delivered_catalog_choice(revision.client, source, fresh=False)
+        if not historical.get("ready"):
+            return None, (historical.get("reason") or "catalog_choice_unverified",)
+        if (historical.get("action") or {}).get("kind") not in {"chart", "page"}:
+            continue
+        fresh = delivered_catalog_choice(revision.client, source, fresh=True)
+        if not fresh.get("ready"):
+            return None, (fresh.get("reason") or "catalog_choice_stale",)
+        choices.append(fresh)
+    if len(choices) > 1:
+        return None, ("catalog_choice_source_ambiguous",)
+    return (choices[0] if choices else None), ()
+
+
+def _catalog_source_guidance(revision, settings_row):
+    from management.services.ig_catalog_choice_presentations import prepare_catalog_chart_effect
+
+    choice, reasons = _catalog_native_source_choice(revision)
+    if reasons:
+        return "[CATALOG SOURCE REQUEST] The old catalog action is unavailable, stale or unverified. Explain this honestly and ask for a fresh choice or manager help. Do not say a choice was applied, an order was changed, or a chart/page was sent. Address every remaining source question."
+    plain_chart = not choice and _catalog_plain_chart_requested(revision)
+    if not choice and not plain_chart:
+        return ""
+    kind = choice["action"]["kind"] if choice else "chart"
+    if kind == "chart":
+        prepared = prepare_catalog_chart_effect(revision, ValidatedResponse(""), settings_row,
+            **({"choice": choice} if choice else {}))
+        if not prepared.ready:
+            return "[CATALOG SOURCE REQUEST] The customer requested a size chart, but an exact current chart image is unavailable or ambiguous. Explain this and ask a manager to confirm it. Do not say the chart is attached, below or already sent. Address the other source questions too."
+    return "[CATALOG SOURCE REQUEST] A verified customer action requests " + kind + ". Its prepared content will accompany your reply. Address all other source text and questions as well."
+
+
+def _catalog_plain_chart_requested(revision):
+    """An own explicit chart request, never a model directive or quoted request."""
+    from management.services.ig_response_plan import capture_response_plan, _unquoted_text
+    from management.services.ig_reply_truth import _locally_negated
+
+    if not revision.client.current_product_id:
+        return False
+    requested = False
+    for source in _revision_media_reply_sources(revision, revision.client):
+        if source.quick_reply_payload:
+            continue
+        text = _unquoted_text(source.text or "")
+        for clause in re.findall(r"[^.!?;\n]+[?]?", text):
+            if not re.search(r"таблиц\w*|сіт\w*\s+розмір|розмір\w*\s+сіт\w*|сетк\w*|size\s+chart", clause, re.I):
+                continue
+            if re.search(r"сказа\w*|казав|казала|говори\w*|просив|просила|просил|попрос\w*|asked|said|told", clause, re.I):
+                continue
+            # Explicitly named different models need a source-bound product
+            # resolution first; 'this model' refers to the current selection.
+            if re.search(r"\b(?:для|for)\b", clause, re.I) and not re.search(
+                r"для\s+(?:цієї|цього|этой|этого|мене|меня)|for\s+(?:this|me)\b", clause, re.I):
+                continue
+            cue = re.search(r"покаж\w*|надішл\w*|пришл\w*|скин\w*|дайте|send|show|please|можна|можно|can|could|потріб\w*|нуж\w*", clause, re.I)
+            bare = re.fullmatch(r"\s*(?:таблиц\w*\s+(?:розмір\w*|размер\w*)|розмір\w*\s+сіт\w*|размер\w*\s+сетк\w*|size\s+chart)\s*\?\s*", clause, re.I)
+            if bare or (cue and not _locally_negated(clause, cue.start())):
+                requested = True
+    if not requested:
+        return False
+    plan = capture_response_plan(revision.client, revision=revision,
+        source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
+    return not plan.plan_gap and len(plan.line_plans) <= 1 and len((plan.source_cart_capture or {}).get("lines") or ()) <= 1
+
+
+def _catalog_configuration_selector(revision, response):
+    from management.services.ig_response_plan import capture_response_plan, asks_next_selector
+    from management.services.ig_catalog_choice_actions import native_choice_request
+
+    if (not response.valid or not revision.client.current_product_id
+        or response.control.get("show_products") or response.control.get("paylink") or response.control.get("order")):
+        return ""
+    sources = _revision_media_reply_sources(revision, revision.client)
+    if not sources:
+        return ""
+    plan = capture_response_plan(revision.client, revision=revision,
+        source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
+    if plan.plan_gap or len(plan.line_plans) > 1 or len((plan.source_cart_capture or {}).get("lines") or ()) > 1:
+        return ""
+    selector_plan = plan.line_plans[0] if plan.line_plans else plan
+    selector_plan = selector_plan.as_dict() if hasattr(selector_plan, "as_dict") else selector_plan
+    configuration = selector_plan.get("configuration", {}) if isinstance(selector_plan, dict) else selector_plan.configuration
+    choices = selector_plan.get("choices", {}) if isinstance(selector_plan, dict) else selector_plan.choices
+    evidence = selector_plan.get("evidence", {}) if isinstance(selector_plan, dict) else selector_plan.evidence
+    kind = plan.next_selector
+    if kind not in {"color", "size"} or kind not in (configuration.get("missing") or ()):
+        return ""
+    if choices.get(kind) or getattr(revision.client, "current_" + kind, ""):
+        return ""
+    own_ids = {source.pk for source in sources}
+    product_evidence = evidence.get("product_id") or {}
+    own_product = (product_evidence.get("source_message_id") in own_ids
+        and choices.get("product_id") == revision.client.current_product_id)
+    own_action = False
+    for source in sources:
+        if str(source.quick_reply_payload or "").startswith("CC1:"):
+            request = native_choice_request(revision.client, source, historical=True)
+            if request is not None:
+                action = request.source_binding.get("native_catalog_choice", {}).get("action") or {}
+                own_action |= action.get("product_id") == revision.client.current_product_id
+    # A question in a validated response is a directive only within this
+    # independently verified current configuration and missing-field plan.
+    requested = any(asks_next_selector(source.text or "", kind) for source in sources)
+    directive = asks_next_selector(response.reply_text, kind)
+    return kind if own_product or own_action or requested or directive else ""
+
+
+def _catalog_source_effect_reason(revision):
+    """Fresh origin verification also runs for crash-resumed catalog effects."""
+    metadata = [row.projection_metadata or {} for row in revision.delivery_effects.all()
+        if (row.projection_metadata or {}).get("catalog_choice") or (row.projection_metadata or {}).get("catalog_chart")]
+    if not metadata:
+        return ""
+    own = _revision_media_reply_sources(revision, revision.client)
+    expected_ids = {row["message_id"] for row in revision.bundle_snapshot.get("sources", ())}
+    if {row.pk for row in own} != expected_ids:
+        return "catalog_choice_source_changed"
+    for row in metadata:
+        manifest = row.get("catalog_choice") or row.get("catalog_chart")
+        scope = manifest.get("scope") or {}
+        origin = scope.get("origin_manifest_digest") or manifest.get("origin_manifest_digest")
+        if origin:
+            choice, reasons = _catalog_native_source_choice(revision)
+            if reasons:
+                return reasons[0]
+            if not choice or choice.get("manifest_digest") != origin:
+                return "catalog_choice_origin_changed"
+    return ""
+
+
+def _catalog_unavailable_chart_reason(reply):
+    # Generation saw the exact-grid result before making image claims. A
+    # late loss must never send a stale promise that an image accompanies it.
+    from management.services.ig_reply_truth import _locally_negated
+
+    image = r"таблиц\w*|сіт\w*|сетк\w*|chart|image|фото|зображен\w*"
+    sent = r"надісл\w*|надсил\w*|прикріп\w*|дода(?:ю|в|ємо)\w*|нижче|отправ\w*|прикреп\w*|ниже|attached|sending|sent|below"
+    for clause in re.findall(r"[^.!?\n]+", str(reply or "")):
+        if not re.search(image, clause, re.I):
+            continue
+        for match in re.finditer(sent, clause, re.I):
+            if not _locally_negated(clause, match.start()):
+                return "catalog_choice_chart_copy_without_image"
+    return ""
+
+
 def _prepare_visible_content(revision, response, settings_row):
     from management.services import instagram_bot as bot
     from management.services.ig_catalog_media import prepare_catalog_media
 
     reply = response.reply_text
     effects = []
+    # Checkout retains its existing photo and authority path. Ordinary native
+    # choices precede the legacy image gallery and share the canonical outbox.
+    if not response.control.get("paylink") and not response.control.get("order"):
+        from management.services.ig_catalog_choice_presentations import (
+            prepare_catalog_choice_presentations, prepare_catalog_configuration_choices,
+            prepare_catalog_chart_effect, prepare_catalog_choice_page,
+        )
+        choice, reasons = _catalog_native_source_choice(revision)
+        if reasons:
+            # A stale button is still a legitimate customer message. Gemini
+            # received the failure before generating this contextual reply;
+            # it grants no stale catalog effects or selection authority.
+            reason = _catalog_unavailable_chart_reason(reply)
+            return (), reply, (reason,) if reason else ()
+        if choice:
+            factory = prepare_catalog_chart_effect if choice["action"]["kind"] == "chart" else prepare_catalog_choice_page
+            prepared = factory(revision, response, settings_row, choice=choice)
+            if prepared.handled:
+                return prepared.effects, reply, prepared.reasons
+            # A missing/ambiguous chart was explicitly disclosed to Gemini.
+            # It must not fall through to an unrelated product photograph.
+            reason = _catalog_unavailable_chart_reason(reply) if choice["action"]["kind"] == "chart" else "catalog_choice_page_unavailable"
+            return (), reply, (reason,) if reason else ()
+        if _catalog_plain_chart_requested(revision):
+            prepared = prepare_catalog_chart_effect(revision, response, settings_row)
+            if prepared.handled:
+                return prepared.effects, reply, prepared.reasons
+            reason = _catalog_unavailable_chart_reason(reply)
+            return (), reply, (reason,) if reason else ()
+        prepared = prepare_catalog_choice_presentations(revision, response, settings_row)
+        if prepared.handled:
+            return prepared.effects, reply, prepared.reasons
+        kind = _catalog_configuration_selector(revision, response)
+        if kind:
+            prepared = prepare_catalog_configuration_choices(revision, response, settings_row, kind=kind)
+            if prepared.handled:
+                return prepared.effects, reply, prepared.reasons
     selection = bot._catalog_media_selection_for_control(response.control, revision.client)
     if selection is not None:
         prepared_media = prepare_catalog_media(settings_row, revision.client.igsid, selection)
@@ -1325,6 +1542,8 @@ def _revision_response_purpose_reason(revision):
         return "service_complaint_manager_reply_owned"
     if revision_has_newer_source(current):
         return "pending_inbound"
+    if catalog_reason := _catalog_source_effect_reason(current):
+        return catalog_reason
     text_effects = tuple(current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
     text = "\n".join(str((row.payload.get("message") or {}).get("text") or "") for row in text_effects)
     from management.services.ig_assisted_commerce_context import CLAIM, capture_assisted_context
@@ -1461,8 +1680,14 @@ def _project_completed_sources(revision_id):
         ).first()
         if client is None or revision is None or client.privacy_erasure_started_at is not None:
             return False
-        states = set(revision.delivery_effects.values_list("state", flat=True))
-        if "sent" not in states or not states.issubset({"sent", "cancelled", "superseded"}):
+        from management.services.ig_revision_execution import _completion_decision, _whole_sent_proof
+
+        effects = list(revision.delivery_effects.select_for_update().order_by("order_index", "id"))
+        states = {effect.state for effect in effects}
+        replacement_complete = bool("definite_failed" in states
+            and _completion_decision(effects) == (True, False, "delivered")
+            and _whole_sent_proof(revision, effects)[0])
+        if "sent" not in states or (not states.issubset({"sent", "cancelled", "superseded"}) and not replacement_complete):
             return False
         turn = IgCustomerTurn.objects.select_for_update().filter(pk=revision.turn_id).first()
         source_ids = list(revision.sources.values_list("message_id", flat=True))

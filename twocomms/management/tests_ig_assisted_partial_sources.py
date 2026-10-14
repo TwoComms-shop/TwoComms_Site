@@ -219,6 +219,10 @@ class PartialCommerceFixture(_AssistedApiFixture):
         with override_settings(ROOT_URLCONF="twocomms.urls", SECURE_SSL_REDIRECT=False):
             response = self.client.get(result["checkout_url"], HTTP_HOST="twocomms.shop")
             self.assertEqual(response.status_code, 302, response.content)
+            shown = self.client.get(response["Location"], HTTP_HOST="twocomms.shop")
+            self.assertEqual(shown.status_code, 200, shown.content)
+            self._hosted_revision_payload = _checkout_fixture.displayed_revision_payload(shown)
+            self.assertEqual(set(self._hosted_revision_payload), {"expected_revision", "expected_digest", "delivery_policy_digest"})
             with patch("storefront.views.monobank._monobank_api_request", return_value={
                 "invoiceId": f"partial-native-{proposal.pk}", "pageUrl": f"https://pay.example/partial-{proposal.pk}"}) as bank:
                 posted = self.client.post(reverse("ig_checkout_proposal", kwargs={"proposal_id": proposal.public_id}),

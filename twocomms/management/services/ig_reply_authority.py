@@ -7,6 +7,11 @@ proposed controls are never copied into ``authorized_actions``.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
+import hmac
+import json
+import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from itertools import islice
 from typing import Iterable, Mapping
@@ -16,7 +21,8 @@ from django.conf import settings
 from django.utils import timezone
 
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
-from management.services.ig_reply_truth import AvailabilityAuthority, ReplyTruthContext, TimingAuthority
+from management.services.ig_reply_truth import (AvailabilityAuthority, CheckoutLineAuthority,
+    CheckoutOrderAuthority, ReplyTruthContext, ShippingAuthority, TimingAuthority)
 
 
 MAX_CATALOG_QUOTES = 8
@@ -31,6 +37,7 @@ READINESS_GAP_CODES = frozenset({
     "server_url_invalid",
     "server_url_not_owned",
     "site_origin_unconfigured",
+    "current_checkout_order_unverified",
 })
 EVIDENCE_CODES = frozenset({
     "configured_server_url",
@@ -49,6 +56,7 @@ EVIDENCE_CODES = frozenset({
     "source_proved_conversation_amounts",
     "source_bound_fulfillment_pending",
     "manager_reviewed_fulfillment_timing",
+    "current_native_checkout_order",
 })
 
 
@@ -66,7 +74,153 @@ def _money(value) -> Decimal | None:
         amount = Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    return amount if amount >= 0 else None
+    return amount if amount.is_finite() and amount >= 0 else None
+
+
+CHECKOUT_ORDER_SCHEMA = "current-checkout-order.v1"
+
+
+def _snapshot_keys():
+    values = [settings.SECRET_KEY, *getattr(settings, "SECRET_KEY_FALLBACKS", ())]
+    return {hashlib.sha256(value.encode()).hexdigest()[:24]: value for value in values if value}
+
+
+def _snapshot_mac(body, key_id):
+    key = _snapshot_keys().get(key_id)
+    if not key:
+        return ""
+    return hmac.new(key.encode(), (CHECKOUT_ORDER_SCHEMA + ":" + json.dumps(body, ensure_ascii=False,
+        sort_keys=True, separators=(",", ":"), allow_nan=False)).encode(), hashlib.sha256).hexdigest()
+
+
+def _shipping_wire(fact):
+    return {key: str(value) if isinstance(value, Decimal) else value for key, value in vars(fact).items()}
+
+
+def checkout_order_authority(snapshot, *, client_id, episode_id):
+    """Pure frozen-source decoder. A raw Order label or unsigned DTO is unknown."""
+    try:
+        keys = {"schema", "scope", "order_number", "winner_generation_id", "attempt_id", "observed_at",
+            "items", "money", "checkout_changes", "shipping_authorities", "source_ref", "key_id", "hmac"}
+        if not isinstance(snapshot, dict) or set(snapshot) != keys or snapshot["schema"] != CHECKOUT_ORDER_SCHEMA:
+            return None
+        body = {key: value for key, value in snapshot.items() if key not in {"key_id", "hmac"}}
+        if not isinstance(snapshot["key_id"], str) or not isinstance(snapshot["hmac"], str):
+            return None
+        expected = _snapshot_mac(body, snapshot["key_id"])
+        if not expected or not hmac.compare_digest(expected, snapshot["hmac"]):
+            return None
+        scope, money = body["scope"], body["money"]
+        if (not isinstance(scope, dict) or set(scope) != {"client_id", "episode_id", "order_id"}
+            or any(type(value) is not int or value <= 0 for value in scope.values())
+            or scope["client_id"] != client_id or scope["episode_id"] != episode_id
+            or type(body["attempt_id"]) is not int or body["attempt_id"] <= 0
+            or not isinstance(body["order_number"], str) or not body["order_number"]
+            or not isinstance(money, dict) or set(money) != {"gross", "discount", "merchandise_payable", "payable", "confirmed_paid", "balance", "currency"}
+            or money["currency"] != "UAH"):
+            return None
+        amounts = {key: _money(money[key]) for key in ("gross", "discount", "merchandise_payable", "payable")}
+        if (any(value is None for value in amounts.values()) or amounts["gross"] - amounts["discount"] != amounts["merchandise_payable"]
+            or amounts["payable"] < amounts["merchandise_payable"]):
+            return None
+        paid = _money(money["confirmed_paid"]) if money["confirmed_paid"] is not None else None
+        balance = _money(money["balance"]) if money["balance"] is not None else None
+        if (money["confirmed_paid"] is not None and paid is None
+            or (paid is None) != (balance is None)
+            or paid is not None and balance != max(amounts["payable"] - paid, Decimal("0"))):
+            return None
+        if not isinstance(body["items"], list) or not 1 <= len(body["items"]) <= 40:
+            return None
+        items = []
+        for row in body["items"]:
+            if (not isinstance(row, dict) or set(row) != {"line_id", "title", "quantity", "unit_price", "line_total", "size", "fit", "color"}
+                or type(row["quantity"]) is not int or not 1 <= row["quantity"] <= 1000
+                or any(not isinstance(row[key], str) for key in ("line_id", "title", "size", "fit", "color"))
+                or not row["line_id"] or not row["title"]):
+                return None
+            unit, total = _money(row["unit_price"]), _money(row["line_total"])
+            if unit is None or total is None:
+                return None
+            items.append(CheckoutLineAuthority(row["line_id"], row["title"], row["quantity"], unit, total,
+                row["size"], row["fit"], row["color"]))
+        if sum((item.line_total for item in items), Decimal("0")) != amounts["gross"]:
+            return None
+        shipping = []
+        for raw in body["shipping_authorities"]:
+            raw = dict(raw)
+            for key in ("customer_maximum", "customer_charge", "threshold", "basis_total"):
+                if raw[key] is not None:
+                    raw[key] = _money(raw[key])
+                    if raw[key] is None:
+                        return None
+            shipping.append(ShippingAuthority(**raw))
+        if not isinstance(body["checkout_changes"], list) or not isinstance(body["source_ref"], dict):
+            return None
+        source = body["source_ref"]
+        if (set(source) - {"proposal_id", "proposal_revision", "generation_id", "attempt_id", "items_digest", "settlement_status", "amendment_hmacs", "paid_at", "payment_ledger"}
+            or any(type(source[key]) is not int or source[key] <= 0 for key in ("proposal_id", "proposal_revision", "attempt_id"))
+            or source["attempt_id"] != body["attempt_id"] or source["generation_id"] != body["winner_generation_id"]
+            or source["generation_id"] is not None and (type(source["generation_id"]) is not int or source["generation_id"] <= 0)
+            or source["settlement_status"] not in {"paid", "prepaid", "converted"}
+            or not isinstance(source["items_digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", source["items_digest"])
+            or not isinstance(source["amendment_hmacs"], list)
+            or datetime.fromisoformat(body["observed_at"]).tzinfo is None):
+            return None
+        if source.get("paid_at") is not None:
+            paid_at = datetime.fromisoformat(source["paid_at"])
+            if paid_at.tzinfo is None or paid_at > datetime.fromisoformat(body["observed_at"]):
+                return None
+        ledger = source.get("payment_ledger")
+        if ledger is not None and (not isinstance(ledger, dict)
+            or set(ledger) != {"review_id", "decision_id", "projection_id", "reconciliation_state", "needs_reconciliation", "digest"}
+            or any(value is not None and (type(value) is not int or value <= 0)
+                for value in (ledger["review_id"], ledger["decision_id"], ledger["projection_id"]))
+            or type(ledger["needs_reconciliation"]) is not bool
+            or not isinstance(ledger["reconciliation_state"], str)
+            or not isinstance(ledger["digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", ledger["digest"])):
+            return None
+        for change in body["checkout_changes"]:
+            if (not isinstance(change, dict) or set(change) != {"amendment_id", "source_hmac", "changed_at", "operation", "line_id", "quantity", "before", "after"}
+                or change["operation"] not in {"quantity", "remove"}
+                or not isinstance(change["source_hmac"], str) or not re.fullmatch(r"[a-f0-9]{64}", change["source_hmac"])
+                or not isinstance(change["before"], list) or not isinstance(change["after"], list)
+                or datetime.fromisoformat(change["changed_at"]).tzinfo is None):
+                return None
+        if source["amendment_hmacs"] != [change["source_hmac"] for change in body["checkout_changes"]]:
+            return None
+        return CheckoutOrderAuthority(scope["client_id"], scope["episode_id"], scope["order_id"], body["order_number"],
+            body["winner_generation_id"], body["attempt_id"], body["observed_at"], tuple(items),
+            amounts["gross"], amounts["discount"], amounts["merchandise_payable"], amounts["payable"], paid, balance,
+            tuple(shipping), json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False))
+    except (TypeError, ValueError, KeyError, InvalidOperation):
+        return None
+
+
+def checkout_communication_prompt_guidance(context):
+    """Mandatory generation input from an already captured context; no reread."""
+    fact = getattr(context, "checkout_authority", None)
+    if not isinstance(fact, CheckoutOrderAuthority):
+        shipping = getattr(context, "shipping_authorities", ())
+        if not shipping and "current_episode_proposal" not in getattr(context, "evidence_codes", ()):
+            return ""
+        return ("[CURRENT CHECKOUT COMMUNICATION]\nExplain that the customer can review the basket and delivery terms "
+            "on the checkout link. Mention quantity/removal controls only when the current server state permits editing. "
+            "Before payment, explain naturally that removing items or reducing quantity can remove automatic free delivery "
+            "when the discounted merchandise total falls below the approved threshold. Read the resulting current checkout "
+            "total and payer; never call an old invoice or the original proposal basket the paid basket. After payment, "
+            "use only the captured native Order/winning attempt facts for items, amount paid and balance. A deposit is not "
+            "full payment. Do not claim any edits occurred without a dated native receipt. "
+            "Only these current verified shipping facts may be stated; thresholds are policy amounts, not product prices:\n"
+            + json.dumps([_shipping_wire(value) for value in shipping], ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    return ("[CURRENT NATIVE CHECKOUT ORDER — VERIFIED DATA]\n" + json.dumps(fact.as_dict(), ensure_ascii=False,
+        sort_keys=True, separators=(",", ":")) + "\nUse the actual current Order items, quantities, discounted payable total, "
+        "confirmed paid amount and balance in this frozen snapshot. Earlier proposal prices, removed items and chat wishes "
+        "are historical context, never the current charged basket. A deposit confirms only the stated paid amount; "
+        "do not say fully paid while balance is positive or unknown. source_ref.paid_at is the native payment-confirmation "
+        "timestamp when present; observed_at is only the capture clock, never a substitute payment date. "
+        "Checkout changes are dated native customer actions. "
+        "An approved shipping threshold applies to full discounted merchandise, never to the deposit; it is not a product price "
+        "or a carrier quote. Explain the verified payer naturally and help with the next step. Source IDs, hashes and proofs are backend metadata, never customer prose.")
 
 
 def _append_unique(values: list, value) -> None:
@@ -185,22 +339,266 @@ def _server_urls(
     return tuple(accepted), tuple(gaps), tuple(evidence)
 
 
-def _current_episode(client):
+def _current_episode(client, *, include_completed=False):
     episode_id = getattr(client, "current_commercial_episode_id", None)
     if not getattr(client, "pk", None) or not episode_id:
         return None
     from management.models import IgCommercialEpisode
 
-    return (
+    query = (
         IgCommercialEpisode.objects.select_related(
             "deal__active_checkout_proposal",
             "deal__order",
             "intended_order",
+            "primary_payment_review",
             "order_attribution__order",
         )
-        .filter(pk=episode_id, client_id=client.pk, open_slot=1)
-        .first()
+        .filter(pk=episode_id, client_id=client.pk)
     )
+    if not include_completed:
+        return query.filter(open_slot=1).first()
+    episode = query.first()
+    if episode is None or episode.open_slot == 1:
+        return episode
+    if not episode.intended_order_id or IgCommercialEpisode.objects.filter(client_id=client.pk, open_slot=1).exclude(pk=episode.pk).exists():
+        return None
+    return episode
+
+
+def _shipping_authority(snapshot, *, source_ref):
+    if not isinstance(snapshot, dict) or snapshot.get("valid") is not True:
+        return ()
+    mode, payer = snapshot.get("mode"), snapshot.get("payer_type")
+    if mode not in {"carrier_recipient", "merchant_free", "customer_prepaid", "customer_paid_included"} or payer not in {"Sender", "Recipient"}:
+        return ()
+    policy = snapshot.get("shipping") or {}
+    automatic = snapshot.get("authority") == "automatic_threshold"
+    return (ShippingAuthority(source_ref, mode, payer, str(snapshot.get("authority") or ""),
+        customer_maximum=_money(snapshot.get("customer_maximum")),
+        customer_charge=_money(snapshot.get("customer_charge_amount")) if mode != "carrier_recipient" else None,
+        delivery_prepaid=snapshot.get("delivery_prepaid") is True,
+        policy_version=str(policy.get("policy_version") or "") if automatic else "",
+        threshold=_money(policy.get("threshold")) if automatic else None,
+        basis_total=_money(policy.get("basis_total")) if automatic else None,
+        eligible=policy.get("eligible") if automatic and type(policy.get("eligible")) is bool else None),)
+
+
+def _checkout_changes(proposal, *, now, order=None):
+    from management.models import IgCheckoutRevision, IgCheckoutCartAmendment, IgCheckoutCartAmendmentResolution
+    from management.services.ig_checkout_cart_amendments import verify_native_transition
+    revision = IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by("-pk").first()
+    capture = (revision.snapshot or {}).get("source_cart_capture") or {} if revision else {}
+    leaf_id = (capture.get("fence") or {}).get("native_amendment_id")
+    leaf = IgCheckoutCartAmendment.objects.filter(pk=leaf_id, client_id=proposal.client_id).first() if leaf_id else None
+    resolution = IgCheckoutCartAmendmentResolution.objects.filter(successor_proposal_id=proposal.pk,
+        client_id=proposal.client_id).select_related("request", "decision", "execution", "successor_proposal",
+            "amendment__selection_transition__session").first()
+    if resolution:
+        from management.services.ig_checkout_amendment_successors import _verified_resolution
+        _verified_resolution(resolution, now=now)
+        from management.services.ig_assisted_checkout import validate_assisted_order
+        if (order is None or resolution.execution.order_id != order.pk
+            or not validate_assisted_order(order, now=now).get("ready")):
+            raise ValueError("checkout_amendment_paid_order_changed")
+        leaf = resolution.amendment
+    if leaf is None:
+        if leaf_id:
+            raise ValueError("checkout_amendment_leaf_missing")
+        return []
+    rows = list(IgCheckoutCartAmendment.objects.filter(client_id=proposal.client_id, session_id=leaf.session_id,
+        created_at__lte=leaf.created_at).select_related("selection_transition__session").order_by("created_at", "pk")[:41])
+    if len(rows) > 40:
+        raise ValueError("checkout_amendment_history_bound")
+    changes = []
+    for row in rows:
+        body = verify_native_transition(row.selection_transition, historical=True, now=now)
+        if body.get("episode_id") != proposal.commercial_episode_id:
+            raise ValueError("checkout_amendment_episode_changed")
+        def items(lines):
+            return [{key: line.get(key) for key in ("line_id", "title", "quantity", "product_id", "size", "color", "fit_option_code")}
+                for line in lines if line.get("line_id") == body["line_id"]]
+        # The signed hosted quote owns this checkout line. A selection session
+        # may begin empty or use a different current line identity; it cannot
+        # substitute for the basket's actual quantity before the amendment.
+        before = body["previous_quote_lines"] if "previous_quote_lines" in body else (body["previous_snapshot"] or {}).get("lines", [])
+        after = body["requested_quote_lines"] if "requested_quote_lines" in body else (body["next_snapshot"] or {}).get("lines", [])
+        changes.append({"amendment_id": str(row.pk), "source_hmac": row.source_hmac,
+            "changed_at": row.created_at.isoformat(), "operation": body["operation"], "line_id": body["line_id"],
+            "quantity": body.get("quantity"), "before": items(before), "after": items(after)})
+    return changes
+
+
+def _current_order_ledger(client, episode, order, *, now, review=None):
+    """Use the existing reconciled ledger, fenced to this exact episode/order."""
+    from management.models import IgPaymentProjection
+    from management.services.ig_commercial_episodes import payment_truth_snapshot
+    deal = episode.deal
+    review = review or episode.primary_payment_review
+    if (deal is None or deal.client_id != client.pk or deal.order_id != order.pk
+        or review is not None and (review.pk != episode.primary_payment_review_id
+            or review.client_id != client.pk or review.deal_id != deal.pk or review.order_id not in (None, order.pk))):
+        return None, True
+    projection = IgPaymentProjection.objects.filter(deal_id=deal.pk).first()
+    decision = review.decisions.order_by("-id").first() if review is not None else None
+    if (projection is not None and projection.client_id != client.pk
+        or decision is not None and (decision.client_id != client.pk or decision.review_id != review.pk)):
+        return None, True
+    clocks = [getattr(projection, key, None) for key in ("paid_at", "provider_modified_at", "updated_at")]
+    clocks.extend((getattr(decision, "created_at", None), getattr(review, "confirmed_at", None)))
+    if any(stamp is not None and stamp > now for stamp in clocks):
+        return None, True
+    # An empty unsaved projection records that this lookup found no provider
+    # ledger, preventing the snapshot helper from doing the lookup twice.
+    snapshot = payment_truth_snapshot(episode=episode, deal=deal, review=review, order=order,
+        projection=projection or IgPaymentProjection(deal_id=deal.pk, client_id=client.pk),
+        decision=decision, allow_deal_review_fallback=False)
+    if (snapshot["episode_id"] != episode.pk or snapshot["order_id"] != order.pk
+        or snapshot["deal_id"] != deal.pk or snapshot["currency"] != "UAH"):
+        return None, True
+    blocked = bool(snapshot["needs_reconciliation"] or snapshot["provider_truth"] in {
+        "refunded", "partially_refunded", "reversed", "failed", "cancelled"})
+    if (not blocked and snapshot["authoritative_for_fulfillment"]
+        and snapshot["reconciliation_state"] == "manager_verified_provider_unverified"):
+        confirmed_at = getattr(review, "confirmed_at", None) or getattr(decision, "created_at", None)
+        snapshot["manager_confirmed_at"] = confirmed_at.isoformat() if confirmed_at is not None else None
+    return snapshot, blocked
+
+
+def capture_checkout_order_authority(client, *, episode=None, order=None, proposal=None, review=None, now=None):
+    """Read only the exact native winning graph and actual materialized rows.
+
+    Already resolved episode/order/proposal avoid duplicate ownership lookups.
+    Every supplied object must still belong to this client's current episode.
+    """
+    from management.models import IgCheckoutInvoiceGeneration
+    from orders.models import PaymentAttempt
+    from orders.services.delivery_payment import delivery_payment_snapshot, threshold_shipping_cart_digest
+    now = now or timezone.now()
+    try:
+        episode = episode or _current_episode(client, include_completed=True)
+        if episode is None or episode.pk != client.current_commercial_episode_id or episode.client_id != client.pk:
+            return None
+        native_order, gap = _episode_order(episode)
+        order = order or native_order
+        if gap or order is None or native_order is None or native_order.pk != order.pk:
+            return None
+        proposal = proposal or _current_proposal(episode)
+        if (proposal is None or proposal.client_id != client.pk or proposal.commercial_episode_id != episode.pk
+            or proposal.deal_id != episode.deal_id or proposal.status != "paid"
+            or episode.intended_order_id != order.pk or episode.deal.order_id != order.pk):
+            return None
+        generation = None
+        if proposal.winner_invoice_generation_id:
+            generation = IgCheckoutInvoiceGeneration.objects.select_related("payment_attempt").filter(
+                pk=proposal.winner_invoice_generation_id, proposal_id=proposal.pk, proposal_revision=proposal.revision,
+                winner_slot=1, state="paid_winner").first()
+            attempt = generation.payment_attempt if generation else None
+        else:
+            attempt = PaymentAttempt.objects.filter(pk=proposal.payment_attempt_id, order_id=order.pk).first()
+        if (attempt is None or attempt.order_id != order.pk or attempt.status not in {"paid", "prepaid", "converted"}
+            or _money(attempt.gross_amount) != _money(order.total_sum)
+            or _money(attempt.discount_amount) != _money(order.discount_amount)):
+            return None
+        rows = list(order.items.select_related("color_variant__color").order_by("pk")[:41])
+        if not 1 <= len(rows) <= 40:
+            return None
+        digest = threshold_shipping_cart_digest(rows)
+        cart = (attempt.cart_snapshot or {}).get("cart")
+        if not isinstance(cart, list) or threshold_shipping_cart_digest(cart) != digest:
+            return None
+        # Reuse this one verified snapshot with the already read actual rows.
+        # Calling order_amounts first would repeat native Attempt/P/Generation
+        # verification and could consume a different item read in the same pass.
+        snapshot = delivery_payment_snapshot(order, item_rows=rows)
+        from management.services.ig_assisted_partial_shipping import assisted_shipping_snapshot
+        snapshot = assisted_shipping_snapshot(order, snapshot)
+        gross, discount = _money(order.total_sum), _money(order.discount_amount)
+        merchandise = max(gross - discount, Decimal("0"))
+        if snapshot.get("mode") == "customer_paid_included" and snapshot.get("valid") is True:
+            merchandise = _money(snapshot["merchandise_total"])
+            payable = _money(snapshot["payable_total"])
+        else:
+            payable = merchandise + _money(snapshot["delivery_amount"])
+        amounts = {"subtotal": gross, "discount": discount, "merchandise_payable": merchandise, "payable": payable}
+        if amounts["payable"] != _money(attempt.payable_amount):
+            return None
+        items = [{"line_id": str(row.pk), "title": row.title, "quantity": row.qty,
+            "unit_price": str(row.unit_price), "line_total": str(row.line_total), "size": row.size or "",
+            "fit": row.fit_option_code or "", "color": row.color_name_custom or
+                (row.color_variant.color.name if row.color_variant_id and row.color_variant else "")} for row in rows]
+        paid = _money(attempt.paid_amount) if attempt.paid_amount is not None else None
+        paid_at = proposal.paid_at.isoformat() if proposal.paid_at and proposal.paid_at <= now else None
+        ledger, blocked = _current_order_ledger(client, episode, order, now=now, review=review)
+        if blocked:
+            paid = None
+        elif ledger is not None and ledger["authoritative_for_fulfillment"]:
+            if _money(ledger["actual_order_total"]) != payable:
+                paid = None
+            else:
+                paid = _money(ledger["confirmed_paid_amount"])
+                if ledger["reconciliation_state"] == "manager_verified_provider_unverified":
+                    paid_at = ledger.get("manager_confirmed_at")
+        shipping = _shipping_authority(snapshot, source_ref=f"order:{order.pk}:attempt:{attempt.pk}")
+        changes = _checkout_changes(proposal, now=now, order=order)
+        body = {"schema": CHECKOUT_ORDER_SCHEMA, "scope": {"client_id": client.pk, "episode_id": episode.pk, "order_id": order.pk},
+            "order_number": order.order_number, "winner_generation_id": generation.pk if generation else None,
+            "attempt_id": attempt.pk, "observed_at": now.isoformat(), "items": items,
+            "money": {"gross": str(amounts["subtotal"]), "discount": str(amounts["discount"]),
+                "merchandise_payable": str(amounts["merchandise_payable"]), "payable": str(amounts["payable"]),
+                "confirmed_paid": str(paid) if paid is not None else None,
+                "balance": str(max(amounts["payable"] - paid, Decimal("0"))) if paid is not None else None, "currency": "UAH"},
+            "checkout_changes": changes, "shipping_authorities": [_shipping_wire(fact) for fact in shipping],
+            "source_ref": {"proposal_id": proposal.pk, "proposal_revision": proposal.revision,
+                "generation_id": generation.pk if generation else None, "attempt_id": attempt.pk,
+                "items_digest": digest, "settlement_status": attempt.status,
+                "amendment_hmacs": [row["source_hmac"] for row in changes],
+                "paid_at": paid_at}}
+        if ledger is not None:
+            body["source_ref"]["payment_ledger"] = {"review_id": ledger["review_id"],
+                "decision_id": ledger["decision_id"], "projection_id": ledger["projection_id"],
+                "reconciliation_state": ledger["reconciliation_state"],
+                "needs_reconciliation": ledger["needs_reconciliation"],
+                "digest": hashlib.sha256(json.dumps(ledger, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+        key_id = next(iter(_snapshot_keys()))
+        return checkout_order_authority({**body, "key_id": key_id, "hmac": _snapshot_mac(body, key_id)},
+            client_id=client.pk, episode_id=episode.pk)
+    except (ValueError, TypeError, KeyError, InvalidOperation):
+        return None
+
+
+def _pending_shipping_authorities(client, episode, proposal):
+    """Current native pending economics, never a catalogue or provisional wish."""
+    from management.models import IgCheckoutInvoiceGeneration
+    from orders.models import PaymentAttempt
+    from orders.services.delivery_payment import build_threshold_delivery_contract
+    from orders.services.shipping_policy import build_shipping_snapshot
+    if (proposal is None or proposal.client_id != client.pk or proposal.commercial_episode_id != episode.pk
+        or proposal.status not in {"ready", "viewed", "details_locked", "invoice_created"}):
+        return ()
+    assisted = getattr(proposal, "assisted_commerce_execution", None)
+    if assisted is not None and assisted.scope == "partial":
+        return ()
+    try:
+        generation = IgCheckoutInvoiceGeneration.objects.filter(proposal_id=proposal.pk, active_slot=1,
+            proposal_revision=proposal.revision).select_related("payment_attempt").first()
+        attempt = generation.payment_attempt if generation else (
+            PaymentAttempt.objects.filter(pk=proposal.payment_attempt_id).first() if proposal.payment_attempt_id else None)
+        if attempt is not None:
+            contract = build_threshold_delivery_contract(attempt, proposal=proposal, generation=generation)
+            if (attempt.cart_snapshot or {}).get("threshold_delivery_contract") != contract:
+                return ()
+            shipping = contract["shipping"]
+        else:
+            shipping = build_shipping_snapshot(merchandise_total=proposal.quoted_total,
+                gross_total=proposal.catalog_total, discount_amount=proposal.negotiated_discount,
+                cart_digest=proposal.items_digest, owner={"client_id": client.pk, "episode_id": episode.pk,
+                    "proposal_pk": proposal.pk, "proposal_id": str(proposal.public_id), "revision": proposal.revision})
+        return _shipping_authority({"valid": True, "mode": shipping["mode"], "payer_type": shipping["payer_type"],
+            "authority": "automatic_threshold", "shipping": shipping, "delivery_prepaid": False,
+            "customer_charge_amount": "0.00" if shipping["eligible"] else None},
+            source_ref=f"proposal:{proposal.pk}:revision:{proposal.revision}")
+    except (ValueError, TypeError, KeyError, InvalidOperation):
+        return ()
 
 
 def _episode_order(episode):
@@ -645,6 +1043,7 @@ def build_reply_truth_context(
     catalog_quotes: Iterable[Mapping[str, object]] = (),
     server_timing_claims: Iterable[object] = (),
     captured_client_state=None,
+    checkout_authority=None,
 ) -> ReplyTruthContext:
     """Return current-episode facts suitable for ``validate_reply_truth``.
 
@@ -662,13 +1061,16 @@ def build_reply_truth_context(
     colors: list[str] = []
     currencies: list[str] = ["UAH"]
 
-    episode = _current_episode(client)
+    episode = _current_episode(client, include_completed=True)
     order = None
     proposal = None
     payment_confirmed = False
     order_created = False
     shipment_state = "unknown"
     tracking_refs: tuple[str, ...] = ()
+    actual_checkout = None
+    legacy_full_payment = False
+    shipping_authorities = ()
     if episode is None:
         _append_unique(gaps, "current_episode_unavailable")
     else:
@@ -689,8 +1091,59 @@ def build_reply_truth_context(
             _append_unique(evidence, code)
 
         proposal = _current_proposal(episode)
-        if proposal is not None:
+        if order is not None:
+            if isinstance(checkout_authority, CheckoutOrderAuthority):
+                actual_checkout = checkout_order_authority(checkout_authority.as_dict(), client_id=client.pk, episode_id=episode.pk)
+                if actual_checkout is not None and actual_checkout.order_id != order.pk:
+                    actual_checkout = None
+            else:
+                actual_checkout = capture_checkout_order_authority(client, episode=episode, order=order, proposal=proposal)
+            if actual_checkout is None:
+                _append_unique(gaps, "current_checkout_order_unverified")
+                if proposal is None or not proposal.winner_invoice_generation_id and not proposal.payment_attempt_id:
+                    # Manager-created Orders have no bank-winner receipt. Their
+                    # exact current materialized economics remain actual facts.
+                    from management.services.ig_order_amounts import order_amounts
+                    amounts = order_amounts(order)
+                    rows = list(order.items.select_related("color_variant__color").order_by("pk")[:41])
+                    if 1 <= len(rows) <= 40 and sum((row.line_total for row in rows), Decimal("0")) == amounts["subtotal"]:
+                        for value in (amounts["merchandise_payable"], amounts["payable"]):
+                            if value > 0:
+                                _append_unique(prices, value)
+                        if amounts["discount"] > 0:
+                            _append_unique(discount_amounts, amounts["discount"])
+                        for item in rows:
+                            for value in (item.unit_price, item.line_total):
+                                if value > 0:
+                                    _append_unique(prices, value)
+                            color = item.color_name_custom or (item.color_variant.color.name
+                                if item.color_variant_id and item.color_variant else "")
+                            for target, value in ((sizes, item.size), (fits, item.fit_option_code), (colors, color)):
+                                if value:
+                                    _append_unique(target, value)
+                    ledger, blocked = _current_order_ledger(client, episode, order, now=timezone.now())
+                    payment_confirmed = bool(not blocked and ledger and ledger["authoritative_for_fulfillment"])
+                    legacy_full_payment = bool(payment_confirmed and _money(ledger["confirmed_paid_amount"]) is not None
+                        and _money(ledger["confirmed_paid_amount"]) >= amounts["payable"] > 0)
+            else:
+                _append_unique(evidence, "current_native_checkout_order")
+                shipping_authorities = actual_checkout.shipping_authorities
+                payment_confirmed = actual_checkout.confirmed_paid is not None and actual_checkout.confirmed_paid > 0
+                for value in (actual_checkout.merchandise_payable, actual_checkout.payable):
+                    if value > 0:
+                        _append_unique(prices, value)
+                if actual_checkout.discount > 0:
+                    _append_unique(discount_amounts, actual_checkout.discount)
+                for item in actual_checkout.items:
+                    for value in (item.unit_price, item.line_total):
+                        if value > 0:
+                            _append_unique(prices, value)
+                    for target, value in ((sizes, item.size), (fits, item.fit), (colors, item.color)):
+                        if value:
+                            _append_unique(target, value)
+        elif proposal is not None:
             _append_unique(evidence, "current_episode_proposal")
+            shipping_authorities = _pending_shipping_authorities(client, episode, proposal)
             currency = str(proposal.currency or "").strip().upper()
             if currency:
                 currencies = [currency]
@@ -724,9 +1177,8 @@ def build_reply_truth_context(
                     if normalized:
                         _append_unique(target, normalized)
 
-    configuration_pricing, configuration_invalid = _current_configuration_pricing(
-        client, control
-    )
+    configuration_pricing, configuration_invalid = (_current_configuration_pricing(client, control)
+        if order is None else (None, False))
     if configuration_invalid:
         _append_unique(gaps, "current_configuration_unverified")
     elif configuration_pricing is not None:
@@ -747,7 +1199,7 @@ def build_reply_truth_context(
         quote_candidates.append(control)
     quote_candidates.extend(islice(catalog_quotes or (), MAX_CATALOG_QUOTES))
     resolved_quote_amounts: list[Decimal] = []
-    for candidate in quote_candidates[:MAX_CATALOG_QUOTES]:
+    for candidate in (quote_candidates[:MAX_CATALOG_QUOTES] if order is None else ()):
         resolved = _resolved_catalog_quote(client, candidate)
         amount = _money(resolved.get("amount")) if resolved else None
         if amount is None or amount <= 0:
@@ -781,6 +1233,8 @@ def build_reply_truth_context(
     if timing:
         _append_unique(evidence, "explicit_server_timing")
     conversation_amounts, agreement_choices = _conversation_facts(client)
+    if order is not None:
+        conversation_amounts, agreement_choices = (), ()
     if conversation_amounts:
         _append_unique(evidence, "source_proved_conversation_amounts")
     fulfillment_status, timing_authorities = _fulfillment_timing_truth(captured_client_state)
@@ -796,6 +1250,9 @@ def build_reply_truth_context(
         authorized_urls=authorized_urls,
         authorized_discount_amounts=tuple(discount_amounts),
         payment_confirmed=payment_confirmed,
+        checkout_authority=actual_checkout,
+        full_payment_confirmed=actual_checkout.fully_paid if actual_checkout is not None else legacy_full_payment if order is not None else None,
+        shipping_authorities=shipping_authorities,
         order_created=order_created,
         shipment_state=shipment_state,
         known_tracking_refs=tracking_refs,
@@ -825,4 +1282,8 @@ __all__ = [
     "fulfillment_timing_authorities",
     "fulfillment_availability_authorities",
     "apply_fulfillment_timing_context",
+    "CheckoutOrderAuthority",
+    "capture_checkout_order_authority",
+    "checkout_order_authority",
+    "checkout_communication_prompt_guidance",
 ]

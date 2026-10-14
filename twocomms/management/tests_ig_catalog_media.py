@@ -124,6 +124,20 @@ class InstagramCatalogMediaTests(TestCase):
         self.assertEqual(selection.state, CatalogMediaState.EMPTY)
         self.assertEqual(selection.items, ())
 
+    def test_multiple_products_get_first_photos_before_extra_angles(self):
+        second = Product.objects.create(title="Second", slug="ig-media-second",
+            category=self.product.category, price=1200, status=ProductStatus.PUBLISHED)
+        variant = ProductColorVariant.objects.create(product=second,
+            color=Color.objects.create(name="Біла", primary_hex="#ffffff"), stock=1)
+        for index in range(2):
+            ProductColorImage.objects.create(variant=variant, order=index,
+                image=SimpleUploadedFile(f"second-{index}.jpg", b"jpeg-placeholder",
+                                         content_type="image/jpeg"))
+        selection = select_catalog_media([self.product.pk, second.pk])
+        self.assertEqual([item.product_id for item in selection.items],
+                         [self.product.pk, second.pk, self.product.pk, second.pk])
+        self.assertEqual(selection.shown_product_count, 2)
+
 
 class InstagramCatalogDiscoveryPipelineTests(TestCase):
     def setUp(self):
@@ -173,6 +187,19 @@ class InstagramCatalogDiscoveryPipelineTests(TestCase):
             sent_count=4,
             attempted_count=4,
         )
+        sent_part = 0
+
+        def confirmed_text(_settings, _recipient, text, **kwargs):
+            nonlocal sent_part
+            sent_part += 1
+            message_id = f"mid-discovery-{row.pk}-text-{sent_part}"
+            receipt = bot.ProviderDeliveryReceipt(
+                ok=True, kind="sent", provider_message_id=message_id,
+                provider_message_ids=(message_id,), planned_chunk_count=1,
+                delivered_chunk_count=1, request_text=text,
+            )
+            return receipt if kwargs.get("return_receipt") else receipt.as_legacy_tuple()
+
         with patch(
             "management.services.bot_sales_classifier.ensure_rule_classification",
             return_value=None,
@@ -190,7 +217,7 @@ class InstagramCatalogDiscoveryPipelineTests(TestCase):
             return_value=delivery,
         ) as send_media, patch(
             "management.services.instagram_bot.send_text",
-            return_value=(True, "", ""),
+            side_effect=confirmed_text,
         ) as send_text:
             handled = bot._process_one(self.settings, row)
         return handled, send_media, send_text
@@ -227,7 +254,10 @@ class InstagramCatalogDiscoveryPipelineTests(TestCase):
         url = f"https://twocomms.shop/product/{self.product.slug}/"
         handled, send_media, send_text = self._run(
             sender="ig-discovery-link",
-            customer_text="Скинь ссылку на эту футболку",
+            # Exact product identity comes from the customer's own published
+            # product reference, rather than an unanchored "this T-shirt".
+            # Keep the mocked response in the customer's requested language.
+            customer_text=f"Покажи фото цього товару та скинь посилання на нього: {url}",
             generated_reply={
                 "reply_text": f"Ось фото і посилання: {url}",
                 "controls": [
@@ -238,6 +268,8 @@ class InstagramCatalogDiscoveryPipelineTests(TestCase):
         )
 
         self.assertTrue(handled)
+        self.assertTrue(send_media.called, "source-backed photo request must reach media delivery")
+        self.assertTrue(send_text.called, "source-backed link request must reach text delivery")
         self.assertEqual(len(send_media.call_args.args[2].items), 4)
         self.assertIn(url, send_text.call_args.args[2])
 
@@ -288,6 +320,34 @@ class InstagramCatalogMediaTransportTests(SimpleTestCase):
         self.assertEqual(result.sent_count, 0)
         self.assertEqual(result.attempted_count, 1)
         provider_http.assert_called_once()
+
+    @patch("management.services.instagram_bot.get_page_token", return_value="token")
+    @patch("management.services.instagram_bot._provider_account_id", return_value="account")
+    @patch("management.services.instagram_bot._provider_http", return_value=(200, '{}'))
+    def test_missing_receipt_is_unknown_and_stops_without_counting_sent(
+        self, provider_http, _account, _token
+    ):
+        result = send_catalog_media(object(), "recipient", self._selection())
+        self.assertEqual(result.state, CatalogMediaDeliveryState.UNKNOWN)
+        self.assertEqual(result.sent_count, 0)
+        self.assertEqual(result.attempted_count, 1)
+        self.assertEqual(result.provider_message_ids, ())
+        self.assertEqual(result.error, "provider_message_id_missing")
+        provider_http.assert_called_once()
+
+    @patch("management.services.instagram_bot.get_page_token", return_value="token")
+    @patch("management.services.instagram_bot._provider_account_id", return_value="account")
+    @patch("management.services.instagram_bot._provider_http", side_effect=[
+        (200, '{"message_id":"mid-1"}'), (200, '{}')])
+    def test_missing_second_receipt_preserves_first_without_retry(
+        self, provider_http, _account, _token
+    ):
+        result = send_catalog_media(object(), "recipient", self._selection())
+        self.assertEqual(result.state, CatalogMediaDeliveryState.UNKNOWN)
+        self.assertEqual(result.sent_count, 1)
+        self.assertEqual(result.attempted_count, 2)
+        self.assertEqual(result.provider_message_ids, ("mid-1",))
+        self.assertEqual(provider_http.call_count, 2)
 
     @patch("management.services.instagram_bot.get_page_token", return_value="token")
     @patch("management.services.instagram_bot._provider_account_id", return_value="account")

@@ -3,6 +3,7 @@ import hashlib
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from html.parser import HTMLParser
 from unittest.mock import patch
 from urllib.parse import urlparse
 
@@ -40,6 +41,25 @@ from orders.nova_poshta_checkout import (
     build_warehouse_choice_token,
 )
 from storefront.models import Category, Product, ProductFitOption, PromoCode, PromoCodeUsage
+
+
+def displayed_revision_payload(response):
+    """Read only the revision inputs actually displayed by the hosted GET."""
+    class Inputs(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.values = {}
+
+        def handle_starttag(self, tag, attributes):
+            attributes = dict(attributes)
+            if tag == "input" and attributes.get("name") in {"expected_revision", "expected_digest", "delivery_policy_digest"}:
+                name, value = attributes["name"], attributes.get("value", "")
+                if name in self.values and self.values[name] != value:
+                    raise AssertionError("Hosted forms displayed conflicting quote revisions")
+                self.values[name] = value
+    parser = Inputs()
+    parser.feed(response.content.decode("utf-8"))
+    return parser.values
 
 
 @override_settings(
@@ -101,6 +121,9 @@ class CheckoutGenerationRuntimeTests(TestCase):
                 "city_ref": "city-ref",
             }),
         }
+        # This remains the captured displayed page, never a fresh model read.
+        # Explicit stale/missing overrides below therefore stay meaningful.
+        payload.update(getattr(self, "_hosted_revision_payload", {}))
         payload.update(values)
         return payload
 
@@ -110,6 +133,8 @@ class CheckoutGenerationRuntimeTests(TestCase):
             reverse("ig_checkout_token_entry", kwargs={"token": raw})
         )
         self.assertEqual(response.status_code, 302)
+        page = self.client.get(response["Location"])
+        self._hosted_revision_payload = displayed_revision_payload(page)
         return response, token
 
     def _create_invoice(self, proposal, *, invoice_id, payment_choice="online_full"):
@@ -309,9 +334,14 @@ class CheckoutGenerationRuntimeTests(TestCase):
         )
         entry, _token = self._open(proposal)
         page = self.client.get(entry["Location"])
-        self.assertContains(page, "Вибір збережено на 12 годин")
-        self.assertContains(page, "повторно перевіряємо актуальну ціну")
+        self.assertTrue(page.context["cart_state"]["can_edit"])
+        self.assertContains(page, "Ваш кошик можна змінити")
+        self.assertContains(page, "захищене посилання діють 12 годин")
+        self.assertContains(page, "Після кожної зміни перевіряємо суму й умови доставки")
+        self.assertContains(page, "Якщо потрібне нове погодження, покажемо це перед оплатою")
         self.assertNotContains(page, "Товари й ціна зафіксовані")
+        self.assertFalse(PaymentAttempt.objects.exists())
+        self.assertFalse(Order.objects.exists())
 
     def test_initial_proposal_without_generation_keeps_editable_checkout_form(self):
         proposal = create_or_update_proposal(
@@ -391,7 +421,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         ):
             created = self.client.post(
                 url,
-                {"reissue_generation": str(first.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(first.generation)},
                 HTTP_ACCEPT="application/json",
             )
         self.assertEqual(created.status_code, 200)
@@ -661,7 +691,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         self.assertNotContains(retry_page, 'data-payment-submit')
         second = self.client.post(
             url,
-            {
+            {**getattr(self, "_hosted_revision_payload", {}),
                 "reissue_generation": "1",
                 "full_name": "Чужий Отримувач",
                 "phone": "+380991234567",
@@ -762,7 +792,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         ) as provider:
             response = self.client.post(
                 url,
-                {
+                {**getattr(self, "_hosted_revision_payload", {}),
                     "reissue_generation": str(generation.generation),
                     "full_name": "Чужий Отримувач",
                     "phone": "+380991234567",
@@ -858,7 +888,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         ) as provider:
             retried = forwarded.post(
                 url,
-                {
+                {**getattr(self, "_hosted_revision_payload", {}),
                     "reissue_generation": str(generation.generation),
                     "full_name": "Чужий Отримувач",
                     "phone": "+380991234567",
@@ -928,7 +958,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         ) as provider:
             replay = self.client.post(
                 url,
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         provider.assert_not_called()
@@ -1046,7 +1076,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
             )
             posted = self.client.post(
                 url,
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         provider.assert_not_called()
@@ -1123,7 +1153,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
             )
             mismatch_post = self.client.post(
                 url,
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         provider.assert_not_called()
@@ -1198,7 +1228,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
             )
             empty_post = self.client.post(
                 cancelled_url,
-                {"reissue_generation": str(cancelled_generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(cancelled_generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         provider.assert_not_called()
@@ -1259,7 +1289,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
             )
             posted = self.client.post(
                 url,
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         provider.assert_not_called()
@@ -1340,6 +1370,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         self.assertEqual(replay.pk, order.pk)
         self.assertFalse(replay_created)
         self.assertEqual(Order.objects.count(), 1)
+
 
     def test_late_paid_loser_never_creates_second_order_or_downgrades_winner(self):
         from storefront.views.monobank import _apply_payment_attempt_status
@@ -1549,7 +1580,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
                     "ig_checkout_proposal",
                     kwargs={"proposal_id": proposal.public_id},
                 ),
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
             second = self.client.post(
@@ -1557,7 +1588,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
                     "ig_checkout_proposal",
                     kwargs={"proposal_id": proposal.public_id},
                 ),
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         self.assertEqual(first.status_code, 200)
@@ -1622,7 +1653,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
                     "ig_checkout_proposal",
                     kwargs={"proposal_id": proposal.public_id},
                 ),
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         self.assertEqual(response.status_code, 200)
@@ -1714,6 +1745,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
         self.assertNotContains(page, 'name="np_city_token"')
 
         attacker_payload = {
+            **displayed_revision_payload(page),
             "full_name": "Чужий Отримувач",
             "phone": "+380991234567",
             "email": "attacker@example.com",
@@ -1853,7 +1885,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
                     status = self.client.get(status_url)
                     posted = self.client.post(
                         url,
-                        {"reissue_generation": str(generation.generation)},
+                        {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                         HTTP_ACCEPT="application/json",
                     )
                 provider.assert_not_called()
@@ -1961,7 +1993,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
             status = self.client.get(status_url)
             posted = self.client.post(
                 url,
-                {"reissue_generation": str(generation.generation)},
+                {**getattr(self, "_hosted_revision_payload", {}), "reissue_generation": str(generation.generation)},
                 HTTP_ACCEPT="application/json",
             )
         provider.assert_not_called()
@@ -2577,3 +2609,81 @@ class CheckoutGenerationRuntimeTests(TestCase):
         self.assertIsNone(replay_order)
         self.assertFalse(replay_created)
         self.assertEqual(Order.objects.count(), 1)
+
+
+@override_settings(ROOT_URLCONF="twocomms.urls", SECURE_SSL_REDIRECT=False,
+    IG_ASSISTED_CHECKOUT_V2="enforced", IG_ASSISTED_CHECKOUT_V2_CANARY_PERCENT=100,
+    GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class NativeHostedRevisionCASTests(TestCase):
+    """Real displayed-page CAS survives an actual authorized basket edit."""
+    _delivery_payload = CheckoutGenerationRuntimeTests._delivery_payload
+
+    def setUp(self):
+        from management import tests_ig_checkout_service as quote_fixture
+        from django.test import Client
+        quote_fixture.InstagramCheckoutConfigurationTests.setUp(self)
+        self.customer = self.client
+        self.http = Client(HTTP_HOST="twocomms.shop")
+        self.proposal = create_or_update_proposal(client=self.customer, pay_type="online_full",
+            item_specs=[quote_fixture.InstagramCheckoutConfigurationTests._valid_item(self)])
+        raw, _token = IgCheckoutAccessToken.issue(proposal=self.proposal)
+        entry = self.http.get(reverse("ig_checkout_token_entry", kwargs={"token": raw}))
+        self.assertEqual(entry.status_code, 302)
+        self.url = entry["Location"]
+        self.page = self.http.get(self.url)
+        self.assertEqual(self.page.status_code, 200)
+        self.shown = displayed_revision_payload(self.page)
+        self.assertEqual(set(self.shown), {"expected_revision", "expected_digest", "delivery_policy_digest"})
+
+    def amend(self):
+        import json
+        import uuid
+        state = self.page.context["cart_state"]
+        response = self.http.post(self.url, json.dumps({"action": "cart_amendment",
+            "operation_id": str(uuid.uuid4()), "operation": "quantity", "quantity": 2,
+            "line_id": state["items"][0]["line_id"], **self.shown,
+            "expected_selection_revision": state["selection_revision"]}), content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["cart_state"]["total"], "1900.00")
+        self.proposal.refresh_from_db()
+        self.assertEqual(self.proposal.items.get().quantity, 2)
+
+    def test_old_page_invoice_and_reissue_cas_reject_after_native_cart_edit_without_any_provider_effect(self):
+        old = copy.deepcopy(self.shown)
+        with patch("storefront.views.monobank._monobank_api_request") as bank:
+            self.amend()
+            for body in ({**self._delivery_payload(payment_choice="online_full"), **old},
+                    {**old, "reissue_generation": "1"}):
+                response = self.http.post(self.url, body, HTTP_ACCEPT="application/json")
+                self.assertEqual(response.status_code, 409, response.content)
+                self.assertEqual(response.json()["error"], "revision_changed")
+        bank.assert_not_called()
+        self.assertFalse(PaymentAttempt.objects.exists())
+        self.assertFalse(IgCheckoutInvoiceGeneration.objects.exists())
+        self.assertFalse(Order.objects.exists())
+        current = self.http.get(self.url)
+        shown = displayed_revision_payload(current)
+        self.assertNotEqual(shown, old)
+        self.assertEqual(current.context["cart_state"]["total"], "1900.00")
+        with patch("storefront.views.monobank._monobank_api_request", return_value={
+                "invoiceId": "native-refreshed-quote", "pageUrl": "https://pay.example/refreshed-quote"}) as bank:
+            response = self.http.post(self.url, {**self._delivery_payload(payment_choice="online_full"), **shown},
+                HTTP_ACCEPT="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        bank.assert_called_once()
+        generation = IgCheckoutInvoiceGeneration.objects.get(proposal=self.proposal)
+        self.assertEqual(generation.payment_amount, Decimal("1900.00"))
+        self.assertEqual(generation.payment_attempt.cart_snapshot["cart"][0]["qty"], 2)
+        self.assertFalse(Order.objects.exists())
+
+    def test_missing_displayed_revision_cannot_create_attempt_or_cross_provider(self):
+        payload = self._delivery_payload(payment_choice="online_full")
+        payload.pop("expected_revision", None)
+        payload.pop("expected_digest", None)
+        with patch("storefront.views.monobank._monobank_api_request") as bank:
+            response = self.http.post(self.url, payload, HTTP_ACCEPT="application/json")
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()["error"], "revision_changed")
+        bank.assert_not_called()
+        self.assertFalse(PaymentAttempt.objects.exists())
+        self.assertFalse(IgCheckoutInvoiceGeneration.objects.exists())

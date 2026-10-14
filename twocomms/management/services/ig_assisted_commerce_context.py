@@ -42,6 +42,28 @@ class AssistedDeliveryAuthority:
     source_ref: str
 
 
+def _native_delivery_terms(decision, verified):
+    """Reuse the native reader's exact signed decision, never a draft DTO."""
+    from management.services import ig_assisted_commerce as commerce
+    from management.services.ig_assisted_scopes import normalize_shipping_terms
+    if (not isinstance(verified, VerifiedAssistedDecision) or verified.historical
+        or not commerce.verify_assisted_evidence(decision, "decision")
+        or decision.pk != verified.decision_id or decision.request_id != verified.request_id
+        or decision.client_id != verified.client_id or decision.version != verified.decision_version
+        or decision.status != "approved" or decision.request_digest != verified.request_digest
+        or decision.envelope_hmac != verified.decision_digest or decision.snapshot_digest != verified.snapshot_digest
+        or decision.full_capture_digest != verified.full_capture_digest):
+        return None
+    quote = (decision.envelope["snapshot"].get("scoped_quotes") or {}).get("selected")
+    if not isinstance(quote, dict) or quote.get("delivery_scope") not in {"now", "later", "together"}:
+        return None
+    try:
+        terms = normalize_shipping_terms(quote.get("shipping_terms"))
+    except commerce.AssistedDecisionError:
+        return None
+    return {"terms": terms, "delivery_scope": quote["delivery_scope"], "source_ref": verified.decision_digest}
+
+
 def _positive(pattern, text):
     from management.services.ig_reply_truth import _locally_negated
     return any(not _locally_negated(text, match.start()) for match in pattern.finditer(text))
@@ -54,8 +76,25 @@ def _delivery_units(text, lines):
     starts += "|" + "|".join(re.escape(line.title) for line in lines if line.title)
     boundary = re.compile(r"(?<!\d),(?!\d)|;|\s+(?:і|й|та|а|и|and|but)\s+(?=(?:" + starts + r")\b)", re.I)
     for sentence in _claim_sentences(text, ()):
+        if not _DELIVERY_COMPONENT.search(sentence):
+            # Commas in "Hoodie available, size L, price 850" do not start a
+            # new anonymous product. Keep the original exact subject unit.
+            yield sentence, False
+            continue
+        pieces, start = [], 0
+        for separator in boundary.finditer(sentence):
+            current, following = sentence[start:separator.start()], sentence[separator.end():].lstrip()
+            delivery_current = bool(_DELIVERY_COMPONENT.search(current))
+            named_following = any(line.title and following.casefold().startswith(line.title.casefold()) for line in lines)
+            domain_switch = bool(_DELIVERY_COMPONENT.match(following)) or delivery_current and (
+                named_following or re.match(r"ціна\w*|цена\w*|товар\w*|price|goods|merchandise|total", following, re.I)
+                or any(pattern.match(following) for pattern in _DELIVERY_PHASES.values()))
+            if domain_switch:
+                pieces.append(current)
+                start = separator.end()
+        pieces.append(sentence[start:])
         delivery_seen = False
-        for unit in boundary.split(sentence):
+        for unit in pieces:
             unit = unit.strip()
             if not unit:
                 continue
@@ -109,11 +148,20 @@ class AssistedCommerceContext:
     selection: object | None = None
     partial_pending: bool = False
     _current_capture_json: str | None = None
+    _delivery_terms_json: str | None = None
 
     def __post_init__(self):
         if (self._issuer is not _ISSUER or not isinstance(self.verified, VerifiedAssistedDecision)
             or self.verified.proof_scope == "historical"):
             raise ValueError("assisted_context_requires_current_native_reader")
+        if self._delivery_terms_json is not None:
+            from management.services.ig_assisted_scopes import normalize_shipping_terms
+            native = json.loads(self._delivery_terms_json)
+            if (set(native) != {"terms", "delivery_scope", "source_ref"}
+                or native["source_ref"] != self.verified.decision_digest
+                or native["delivery_scope"] not in {"now", "later", "together"}
+                or normalize_shipping_terms(native["terms"]) != native["terms"]):
+                raise ValueError("assisted_delivery_terms_require_exact_native_decision")
         if self.selection is not None:
             from management.services.ig_assisted_scopes import VerifiedAssistedSelection, selection_evidence
             if (type(self.selection) is not VerifiedAssistedSelection or self.selection.historical
@@ -153,11 +201,13 @@ class AssistedCommerceContext:
 
     @property
     def delivery_authorities(self):
-        # Only the already verified native selection supplies adopted shipping
-        # terms. Its decision exposes neither carrier bills nor promo approval.
-        if self.selection is None:
+        # Selection and full-context terms share native signed decision
+        # ownership. Neither supplies actual carrier bills or promo approval.
+        native = json.loads(self._delivery_terms_json) if self._delivery_terms_json is not None else None
+        if self.selection is None and native is None:
             return ()
-        terms = self.selection.shipping_terms
+        terms = self.selection.shipping_terms if self.selection is not None else native["terms"]
+        source_ref = self.selection.terms_digest if self.selection is not None else native["source_ref"]
         result = []
         for phase in ("now", "later", "together"):
             term = terms.get(phase) if isinstance(terms, dict) else None
@@ -170,16 +220,22 @@ class AssistedCommerceContext:
                 return ()
             if not maximum.is_finite() or maximum < 0 or term["payer"] == "merchant" and maximum != 0:
                 return ()
-            result.append(AssistedDeliveryAuthority(phase, term["payer"], maximum, "UAH",
-                self.selection.terms_digest))
+            result.append(AssistedDeliveryAuthority(phase, term["payer"], maximum, "UAH", source_ref))
         return tuple(result)
+
+    @property
+    def delivery_scope(self):
+        if self.selection is not None:
+            return self.selection.delivery_scope
+        native = json.loads(self._delivery_terms_json) if self._delivery_terms_json is not None else {}
+        return native.get("delivery_scope", "")
 
     def _checked_delivery_copy(self, text):
         """Mask only proven delivery money, leaving every other claim intact."""
         from management.services.ig_reply_truth import (_MONEY_RE, _PREFIX_MONEY_RE, _RANGE_RE,
             _currency_code, _decimal, ReplyTruthResult)
         authorities = {fact.phase: fact for fact in self.delivery_authorities}
-        masked, checked_units, cursor = list(text), [], 0
+        masked, checked_units, preserved_zeroes, cursor = list(text), [], [], 0
         for unit, is_delivery in _delivery_units(text, self.lines):
             offset = text.find(unit, cursor)
             if offset < 0:
@@ -213,7 +269,7 @@ class AssistedCommerceContext:
                 if merchant and authority.payer != "merchant":
                     return text, (), ReplyTruthResult(False, ("assisted_delivery_payer_unverified",))
                 if customer:
-                    current = authority or authorities.get(getattr(self.selection, "delivery_scope", ""))
+                    current = authority or authorities.get(self.delivery_scope)
                     zero_for_customer = bool(delivery_money and _DELIVERY_CUSTOMER_ZERO.search(unit)
                         and all(_decimal(match.group("amount")) == 0 for match in delivery_money))
                     if current is not None and current.payer != "customer" and not zero_for_customer:
@@ -231,7 +287,13 @@ class AssistedCommerceContext:
                             or _decimal(match.group("amount")) != authority.customer_maximum):
                             return text, (), ReplyTruthResult(False, ("assisted_delivery_amount_unverified",))
                         masked[offset + match.start():offset + match.end()] = " " * (match.end() - match.start())
+                        if customer_zero:
+                            preserved_zeroes.append((offset + match.start(), offset + match.end()))
             checked_units.append("".join(masked[offset:offset + len(unit)]))
+        # Keep the typed customer-zero qualifier for the final shipping payer
+        # guard. Goods-line checks above still receive masked delivery money.
+        for start, end in preserved_zeroes:
+            masked[start:end] = text[start:end]
         return "".join(masked), tuple(checked_units), ReplyTruthResult(True)
 
     @property
@@ -245,6 +307,8 @@ class AssistedCommerceContext:
         if self.selection is not None:
             from management.services.ig_assisted_scopes import selection_evidence
             reference["selection"] = selection_evidence(self.selection)
+        if self._delivery_terms_json is not None:
+            reference["delivery_terms"] = json.loads(self._delivery_terms_json)
         return reference
 
     @property
@@ -342,6 +406,21 @@ class AssistedCommerceContext:
         checked_reply, checked_units, delivery_result = self._checked_delivery_copy(response.reply_text)
         if not delivery_result.valid:
             return delivery_result
+        from management.services.ig_reply_truth import ShippingAuthority
+        local_shipping = tuple(ShippingAuthority(fact.source_ref,
+            "merchant_free" if fact.payer == "merchant" else "carrier_recipient",
+            "Sender" if fact.payer == "merchant" else "Recipient",
+            "ig_assisted_selected" if self.selection is not None else "ig_assisted_manager",
+            phase=fact.phase, customer_maximum=fact.customer_maximum,
+            customer_charge=Decimal("0") if fact.payer == "merchant" else None)
+            for fact in self.delivery_authorities)
+        if not local_shipping and self.selection is None and not self.partial_pending:
+            # Ordinary carrier payment is a no-fee business rule. It cannot
+            # establish a cap, merchant payer, prepaid charge or promotion.
+            local_shipping = (ShippingAuthority(self.verified.decision_digest,
+                "carrier_recipient", "Recipient", "ordinary_carrier_payment"),)
+        if local_shipping:
+            base = replace(base, shipping_authorities=local_shipping)
         from management.services.ig_product_inquiries import _SPEC, validate_inquiry_response
         from management.services.ig_reply_language import own_reply_text
         questions = {question["question_id"]: question for question in self.verified.source_proof.get("questions", ())
@@ -506,7 +585,9 @@ def capture_assisted_context(client, revision, plan=None, *, reference=None, now
             capture = current
     context = AssistedCommerceContext(value, revision.pk, revision.snapshot_digest, capture.get("capture_digest", ""),
         result.get("can_prepare_checkout") is True, _ISSUER, selection=selection, partial_pending=partial_pending,
-        _current_capture_json=json.dumps(current, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        _current_capture_json=json.dumps(current, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        _delivery_terms_json=json.dumps(terms, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if selection is None and (terms := _native_delivery_terms(decision, value)) is not None else None)
     if reference is not None and context.reference != reference:
         rebound = dict(reference) if isinstance(reference, dict) else {}
         if (isinstance(execution, VerifiedAssistedExecution) and execution.client_id == client.pk
