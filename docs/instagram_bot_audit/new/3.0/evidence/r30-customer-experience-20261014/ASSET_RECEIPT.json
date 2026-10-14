@@ -1,0 +1,14 @@
+{
+  "js": {
+    "sha256": "2d674ae661f84861203fae3200a920ab97614fc51aee7fc376a56a02e293529e",
+    "served_bytes_match_scoped_source": true,
+    "only_collectstatic_font_urls_differ": false,
+    "font_rewrites": 0
+  },
+  "css": {
+    "sha256": "751c799170e81a85071be93ff9461dca982896a09a6c39e7a949a72e37bee318",
+    "served_bytes_match_scoped_source": false,
+    "only_collectstatic_font_urls_differ": true,
+    "font_rewrites": 3
+  }
+}

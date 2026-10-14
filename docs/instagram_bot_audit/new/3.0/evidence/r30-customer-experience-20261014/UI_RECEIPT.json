@@ -1,0 +1,46 @@
+{
+  "source": "isolated native MariaDB fixture; authenticated Chrome; no external provider I/O",
+  "release_sha": "1eaa1a30f2bff2fbd2d8cabe54d61b00ec6c2f04",
+  "local_checkout": {
+    "widths": [
+      320,
+      390,
+      1280
+    ],
+    "horizontal_overflow": 0,
+    "quantity_controls_minimum_px": 44,
+    "locales": [
+      "uk",
+      "ru",
+      "en"
+    ],
+    "quantity_change": "4 -> 3",
+    "merchandise_change": "3800 -> 2850 UAH",
+    "remaining_to_free_shipping": "150 UAH",
+    "threshold": "3000 UAH after discounts",
+    "lost_benefit_requires_fresh_ack": true,
+    "restored_quantity_restores_benefit": true,
+    "original_link_after_independent_payment": "200 readonly; actual 3 items/2850 invoice received; no progress/actionable upsell",
+    "native_client_list_api": "200",
+    "native_shared_state_api": "captured; exact order scope; order.completed"
+  },
+  "local_manager_card": "named quantity 4 -> 3, dated; exact 2850 confirmed paid/0 balance; technical proof collapsed",
+  "production_browser": {
+    "authenticated_client_view": "existing client 351; read only",
+    "loaded_inline_order_renderer": true,
+    "widths": [
+      320,
+      390,
+      1816
+    ],
+    "horizontal_overflow": 0,
+    "natural_native_edit_and_successor_rows": {
+      "IgCheckoutCartAmendment": 0,
+      "IgCheckoutCartAmendmentResolution": 0
+    },
+    "natural_new_checkout_or_native_carousel_cohort": "OPEN; no production fixture/token/card/payment created"
+  },
+  "cache_version": "20261014-cart-delivery-v4",
+  "node_cases": 40,
+  "node_skips": 0
+}
