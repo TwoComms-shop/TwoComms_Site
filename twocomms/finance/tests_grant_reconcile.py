@@ -8,7 +8,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 
 from finance.models import (
-    Account, AuditLog, FundingAllocation, FundingSource, LedgerClassification,
+    Account, AuditLog, ClassificationReview, FundingAllocation, FundingSource, LedgerClassification,
     LedgerClassificationEvent, ObligationGroup, Transaction,
 )
 from finance.services import ledger_v2
@@ -84,6 +84,7 @@ class GrantReconcileTests(GrantFixture):
             'allocations': list(FundingAllocation.objects.order_by('pk').values()),
             'classifications': list(LedgerClassification.objects.order_by('pk').values()),
             'events': list(LedgerClassificationEvent.objects.order_by('pk').values()),
+            'reviews': list(ClassificationReview.objects.order_by('pk').values()),
             'groups': list(ObligationGroup.objects.order_by('pk').values()),
             'audit': list(AuditLog.objects.order_by('pk').values()),
         }
@@ -141,6 +142,38 @@ class GrantReconcileTests(GrantFixture):
         self.uwf.refresh_from_db()
         self.assertEqual(ledger_v2.funding_summary(self.uwf)['available'], Decimal('13405'))
         self.assertEqual(ledger_v2.funding_summary(self.source)['spent'], Decimal('216000'))
+
+    def test_apply_resolves_old_grant_proposals_without_reclassifying_withdrawal(self):
+        for txn in [self.double_tagged, *self.supplier_expenses, self.withdrawal]:
+            ClassificationReview.objects.create(
+                company=self.company, transaction=txn,
+                proposal={'economic_kind': 'operating_expense', 'funding_source_id': self.uwf.pk},
+            )
+        self.run_command(apply=True)
+        for txn in [self.double_tagged, *self.supplier_expenses]:
+            self.assertEqual(txn.classification_reviews.get().status, 'accepted')
+        self.assertEqual(self.withdrawal.classification_reviews.get().status, 'skipped')
+        self.withdrawal.refresh_from_db()
+        self.assertEqual(self.withdrawal.economic_kind, 'owner_draw')
+
+    def test_manual_grant_classification_resolves_matching_proposal_only(self):
+        expense = self.supplier_expenses[0]
+        matching = ClassificationReview.objects.create(
+            company=self.company, transaction=expense,
+            proposal={'economic_kind': 'operating_expense', 'funding_source_id': self.uwf.pk},
+        )
+        unrelated = ClassificationReview.objects.create(
+            company=self.company, transaction=expense,
+            proposal={'kind': 'counterparty_policy', 'economic_kind': 'operating_expense',
+                      'funding_source_id': self.uwf.pk},
+        )
+        ledger_v2.classify_transaction(
+            expense, economic_kind='operating_expense', funding_source=self.uwf, user=self.user,
+        )
+        matching.refresh_from_db(); unrelated.refresh_from_db()
+        self.assertEqual(matching.status, 'accepted')
+        self.assertEqual(matching.reviewed_by_id, self.user.pk)
+        self.assertEqual(unrelated.status, 'pending')
 
     def test_opening_must_match_reviewed_account_initial_balance(self):
         before = self.complete_state()

@@ -81,6 +81,10 @@ class Command(BaseCommand):
             note='Підтверджено власником: грантова частина та власне співфінансування з пенсійного рахунку',
         )
         group = grant_replenishment.register_withdrawal(source, withdrawal)
+        for confirmed in Transaction.objects.filter(
+            company=source.company, funding_source__in=[source, split_source],
+        ).exclude(economic_kind='unknown'):
+            ledger_v2.resolve_grant_reviews(confirmed)
         bank_after = list(Transaction.objects.filter(company=source.company).order_by('id').values_list(*bank_fields))
         balances_after = list(source.company.accounts.order_by('id').values_list('id', 'current_balance'))
         if bank_before != bank_after or balances_before != balances_after:

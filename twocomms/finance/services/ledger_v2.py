@@ -489,6 +489,25 @@ def confirm_terminal_cash_transfer(txn, *, source_cash_account_id, user=None, no
 
 
 @db_transaction.atomic
+def resolve_grant_reviews(txn, *, user=None):
+    """Retire grant proposals once their bank row has an explicit meaning."""
+    if not txn.funding_source_id or txn.economic_kind == 'unknown':
+        return
+    for review in txn.classification_reviews.filter(
+        status='pending', proposal__funding_source_id=txn.funding_source_id,
+    ):
+        if review.proposal.get('kind') not in (None, 'grant_inflow', 'operating_expense'):
+            continue
+        proposed_kind = review.proposal.get('economic_kind') or review.proposal.get('kind')
+        if proposed_kind not in {'grant_inflow', 'operating_expense'}:
+            continue
+        review.status = 'accepted' if proposed_kind == txn.economic_kind else 'skipped'
+        review.reviewed_by = user if getattr(user, 'is_authenticated', False) else None
+        review.reviewed_at = timezone.now()
+        review.save(update_fields=['status', 'reviewed_by', 'reviewed_at'])
+
+
+@db_transaction.atomic
 def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_kind='unknown',
                          confidence=Decimal('100'), note='', source='manual', funding_source=None,
                          force_category=False, category_override=None):
@@ -544,6 +563,7 @@ def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_
                  'funding_source_id': getattr(funding_source, 'id', None)},
         changed_by=user if getattr(user, 'is_authenticated', False) else None,
     )
+    resolve_grant_reviews(txn, user=user)
     return obj
 
 
