@@ -119,13 +119,20 @@ def historical_admin_state(client_id, revision_id, *, now=None):
         revision=revision_id, reads=2, historical=True)
 
 
-def _owner_fence(client_id, *, _native_head_out=None):
+def _owner_fence(client_id, *, _native_head_out=None, _waiting_list_out=None):
     from management.models import IgClient, IgCommerceSelectionSession, IgCommerceSelectionTransition, IgFunnelResetAudit, IgCommercialEpisode
     if _native_head_out is not None:
         _native_head_out.clear()
         _native_head_out.update(has_native_head=False, session_id=None, revision=None)
-    owner = IgClient.objects.filter(pk=client_id).values("pk", "igsid", "current_commercial_episode_id",
-        "privacy_erasure_started_at", "reply_permission_epoch").first()
+    owner_query = IgClient.objects.filter(pk=client_id)
+    owner_fields = ["pk", "igsid", "current_commercial_episode_id", "privacy_erasure_started_at", "reply_permission_epoch"]
+    if _waiting_list_out is not None:
+        from management.services.ig_restock_waiting_list_context import waiting_list_owner_query
+        owner_query = waiting_list_owner_query(owner_query)
+        owner_fields.append("_has_waiting_list")
+    owner = owner_query.values(*owner_fields).first()
+    if owner is not None and _waiting_list_out is not None:
+        _waiting_list_out["present"] = owner.pop("_has_waiting_list")
     if owner is None:
         return None
     if owner["privacy_erasure_started_at"]:
@@ -279,12 +286,13 @@ def _current_readiness(cart, choices, *, _catalog_readback=None):
         fit=choices.get("fit_option_code", ""), color=choices.get("color", ""), quantity=choices.get("quantity", 1), strict=True)
 
 
-def _current_capture(client_id, expected_selection_revision, now):
+def _current_capture(client_id, expected_selection_revision, now, *, _remaining_reads=None):
     from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_turn_intelligence import TurnContextError, validate_source_cart_capture
     from management.services.ig_turn_capture import validate_current_source_cart_sources
 
-    first = _owner_fence(client_id)
+    waiting_list_presence = {}
+    first = _owner_fence(client_id, _waiting_list_out=waiting_list_presence)
     if first is None:
         raise AdminStateReadError("client_missing")
     owner, session, episode, reset = (first[key] for key in ("owner", "session", "episode", "reset"))
@@ -439,6 +447,15 @@ def _current_capture(client_id, expected_selection_revision, now):
     _, final_payment_reason, final_payment_fence = capture_payment_context(boundary, now=now)
     if payment_fence != final_payment_fence or payment_reason != final_payment_reason:
         raise AdminStateReadError("current_payment_changed")
+    if waiting_list_presence.get("present"):
+        from management.services.ig_restock_waiting_list_context import capture_waiting_list_context, MAX_CONTEXT_READS
+        # All established fences have completed. Spend only remaining SELECTs;
+        # the native producer's pre-execution guard must stop before the outer
+        # 96-read ceiling, retaining a truthful named omission when necessary.
+        components["slots"].update(capture_waiting_list_context(client_id,
+            boundary=boundary, captured_at=now,
+            max_read_queries=_remaining_reads() if _remaining_reads else MAX_CONTEXT_READS))
+        state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
     return AdminStateResult(state, "captured", source_reason or payment_reason, now.isoformat(), revision)
 
 
@@ -469,7 +486,9 @@ def current_admin_state(client_id, *, expected_selection_revision=None, now=None
             # rollback before our exception reaches this boundary. Isolate it
             # in our own savepoint and catch only after that savepoint exits.
             with transaction.atomic():
-                result = _current_capture(client_id, expected_selection_revision, now)
+                result = _current_capture(client_id, expected_selection_revision, now,
+                    # An inner rejected SELECT passes the outer counter first.
+                    _remaining_reads=lambda: max(0, MAX_READ_QUERIES - reads - 1))
                 if violation:
                     raise AdminStateReadError(violation)
         return AdminStateResult(result.state, result.status, result.reason, result.as_of, result.selection_revision, reads)

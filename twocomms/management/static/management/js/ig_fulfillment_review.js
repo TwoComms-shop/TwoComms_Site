@@ -407,7 +407,11 @@
       try{const response=await fetch(options.url(id),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':options.csrfToken,'X-Requested-With':'XMLHttpRequest'},body:JSON.stringify(payload)});const data=await response.json().catch(()=>({}));if(version!==generation)return;
         if(response.status===409){dirty=false;pendingOperation=null;review=null;draw(null);say('Запит клієнта змінився або перевірку вже оновив інший менеджер. Натисніть «Оновити» й звірте всі позиції перед новим збереженням.',true);return;}
         if(!response.ok||data.success!==true)throw new Error(response.status===401||response.status===403?'Збереження недоступне. Перевірте дозволи та авторизацію.':safeText(data.message,'Не вдалося зберегти перевірку. Ваші поля залишено; можна повторити.'));
-        dirty=false;pendingOperation=null;if(data.review){review=normalizeReview(data.review);draw(review);say('Перевірку збережено.');}else{lock(false);await load(true);say('Перевірку збережено.');}
+        dirty=false;pendingOperation=null;
+        // Sibling read refresh is advisory; a failed callback cannot undo persistence.
+        if(typeof options.onSaved==='function'){try{Promise.resolve(options.onSaved(id)).catch(()=>{});}catch(_){}}
+        if(version!==generation)return;
+        if(data.review){review=normalizeReview(data.review);draw(review);say('Перевірку збережено.');}else{lock(false);await load(true);say('Перевірку збережено.');}
       }catch(error){if(version===generation)say(error.message||'Не вдалося зберегти перевірку.',true);}
       finally{if(version===generation)lock(false);}
     }

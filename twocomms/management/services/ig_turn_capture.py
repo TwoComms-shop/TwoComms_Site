@@ -457,7 +457,8 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     plan = getattr(generation_boundary, "response_plan", None)
     if plan is None:
         raise TurnContextError("response_plan_capture_missing")
-    client = IgClient.objects.filter(pk=revision.client_id).first()
+    from management.services.ig_restock_waiting_list_context import waiting_list_owner_query
+    client = waiting_list_owner_query(IgClient.objects.filter(pk=revision.client_id)).first()
     if client is None:
         raise TurnContextError("capture_client_missing")
     if client.privacy_erasure_started_at or revision.erasure_started_at_snapshot:
@@ -569,6 +570,10 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     from management.services.ig_fulfillment_context import SLOT as FULFILLMENT_SLOT, capture_fulfillment_context
     components["slots"]["capture"][FULFILLMENT_SLOT] = capture_fulfillment_context(
         client, boundary=boundary, captured_at=captured_at, current_source_cart=source_cart)
+    if client._has_waiting_list:
+        from management.services.ig_restock_waiting_list_context import capture_waiting_list_context
+        components["slots"]["capture"].update(capture_waiting_list_context(
+            client.pk, boundary=boundary, captured_at=captured_at))
     if payment_context.get("checkout_order"):
         components["checkout_order"] = deepcopy(payment_context["checkout_order"])
     components["observation_omissions"] = dict(scope=scope, capture=deepcopy(payment_context.get("omissions") or []))

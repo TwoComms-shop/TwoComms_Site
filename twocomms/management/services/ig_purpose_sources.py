@@ -6,7 +6,7 @@ def owned_source(revision, source, settings_obj, *, require_head=True):
     from management.models import IgCustomerTurnRevision, InstagramBotMessage
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     from management.services.instagram_bot import ingress_provider_namespace
-    revision = IgCustomerTurnRevision.objects.filter(pk=revision.pk).first()
+    revision = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision.pk).first()
     if not revision or not revision.snapshot_digest or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         return None, "revision_unsealed"
     if require_head and (revision.active_slot != 1 or revision.state not in {"sealed", "claimed", "processed"} or revision.origin != "inbound"):

@@ -229,6 +229,10 @@ def _additional_facts(request, decision):
 
 def cart_update_coordination(task, projection, settings_obj, now=None):
     now = now or timezone.now()
+    from management.services.ig_restock_waiting_list_coordination import cart_update_coordination as list_coordination
+    list_result = list_coordination(task, now=now)
+    if list_result.get("reason"):
+        return list_result
     binding = _cart_binding(task)
     if not binding:
         return _result(CORRUPT)

@@ -10,7 +10,7 @@
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_memory_card.css' %}?v=memory-presentation-v1">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
-{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=9853821fcf8b">{% endif %}
+{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=9853821fcf8b"><link rel="stylesheet" href="{% static 'management/css/ig_restock_waiting_list.css' %}?v=2708668079fa">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'css/management-ig-split-shipping.css' %}?v=c3949ee0d051">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_assisted_commerce.css' %}?v=79f864b3f503"><link rel="stylesheet" href="{% static 'management/css/ig_assisted_partial.css' %}?v=8e908d88ef84">{% endif %}
 <style>
@@ -1919,9 +1919,9 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
-{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=6783b00a696e"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=f6a2e97dcc5d"></script><script src="{% static 'management/js/ig_restock_waiting_list.js' %}?v=0b0a6641df1c"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'js/management-ig-split-shipping.js' %}?v=e749772c9099"></script>{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=920aa9c3a0b6"></script><script src="{% static 'management/js/ig_assisted_partial.js' %}?v=369002f1ad35"></script>{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=0a2aee9a669c"></script><script src="{% static 'management/js/ig_assisted_partial.js' %}?v=369002f1ad35"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
 <script src="{% static 'management/bot_chat_reading.js' %}?v=chat-reading-v1"></script>
@@ -2528,6 +2528,7 @@ body.bot-drawer-open{overflow:hidden;}
     let commerceScopeController=null,commerceScopeRoot=null,commerceScopeClientId=null,commerceScopeOrderId=null,commerceScopeEnvelope=null,commerceScopeRequest=0,commerceScopeAbort=null;
     let decisionTraceController=null,decisionTraceClientId=null,decisionTraceDisclosure=null;
     let fulfillmentReviewController=null,fulfillmentReviewRoot=null;
+    let restockWaitingController=null,restockWaitingRoot=null;
     let splitShippingController=null,splitShippingRoot=null,splitShippingClientId=null;
     let assistedCommerceController=null,assistedCommerceRoot=null,assistedCommerceClientId=null,assistedPartialController=null,assistedPartialRoot=null;
     function canLeaveAssistedCommerce(id){
@@ -2589,6 +2590,23 @@ body.bot-drawer-open{overflow:hidden;}
       contextEl.appendChild(splitShippingRoot);void splitShippingController.load();
       {% endif %}
     }
+    function renderRestockWaitingList(id){
+      {% if bot_can_view_pii %}
+      if(!window.IgRestockWaitingList)return;
+      if(!restockWaitingRoot){
+        restockWaitingRoot=node('section','bot-context-block');
+        restockWaitingController=window.IgRestockWaitingList.create(restockWaitingRoot,{
+          canOperate:{% if bot_can_operate %}true{% else %}false{% endif %},
+          url:clientId=>'{% url "management_bot_restock_waiting_list_api" 0 %}'.replace('/clients/0/','/clients/'+String(clientId)+'/'),
+          reviewUrl:(clientId,requestId)=>{
+            const url=new URL(window.location.href);url.search='';url.hash='';
+            url.searchParams.set('section','clients');url.searchParams.set('client_id',String(clientId));url.searchParams.set('fulfillment_request',requestId);return url.href;
+          }
+        });
+      }
+      contextEl.appendChild(restockWaitingRoot);void restockWaitingController.render(id);
+      {% endif %}
+    }
     function renderFulfillmentReview(id){
       {% if bot_can_view_pii %}
       if(!window.IgFulfillmentReview)return;
@@ -2597,6 +2615,7 @@ body.bot-drawer-open{overflow:hidden;}
         fulfillmentReviewController=window.IgFulfillmentReview.create(fulfillmentReviewRoot,{
           csrfToken:csrf,
           canOperate:{% if bot_can_operate %}true{% else %}false{% endif %},
+          onSaved:savedId=>{if(restockWaitingController&&restockWaitingController.clientId===Number(savedId))return restockWaitingController.load();},
           onOpenProposal:(proposalId,state)=>{CheckoutProposals.select(proposalId,state);activate('orders',true);},
           url:clientId=>{
             const url='{% url "management_bot_fulfillment_review_api" 0 %}'.replace('/clients/0/','/clients/'+String(clientId)+'/');
@@ -3354,7 +3373,7 @@ body.bot-drawer-open{overflow:hidden;}
           if(!response.ok||!data.success||data.status!=='captured'){body.appendChild(node('div','bot-hint','Поточний знімок недоступний. Оновіть картку після завершення змін.'));return;}
           if(sizeCorrectionController&&Number(sizeCorrectionClientId)===Number(id))sizeCorrectionController.render(id,data);
           body.appendChild(node('div','bot-hint','Поточне спостереження: '+new Date(data.as_of).toLocaleString()+'. Історичні запити відкриваються окремо.'));
-          const slots=(data.state||{}).slots||{};Object.entries(slots).forEach(([key,item])=>{const row=node('div','bot-deal');const completed=key==='order.completed'||key==='order.completed_history';const label=key.startsWith('choice.')?(choiceLabels[key.slice(7)]||key.slice(7)):(key==='order.completed'?'Фактичне замовлення':key==='order.completed_history'?'Попередні оформлення':key==='payment.reminder'?'Нагадування про оплату':key==='payment.current'?'Оплата':key==='configuration.readiness'?'Готовність замовлення':key.startsWith('consent.')?'Дозвіл: '+({marketing:'Маркетинг',payment_reminder:'Нагадування про оплату',restock:'Повернення в наявність'}[key.slice(8)]||key.slice(8)):key);
+          const slots=(data.state||{}).slots||{};Object.entries(slots).forEach(([key,item])=>{const row=node('div','bot-deal');const completed=key==='order.completed'||key==='order.completed_history';const label=key.startsWith('choice.')?(choiceLabels[key.slice(7)]||key.slice(7)):(key==='order.completed'?'Фактичне замовлення':key==='order.completed_history'?'Попередні оформлення':key==='payment.reminder'?'Нагадування про оплату':key==='payment.current'?'Оплата':key==='configuration.readiness'?'Готовність замовлення':key.startsWith('consent.')?'Дозвіл: '+({marketing:'Маркетинг',payment_reminder:'Нагадування про оплату',restock:'Сповіщення про поповнення'}[key.slice(8)]||key.slice(8)):key);
             let value=item.value==null?'—':typeof item.value==='boolean'?(item.value?'Так':'Ні'):String(item.value);
             if(key==='choice.garment_type')value=({tshirt:'Футболка',hoodie:'Худі',sweatshirt:'Світшот'}[item.value]||value);
             if(key==='payment.reminder'){value=item.status==='confirmed'&&item.value?String(item.value.state_label||'Стан невідомий'):'Стан невідомий';row.style.overflowWrap='anywhere';row.style.minWidth='0';row.style.maxWidth='100%';row.dataset.paymentReminderVersion='payment-reminder-v1';}
@@ -3416,6 +3435,7 @@ body.bot-drawer-open{overflow:hidden;}
       const next=nextAction(d);const nextBlock=node('div','bot-context-next');nextBlock.style.marginTop='9px';nextBlock.append(node('span','','Наступна дія'),node('b','',next[0]),node('span','',next[1]));status.appendChild(nextBlock);const active=d.review&&d.review.active;if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-client-order-action is-pending');review.type='button';review.append(node('span','',active.approval.state==='needs_order_resolution'?"Потрібно прив'язати замовлення":'Потрібно підтвердити оплату'),node('span','',active.approval.state==='needs_order_resolution'?'Оберіть існуюче або створіть нове':'Звірте чек, товари та суму'));review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));status.appendChild(review);}
       renderCapturedState(contextEl,id);
       renderAssistedCommerce(id);
+      renderRestockWaitingList(id);
       renderFulfillmentReview(id);
       renderSplitShipping(id);
       renderSizeCorrectionEditor(id);

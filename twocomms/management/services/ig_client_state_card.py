@@ -414,9 +414,9 @@ def _assemble_client_state(*, boundary, components, captured_at, verified_cart=N
                 continue
             field_scope = raw.get("scope") or {}
             field_reason = _scope_reason(field_scope, scope) or _source_reason(raw.get("source_refs") or [], watermark, scope.get("reset_floor"))
-            if key in {"payment.reminder", "fulfillment.review"} and raw.get("omission_reason"):
+            if key in {"payment.reminder", "fulfillment.review", "waiting_list.interest", "waiting_list.items"} and raw.get("omission_reason"):
                 field_reason = _reason(raw["omission_reason"])
-            if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review"}:
+            if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "waiting_list.interest", "waiting_list.items"}:
                 field_reason = field_reason or _selection_binding_reason(raw.get("capture_scope"), boundary)
             if key in {"payment.reminder", "fulfillment.review"}:
                 binding = raw.get("capture_scope") or {}
@@ -424,6 +424,11 @@ def _assemble_client_state(*, boundary, components, captured_at, verified_cart=N
                         "selection_session_id", "selection_generation", "selection_revision", "source_cart_capture_digest")):
                     field_reason = field_reason or ("payment_reminder_scope_changed" if key == "payment.reminder" else "fulfillment_purchase_changed")
             authority = raw.get("authority") if raw.get("authority") in AUTHORITIES else "none"
+            if key in {"waiting_list.interest", "waiting_list.items"}:
+                capture_only = key == "waiting_list.interest" and authority == "derived" and isinstance(raw.get("value"), dict) and (
+                    raw["value"].get("state") == "not_captured" or raw["value"].get("lists") == [])
+                if authority != "conversation_agreement" and not capture_only:
+                    field_reason = field_reason or "observation_authority_unknown"
             if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review"} and authority != {
                     "conversation.agreement": "conversation_agreement", "receipt.observation": "typed_analysis",
                     "payment.reminder": "conversation_agreement", "fulfillment.review": "verified_manager_review"}[key]:
@@ -433,7 +438,7 @@ def _assemble_client_state(*, boundary, components, captured_at, verified_cart=N
                 field_reason = "authority_unknown"
             if raw.get("omission_reason"):
                 field_reason = field_reason or _reason(raw["omission_reason"])
-            protected_observation = key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review"}
+            protected_observation = key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "waiting_list.interest", "waiting_list.items"}
             slots[key] = _slot(None if field_reason and protected_observation else raw.get("value"), status="unknown" if field_reason else status,
                 authority="none" if field_reason and protected_observation else authority,
                 refs=[] if field_reason and protected_observation else raw.get("source_refs") or [], scope=field_scope,
@@ -452,6 +457,8 @@ def _assemble_client_state(*, boundary, components, captured_at, verified_cart=N
                     payload["diagnostics"]["fulfillment_timing_hold"] = True
             if protected_observation:
                 slots[key]["confirmation_semantics"] = "source_verified_context"
+            if key in {"waiting_list.interest", "waiting_list.items"}:
+                slots[key]["confirmation_semantics"] = "business_agreement_history_only"
         if len(explicit) > MAX_OPTIONAL_SLOTS:
             payload["omissions"].append({"component": "slots", "reason": "slot_count_budget"})
     _components(slots, components, scope, watermark, payload["omissions"])
@@ -740,6 +747,10 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
                 continue
             projected = {"slot": key, "line_id": cart.get("active_line_id"),
                 "value": slot["value"], "authority": slot["authority"], **catalog}
+        elif key == "waiting_list.interest":
+            # Exact source refs/binding stay in the immutable state. Keep this
+            # mandatory history summary small; exact lines remain optional.
+            projected = {"slot": key, "authority": slot["authority"], "value": slot["value"]}
         else:
             # Pure presentation only. Keep values, scopes, source refs and
             # conflict/payment/consent semantics intact; omit duplicate
@@ -756,7 +767,10 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
             "authority": "source_bound_customer_wishes", "value": source_cart_current_facts(cart)})))
     def estimate(text):
         return math.ceil(len(text.encode()) / 4)
-    text = HEADER + "\n".join(block for key, block in mandatory)
+    waiting_note = ("Waiting lists are historical opt-ins for ALL listed items; omitted details are unknown. "
+        "They do not prove current cart, payment, stock, price or permission to send.\n"
+        if "waiting_list.interest" in included or any(key == "waiting_list.interest" for key, _block in mandatory) else "")
+    text = HEADER + waiting_note + "\n".join(block for key, block in mandatory)
     if payload["status"] != "captured":
         text = HEADER + _json({"status": payload["status"], "omissions": payload["omissions"]})
     included.extend(dict.fromkeys([*(key for key, block in mandatory), *represented_choices]))

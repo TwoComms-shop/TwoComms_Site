@@ -116,7 +116,7 @@ def is_restock_interest(text):
     text = str(text or "").strip()
     if not text or re.search(r"[«»\"“”]|\b(?:не|нет|no|not)\b|якби|если|would have|what if", text, re.I):
         return False
-    return bool(re.search(r"(?:повідом|сообщ|уведом|сповіст|notify|let me know).{0,60}(?:наяв|налич|попов|поступ|stock|available|back)|(?:коли|когда|when).{0,40}(?:з.?яв|появ|stock).{0,40}(?:повідом|сообщ|notify)", text, re.I))
+    return bool(re.search(r"(?:повідом|сообщ|уведом|сповіст|notify|let me know).{0,60}(?:наяв|налич|попов|поступ|з.?яв|появ|stock|available|back)|(?:коли|когда|when).{0,40}(?:з.?яв|появ|stock).{0,40}(?:повідом|сообщ|notify)", text, re.I))
 
 
 def _copy(locale, kind, label=""):
@@ -151,6 +151,20 @@ def _copy(locale, kind, label=""):
 
 def _label(inv):
     return inv.envelope["label"]
+
+
+def _copy_for(inv, kind):
+    from management.services import ig_restock_waiting_list as waiting
+    return (waiting.copy_for(inv.locale, kind, _label(inv)) if waiting.is_list(inv.target)
+        else _copy(inv.locale, kind, _label(inv)))
+
+
+def _observe_target(target, *, now):
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(target):
+        return waiting.observe(target, now=now)
+    from management.services.ig_restock_availability import observe_target
+    return observe_target(target, now=now).as_dict()
 
 
 def _safe_label(observation):
@@ -302,6 +316,10 @@ def _manager_case_binding(identity, *, client_id, source_id, revision_id, source
 
 
 def _invitation_manager_case(inv, *, settings_obj=None, now=None, require_current=False):
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(inv.target):
+        from management.services.ig_restock_waiting_list_review import invitation_review_valid
+        return invitation_review_valid(inv)
     frozen = inv.envelope.get("manager_review")
     if not isinstance(frozen, dict) or not frozen.get("request_id"):
         return False
@@ -327,6 +345,11 @@ def _prepare_manager_case(revision, row, proof, captured, settings_obj, *, now):
 def _invitation_source(inv, settings_obj, *, require_head=False):
     if not _verified(inv, "invitation") or _digest(inv.target) != inv.target_digest:
         return "invitation_signature_invalid"
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(inv.target):
+        if settings_obj is None:
+            return "settings_missing"
+        return waiting.invitation_reason(inv, settings_obj, require_head=require_head)
     owned, reason = owned_source(inv.revision, inv.request_source, settings_obj, require_head=require_head)
     if not owned or owned[2] != inv.envelope.get("source"):
         return reason or "request_source_changed"
@@ -343,6 +366,9 @@ def _invitation_source(inv, settings_obj, *, require_head=False):
 
 
 def _current_target(inv, *, now):
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(inv.target):
+        return waiting.current_target_reason(inv, now=now)
     from management.services.ig_commerce_projection import source_preferences_for, capture_current_selection_lines
     from management.services.ig_restock_availability import resolve_source_interest
     stored = inv.envelope["selection"]
@@ -390,6 +416,25 @@ def prepare_request(revision, source, settings_obj=None, now=None):
         return RestockRequest(False, reason="permission_blocked")
     if not (row.provider_created_at <= now + timedelta(minutes=1) and now < row.provider_created_at + WINDOW):
         return RestockRequest(False, reason="request_window_expired")
+    from management.services import ig_restock_waiting_list as waiting
+    try:
+        list_request = waiting.prepare_request(revision, row, proof, settings_obj, now=now)
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        if isinstance(error, ValueError) and str(error) == "waiting_list_no_unavailable_items":
+            list_request = None  # Every resolved catalog item is already available.
+        elif isinstance(error, ValueError) and str(error) in {
+            "waiting_list_manager_source_required", "waiting_list_source_cart_unavailable"}:
+            # Unknown stock or an unavailable source frame remains with the
+            # ordinary manager-review response plan. It is never a partial
+            # one-item fallback or customer subscription.
+            return RestockRequest(False, reason="manager_review_required")
+        else:
+            # An incomplete multi/custom capture cannot silently subscribe the
+            # active single item instead of the customer's requested list.
+            return RestockRequest(explicit, _copy(locale, "clarify") if explicit else "",
+                reason="waiting_list_capture_unverified")
+    if list_request is not None:
+        return list_request
     captured, reason = _target_capture(revision.client, row, explicit=explicit, now=now)
     if not captured:
         return RestockRequest(explicit, _copy(locale, "clarify") if explicit else "", reason=reason)
@@ -503,7 +548,7 @@ def _ack_card(inv, accepted, *, reply_to=""):
     from management.models import IgRevisionDeliveryEffect
     source = accepted.envelope["source"]
     effects = list(IgRevisionDeliveryEffect.objects.filter(revision_id=source["revision_id"], source_message_id=accepted.source_id))
-    matches = [effect for effect in effects if _effect_matches(inv, effect, body=_copy(inv.locale, "accepted", _label(inv)),
+    matches = [effect for effect in effects if _effect_matches(inv, effect, body=_copy_for(inv, "accepted"),
         action="revoke", source_id=accepted.source_id, revision_id=source["revision_id"])
         and effect.revision_snapshot_digest == source["revision_digest"]
         and (not reply_to or effect.provider_message_id == reply_to)]
@@ -578,7 +623,7 @@ def handle_reply(row, revision=None, settings_obj=None, now=None):
             if action == "accept" and (now >= inv.expires_at or not Subscription.objects.filter(accepted_answer_id=previous.pk, state="active").exists()
                 or Answer.objects.filter(invitation_id=inv.pk, kind="revoke").exists()):
                 return invalid
-            return RestockRequest(True, _copy(locale, "accepted" if action == "accept" else "revoked", _label(inv)),
+            return RestockRequest(True, _copy_for(inv, "accepted" if action == "accept" else "revoked"),
                 (_button(inv, "revoke"),) if action == "accept" and row.pk == previous.source_id else (), reason="duplicate_answer")
         ack = None
         if action == "accept":
@@ -601,7 +646,7 @@ def handle_reply(row, revision=None, settings_obj=None, now=None):
             Subscription.objects.create(accepted_answer=answer, client=inv.client, expires_at=inv.expires_at, next_check_at=now)
         else:
             Subscription.objects.filter(accepted_answer__invitation_id=inv.pk).exclude(state="sent").update(state="revoked", last_reason="customer_revoked")
-        return RestockRequest(True, _copy(locale, "accepted" if action == "accept" else "revoked", _label(inv)),
+        return RestockRequest(True, _copy_for(inv, "accepted" if action == "accept" else "revoked"),
             (_button(inv, "revoke"),) if action == "accept" else (), str(inv.pk), action)
 
 
@@ -624,6 +669,10 @@ def _subscription_reason(subscription, settings_obj, *, now):
 
 def manager_admission(subscription, availability, *, now):
     """No mutable approval note, inventory change or consent substitutes this gate."""
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(subscription.accepted_answer.invitation.target):
+        from management.services.ig_restock_waiting_list_review import manager_admission as admit_list
+        return admit_list(subscription, availability, now=now)
     try:
         from management.services.ig_restock_manager_gate import admit_restock
     except ImportError:
@@ -674,7 +723,7 @@ def reconcile_subscriptions(limit=50, now=None):
             settings_obj = InstagramBotSettings.objects.filter(pk=inv.envelope.get("settings_id")).first()
             reason = _subscription_reason(subscription, settings_obj, now=now) if settings_obj else "settings_missing"
             if not reason:
-                observation = observe_target(inv.target, now=now).as_dict()
+                observation = _observe_target(inv.target, now=now)
                 if observation.get("target") != inv.target:
                     reason = "inventory_target_changed"
                 else:
@@ -715,8 +764,10 @@ def observe_inventory_event(source: dict, *, now=None):
         variant = ProductColorVariant.objects.filter(pk=source.get("variant_id"), product_id=source.get("product_id")).first()
         if not variant or source.get("source_revision") != f"product_catalog:{variant_inventory_revision(variant.pk)}":
             return {"checked": 0, "created": 0, "reason": "inventory_source_stale"}
-        candidates = candidates.filter(accepted_answer__invitation__target__product_id=variant.product_id,
-            accepted_answer__invitation__target__color_variant_id=variant.pk)
+        from django.db.models import Q
+        from management.services.ig_restock_waiting_list import SCHEMA
+        candidates = candidates.filter(Q(accepted_answer__invitation__target__product_id=variant.product_id,
+            accepted_answer__invitation__target__color_variant_id=variant.pk) | Q(accepted_answer__invitation__target__schema=SCHEMA))
     else:
         from django.contrib.contenttypes.models import ContentType
         from warehouse.models import StockItem, StockMovement

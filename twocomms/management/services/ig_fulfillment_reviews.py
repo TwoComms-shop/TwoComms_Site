@@ -185,7 +185,7 @@ def _create_request(client, payload, *, source=None, revision=None, now):
     for line in identity["lines"]:
         line["observation"].pop("captured_at", None)
         line["observation"].pop("digest", None)
-    if payload.get("scope") == "restock":
+    if payload.get("scope") in {"restock", "restock_list"}:
         identity = {key: payload.get(key) for key in ("scope", "client_id", "subscription_id", "answer_hmac", "settings_id", "settings_epoch", "client_epoch", "review_generation")}
         identity["lines"] = [{key: line.get(key) for key in ("line_id", "target", "configuration_digest")} for line in payload["lines"]]
     event_key = "ig-fulfillment-review:" + _digest({"client": client.pk, "payload": identity})
@@ -451,6 +451,9 @@ def _current_reason(request, settings_obj, *, now, current_source_cart=None, _se
         permission = capture_reply_permission(settings_obj.pk, client.pk)
         if not permission or permission.settings_epoch != data["settings_epoch"] or permission.client_epoch != data["client_epoch"]:
             return "permission_changed"
+    if data["scope"] in {"restock_list", "restock_list_invitation"}:
+        from management.services.ig_restock_waiting_list_review import current_review_reason
+        return current_review_reason(request, settings_obj, now=now)
     if data["scope"] == "restock":
         from management.ig_restock_subscription_models import IgRestockSubscription
         from management.services.ig_restock_subscriptions import _subscription_reason
@@ -484,6 +487,9 @@ def _timing(value, now):
 
 
 def _decisions(value, request, now):
+    if request.envelope.get("scope") in {"restock_list", "restock_list_invitation"}:
+        from management.services.ig_restock_waiting_list_review import normalize_decisions
+        return normalize_decisions(value, request, now)
     from management.services.ig_restock_availability import observe_target
     if isinstance(value, dict):
         if set(value) - {"lines", "split_offer"}:
@@ -632,7 +638,7 @@ def _apply_fulfillment_decision(request_id, *, actor, expected_request_digest, o
         task.manager_approval_decided_at = now
         task.manager_context = {**(task.manager_context or {}), "decision_id": str(decision.pk), "decision_version": version,
             "decision_digest": decision.envelope_hmac}
-        if any(line["availability"] == "available" and (line.get("supply_basis") == "accessible_unrecorded"
+        if any(line.get("item_kind") != "custom_apparel" and line["availability"] == "available" and (line.get("supply_basis") == "accessible_unrecorded"
                 or line.get("accounting_recount_required")) for line in lines):
             task.manager_context["required_decisions"] = ["stock_record_sync_or_manual_order"]
             task.manager_context["business_debt_open"] = True
@@ -660,6 +666,9 @@ def apply_fulfillment_decision(request_id, *, actor, expected_request_digest, op
 
 
 def _decision_reason(request, decision, *, now, _catalog_readback=None, current_source_cart=None):
+    if request.envelope.get("scope") in {"restock_list", "restock_list_invitation"}:
+        from management.services.ig_restock_waiting_list_review import decision_reason
+        return decision_reason(request, decision, now=now)
     if not _verified(decision, "decision") or decision.envelope.get("request_digest") != request.envelope_hmac:
         return "decision_evidence_invalid"
     if decision.created_at > now or now - decision.created_at > FRESHNESS:
@@ -779,7 +788,11 @@ def fulfillment_review_projection(client_id, *, now=None, current_source_cart=No
         except ValueError:
             return {"version": 1, "status": "none", "current_request": None, "decision": None, "captured_at": now.isoformat()}
     else:
-        query = query.filter(source__isnull=False)
+        # Exact-list reviews have their own standing-list panel/context. They
+        # must not displace the current CART review in this legacy default
+        # reader; exact request IDs still expose their authenticated native form.
+        query = query.filter(source__isnull=False).exclude(
+            envelope__scope__in=["restock_list_invitation", "restock_list"])
     request = query.select_related("client", "revision").order_by("-created_at").first()
     return _projection(request, None, now=now, current_source_cart=current_source_cart, _catalog_readback=_catalog_readback)
 
@@ -968,6 +981,10 @@ def _cart_restock_review(subscription, settings_obj, configuration, *, now, curr
 
 
 def ensure_restock_manager_review(subscription, availability, *, now=None):
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(subscription.accepted_answer.invitation.target):
+        from management.services.ig_restock_waiting_list_review import ensure_review
+        return ensure_review(subscription, availability, now=now or timezone.now())
     from management.models import IgClient
     from management.services.ig_restock_subscriptions import _subscription_reason
     now = now or timezone.now()
@@ -1020,6 +1037,10 @@ def ensure_restock_manager_review(subscription, availability, *, now=None):
 
 
 def restock_manager_admission(subscription, availability, *, now=None):
+    from management.services import ig_restock_waiting_list as waiting
+    if waiting.is_list(subscription.accepted_answer.invitation.target):
+        from management.services.ig_restock_waiting_list_review import manager_admission
+        return manager_admission(subscription, availability, now=now or timezone.now())
     now, settings_obj = now or timezone.now(), _settings()
     observed = _observation(availability)
     if not settings_obj:

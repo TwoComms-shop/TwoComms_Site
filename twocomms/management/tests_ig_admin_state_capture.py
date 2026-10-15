@@ -287,9 +287,9 @@ class CurrentAdminStateTests(TestCase):
         self.partial()
         original = capture._owner_fence
         calls = 0
-        def changed(client_id):
+        def changed(client_id, **kwargs):
             nonlocal calls
-            value = original(client_id)
+            value = original(client_id, **kwargs)
             calls += 1
             if calls == 2:
                 value["session"]["revision"] += 1
@@ -353,7 +353,7 @@ class CurrentAdminStateTests(TestCase):
         with patch.object(capture, "MAX_READ_QUERIES", 2):
             budget = self.result()
         self.assertEqual(budget.reason, "state_read_budget_exceeded")
-        def writer(*args):
+        def writer(*args, **kwargs):
             IgClient.objects.filter(pk=self.row.pk).update(current_size="XL")
         with patch.object(capture, "_current_capture", side_effect=writer):
             denied = self.result()
@@ -374,9 +374,9 @@ class CurrentAdminStateTests(TestCase):
         # A downstream helper may catch the denied ORM call; the factory's
         # latched violation still forces its own savepoint rollback.
         previous = self.result()
-        def swallowing_writer(*args):
+        def swallowing_writer(*args, **kwargs):
             try:
-                writer()
+                writer(*args, **kwargs)
             except capture.AdminStateReadError:
                 return previous
         with patch.object(capture, "_current_capture", side_effect=swallowing_writer):

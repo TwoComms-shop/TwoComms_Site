@@ -131,8 +131,22 @@ test('WAIT remains in saved full basket and cannot prepare a partial payable lin
 
 test('manual prepare needs native-buy authority while bot pause disables only automatic sending',async()=>{
  let data=decision(context(),[item()],'approved',2);const f=fixture();await f.load(data);assert.equal(f.button('Підготувати посилання на оформлення').disabled,true);
- data.can_prepare_checkout=true;data.bot_effects_allowed=false;await f.load(data);assert.equal(f.button('Підготувати посилання на оформлення').disabled,false);assert.match(f.root.textContent,/Бот на паузі: посилання можна підготувати вручну, автоматичне надсилання вимкнено/);assert.equal(f.posts().length,0);
+ data.can_prepare_checkout=true;data.bot_effects_allowed=false;await f.load(data);assert.equal(f.button('Підготувати посилання на оформлення').disabled,false);assert.match(f.root.textContent,/Автоматичне надсилання зараз недоступне/);assert.doesNotMatch(f.root.textContent,/Бот на паузі|посилання можна підготувати вручну/);assert.equal(f.posts().length,0);
  f.replies.push(f.response(data,{checkout:{ready:true,public_id:PUBLIC,checkout_url:'/ig-checkout/'+PUBLIC+'/?token=synthetic-only'}}));f.button('Підготувати посилання на оформлення').click();await f.flush();const body=JSON.parse(f.posts()[0].body);assert.deepEqual(Object.keys(body).sort(),['action','decision_id','expected_decision_digest','expected_request_digest','operation_id','request_id']);assert.equal(body.action,'prepare');assert.equal(body.expected_decision_digest,data.approved_head.decision_digest);assert.equal(f.root.querySelector('.ig-ac-checkout').querySelector('a'),null);f.button('Відкрити пропозицію').click();assert.deepEqual(f.opened,[PUBLIC]);assert.doesNotMatch(f.root.textContent,/Оплату підтверджено|synthetic-only|33333333/);
+});
+
+test('stale commerce with unknown reply permission does not claim bot pause or manual checkout availability',async()=>{
+ const data=decision(context({status:'stale',reason:'source_capture_changed',bot_effects_allowed:false}),[item()],'approved',2);
+ data.can_prepare_checkout=false;data.prepare_reason='Спочатку звірте поточний кошик із підтвердженням клієнта.';
+ const f=fixture();await f.load(data);
+ assert.match(f.root.textContent,/Автоматичне надсилання зараз недоступне\. Перевірте актуальні умови та дозвіл на відповіді\./);
+ assert.doesNotMatch(f.root.textContent,/Бот на паузі|посилання можна підготувати вручну/);
+ assert.match(f.root.textContent,/Клієнтський кошик змінився/);
+ assert.match(f.root.textContent,/Спочатку звірте поточний кошик із підтвердженням клієнта/);
+ assert.equal(f.button('Зберегти чернетку').disabled,true);
+ assert.equal(f.button('Затвердити збережені умови').disabled,true);
+ assert.equal(f.button('Підготувати посилання на оформлення').disabled,true);
+ assert.equal(f.posts().length,0);
 });
 
 test('READY questions require verified answers and another Save before exact approval',async()=>{

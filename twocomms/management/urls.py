@@ -13,6 +13,7 @@ from . import bot_views
 from . import bot_request_preview_views
 from . import bot_state_views
 from . import bot_fulfillment_views
+from . import bot_restock_waiting_list_views
 from . import bot_split_shipping_views
 from . import bot_commerce_scope_views
 from . import bot_decision_trace_views
@@ -112,6 +113,7 @@ urlpatterns = [
     path('bot/api/clients/<int:client_id>/turn-revisions/<int:revision_id>/decision-trace/', bot_decision_trace_views.bot_decision_trace_api, name='management_bot_decision_trace_api'),
     path('bot/api/clients/<int:client_id>/state/', bot_state_views.bot_client_state_api, name='management_bot_client_state_api'),
     path('bot/api/clients/<int:client_id>/fulfillment-review/', bot_fulfillment_views.bot_fulfillment_review_api, name='management_bot_fulfillment_review_api'),
+    path('bot/api/clients/<int:client_id>/restock-waiting-list/', bot_restock_waiting_list_views.bot_restock_waiting_list_api, name='management_bot_restock_waiting_list_api'),
     path('bot/api/clients/<int:client_id>/split-shipping/', bot_split_shipping_views.bot_split_shipping_api, name='management_bot_split_shipping_api'),
     path('bot/api/clients/<int:client_id>/commerce-scope/', bot_commerce_scope_views.bot_client_commerce_scope_api, name='management_bot_client_commerce_scope_api'),
     path('bot/api/clients/<int:client_id>/state/size/', bot_state_views.bot_client_size_correction_api, name='management_bot_client_size_correction_api'),

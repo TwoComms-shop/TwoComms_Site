@@ -366,7 +366,7 @@ class FulfillmentNativeIntegrationTests(_RestockFixture, TransactionTestCase):
         text = physical_payloads[0]["message"]["text"]
         self.assertIn("Менеджер перевірив", text)
         self.assertIn("підготовка 7–10", text)
-        self.assertIn("не гарантія дати прибуття", text)
+        self.assertIn("Точний день отримання залежить від перевізника.", text)
         self.assertNotIn("1–3", text)
         self.assertNotIn("доставка 7–10", text.casefold())
         task.refresh_from_db()

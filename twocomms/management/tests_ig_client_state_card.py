@@ -234,12 +234,15 @@ class CapturedClientStateCardTests(SimpleTestCase):
         note = {"text": "private injection quote " * 2000, "scope": self.scope,
             "source_refs": [{"kind": "manager_note", "id": 50}]}
         state = self.capture({"source_selection": self.selection({"size": "L"}), "manager_notes": [note]})
-        result = render_client_state_prompt(state, budget=600)
+        # The released domain header already exceeds the old 600-token fixture
+        # once a mandatory choice is present. Production's 2400 is unchanged.
+        result = render_client_state_prompt(state, budget=1200)
         self.assertFalse(result.oversized)
         self.assertIn("choice.size", result.included)
         self.assertIn(("context.manager_note.0", "budget_exceeded"), result.omitted)
         self.assertNotIn("private injection", result.text)
-        self.assertLessEqual(result.estimated_tokens, 600)
+        self.assertNotIn("Waiting lists are historical", result.text)
+        self.assertLessEqual(result.estimated_tokens, 1200)
 
     def test_oversized_mandatory_choice_signals_failure_without_slice(self):
         state = self.capture({"source_selection": self.selection({"model_query": "model " * 4000})})

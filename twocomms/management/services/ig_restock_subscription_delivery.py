@@ -17,8 +17,8 @@ from management.services.ig_payment_reminder_time import quiet_time_allowed
 
 HOLD_REASONS = {"waiting_window", "quiet_hours", "pending_inbound", "manager_decision_unverified",
     "manager_decision_expired", "inventory_unavailable", "inventory_unknown", "service_case_open",
-    "manager_review_pending", "manager_review_expired", "manager_review_stale", "manager_review_unavailable",
-    "other_availability_send_in_progress", "availability_coordination_unverified"}
+    "manager_review_pending", "manager_review_expired", "manager_review_stale", "manager_review_unavailable", "manager_actor_forbidden",
+    "other_availability_send_in_progress", "availability_coordination_unverified", "other_availability_receipt_requires_review"}
 
 
 def _event_guard(task, settings_obj, *, now):
@@ -49,7 +49,12 @@ def _event_guard(task, settings_obj, *, now):
         or event.envelope.get("availability", {}).get("digest") != event.availability_digest):
         return None, "availability_event_binding_changed"
     from management.services.ig_fulfillment_notification_coordination import restock_update_coordination
-    coordinated = restock_update_coordination(event, settings_obj, now=now)
+    from management.services.ig_restock_waiting_list import is_list
+    if is_list(inv.target):
+        from management.services.ig_restock_waiting_list_coordination import restock_update_coordination as list_coordination
+        coordinated = list_coordination(event, settings_obj, now=now)
+    else:
+        coordinated = restock_update_coordination(event, settings_obj, now=now)
     if coordinated.get("reason"):
         return (event, ""), coordinated["reason"]
     client = inv.client
@@ -61,7 +66,7 @@ def _event_guard(task, settings_obj, *, now):
     if not quiet_time_allowed(now):
         return None, "quiet_hours"
     from management.services.ig_restock_availability import observe_target
-    observation = observe_target(inv.target, now=now).as_dict()
+    observation = agreements._observe_target(inv.target, now=now)
     if observation.get("target") != inv.target:
         return None, "inventory_target_changed"
     admission = agreements.manager_admission(subscription, observation, now=now)
@@ -74,7 +79,7 @@ def _event_guard(task, settings_obj, *, now):
     # inventory observations alone can never authorize this message.
     if not isinstance(admission.get("proof"), dict) or not admission["proof"]:
         return None, "manager_decision_unverified"
-    text = agreements._copy(inv.locale, "notification", agreements._label(inv))
+    text = agreements._copy_for(inv, "notification")
     if len(text.encode()) > 1000:
         return None, "physical_message_too_long"
     return (event, text), ""

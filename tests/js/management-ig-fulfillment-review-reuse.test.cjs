@@ -114,24 +114,27 @@ function review(restockInterest, { pending = false } = {}) {
       decided_at: DECIDED_AT, lines: [{ line_id: 'exact-line', availability: 'available',
         checked_quantity: 1, supply_basis: 'warehouse_checked' }] }, restock_interest: restockInterest };
 }
-function fixture({ canOperate = true } = {}) {
+function fixture({ canOperate = true, onSaved } = {}) {
   const document = { createElement(tag) { return new Node(tag, this); } };
   const root = new Node('div', document), calls = [], replies = [];
   const fetch = async (url, options = {}) => {
-    calls.push({ url: String(url), method: options.method || 'GET' });
+    calls.push({ url: String(url), method: options.method || 'GET', options });
     assert.ok(replies.length, 'each real controller request must have a fixture response');
-    return { status: 200, ok: true, json: async () => ({ success: true, review: replies.shift() }) };
+    const next=replies.shift();
+    if(typeof next==='function')return await next();
+    if(next&&next.http)return next.http;
+    return { status: 200, ok: true, json: async () => ({ success: true, review: next }) };
   };
   const window = { location: { origin: 'https://management.example' }, crypto };
   vm.runInNewContext(source, { window, document, fetch, URL, AbortController, Date, Intl, Uint8Array });
-  const controller = window.IgFulfillmentReview.create(root, { canOperate, csrfToken: 'synthetic-only',
+  const controller = window.IgFulfillmentReview.create(root, { canOperate, onSaved, csrfToken: 'synthetic-only',
     url: id => '/bot/api/clients/' + id + '/fulfillment-review/' });
   async function load(value) {
     replies.push(value); controller.render(12);
     await new Promise(setImmediate); await new Promise(setImmediate);
     assert.equal(replies.length, 0, 'controller consumed the actual GET fixture');
   }
-  return { root, controller, calls, load, aside: () => root.querySelector('.ig-fr-interest'),
+  return { root, controller, calls, replies, load, aside: () => root.querySelector('.ig-fr-interest'),
     reuse: () => root.querySelector('.ig-fr-interest-review') };
 }
 
@@ -211,4 +214,53 @@ test('stale outer projections or different original identities hide reusable aut
     const f = fixture({ canOperate: false }); await f.load(value);
     assert.equal(f.reuse(), null); assert.equal(f.calls.filter(call => call.method === 'POST').length, 0);
   }
+});
+
+async function flushSave(){await new Promise(setImmediate);await new Promise(setImmediate);}
+function submitUnavailable(f){
+  const availability=f.root.querySelector('.ig-fr-line').querySelector('select');availability.value='unavailable';availability.emit('change');
+  f.root.querySelector('button[type="submit"]').click();
+}
+function http(status,body){return {http:{status,ok:status>=200&&status<300,json:async()=>body}};}
+
+test('actual successful manager POST notifies the same saved client once and callback failures cannot turn persistence into failure',async()=>{
+  for(const onSaved of [()=>{},()=>{throw new Error('sibling read failed');},()=>Promise.reject(new Error('sibling read failed'))]){
+    const saved=[],f=fixture({onSaved:id=>{saved.push(id);return onSaved();}});await f.load(review(null,{pending:true}));
+    f.replies.push(http(200,{success:true,review:review(null)}));submitUnavailable(f);await flushSave();
+    assert.deepEqual(saved,[12]);assert.equal(f.calls.filter(call=>call.method==='POST').length,1);
+    const body=JSON.parse(f.calls.find(call=>call.method==='POST').options.body);assert.equal(body.request_id,REQUEST_A);assert.equal(body.decisions_by_line[0].availability,'unavailable');
+    assert.match(f.root.textContent,/Перевірку збережено/);assert.doesNotMatch(f.root.textContent,/sibling read failed|Не вдалося зберегти/);assert.equal(f.controller.canLeave(99),true);
+  }
+});
+
+test('native denied/conflicted manager POST never announces a saved change to siblings',async()=>{
+  for(const status of [403,409,500]){
+    const saved=[],f=fixture({onSaved:id=>saved.push(id)});await f.load(review(null,{pending:true}));
+    f.replies.push(http(status,{success:false}));submitUnavailable(f);await flushSave();
+    assert.deepEqual(saved,[]);assert.equal(f.calls.filter(call=>call.method==='POST').length,1);assert.doesNotMatch(f.root.textContent,/Перевірку збережено/);
+  }
+});
+
+test('a late successful POST from the previous client cannot refresh the newly selected client',async()=>{
+  const saved=[],f=fixture({onSaved:id=>saved.push(id)});await f.load(review(null,{pending:true}));
+  let finish;f.replies.push(()=>new Promise(resolve=>{finish=resolve;}));submitUnavailable(f);
+  const next=review(null,{pending:true});next.current_request.id='22222222-2222-4222-8222-222222222222';next.current_request.lines[0].label='Новий клієнт';
+  f.replies.push(next);f.controller.render(23);await flushSave();
+  finish(http(200,{success:true,review:review(null)}).http);await flushSave();
+  assert.deepEqual(saved,[]);assert.equal(f.controller.clientId,23);assert.match(f.root.textContent,/Новий клієнт/);assert.doesNotMatch(f.root.textContent,/Перевірку збережено/);
+});
+
+test('successful POST without inline review still notifies once before its ordinary native GET refresh',async()=>{
+  const saved=[],f=fixture({onSaved:id=>saved.push(id)});await f.load(review(null,{pending:true}));
+  f.replies.push(http(200,{success:true}),review(null));submitUnavailable(f);await flushSave();
+  assert.deepEqual(saved,[12]);assert.deepEqual(f.calls.map(call=>call.method),['GET','POST','GET']);assert.match(f.root.textContent,/Перевірку збережено/);
+});
+
+test('actual bot onSaved hook refreshes only the matching waiting-list controller',async()=>{
+  const template=fs.readFileSync(path.join(__dirname,'../../twocomms/management/templates/management/bot.html'),'utf8');
+  const line=template.split('\n').find(line=>line.trim().startsWith('onSaved:savedId=>'));assert.ok(line);
+  const code=line.trim().replace(/^onSaved:/,'').replace(/,$/,'');let count=0;
+  const context={restockWaitingController:{clientId:12,load(){count++;return Promise.resolve('read only');}}};
+  const hook=vm.runInNewContext('('+code+')',context);assert.equal(await hook(12),'read only');assert.equal(count,1);
+  hook(23);assert.equal(count,1);context.restockWaitingController=null;hook(12);assert.equal(count,1);
 });
