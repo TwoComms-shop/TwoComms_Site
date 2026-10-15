@@ -268,7 +268,11 @@ def compile_policy(
             raise PolicyReadinessError(
                 "mandatory_policy_exceeds_budget",
                 "mandatory policy does not fit the configured budget",
-                details={"mandatory_ids": list(mandatory_ids), "budget_chars": budget, "required_chars": used + cost},
+                details={"mandatory_ids": list(mandatory_ids), "budget_chars": budget,
+                         "required_chars": used + cost,
+                         "mandatory_total_chars": len("\n\n".join(item.body for item in mandatory)),
+                         "mandatory_count": len(mandatory),
+                         "mandatory_module_lengths": {item.id: len(item.body) for item in mandatory}},
             )
         parts.append(module.body)
         used += cost

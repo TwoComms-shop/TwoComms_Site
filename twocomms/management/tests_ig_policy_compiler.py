@@ -84,6 +84,18 @@ class PolicyCompilerTests(SimpleTestCase):
         self.assertEqual(error.details["budget_chars"], 10)
         self.assertNotIn("NO INVENTED PAYMENTS", repr(error.details))
 
+    def test_overflow_reports_entire_mandatory_cost_without_prompt_bodies(self):
+        with self.assertRaises(PolicyReadinessError) as raised:
+            _compile(budget_chars=10)
+        details = raised.exception.details
+        bodies = ["NO INVENTED PAYMENTS", "SOLOMIIA RULE", "VERIFIED CHECKOUT FACT"]
+        self.assertEqual(details["mandatory_count"], 3)
+        self.assertEqual(details["mandatory_total_chars"], len("\n\n".join(bodies)))
+        self.assertGreater(details["mandatory_total_chars"], details["required_chars"])
+        self.assertEqual(details["mandatory_module_lengths"],
+            dict(zip(("authority", "core", "facts"), map(len, bodies))))
+        self.assertTrue(all(body not in repr(details) for body in bodies))
+
 
 class KnowledgeReadinessTests(SimpleTestCase):
     def test_unknown_approved_knowledge_language_is_an_explicit_readiness_gap(self):

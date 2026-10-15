@@ -25,9 +25,9 @@ def module(name, **values):
     return result
 
 
-def preparation(*, handled=False, effects=(), reasons=()):
+def preparation(*, handled=False, effects=(), reasons=(), copy_hint=""):
     return SimpleNamespace(handled=handled, effects=effects, reasons=reasons,
-        ready=handled and bool(effects) and not reasons)
+        ready=handled and bool(effects) and not reasons, copy_hint=copy_hint)
 
 
 class CatalogLiveIntegrationTests(unittest.TestCase):
@@ -57,7 +57,8 @@ class CatalogLiveIntegrationTests(unittest.TestCase):
         choose = Mock(return_value=selector)
         execute = function("_prepare_visible_content", _catalog_native_source_choice=resolve,
             _catalog_configuration_selector=choose, _catalog_unavailable_chart_reason=Mock(return_value=copy_reason),
-            _catalog_plain_chart_requested=Mock(return_value=plain_chart))
+            _catalog_plain_chart_requested=Mock(return_value=plain_chart),
+            _catalog_prepared_reply=function("_catalog_prepared_reply"))
         with patch.dict(sys.modules, modules):
             result = execute(self.revision, self.response, self.settings)
         return result, resolve, choose
@@ -206,10 +207,28 @@ class CatalogLiveIntegrationTests(unittest.TestCase):
         self.assertEqual(execute(self.revision), "catalog_choice_source_changed")
 
     def test_runtime_guidance_covers_payer_cap_stock_chart_and_remaining_questions(self):
-        text = function("_catalog_customer_guidance")()
+        with patch.dict(sys.modules, {"management.services.ig_catalog_category_discovery":
+            module("management.services.ig_catalog_category_discovery", catalog_discovery_guidance=lambda: "The shortlist is only a few models; full category is on the cards.")}):
+            text = function("_catalog_customer_guidance")()
         for phrase in ("remaining request", "zero-stock", "recipient pays", "cap is not the actual",
             "explicit approved", "insurance", "guaranteed arrival", "manager confirmation", "image in this chat"):
             self.assertIn(phrase, text)
+        self.assertIn("full category is on the cards", text)
+
+    def test_ready_category_notice_preserves_generated_delivery_answer_and_link(self):
+        self.response.reply_text = "Доставку оплачує отримувач. Посилання: https://twocomms.test/product/model/"
+        hint = "Кілька моделей для початку. Повний вибір у категорії — кнопка «Всі футболки»."
+        prepared = preparation(handled=True, effects=({"payload": "native cards"},), copy_hint=hint)
+        result, *_ = self.visible(prepare_catalog_choice_presentations=Mock(return_value=prepared))
+        self.assertEqual(result[1], self.response.reply_text + "\n\n" + hint)
+        self.assertEqual(self.response.reply_text.count("Доставку"), 1)
+        self.assertEqual(result[1].count("https://"), 1)
+
+    def test_category_notice_requires_ready_effect_and_is_not_duplicated(self):
+        execute = function("_catalog_prepared_reply")
+        hint = "Explore the full category from the card."
+        self.assertEqual(execute("Original answer", preparation(handled=True, reasons=("changed",), copy_hint=hint)), "Original answer")
+        self.assertEqual(execute("Original answer\n" + hint, preparation(handled=True, effects=({},), copy_hint=hint)), "Original answer\n" + hint)
 
     def test_late_missing_chart_cannot_keep_positive_attachment_claim(self):
         execute = function("_catalog_unavailable_chart_reason")

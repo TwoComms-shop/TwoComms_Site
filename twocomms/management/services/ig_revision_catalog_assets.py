@@ -326,7 +326,8 @@ def build_catalog_asset_reference_binding(client, control):
             if "catalog_choice_presentation" in control:
                 manifest = control["catalog_choice_presentation"]
                 rebuilt = build_catalog_choice_effects(manifest["invitation_id"], manifest["scope"], manifest["cards"],
-                    presentation_kind=manifest["presentation_kind"], actions=manifest["actions"], _legacy=manifest["schema"] == SCHEMA_V1)
+                    presentation_kind=manifest["presentation_kind"], actions=manifest["actions"], _legacy=manifest["schema"] == SCHEMA_V1,
+                    _schema=manifest["schema"])
                 if rebuilt.manifest != manifest:
                     return None, "catalog_choice_manifest_changed"
                 reference = catalog_choice_reference(manifest)

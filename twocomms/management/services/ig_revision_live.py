@@ -1158,6 +1158,11 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
             captured_reply_language=reply_language,
         )
     if not isinstance(response, ValidatedResponse) or not response.valid:
+        from management.services.ig_revision_recovery import policy_readiness_failure_code
+        policy_code = policy_readiness_failure_code(failure)
+        if policy_code:
+            boundary.policy_readiness_failure = {"code": policy_code, "details": failure.get("policy_readiness_details")}
+            return None, boundary, (policy_code,)
         return None, boundary, boundary.last_reasons or (str(failure.get("kind") or "generation_failed"),)
     readiness = boundary.check()
     if not readiness.ready:
@@ -1213,6 +1218,12 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     truth_client = IgClient.objects.get(pk=revision.client_id)
     truth_context = (build_reply_truth_context(truth_client, control=response.control)
         if boundary.response_plan.line_plans else bot._provider_reply_truth_context(truth_client, response.control, response.reply_text))
+    from management.services.ig_catalog_category_discovery import category_urls_for_control
+    category_urls = category_urls_for_control(response.control, truth_client,
+        locale=reply_language.template_family)
+    if category_urls:
+        truth_context = replace(truth_context, authorized_urls=tuple(dict.fromkeys(
+            (*truth_context.authorized_urls, *category_urls))))
     truth = boundary.validate_response_truth(response, truth_context)
     if not truth.valid:
         return None, boundary, truth.reasons
@@ -1245,6 +1256,8 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
 def _catalog_customer_guidance():
     # This turn note accompanies the active DB publication, not only the
     # default prompt text (which an already published instruction overrides).
+    from management.services.ig_catalog_category_discovery import catalog_discovery_guidance
+
     return (
         "[CATALOG AND DELIVERY CUSTOMER EXPERIENCE]\n"
         "Answer every question and remaining request in the full sealed source bundle, including text "
@@ -1258,7 +1271,7 @@ def _catalog_customer_guidance():
         "the carrier separately; an agreed delivery cap is not the actual carrier charge. Merchant-funded "
         "delivery requires explicit approved terms. Never invent free delivery, promotions, insurance or "
         "a guaranteed arrival date. For urgent timing or uncertain availability, get manager confirmation "
-        "and avoid a firm shipment commitment."
+        "and avoid a firm shipment commitment.\n" + catalog_discovery_guidance()
     )
 
 
@@ -1418,6 +1431,14 @@ def _catalog_unavailable_chart_reason(reply):
     return ""
 
 
+def _catalog_prepared_reply(reply, prepared):
+    """Keep every generated answer and append only the ready producer's notice."""
+    hint = str(getattr(prepared, "copy_hint", "") or "").strip()
+    if not prepared.ready or not hint or hint in reply:
+        return reply
+    return reply.rstrip() + "\n\n" + hint
+
+
 def _prepare_visible_content(revision, response, settings_row):
     from management.services import instagram_bot as bot
     from management.services.ig_catalog_media import prepare_catalog_media
@@ -1442,7 +1463,7 @@ def _prepare_visible_content(revision, response, settings_row):
             factory = prepare_catalog_chart_effect if choice["action"]["kind"] == "chart" else prepare_catalog_choice_page
             prepared = factory(revision, response, settings_row, choice=choice)
             if prepared.handled:
-                return prepared.effects, reply, prepared.reasons
+                return prepared.effects, _catalog_prepared_reply(reply, prepared), prepared.reasons
             # A missing/ambiguous chart was explicitly disclosed to Gemini.
             # It must not fall through to an unrelated product photograph.
             reason = _catalog_unavailable_chart_reason(reply) if choice["action"]["kind"] == "chart" else "catalog_choice_page_unavailable"
@@ -1455,7 +1476,7 @@ def _prepare_visible_content(revision, response, settings_row):
             return (), reply, (reason,) if reason else ()
         prepared = prepare_catalog_choice_presentations(revision, response, settings_row)
         if prepared.handled:
-            return prepared.effects, reply, prepared.reasons
+            return prepared.effects, _catalog_prepared_reply(reply, prepared), prepared.reasons
         kind = _catalog_configuration_selector(revision, response)
         if kind:
             prepared = prepare_catalog_configuration_choices(revision, response, settings_row, kind=kind)
@@ -2011,6 +2032,18 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             revision, token, settings_row, publication, collection,
         )
         if response is None:
+            from management.services.ig_revision_recovery import (
+                LOCAL_POLICY_READINESS_CODES, record_policy_readiness_failure,
+            )
+            policy_failure = getattr(boundary, "policy_readiness_failure", None) or {}
+            if policy_failure.get("code") in LOCAL_POLICY_READINESS_CODES:
+                recorded = record_policy_readiness_failure(
+                    revision.pk, token, settings_id=settings_row.pk,
+                    settings_permission_epoch=boundary.settings_epoch, publication=publication,
+                    code=policy_failure["code"], details=policy_failure.get("details"),
+                )
+                return RevisionLiveResult(revision_id, "blocked", reasons if recorded.ready else
+                    tuple(dict.fromkeys((*reasons, recorded.reason))))
             from management.services.ig_revision_input import record_source_preference_fallback
 
             fallback = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk)

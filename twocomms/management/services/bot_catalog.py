@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 from django.db.models import Sum
 
 CACHE_KEY = "ig_bot_catalog_ctx"
-CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact"
+CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_shared_v1"
 CACHE_TTL = 600          # 10 хв
 # Збій build-у кешується на дуже короткий час: знімок мусить швидко оновитись
 # після відновлення, а не жити ті самі 10 хвилин, що й валідний каталог.
@@ -193,14 +193,20 @@ def _build(*, compact: bool = False) -> str:
             f"{colors_s}{avail}{fits_s}{fp_s} | {url}"
         )
 
-    limit = COMPACT_MAX_CHARS if compact else MAX_CHARS
-    text, _dropped = truncate_catalog_lines(lines, limit=limit)
-    return text + (
+    price_rule = (
         "\nПравило ціни: точну ціну називай лише для обраної конфігурації "
         "variant_id + фасон/опції. Якщо в рядку є діапазон або різні ціни, "
         "спершу уточни параметри; не підмінюй ціну товару базовою. Не вигадуй "
         "variant_id, фасон або розмір; використовуй тільки значення з каталогу."
     )
+    if compact:
+        from management.services.ig_catalog_prompt_compaction import fit_compact_catalog
+        text, dropped = fit_compact_catalog(lines, limit=COMPACT_MAX_CHARS, footer=price_rule)
+        if dropped:
+            _log_catalog_truncation(dropped, len(products), COMPACT_MAX_CHARS)
+        return text
+    text, _dropped = truncate_catalog_lines(lines, limit=MAX_CHARS)
+    return text + price_rule
 
 
 def _availability_label(product_id: int, *, aggregate_stock: int) -> str:

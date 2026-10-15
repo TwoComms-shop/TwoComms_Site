@@ -8756,6 +8756,7 @@ class IgCustomerTurnRevision(models.Model):
                     "input_decision", "client_configuration_update", "manager_handoff",
                     "rate_alert", "postback_decision", "normal_followups", "commerce_reduction",
                     "manual_resume_authorization", "generation_admission", "recovery_lineage",
+                    "policy_readiness_failure",
                     "media_unavailable_reply", "provider_execution_manifest",
                     "provider_execution_reference", "proposal_execution_resume",
                     "response_debt", "source_preference_fallback",

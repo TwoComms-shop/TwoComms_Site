@@ -17,7 +17,8 @@ from management.services.ig_revision_outbox import _digest
 from management.services.ig_revision_catalog_assets import _Unavailable
 
 SCHEMA_V1 = "catalog-choice-presentation.v1"
-SCHEMA = "catalog-choice-presentation.v2"
+SCHEMA_V2 = "catalog-choice-presentation.v2"
+SCHEMA = "catalog-choice-presentation.v3"
 PREFIX = "CC1:"
 _PAYLOAD = re.compile(r"CC1:([1-9][0-9]{0,17}):([0-9]{1,2}):([0-9a-f]{32})")
 MAX_CARDS = 3
@@ -72,6 +73,77 @@ def _payload_kind(payload):
     if "text" in message:
         return "text"
     return "image" if (message.get("attachment") or {}).get("type") == "image" else "template"
+
+
+def _admitted_source_locale(revision, *, reset_floor):
+    """Recover UI language only from exact sealed, accepted native source proof."""
+    from management.services.ig_catalog_choice_actions import native_choice_request
+    from management.services.ig_turn_revisions import _source_payload
+
+    manager = getattr(revision, "sources", None)
+    if manager is None:
+        return ""
+    snapshots = {row["message_id"]: row for row in (revision.bundle_snapshot or {}).get("sources", ())}
+    locales = set()
+    for source in manager.select_related("message").order_by("ordinal", "id"):
+        row, snapshot = source.message, snapshots.get(source.message_id)
+        if (snapshot is None or not str(row.quick_reply_payload or "").startswith(PREFIX)
+            or row.pk < reset_floor or row.client_id != revision.client.pk
+            or row.sender_id != revision.client.igsid or row.role != "user" or row.source != "webhook"
+            or row.status == "failed" or row.provider_namespace != source.source_namespace
+            or snapshot.get("source_namespace") != row.provider_namespace
+            or snapshot.get("source_digest") != source.source_digest
+            or snapshot.get("text") != row.text or snapshot.get("quick_reply_payload") != row.quick_reply_payload
+            or snapshot.get("provider_message_id") != row.mid):
+            continue
+        try:
+            if _source_payload(row, previous=source, ordinal=source.ordinal)["source_digest"] != source.source_digest:
+                continue
+            request = native_choice_request(revision.client, row, historical=True)
+        except (ValueError, TypeError, KeyError):
+            continue
+        proof = (getattr(request, "source_binding", None) or {}).get("native_catalog_choice") or {}
+        locale = (proof.get("scope") or {}).get("locale")
+        if (proof.get("action") or {}).get("kind") in {"product", "color", "size"} and locale in _LABELS:
+            locales.add(locale)
+    return next(iter(locales)) if len(locales) == 1 else ""
+
+
+def _presentation_locale(revision, response, *, choice=None):
+    """Own authored sealed text wins; opaque native clicks retain invitation locale."""
+    from django.utils.dateparse import parse_datetime
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_reply_language import resolve_own_source_reply_language
+
+    sources = deepcopy((revision.bundle_snapshot or {}).get("sources") or [])
+    for source in sources:
+        # A provider's button title is UI copy, not newly authored language.
+        if str(source.get("quick_reply_payload") or "").startswith(PREFIX):
+            source["text"] = ""
+    floor = conversation_route_reset_floor(revision.client.pk)
+    frozen = ((choice or {}).get("manifest") or {}).get("scope", {}).get("locale") if (choice or {}).get("ready") else None
+    if frozen not in _LABELS and any(str(row.get("quick_reply_payload") or "").startswith(PREFIX) for row in sources):
+        frozen = _admitted_source_locale(revision, reset_floor=floor)
+    profile = frozen if frozen in _LABELS else getattr(revision.client, "language", "uk")
+    profile = "uk" if profile == "ua" else profile
+    times = []
+    for source in sources:
+        if source.get("role") != "user" or type(source.get("message_id")) is not int:
+            continue
+        stamp = source.get("provider_created_at") or source.get("observed_created_at")
+        try:
+            parsed = parse_datetime(stamp) if isinstance(stamp, str) and stamp else None
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            times.append((parsed, source["message_id"]))
+    watermark = max(times) if times else None
+    decision = resolve_own_source_reply_language(sources=sources, profile_language=profile,
+        reset_floor=floor,
+        watermark_message_id=watermark[1] if watermark else max(
+            (row["message_id"] for row in sources if type(row.get("message_id")) is int), default=None),
+        watermark_event_at=watermark[0] if watermark else None)
+    return decision.template_family if decision.template_family in _LABELS else "en"
 
 
 def _scope(revision, settings_row, locale):
@@ -139,7 +211,7 @@ def _configured_card(client, product_id, capture=None, *, require_photo=True):
         "configuration_digest": captured.get("configuration_digest") or ""}
 
 
-def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_kind="products", actions=None, _legacy=False):
+def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_kind="products", actions=None, _legacy=False, _schema=None):
     """Pure builder used by the producer and causal tests; no source admission."""
     from management.services import ig_message_templates as tpl
 
@@ -147,6 +219,21 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
     if not 1 <= len(cards) <= MAX_CARDS or len({row["product_id"] for row in cards}) != len(cards):
         raise ValueError("catalog_choice_cardinality_invalid")
     locale = scope.get("locale") if scope.get("locale") in _LABELS else "uk"
+    # Existing callers may rebuild historical values without discovery data.
+    # Real product preparation below always captures category proof for v3.
+    schema = _schema or (SCHEMA_V1 if _legacy else SCHEMA if any("category" in row for row in cards) else SCHEMA_V2)
+    if schema not in {SCHEMA_V1, SCHEMA_V2, SCHEMA}:
+        raise ValueError("catalog_choice_schema_invalid")
+    _legacy = schema == SCHEMA_V1
+    discovery_categories = ()
+    if schema == SCHEMA and presentation_kind == "products":
+        from management.services.ig_catalog_category_discovery import (
+            category_button_label, shortlist_copy, validate_category,
+        )
+        discovery_categories = tuple(row.get("category") for row in cards)
+        if any(not validate_category(category, product_id=row["product_id"])
+            for row, category in zip(cards, discovery_categories)):
+            raise ValueError("catalog_choice_category_invalid")
     choose, chart, head, numbered = _LABELS[locale]
     if presentation_kind not in {"products", "color", "size"}:
         raise ValueError("catalog_choice_presentation_kind_invalid")
@@ -170,7 +257,6 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
         if any(row.get("kind") not in {presentation_kind, "chart"}
             or row.get("product_id") != cards[0]["product_id"] or not row.get("label") for row in actions):
             raise ValueError("catalog_choice_configuration_action_invalid")
-    schema = SCHEMA_V1 if _legacy else SCHEMA
     manifest = {"schema": schema, "invitation_id": int(invitation_id), "scope": deepcopy(scope),
         "cards": cards, "actions": actions, "presentation_kind": presentation_kind}
     manifest["context_digest"] = _digest(_context(manifest))
@@ -179,9 +265,13 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
     if presentation_kind == "products":
         elements = tuple(tpl.TemplateCard(title=tpl.display_short(row["title"]), image_url=row["image_url"],
             buttons=(tpl.TemplateButton(tpl.BUTTON_POSTBACK, choose, payload=payloads[index * 2]),
-                     tpl.TemplateButton(tpl.BUTTON_POSTBACK, chart, payload=payloads[index * 2 + 1])))
+                     tpl.TemplateButton(tpl.BUTTON_POSTBACK, chart, payload=payloads[index * 2 + 1]))
+                + ((tpl.TemplateButton(tpl.BUTTON_WEB_URL, category_button_label(row["category"]),
+                    url=row["category"]["url"]),) if discovery_categories else ()))
             for index, row in enumerate(cards))
         text = head + "\n" + "\n".join(f"{index + 1}. {tpl.display_short(row['title'])}" for index, row in enumerate(cards))
+        if discovery_categories:
+            text += "\n" + shortlist_copy(discovery_categories, locale, links=True)
         more = tuple(tpl.QuickReply(action["label"], payloads[index])
             for index, action in enumerate(actions) if action["kind"] == "page")
         normalized = tpl.normalize_template(tpl.GenericTemplate(cards=elements, fallback_text=text, quick_replies=more))
@@ -235,10 +325,11 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
         if delivery == "fallback":
             row["activation"] = {"group": "template", "part_index": 0, "failure_code": "provider_rejected"}
         effects.append(row)
-    return CatalogChoicePreparation(True, tuple(effects), "", (), manifest)
+    return CatalogChoicePreparation(True, tuple(effects),
+        shortlist_copy(discovery_categories, locale) if discovery_categories else "", (), manifest)
 
 
-def prepare_catalog_choice_presentations(revision, response, settings_row, *, configured_choices_capture=None):
+def prepare_catalog_choice_presentations(revision, response, settings_row, *, configured_choices_capture=None, choice=None):
     """Replace SHOW_PRODUCTS only for ordinary presentation, preserving checkout."""
     from management.services.ig_catalog_media import parse_product_ids
 
@@ -253,20 +344,21 @@ def prepare_catalog_choice_presentations(revision, response, settings_row, *, co
         # a later page must be a separately sealed presentation revision.
         page = tuple(dict.fromkeys(ids))[:MAX_CARDS]
         captures = configured_choices_capture or {}
-        locale = str(getattr(response, "reply_language", "") or getattr(revision.client, "language", "") or "uk")
-        if locale == "ua":
-            locale = "uk"
+        locale = _presentation_locale(revision, response, choice=choice)
         scope = _scope(revision, settings_row, locale)
         scope["ordered_product_ids"] = list(dict.fromkeys(ids))
         scope["page"] = 0
         cards = [_configured_card(revision.client, product_id,
             captures.get(product_id) or captures.get(str(product_id))) for product_id in page]
-        return build_catalog_choice_effects(revision.pk, scope, cards)
+        from management.services.ig_catalog_category_discovery import capture_product_category
+        for card in cards:
+            card["category"] = capture_product_category(card["product_id"], locale)
+        return build_catalog_choice_effects(revision.pk, scope, cards, _schema=SCHEMA)
     except (ValueError, TypeError, KeyError, _Unavailable) as exc:
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
 
-def prepare_catalog_configuration_choices(revision, response, settings_row, *, kind, capture=None):
+def prepare_catalog_configuration_choices(revision, response, settings_row, *, kind, capture=None, choice=None):
     """Caller owns when to ask. Expose enabled configured rules without stock claims."""
     from management.services.ig_catalog_configured_choices import capture_configured_choices
     from management.services import ig_revision_catalog_assets as assets
@@ -283,8 +375,7 @@ def prepare_catalog_configuration_choices(revision, response, settings_row, *, k
         rows = captured.get("colors") if kind == "color" else captured.get("sizes")
         if not rows or len(rows) > 13:
             return CatalogChoicePreparation()
-        locale = str(getattr(response, "reply_language", "") or revision.client.language or "uk")
-        locale = "uk" if locale == "ua" else locale
+        locale = _presentation_locale(revision, response, choice=choice)
         scope = _scope(revision, settings_row, locale)
         actions = []
         for row in rows:
@@ -316,14 +407,17 @@ def prepare_catalog_choice_page(revision, response, settings_row, *, choice, con
         window = ordered[page * MAX_CARDS:(page + 1) * MAX_CARDS]
         if not window:
             raise ValueError("catalog_choice_page_exhausted")
-        scope = _scope(revision, settings_row, original["scope"]["locale"])
+        scope = _scope(revision, settings_row, _presentation_locale(revision, response, choice=choice))
         scope.update(ordered_product_ids=list(ordered), page=page,
             origin_manifest_digest=choice["manifest_digest"], origin_invitation_id=choice["invitation_id"],
             origin_effect_id=choice["effect_id"])
         captures = configured_choices_capture or {}
         cards = [_configured_card(revision.client, product_id,
             captures.get(product_id) or captures.get(str(product_id))) for product_id in window]
-        return build_catalog_choice_effects(revision.pk, scope, cards)
+        from management.services.ig_catalog_category_discovery import capture_product_category
+        for card in cards:
+            card["category"] = capture_product_category(card["product_id"], scope["locale"])
+        return build_catalog_choice_effects(revision.pk, scope, cards, _schema=SCHEMA)
     except (KeyError, ValueError, TypeError, _Unavailable) as exc:
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
@@ -350,8 +444,8 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
         row = SizeGrid.objects.filter(pk=grid["grid_id"]).first()
         if row is None or str(row.image.name or "") != grid.get("image_name") or assets._url(row.image) != photo["url"]:
             raise ValueError("catalog_choice_chart_changed")
-        locale = str(getattr(response, "reply_language", "") or revision.client.language or "uk")
-        scope = _scope(revision, settings_row, "uk" if locale == "ua" else locale)
+        locale = _presentation_locale(revision, response, choice=choice)
+        scope = _scope(revision, settings_row, locale)
         if choice:
             scope.update(origin_manifest_digest=choice["manifest_digest"],
                 origin_invitation_id=choice["invitation_id"], origin_effect_id=choice["effect_id"])
@@ -434,7 +528,7 @@ def validate_catalog_choice_metadata(metadata, *, payload, group, kind):
     keys = {"catalog_choice", "delivery", "prepared_payload_digest"} | (set() if legacy else {"part_index"})
     if (set(metadata) != keys or not isinstance(manifest, dict)
         or set(manifest) != (_V1_MANIFEST_KEYS if legacy else _MANIFEST_KEYS)
-        or manifest.get("schema") not in {SCHEMA, SCHEMA_V1} or delivery not in {"native", "fallback"}
+        or manifest.get("schema") not in {SCHEMA, SCHEMA_V1, SCHEMA_V2} or delivery not in {"native", "fallback"}
         or group != ("template" if delivery == "native" else "template_fallback")):
         return False
     try:
@@ -449,7 +543,7 @@ def validate_catalog_choice_metadata(metadata, *, payload, group, kind):
             or _digest(payload) != expected_digest):
             return False
         rebuilt = build_catalog_choice_effects(manifest["invitation_id"], manifest["scope"], manifest["cards"],
-            presentation_kind=manifest["presentation_kind"], actions=manifest["actions"], _legacy=legacy)
+            presentation_kind=manifest["presentation_kind"], actions=manifest["actions"], _legacy=legacy, _schema=manifest["schema"])
         expected = rebuilt.effects[0 if delivery == "native" else 1 + part_index]
         return expected["kind"] == kind and expected["payload"] == payload and expected["projection_metadata"] == metadata
     except (KeyError, TypeError, ValueError, AttributeError, IndexError):
@@ -520,11 +614,16 @@ def _own_product_continuation(session, manifest):
 
 def catalog_choice_reference(manifest):
     """Content-free selector compatible with the outbox's 4096-byte bindings."""
-    return {"invitation_id": manifest["invitation_id"], "manifest_digest": manifest["manifest_digest"],
+    reference = {"invitation_id": manifest["invitation_id"], "manifest_digest": manifest["manifest_digest"],
         "presentation_kind": manifest["presentation_kind"],
         "scope": deepcopy(manifest["scope"]), "cards": [{key: deepcopy(row[key]) for key in
             ("product_id", "asset_ref", "asset_selected_variant_id", "configuration_selector", "configuration_digest")}
             for row in manifest["cards"]]}
+    if manifest.get("schema") == SCHEMA and manifest["presentation_kind"] == "products":
+        from management.services.ig_catalog_category_discovery import category_reference
+        for row, card in zip(reference["cards"], manifest["cards"]):
+            row["category"] = category_reference(card["category"])
+    return reference
 
 
 def validate_catalog_choice_assets(manifest, client):
@@ -534,6 +633,10 @@ def validate_catalog_choice_assets(manifest, client):
 
     try:
         for card in manifest["cards"]:
+            if "category" in card:
+                from management.services.ig_catalog_category_discovery import validate_current_category
+                if not validate_current_category(card["category"], product_id=card["product_id"]):
+                    return "catalog_choice_category_changed"
             product = assets._product(card["product_id"])
             if card["asset_ref"] is not None:
                 asset = assets._load_asset(product, card["asset_ref"], card["asset_selected_variant_id"])

@@ -185,7 +185,7 @@ class CatalogNativeDeliveryTests(TransactionTestCase):
         payloads = []
         attached = (native.get("attachment") or {}).get("payload") or {}
         if attached.get("template_type") == "generic":
-            payloads.extend(button["payload"] for card in attached["elements"] for button in card["buttons"])
+            payloads.extend(button["payload"] for card in attached["elements"] for button in card["buttons"] if "payload" in button)
         elif attached.get("template_type") == "button":
             payloads.extend(button["payload"] for button in attached["buttons"])
         payloads.extend(quick["payload"] for quick in native.get("quick_replies") or [])
@@ -391,3 +391,80 @@ class CatalogNativeDeliveryTests(TransactionTestCase):
         with transaction.atomic():
             refused = consume_catalog_choice(self.client_row, tap)
         self.assertFalse(refused["ready"], refused)
+
+    def test_own_english_source_overrides_stored_russian_in_real_prepared_delivery(self):
+        self.client_row.language = "ru"
+        self.client_row.save(update_fields=["language"])
+        self.seal(self.source_row(text="Please show me your hoodies and answer in English."))
+        prepared, response = self.prepare()
+        self.assertEqual(prepared.manifest["scope"]["locale"], "en")
+        elements = prepared.effects[0]["payload"]["message"]["attachment"]["payload"]["elements"]
+        self.assertEqual(elements[0]["buttons"][0]["title"], "Choose")
+        self.assertIn("/en/catalog/", elements[0]["buttons"][2]["url"])
+        self.plan(prepared, response)
+        sent, outcomes = self.deliver()
+        self.assertEqual(outcomes["template"].state, "sent")
+        self.assertEqual(sent[0]["message"]["attachment"]["payload"]["elements"], elements)
+        self.client_row.refresh_from_db()
+        self.assertEqual(self.client_row.language, "ru")
+        selected = self.action_source(prepared, product_id=self.products[0].pk)
+        self.consume(selected)
+        self.seal(selected)
+        response = self.response(text="Choose a colour.")
+        colors = presentations.prepare_catalog_configuration_choices(self.revision, response, self.settings, kind="color")
+        self.assertTrue(colors.ready, colors.reasons)
+        self.assertEqual(colors.manifest["scope"]["locale"], "en")
+        self.plan(colors, response)
+        self.deliver()
+        selected_color = self.action_source(colors, kind="color", value=self.variants[0].pk)
+        self.consume(selected_color)
+        self.seal(selected_color)
+        response = self.response(text="Choose a size.")
+        sizes = presentations.prepare_catalog_configuration_choices(self.revision, response, self.settings, kind="size")
+        self.assertTrue(sizes.ready, sizes.reasons)
+        self.assertEqual(sizes.manifest["scope"]["locale"], "en")
+        self.assertIn("Choose a size", sizes.effects[0]["payload"]["message"]["attachment"]["payload"]["text"])
+        self.client_row.refresh_from_db()
+        self.assertEqual(self.client_row.language, "ru")
+
+    def test_new_own_english_text_overrides_verified_ukrainian_card_locale(self):
+        self.seal(self.source_row(text="Покажіть, будь ласка, худі українською."))
+        prepared, response = self.prepare([self.products[0]])
+        self.assertEqual(prepared.manifest["scope"]["locale"], "uk")
+        self.plan(prepared, response)
+        self.deliver()
+        choice = self.consume(self.action_source(prepared))
+        self.seal(self.source_row(text="Please answer in English and show me the colours."))
+        colors = presentations.prepare_catalog_configuration_choices(self.revision,
+            self.response(text="Choose a colour."), self.settings, kind="color", choice=choice)
+        self.assertTrue(colors.ready, colors.reasons)
+        self.assertEqual(colors.manifest["scope"]["locale"], "en")
+
+    def test_real_category_button_fallback_url_and_current_category_fence(self):
+        from management.services.ig_catalog_category_discovery import category_url
+        from storefront.models import Category
+
+        self.category.slug, self.category.name = "hoodie", "Худі"
+        self.category.save(update_fields=["slug", "name"])
+        prepared, response = self.prepare()
+        self.assertEqual(prepared.manifest["schema"], presentations.SCHEMA)
+        category = prepared.manifest["cards"][0]["category"]
+        url = category_url("hoodie", category["locale"])
+        elements = prepared.effects[0]["payload"]["message"]["attachment"]["payload"]["elements"]
+        self.assertTrue(all(len(row["buttons"]) == 3 for row in elements))
+        self.assertTrue(all(row["buttons"][2]["type"] == "web_url" and row["buttons"][2]["url"] == url for row in elements))
+        self.assertIn(url, prepared.effects[-1]["payload"]["message"]["text"])
+        self.assertNotIn("https://", prepared.copy_hint)
+        self.assertIn("для початку", prepared.copy_hint)
+        self.plan(prepared, response)  # Real three-card authority must fit 4096 bytes.
+        self.deliver()
+        source = self.action_source(prepared)
+        self.assertTrue(presentations.delivered_catalog_choice(self.client_row, source)["ready"])
+        for changed in ({"slug": "hoodie-renamed"}, {"name": "Нові худі"}, {"is_active": False}):
+            with self.subTest(changed=changed):
+                Category.objects.filter(pk=self.category.pk).update(**changed)
+                result = presentations.delivered_catalog_choice(self.client_row, source)
+                self.assertFalse(result["ready"], result)
+                self.assertEqual(result["reason"], "catalog_choice_category_changed")
+                Category.objects.filter(pk=self.category.pk).update(slug="hoodie", name="Худі", is_active=True)
+        self.assertTrue(presentations.delivered_catalog_choice(self.client_row, source, fresh=False)["ready"])

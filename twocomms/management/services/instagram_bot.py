@@ -7978,6 +7978,13 @@ def _provider_reply_truth_context(client, control, reply_text):
         local_control,
     )
     context = build_reply_truth_context(client, control=resolved_control)
+    from dataclasses import replace
+    from management.services.ig_catalog_category_discovery import category_urls_for_control
+    category_urls = category_urls_for_control(resolved_control, client,
+        locale=_assisted_checkout_locale(client))
+    if category_urls:
+        context = replace(context, authorized_urls=tuple(dict.fromkeys(
+            (*context.authorized_urls, *category_urls))))
     if resolved_control.get("_price_claim_invalid"):
         # A rejected exact configuration quote cannot borrow an authorized
         # amount or range from a sibling proposal item. Typed controls belong
@@ -8185,6 +8192,11 @@ def gemini_generate(
         if failure_context is not None:
             failure_context["kind"] = "invalid_payload"
             failure_context["policy_readiness"] = exc.code
+            # Persist only bounded policy sizes/IDs; never prompt bodies or a
+            # fabricated provider request for a failure before dispatch.
+            from management.services.ig_revision_recovery import _policy_failure_details
+            failure_context["policy_readiness_details"] = _policy_failure_details(
+                getattr(exc, "details", {}))
         log("error", "policy_not_ready", exc.code)
         return None
     if failure_context is not None:
@@ -14457,16 +14469,13 @@ def _append_more_products_hint(reply: str, selection, client) -> str:
     Висипати десять картинок — не рішення: краще показати межу і дати підбірку
     каталогу одним посиланням.
     """
-    truncated = int(getattr(selection, "truncated_product_count", 0) or 0)
-    if truncated <= 0:
-        return reply
+    from management.services.ig_catalog_category_discovery import append_catalog_discovery_hint
+
     locale = _assisted_checkout_locale(client) if client is not None else "uk"
     locale = locale if locale in _MORE_PRODUCTS_HINT else "uk"
-    url = f"{_site_base_url()}/catalog/"
-    hint = _MORE_PRODUCTS_HINT[locale].format(url=url)
-    if url in str(reply or ""):
-        return reply
-    return f"{str(reply or '').strip()}\n{hint}".strip()
+    ids = getattr(selection, "requested_product_ids", ()) or tuple(dict.fromkeys(
+        item.product_id for item in getattr(selection, "items", ())))
+    return append_catalog_discovery_hint(reply, ids, locale)[0]
 
 
 def _site_base_url() -> str:
@@ -15978,8 +15987,11 @@ def _process_one_inside_reply_boundary(
         # Клієнт мусить дізнатись словами, що показане — не весь асортимент:
         # без цього три фото читаються як «це все, що є».
         reply = _append_more_products_hint(reply, catalog_media_selection, row.client)
-        if int(getattr(catalog_media_selection, "truncated_product_count", 0) or 0) > 0:
-            catalog_url = f"{_site_base_url()}/catalog/"
+        from management.services.ig_catalog_category_discovery import catalog_category_discovery
+        browse = catalog_category_discovery(
+            catalog_media_selection.requested_product_ids,
+            _assisted_checkout_locale(row.client) if row.client else "uk")
+        for catalog_url in browse.urls:
             if catalog_url not in server_generated_urls:
                 server_generated_urls.append(catalog_url)
         try:

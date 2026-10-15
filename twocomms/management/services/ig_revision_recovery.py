@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
+import re
 
 from django.db import transaction
 from django.db.models import Q
@@ -38,6 +39,14 @@ INCIDENT_DELAY = timedelta(seconds=45)
 RETRY_DELAYS = (45, 120, 300)
 MAX_LINEAGE = 10
 EXECUTION_RESUME_KEY = "proposal_execution_resume"
+POLICY_READINESS_FAILURE_KEY = "policy_readiness_failure"
+LOCAL_POLICY_READINESS_CODES = frozenset({
+    "mandatory_policy_exceeds_budget", "required_policy_exceeds_budget",
+    "captured_state_exceeds_budget", "invalid_policy_budget",
+    "invalid_required_policy_module", "required_scenario_module_missing",
+    "invalid_mandatory_policy", "duplicate_mandatory_policy_id",
+    "unnamed_mandatory_policy", "approved_public_facts_unavailable",
+})
 
 
 @dataclass(frozen=True)
@@ -108,6 +117,105 @@ def record_generation_admission(
         revision.action_receipts = {**(revision.action_receipts or {}), "generation_admission": receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])
         return RecoveryAdmissionResult(True, "admitted")
+
+
+def policy_readiness_failure_code(failure):
+    """Keep the compiler's finite local reason without inventing a provider failure."""
+    if not isinstance(failure, dict) or failure.get("kind") != "invalid_payload":
+        return ""
+    code = failure.get("policy_readiness")
+    return code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code) else ""
+
+
+def _policy_failure_details(details):
+    """Content-free counts and module identities only; never prompt/customer text."""
+    if not isinstance(details, dict):
+        return {}
+    result = {key: value for key in ("budget_chars", "required_chars", "mandatory_total_chars", "mandatory_count")
+        if type(value := details.get(key)) is int and 0 <= value <= 10_000_000}
+    for key in ("mandatory_ids", "required_ids"):
+        values = details.get(key)
+        if isinstance(values, (tuple, list)) and len(values) <= 128:
+            result[key] = [value for value in values if isinstance(value, str)
+                and re.fullmatch(r"[a-zA-Z0-9_:.-]{1,120}", value)]
+    lengths = details.get("mandatory_module_lengths")
+    if isinstance(lengths, dict) and len(lengths) <= 128:
+        result["mandatory_module_lengths"] = {key: value for key, value in lengths.items()
+            if isinstance(key, str) and re.fullmatch(r"[a-zA-Z0-9_:.-]{1,120}", key)
+            and type(value) is int and 0 <= value <= 10_000_000}
+    return result
+
+
+def record_policy_readiness_failure(
+    revision_id, token, *, settings_id, settings_permission_epoch, publication,
+    code, details=None, now=None,
+):
+    """Park a proven local zero-dispatch fault as real source-bound reply debt.
+
+    This is not provider recovery. A separately audited manager Resume may
+    create a fresh source successor after the configuration is repaired.
+    """
+    if code not in LOCAL_POLICY_READINESS_CODES:
+        return RecoveryAdmissionResult(reason="policy_failure_code_unsupported")
+    now = now or timezone.now()
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return RecoveryAdmissionResult(reason="revision_missing")
+    with transaction.atomic():
+        settings_row = InstagramBotSettings.objects.select_for_update().select_related("active_instruction_publication").filter(pk=settings_id).first()
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
+        if revision is None or client is None:
+            return RecoveryAdmissionResult(reason="revision_missing")
+        if (revision.generation_proposal_digest or revision.generation_proposal
+            or revision.delivery_effects.exists()
+            or GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").exists()):
+            return RecoveryAdmissionResult(reason="policy_failure_dispatch_not_excluded")
+        admission = (revision.action_receipts or {}).get("generation_admission") or {}
+        material = {key: value for key, value in admission.items() if key != "digest"}
+        expected_publication = {"id": publication.publication_id, "version": publication.version, "hash": publication.snapshot_hash}
+        if (not admission or admission.get("digest") != _digest(material)
+            or admission.get("revision_id") != revision.pk
+            or admission.get("logical_turn_id") != f"ig-revision:{revision.pk}"
+            or admission.get("snapshot_digest") != revision.snapshot_digest
+            or admission.get("selection_digest") != _selection_digest(client)
+            or admission.get("settings_id") != settings_id
+            or admission.get("settings_permission_epoch") != settings_permission_epoch
+            or admission.get("publication") != expected_publication):
+            return RecoveryAdmissionResult(reason="policy_failure_admission_changed")
+        from management.services.ig_revision_holding import _sources_unchanged
+        try:
+            sources_current = _sources_unchanged(revision)
+        except (TypeError, ValueError, KeyError):
+            sources_current = False
+        if not sources_current:
+            return RecoveryAdmissionResult(reason="policy_failure_sources_changed")
+        readiness = _cas_readiness(
+            revision, client=client, settings_obj=settings_row, revision_token=token,
+            settings_id=settings_id, settings_permission_epoch=settings_permission_epoch,
+            publication=publication, fact_bindings=admission.get("fact_bindings") or [],
+            offer_bindings=admission.get("offer_bindings") or [],
+            fact_checker=check_fact_bindings, offer_checker=check_offer_bindings, now=now,
+        )
+        if not readiness.ready:
+            return RecoveryAdmissionResult(reason=readiness.reasons[0])
+        receipt = {
+            "schema": "revision-policy-readiness.v1", "revision_id": revision.pk,
+            "logical_turn_id": admission["logical_turn_id"], "snapshot_digest": revision.snapshot_digest,
+            "source_message_ids": [row["message_id"] for row in revision.bundle_snapshot["sources"]],
+            "generation_admission_digest": admission["digest"],
+            "settings_id": settings_id, "settings_permission_epoch": settings_permission_epoch,
+            "publication": expected_publication, "code": code,
+            "details": _policy_failure_details(details), "provider_dispatched": False,
+        }
+        receipt["digest"] = _digest(receipt)
+        existing = (revision.action_receipts or {}).get(POLICY_READINESS_FAILURE_KEY)
+        if existing and existing != receipt:
+            return RecoveryAdmissionResult(reason="policy_failure_receipt_changed")
+        revision.action_receipts = {**(revision.action_receipts or {}), POLICY_READINESS_FAILURE_KEY: receipt}
+        revision.save(update_fields=["action_receipts", "updated_at"])
+        _set_state(revision, "manual", code)
+        return RecoveryAdmissionResult(True, code)
 
 
 def _set_state(revision, state, code, *, due_at=None, child_id=0):
@@ -410,7 +518,7 @@ def execution_resume_is_current(revision, *, now=None):
     return bool(graph and graph.winner_attempt_id == receipt.get("winner_attempt_id")
         and _generation_graph_matches(revision=revision, source_ids=sources,
             request_id=graph.request_id, model=generation.get("actual_model", ""),
-            policy_manifest=proposal.get("policy_manifest") or {}))
+            policy_manifest=proposal.get("policy_manifest") or {}, lock=False))
 
 
 def _authorize_proposal_execution(revision, client, settings_row, *, now):
