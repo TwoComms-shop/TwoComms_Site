@@ -1,0 +1,18 @@
+{
+  "twocomms/management/services/bot_catalog.py": "fe9665c1a138dd99d762f4d28f7911e6b288b1120fd84b218373afd62405d9fb",
+  "twocomms/management/services/ig_catalog_prompt_compaction.py": "f07fe51ca373f2184ac4976c0f43aa8f2ef6123ea8cc4ff75b366ad95918f73e",
+  "twocomms/management/services/ig_policy_compiler.py": "de467f89410a9929092c49d5aa9368ccb0fa7ae310f78ab9cc55c6e7502aaeb5",
+  "twocomms/management/services/instagram_bot.py": "8cb4b941c9c8ef8e40ea3df2f1fbf95e8cf2e4b93ca460e04e9df98c19cdda33",
+  "twocomms/management/services/ig_revision_live.py": "043c3c774e9e7c7811eb8cd7c7a14dcf9f28710fc99bce72146bd0a2b8e4c015",
+  "twocomms/management/services/ig_revision_recovery.py": "00b9d8d899d8a27ddfbedb57b9c0ede594b95cc092051881aaa50f68a939e26f",
+  "twocomms/management/tests_ig_catalog_prompt_compaction.py": "073d40f04ee4c240a3f76069c1bf5b689c1f38ae2d6c59bcb0acfe7000747443",
+  "twocomms/management/tests_ig_policy_compiler.py": "a2f877109c2b40e02dbbdf7c203809636a771471e117032bae8a0a576312aa3d",
+  "twocomms/management/tests_ig_revision_policy_readiness.py": "1f45d1642fb7484213ebac884e02e54d1935211f0ec5ce4c5818a4a028f1adae",
+  "twocomms/management/tests_ig_catalog_live_integration.py": "3918237ec9f989543d13376c64bd4cf41bf4d31aa8acbe4e933352d1ddf3bf15",
+  "twocomms/management/services/ig_catalog_category_discovery.py": "7440f02fefeafc7d02834c46dd0c70a7f14cf48969834001af2a6c46d0aa57a3",
+  "twocomms/management/services/ig_catalog_choice_presentations.py": "aa51fc6b4ae59986ee2e161f4fe223fe2020c9f420e601b91aeef7cdd5ccc527",
+  "twocomms/management/services/ig_revision_catalog_assets.py": "43f9cdedaa6abcdbec0226e37f3b8309072484686f5fc640f18a1ceea375967c",
+  "twocomms/management/tests_ig_catalog_category_discovery.py": "7a35d81f1e5a1825d60ec5c2c39285588fa2e182dea4309f72a2127b1a7dde89",
+  "twocomms/management/tests_ig_catalog_native_delivery.py": "698481fbc54a680ed3bd345d1b7f05f72ad16b5e70e27cdcc2311064dfa0b747",
+  "twocomms/management/ig_bot_models.py": "c54d5ffb315d8acea343f10a85a3407ad0ca0f36164f4f9fb914b55421c27482"
+}

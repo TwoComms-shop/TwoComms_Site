@@ -1,0 +1,37 @@
+{
+  "observed_at": "2026-10-15T16:13:03.447141+00:00",
+  "sha": "70a3d21c4408aa89d45ff3a06abdcb29065524b0",
+  "branch": "main",
+  "python": "3.14.8",
+  "django": "6.1",
+  "catalogue_rows": 81,
+  "catalogue_stock_digest": "c84facc0c868919af3437b71db996ba21a3d615c1bd7cfd8be49684f9df6a30f",
+  "daemon": {
+    "process_pid": 3015686,
+    "process_identity_verified": null,
+    "process_online": true,
+    "main_healthy": true,
+    "workers_healthy": true,
+    "stalled": false,
+    "worker_stalled": false,
+    "supervisor": {
+      "available": true,
+      "status": "current",
+      "observed_at": 1792080769.884,
+      "last_ensure_seen_at": 1792080782.926,
+      "supervisor_release_sha": "70a3d21c4408aa89d45ff3a06abdcb29065524b0",
+      "child_release_sha": "70a3d21c4408aa89d45ff3a06abdcb29065524b0",
+      "restart_count": 0,
+      "child_pid": 3015686,
+      "child_pid_matches_expected": true
+    }
+  },
+  "maintenance_active": false,
+  "data_select_queries": 22,
+  "sql_verbs": [
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "START"
+  ]
+}

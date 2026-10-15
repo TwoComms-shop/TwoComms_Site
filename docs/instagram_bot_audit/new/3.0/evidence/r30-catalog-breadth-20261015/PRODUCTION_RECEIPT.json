@@ -1,0 +1,38 @@
+{
+  "observed_at": "2026-10-15T16:00:53.435931+00:00",
+  "sha": "e2b6d22b55770dd4129c379cea3c6232eb2d1706",
+  "branch": "main",
+  "python": "3.14.8",
+  "django": "6.1",
+  "catalogue_rows": 81,
+  "catalogue_stock_digest": "c84facc0c868919af3437b71db996ba21a3d615c1bd7cfd8be49684f9df6a30f",
+  "daemon": {
+    "process_pid": 2993694,
+    "process_identity_verified": null,
+    "process_online": true,
+    "main_healthy": true,
+    "workers_healthy": true,
+    "stalled": false,
+    "worker_stalled": false,
+    "supervisor": {
+      "available": true,
+      "status": "current",
+      "observed_at": 1792079973.552,
+      "last_ensure_seen_at": 1792080002.422,
+      "supervisor_release_sha": "e2b6d22b55770dd4129c379cea3c6232eb2d1706",
+      "child_release_sha": "e2b6d22b55770dd4129c379cea3c6232eb2d1706",
+      "restart_count": 0,
+      "child_pid": 2993694,
+      "child_pid_matches_expected": true
+    }
+  },
+  "maintenance_active": false,
+  "data_select_queries": 22,
+  "sql_verbs": [
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "START"
+  ],
+  "scope": "read-only runtime verification; separate authorized selftest used live provider after this snapshot"
+}
