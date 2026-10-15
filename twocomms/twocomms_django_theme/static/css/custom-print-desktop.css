@@ -5,9 +5,9 @@
   :is(html[lang|="ru"], html[lang|="en"]) .cp-mobile-hero__title { font-size: clamp(44px, 4.55vw, 68px); }
   .cp-purpose-grid { gap: 14px; align-items: stretch; }
   .cp-purpose-grid .cp-purpose-card {
-    display: grid; grid-template-columns: minmax(0, 1fr) 24px;
-    align-content: start; align-items: center; gap: 18px 8px;
-    min-height: 224px; padding: clamp(16px, 1.7vw, 24px);
+    display: grid; grid-template-columns: 58px minmax(0, 1fr) 20px;
+    align-content: center; align-items: center; gap: 14px;
+    min-height: 136px; padding: clamp(16px, 1.4vw, 20px);
     border-radius: 22px; border-color: #ffffff24;
     background: linear-gradient(125deg, #242129, #17171d);
     box-shadow: 0 10px 24px #0002; isolation: isolate;
@@ -15,11 +15,11 @@
   .cp-purpose-grid .cp-purpose-card::after { display: none; }
   .cp-purpose-grid .cp-purpose-icon { display: grid; place-items: center; width: 58px; height: 66px; border-radius: 16px; color: #e9d3a7; background: linear-gradient(145deg, #f4dcae1a, #f4dcae06); }
   .cp-purpose-icon > svg { width: 32px; height: 32px; stroke-width: 1.5; }
-  .cp-purpose-grid .cp-purpose-copy { grid-column: 1 / -1; grid-row: 2; gap: 9px; }
+  .cp-purpose-grid .cp-purpose-copy { min-width: 0; grid-column: 2; grid-row: 1; gap: 6px; }
   .cp-purpose-grid .cp-purpose-copy small { color: #cbbfa8; font-size: 10px; line-height: 1.4; letter-spacing: .04em; text-transform: uppercase; }
-  .cp-purpose-grid .cp-purpose-copy strong { font-size: clamp(17px, 1.4vw, 21px); font-weight: 750; line-height: 1.25; letter-spacing: -.025em; }
-  .cp-purpose-grid .cp-purpose-copy > span { font-size: 13px; line-height: 1.5; color: #c4bec8; }
-  .cp-purpose-grid .cp-purpose-arrow { position: relative; display: grid; place-items: center; grid-column: 2; grid-row: 1; width: 24px; height: 24px; font-size: 25px; color: #d2c4aa; }
+  .cp-purpose-grid .cp-purpose-copy strong { font-size: clamp(17px, 1.25vw, 19px); font-weight: 750; line-height: 1.25; letter-spacing: -.025em; }
+  .cp-purpose-grid .cp-purpose-copy > span { font-size: 13px; line-height: 1.4; color: #c4bec8; }
+  .cp-purpose-grid .cp-purpose-arrow { position: relative; display: grid; place-items: center; grid-column: 3; grid-row: 1; width: 20px; height: 24px; font-size: 25px; color: #d2c4aa; }
   .cp-purpose-arrow > span { transition: opacity 180ms, transform 180ms; }
   .cp-purpose-arrow .cp-purpose-check { position: absolute; inset: 0; display: block; width: 24px; height: 24px; opacity: 0; transform: scale(.65); transition: opacity 220ms, transform 300ms; color: #f3d390; }
   .cp-purpose-card.is-active .cp-purpose-arrow > span { opacity: 0; transform: translateX(4px); }
@@ -30,6 +30,10 @@
   .cp-purpose-grid .cp-purpose-card:active { transform: scale(.985); }
   .cp-purpose-grid .cp-purpose-card:focus-visible { outline: 2px solid #f3d798; outline-offset: 4px; }
   .cp-studio-telegram span { display: none; }
+}
+@media (min-width: 992px) and (max-width: 1199.98px) {
+  .cp-purpose-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .cp-purpose-grid .cp-purpose-card { min-height: 112px; }
 }
 @media (min-width: 1101px) {
   body.cp-studio-active .cp-studio-toolbar {
