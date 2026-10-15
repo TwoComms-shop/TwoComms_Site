@@ -1,0 +1,47 @@
+{
+  "database": "test_twocomms_ig_r30_partial_ui",
+  "synthetic": true,
+  "external_http": "blocked",
+  "actual_browser_manager_post": "two exact custom lines available, checked quantity1 each, accessible_unrecorded; decision saved and native list GET confirms all_ready",
+  "refresh_hook": "post-success same-client callback tested in Node; no claim of browser automatic refresh before hook",
+  "viewports": [
+    {
+      "width": 1816,
+      "stage_columns": "280px",
+      "region_overflow": false
+    },
+    {
+      "width": 390,
+      "stage_columns": "330px",
+      "document_overflow": false,
+      "region_overflow": false
+    },
+    {
+      "width": 320,
+      "stage_columns": "260px",
+      "document_overflow": false,
+      "region_overflow": false
+    }
+  ],
+  "production_authenticated": "new hashed assets and empty exact-list state verified for actual test account; no production fixtures",
+  "assets": {
+    "waiting_css": {
+      "url": "/static/management/css/ig_restock_waiting_list.8a95c72976dc.css",
+      "sha256": "2708668079fa652a6ebc67ef863b2225751018bee799186d7906a71245c450b1"
+    },
+    "waiting_js": {
+      "url": "/static/management/js/ig_restock_waiting_list.010eb41e93f3.js",
+      "sha256": "0b0a6641df1cd825e2fee5ec3854783d6f2b45dd08a0db55f87ded469ae3908b"
+    },
+    "review_js": {
+      "url": "/static/management/js/ig_fulfillment_review.db5c00c75136.js",
+      "sha256": "f6a2e97dcc5dc191ed1c293b6e868f92714185a95f3617dbbe1e86ba14493a29"
+    },
+    "commerce_js": {
+      "url": "/static/management/js/ig_assisted_commerce.c4f9b800eb02.js",
+      "sha256": "0a2aee9a669cce308a3c484ec21ccbec0276f9a8abdc61dc95183fdef0c44b05"
+    }
+  },
+  "node_tests": 69,
+  "node_skips": 0
+}
