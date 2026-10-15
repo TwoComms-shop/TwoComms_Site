@@ -230,7 +230,7 @@
 .fin-v2-pay-name { margin: 0; color: #f8fafc; font-size: 18px; font-weight: 750; }
 .fin-v2-component-picker { margin: 0; color: var(--fin-text-2); font-size: 12px; font-weight: 650; }
 .fin-v2-pay-panel label > span, .fin-v2-component-picker { color: var(--fin-text-2); font-size: 12px; font-weight: 650; }
-.fin-v2-pay-panel input, .fin-v2-pay-panel select, .fin-v2-pay-panel textarea, .fin-v2-component-picker select {
+.fin-v2-pay-panel input, .fin-v2-pay-panel select, .fin-v2-pay-panel textarea, .fin-v2-component-picker select, .fin-v2-period input {
   min-height: 42px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
   background-color: #171b24; color: #f8fafc; font: inherit; line-height: 1.35; transition: border-color .15s, box-shadow .15s, background-color .15s;
 }
@@ -239,6 +239,8 @@
 .fin-v2-pay-panel input:hover, .fin-v2-pay-panel select:hover, .fin-v2-pay-panel textarea:hover, .fin-v2-component-picker select:hover { border-color: rgba(255,255,255,.28); background-color: #1b202b; }
 .fin-v2-pay-panel input:focus, .fin-v2-pay-panel select:focus, .fin-v2-pay-panel textarea:focus, .fin-v2-component-picker select:focus { outline: none; border-color: var(--fin-accent); box-shadow: 0 0 0 3px rgba(246,165,26,.16); }
 .fin-v2-fields { display: grid; gap: 11px; }
+.fin-v2-period { display: grid; gap: 5px; color: var(--fin-muted); font-size: 12px; }
+.fin-v2-period input { width: 100%; box-sizing: border-box; color-scheme: dark; }
 .fin-v2-payment-actions { display: flex; align-items: center; gap: 10px; margin-top: 3px; }
 .fin-v2-payment-actions .fin-btn { min-height: 42px; padding-inline: 16px; }
 .fin-v2-payment-actions .fin-btn:disabled { cursor: wait; opacity: .65; }

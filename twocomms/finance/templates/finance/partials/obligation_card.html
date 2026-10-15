@@ -41,6 +41,7 @@
     <div class="fin-oblig__act">
         {% if g.v2_group_id and g.type == 'expense' %}
         <button type="button" class="fin-oblig__pay fin-oblig__pay--now" data-v2-group="{{ g.v2_group_id }}"
+                data-v2-period="{{ g.next_due_iso|slice:':7' }}"
                 data-v2-group-title="{{ g.v2_group_title }}" title="Відкрити оплату групи">
             <span aria-hidden="true">↗</span><span class="fin-oblig__pay-tx">Сплатити зараз</span>
         </button>

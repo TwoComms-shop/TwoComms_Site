@@ -90,6 +90,7 @@ from .planned import (  # noqa: F401
     obligation_move_current_api,
 )
 from .grants import (  # noqa: F401
+    grant_replenishment_api,
     grants,
 )
 from .counterparties import (  # noqa: F401

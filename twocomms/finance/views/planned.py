@@ -19,6 +19,7 @@ from ..services import cards as cards_service
 from ..services import counterparty as cp_service
 from ..services import obligations as obligations_service
 from ..services import obligations_v2
+from ..services import grant_replenishment
 from ..services import payables as payables_service
 from ..services import payloads as payload_service
 from ..services import serializers as ser
@@ -66,7 +67,7 @@ def planned(request):
     }
     v2_group_summaries = []
     for group in company.obligation_groups.filter(is_active=True).prefetch_related('components'):
-        summary = obligations_v2.group_summary(group)
+        summary = obligations_v2.group_summary(group, period_key=obligations_v2.payment_period())
         summary['status_label'] = status_labels.get(summary['status'], summary['status'])
         summary['remaining_display'] = ser.money(summary['remaining'], company.base_currency)
         for component in summary['components']:
@@ -110,6 +111,7 @@ def planned(request):
         'expense_count': data['expense_count'],
         'dropdowns': ser.serialize_dropdowns(company),
         'v2_groups': v2_group_summaries,
+        'grant_repayments': grant_replenishment.pending_rows(company),
         'v2_accounts': [
             {'id': a.id, 'name': a.name, 'balance': str(a.current_balance), 'currency': a.currency}
             for a in company.accounts.filter(is_active=True, is_archived=False).order_by('sort_order', 'id')

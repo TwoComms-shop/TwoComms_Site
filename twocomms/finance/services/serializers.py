@@ -74,6 +74,7 @@ def serialize_transaction(txn: Transaction, *, running_balance=None) -> dict:
         'status_display': txn.get_status_display(),
         'is_planned': txn.is_planned,
         'amount': str(txn.amount),
+        'amount_base': str(txn.amount_base or txn.amount),
         'currency': txn.currency,
         'amount_display': amount_display,
         'amount_class': amount_class,
@@ -275,11 +276,13 @@ def serialize_dropdowns(company) -> dict:
     counterparties = [{'id': c.id, 'name': c.name, 'group': c.group or c.get_type_display()}
                       for c in company.counterparties.all().order_by('name')]
     tags = [{'id': t.id, 'name': t.name} for t in company.tags.all().order_by('name')]
+    from .ledger_v2 import funding_summary
     funding_sources = [
-        {'id': source.id, 'name': source.name}
+        {'id': source.id, 'name': source.name, 'available': str(funding_summary(source)['available'])}
         for source in company.funding_sources.filter(is_active=True).order_by('name')
     ]
     return {
+        'base_currency': company.base_currency,
         'accounts': accounts,
         'income_categories': income_cats,
         'expense_categories': expense_cats,

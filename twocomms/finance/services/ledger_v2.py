@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 from django.db import transaction as db_transaction
 from django.db.models import Sum
@@ -493,6 +493,10 @@ def classify_transaction(txn, *, user=None, ownership_scope='unknown', economic_
                          confidence=Decimal('100'), note='', source='manual', funding_source=None,
                          force_category=False, category_override=None):
     """Upsert explicit meaning without changing the original bank row."""
+    from .grant_replenishment import protected_meaning
+    protected = protected_meaning(txn)
+    if protected and protected != (economic_kind, getattr(funding_source, 'id', None)):
+        raise ValueError('Операція повʼязана з поверненням гранту; її підтверджене призначення змінювати не можна')
     if economic_kind in PERSONAL_INCOME_KINDS and ownership_scope == 'unknown':
         ownership_scope = 'personal'
     obj, created = LedgerClassification.objects.get_or_create(
@@ -819,25 +823,65 @@ def confirm_transfer(match, *, user=None):
     return original_match
 
 
+def funding_base_amount(txn, amount):
+    if not txn.amount:
+        return Decimal('0')
+    return (Decimal(amount) * (txn.amount_base or txn.amount) / txn.amount).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
 def funding_summary(source):
-    received = source.allocations.filter(allocation_type='received').aggregate(v=Sum('amount'))['v'] or Decimal('0')
-    spent = source.allocations.filter(allocation_type='spent').aggregate(v=Sum('amount'))['v'] or Decimal('0')
-    reserved = source.allocations.filter(allocation_type='reserved').aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    totals = {kind: Decimal('0') for kind in ('received', 'spent', 'reserved', 'withdrawn', 'returned')}
+    for allocation in source.allocations.select_related('transaction').all():
+        if (allocation.transaction.status == Transaction.STATUS_CANCELLED
+                or (allocation.allocation_type != 'reserved' and allocation.transaction.status != Transaction.STATUS_ACTUAL)):
+            continue
+        kind = ('withdrawn' if allocation.allocation_type == 'reserved'
+                and allocation.transaction.economic_kind == 'owner_draw' else allocation.allocation_type)
+        if kind in totals:
+            totals[kind] += funding_base_amount(allocation.transaction, allocation.amount)
+    received, spent, reserved = totals['received'], totals['spent'], totals['reserved']
     received = max(received, source.received_amount)
-    return {'received': received, 'spent': spent, 'reserved': reserved,
-            'available': received - spent - reserved}
+    return {'received': received, 'opening': source.opening_amount,
+            'spent': spent, 'reserved': reserved, 'withdrawn': totals['withdrawn'], 'returned': totals['returned'],
+            'to_replenish': max(totals['withdrawn'] - totals['returned'], Decimal('0')),
+            'available': source.opening_amount + received - spent - reserved - totals['withdrawn'] + totals['returned']}
 
 
+@db_transaction.atomic
 def allocate_funding(*, source, txn, amount, allocation_type='spent', user=None, note='', replace=False):
+    txn = Transaction.objects.select_for_update().get(pk=txn.pk)
+    source = FundingSource.objects.select_for_update().get(pk=source.pk)
+    from .grant_replenishment import protected_meaning
+    if protected_meaning(txn):
+        raise ValueError('Розподіл повернення гранту змінюється лише через зобовʼязання повернення')
+    if allocation_type not in {'received', 'spent', 'reserved'}:
+        raise ValueError('Повернення виведених коштів підтверджується лише у картці зобовʼязання')
+    if allocation_type == 'received' and (txn.type != Transaction.TYPE_INCOME or txn.status != Transaction.STATUS_ACTUAL):
+        raise ValueError('Надходження гранту має бути фактичною вхідною операцією')
+    if allocation_type == 'spent' and (txn.type != Transaction.TYPE_EXPENSE or txn.status != Transaction.STATUS_ACTUAL):
+        raise ValueError('Витрата гранту має бути фактичною витратною операцією')
     amount = Decimal(str(amount))
-    if amount <= 0 or amount > txn.amount:
+    if source.company_id != txn.company_id or not amount.is_finite() or amount <= 0 or amount > txn.amount:
         raise ValueError('Сумма распределения должна быть положительной и не превышать операцию')
-    allocated = source.allocations.filter(transaction=txn).aggregate(v=Sum('amount'))['v'] or Decimal('0')
-    if allocated + amount > txn.amount:
-        raise ValueError('Распределение превышает сумму операции')
     existing = FundingAllocation.objects.filter(
         funding_source=source, transaction=txn, allocation_type=allocation_type,
     ).first()
+    other = txn.funding_allocations.filter(allocation_type=allocation_type)
+    if replace and existing:
+        other = other.exclude(pk=existing.pk)
+    allocated = other.aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    if allocated + amount > txn.amount:
+        raise ValueError('Распределение превышает сумму операции')
+    if allocation_type in {'spent', 'reserved'}:
+        available = funding_summary(source)['available']
+        if replace and existing:
+            available += funding_base_amount(txn, existing.amount)
+        # An existing allocation can be reduced or saved while older receipt
+        # history is being reconciled; it cannot be increased past the budget.
+        capacity = max(available, funding_base_amount(txn, existing.amount) if replace and existing else Decimal('0'))
+        if funding_base_amount(txn, amount) > capacity:
+            raise ValueError('Грантова частина перевищує доступні кошти програми. Решта оплати — власні кошти.')
     if existing:
         if replace:
             existing.amount = amount
@@ -853,6 +897,48 @@ def allocate_funding(*, source, txn, amount, allocation_type='spent', user=None,
         created_by=user if getattr(user, 'is_authenticated', False) else None,
         note=note or '',
     )
+
+
+@db_transaction.atomic
+def sync_grant_allocation(txn, *, source=None, amount=None, user=None, note=''):
+    """Persist the single-program split selected in the transaction editor."""
+    txn = Transaction.objects.select_for_update().get(pk=txn.pk)
+    previous = list(txn.funding_allocations.filter(allocation_type='spent').values(
+        'funding_source_id', 'amount'))
+    if source is not None:
+        source = FundingSource.objects.select_for_update().get(pk=source.pk)
+        if source.company_id != txn.company_id:
+            raise ValueError('Грант та операція мають належати одній компанії')
+    if txn.type != Transaction.TYPE_EXPENSE:
+        return None
+    old_selected = sum((row['amount'] for row in previous
+                        if source and row['funding_source_id'] == source.id), Decimal('0'))
+    txn.funding_allocations.filter(allocation_type='spent').delete()
+    granted = Decimal('0')
+    if source is not None:
+        capacity_base = max(funding_summary(source)['available'], funding_base_amount(txn, old_selected), Decimal('0'))
+        base_amount = txn.amount_base or txn.amount
+        capacity = (capacity_base * txn.amount / base_amount).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+        granted = min(txn.amount, capacity) if amount in (None, '') else Decimal(str(amount))
+        if not granted.is_finite() or granted < 0 or granted > min(txn.amount, capacity):
+            raise ValueError('Некоректна грантова частина: вона не може перевищувати оплату або доступні кошти програми')
+        if granted:
+            FundingAllocation.objects.create(
+                funding_source=source, transaction=txn, amount=granted, allocation_type='spent',
+                created_by=user if getattr(user, 'is_authenticated', False) else None, note=note,
+            )
+    classification = LedgerClassification.objects.filter(transaction=txn).first()
+    if classification:
+        LedgerClassificationEvent.objects.create(
+            classification=classification,
+            previous={'funding_allocations': [
+                {**row, 'amount': str(row['amount'])} for row in previous]},
+            current={'funding_source_id': source.id if source else None,
+                     'grant_amount': str(granted), 'own_amount': str(txn.amount - granted),
+                     'note': note},
+            changed_by=user if getattr(user, 'is_authenticated', False) else None,
+        )
+    return granted
 
 
 @db_transaction.atomic

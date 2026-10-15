@@ -186,7 +186,7 @@
           <input type="checkbox" id="fin-txn-grant" value="1">
           <span>
             <strong>Цільова грантова операція</strong>
-            <small>Оберіть програму: надходження не потрапить у прибуток, витрата буде врахована як грантова</small>
+            <small>Оберіть програму та грантову частину витрати. Решту можна оплатити власними коштами</small>
           </span>
         </label>
         <label class="fin-field fin-grant-classification__source" for="fin-txn-grant-source" id="fin-txn-grant-source-wrap" hidden>
@@ -194,6 +194,11 @@
           <select id="fin-txn-grant-source" class="fin-select">
             <option value="">Оберіть програму</option>
           </select>
+        </label>
+        <label class="fin-field" for="fin-txn-grant-amount" id="fin-txn-grant-amount-wrap" hidden>
+          <span>Грантова частина оплати</span>
+          <input type="number" id="fin-txn-grant-amount" class="fin-input" min="0" step="0.01" placeholder="Автоматично за доступними коштами гранту" aria-describedby="fin-txn-grant-own">
+          <small id="fin-txn-grant-own" aria-live="polite"></small>
         </label>
       </section>
 
@@ -356,6 +361,11 @@
             <select id="fin-txn-grant-source-extra" class="fin-select">
               <option value="">Оберіть програму</option>
             </select>
+          </label>
+          <label class="fin-field" for="fin-txn-grant-amount-extra" id="fin-txn-grant-amount-extra-wrap" hidden>
+            <span>Грантова частина оплати</span>
+            <input type="number" id="fin-txn-grant-amount-extra" class="fin-input" min="0" step="0.01" placeholder="Автоматично за доступними коштами гранту" aria-describedby="fin-txn-grant-own-extra">
+            <small id="fin-txn-grant-own-extra" aria-live="polite"></small>
           </label>
         </section>
         <label class="fin-field">

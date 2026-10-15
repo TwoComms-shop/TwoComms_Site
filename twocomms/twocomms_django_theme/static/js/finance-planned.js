@@ -55,8 +55,13 @@
   var v2ApiButton = document.getElementById('fin-v2-pay-api');
   var v2PickerWrap = document.getElementById('fin-v2-component-picker-wrap');
   var v2Picker = document.getElementById('fin-v2-component-picker');
+  var v2Period = document.getElementById('fin-v2-period');
+  var v2ExistingNote = document.getElementById('fin-v2-existing-note');
   var activeIntent = null;
   var activeComponentId = null;
+  var activeGroupId = null;
+  var activePlannedTxnId = null;
+  var activeComponent = null;
   var v2Mode = 'existing';
   function setV2Mode(mode) {
     v2Mode = mode;
@@ -89,15 +94,34 @@
       box.appendChild(link);
     }
   }
+  function updateV2ExistingAmount() {
+    var selected = v2Existing.options[v2Existing.selectedIndex];
+    var available = selected && selected.value ? Number(selected.dataset.amount) : 0;
+    var amount = activeComponent && !activeComponent.is_variable ?
+      Math.min(available, Number(activeComponent.remaining)) : available;
+    v2ExistingAmount.value = amount > 0 ? amount : '';
+    v2ExistingButton.disabled = !activeComponent || amount <= 0;
+  }
   function loadV2Context(componentId, counterpartyId) {
     if (!v2Existing) return;
+    var period = v2Period.value;
+    activeComponent = null;
+    v2ExistingAmount.value = '';
+    v2ExistingButton.disabled = true;
+    if (v2ExistingNote) v2ExistingNote.hidden = true;
     v2Existing.innerHTML = '<option value="">Завантаження операцій…</option>';
-    api('/api/v2/obligation-components/' + componentId + '/payment-context/').then(function (res) {
+    api('/api/v2/obligation-components/' + componentId + '/payment-context/?period_key=' + encodeURIComponent(period)).then(function (res) {
+      if (String(componentId) !== String(activeComponentId) || period !== v2Period.value) return;
       if (!res.ok || !res.data.ok) {
         v2Existing.innerHTML = '<option value="">Не вдалося завантажити операції</option>';
         return;
       }
+      activeComponent = res.data.component;
       showV2Recipient(res.data, counterpartyId);
+      if (v2ExistingNote) {
+        v2ExistingNote.hidden = !activeComponent.is_variable;
+        v2ExistingNote.textContent = 'Змінна сума: вкажіть фактичну суму за обраний період. Вона закриє компонент лише за цей місяць.';
+      }
       var rows = res.data.candidates || [];
       v2Existing.innerHTML = '';
       if (!rows.length) {
@@ -110,7 +134,7 @@
         option.dataset.amount = row.amount || '';
         v2Existing.appendChild(option);
       });
-      v2ExistingAmount.value = res.data.component.remaining || '';
+      updateV2ExistingAmount();
     });
   }
   function activateV2Component(componentId, componentName, remaining, purpose, counterpartyId) {
@@ -136,6 +160,8 @@
   }
   function openV2Pay(btn) {
     if (!v2Modal) return;
+    activeGroupId = null;
+    activePlannedTxnId = null;
     if (v2PickerWrap) v2PickerWrap.hidden = true;
     activateV2Component(btn.getAttribute('data-component-id'), btn.getAttribute('data-component-name'),
       btn.getAttribute('data-component-remaining'), btn.getAttribute('data-component-purpose'),
@@ -146,7 +172,21 @@
     if (!v2Modal) return;
     var groupId = btn.getAttribute('data-v2-group');
     if (!groupId) return;
-    api('/api/v2/obligation-groups/' + groupId + '/').then(function (res) {
+    activeGroupId = groupId;
+    var obligation = btn.closest('[data-next-txn]');
+    activePlannedTxnId = obligation ? obligation.getAttribute('data-next-txn') : null;
+    v2Period.value = btn.getAttribute('data-v2-period') || v2Period.defaultValue;
+    loadV2Group(groupId);
+  }
+  function loadV2Group(groupId, preferredId) {
+    var period = v2Period.value;
+    activeComponentId = null;
+    activeComponent = null;
+    activeIntent = null;
+    if (v2ApiButton) { v2ApiButton.disabled = true; v2ApiButton.onclick = null; }
+    v2ExistingButton.disabled = true;
+    api('/api/v2/obligation-groups/' + groupId + '/?period_key=' + encodeURIComponent(period)).then(function (res) {
+      if (String(groupId) !== String(activeGroupId) || period !== v2Period.value) return;
       if (!res.ok || !res.data.ok) {
         if (v2Result) { v2Result.hidden = false; v2Result.textContent = (res.data && res.data.error) || 'Не вдалося відкрити групу оплати'; }
         openModal(v2Modal);
@@ -156,12 +196,25 @@
       var components = (group.components || []).filter(function (component) {
         return Number(component.remaining) > 0 || component.needs_amount;
       });
-      if (!components.length) return;
+      if (!components.length) {
+        if (v2PickerWrap) v2PickerWrap.hidden = true;
+        if (v2ExistingNote) v2ExistingNote.hidden = true;
+        setV2Mode('existing');
+        v2Existing.innerHTML = '';
+        v2ExistingAmount.value = '';
+        document.getElementById('fin-v2-pay-name').textContent = group.title;
+        v2Result.hidden = false;
+        v2Result.textContent = 'Усі компоненти за цей період закриті.';
+        openModal(v2Modal);
+        return;
+      }
       if (v2PickerWrap) v2PickerWrap.hidden = false;
       if (v2Picker) {
         v2Picker.innerHTML = '';
         components.forEach(function (component) {
-          var option = opt(component.id, component.name + ' · залишок ' + component.remaining + ' грн', false);
+          var amountLabel = component.needs_amount ? 'змінна сума' :
+            (component.is_variable ? 'орієнтовно ' : 'залишок ') + component.remaining + ' грн';
+          var option = opt(component.id, component.name + ' · ' + amountLabel, false);
           option.dataset.name = component.name;
           option.dataset.remaining = component.remaining;
           option.dataset.purpose = component.purpose || '';
@@ -173,20 +226,24 @@
             current.dataset.purpose, group.counterparty_id || '');
         };
       }
-      var first = components[0];
+      var first = components.find(function (component) { return String(component.id) === String(preferredId); }) || components[0];
+      if (v2Picker) v2Picker.value = String(first.id);
       activateV2Component(first.id, first.name, first.remaining, first.purpose, group.counterparty_id || '');
+      if (v2ApiButton) v2ApiButton.disabled = false;
       openModal(v2Modal);
     });
   }
-  if (v2Existing) v2Existing.addEventListener('change', function () {
-    var selected = v2Existing.options[v2Existing.selectedIndex];
-    if (selected && selected.value) v2ExistingAmount.value = selected.dataset.amount || v2ExistingAmount.value;
+  if (v2Period) v2Period.addEventListener('change', function () {
+    if (activeGroupId) loadV2Group(activeGroupId, activeComponentId);
+    else if (activeComponentId) loadV2Context(activeComponentId);
   });
+  if (v2Existing) v2Existing.addEventListener('change', updateV2ExistingAmount);
   if (v2ExistingButton) v2ExistingButton.addEventListener('click', function () {
     if (!activeComponentId || !v2Existing.value) return;
     v2ExistingButton.disabled = true;
     api('/api/v2/obligation-components/' + activeComponentId + '/settle-existing/', 'POST', {
-      transaction_id: v2Existing.value, amount: v2ExistingAmount.value,
+      transaction_id: v2Existing.value, amount: v2ExistingAmount.value, period_key: v2Period.value,
+      planned_txn_id: activePlannedTxnId,
     }).then(function (res) {
       v2ExistingButton.disabled = false;
       v2Result.hidden = false;
@@ -198,7 +255,7 @@
     button.addEventListener('click', function () { setV2Mode(button.getAttribute('data-v2-mode')); });
   });
   function createV2Intent(fromApiButton) {
-    if (v2Mode !== 'new' || activeIntent) return;
+    if (v2Mode !== 'new' || activeIntent || !activeComponentId) return;
     var button = fromApiButton ? v2ApiButton : v2Form.querySelector('button[type="submit"]');
     if (button) button.disabled = true;
     api('/api/v2/obligation-components/' + document.getElementById('fin-v2-component-id').value + '/payment-intent/', 'POST', {

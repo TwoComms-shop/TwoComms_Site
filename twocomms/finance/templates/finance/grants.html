@@ -42,10 +42,15 @@
         <div class="fin-grant-card__stats">
             {% if source.program_total_amount %}<div><span>Ліміт програми</span><strong>{{ source.program_total_amount }} грн</strong></div>{% endif %}
             <div><span>Отримано</span><strong>{{ source.received }} грн</strong></div>
+            {% if source.opening %}<div><span>Залишок гранту на початок обліку</span><strong>{{ source.opening }} грн</strong></div>{% endif %}
             <div><span>Витрачено</span><strong>{{ source.spent }} грн</strong></div>
             <div><span>Зарезервовано</span><strong>{{ source.reserved }} грн</strong></div>
             <div class="is-available"><span>Доступно</span><strong>{{ source.available }} грн</strong></div>
+            {% if source.withdrawn %}<div><span>Виведено тимчасово</span><strong>{{ source.withdrawn }} грн</strong></div>{% endif %}
+            {% if source.returned %}<div><span>Повернуто на рахунок</span><strong>{{ source.returned }} грн</strong></div>{% endif %}
+            {% if source.bank_balance != None %}<div><span>Фактичний залишок рахунку</span><strong>{{ source.bank_balance }} грн</strong></div>{% endif %}
         </div>
+        {% for repayment in source.repayments %}{% include 'finance/partials/grant_replenishment_card.html' %}{% endfor %}
         <div class="fin-grant-card__meta">
             {% if source.stage_label %}<span>{{ source.stage_label }}</span>{% endif %}
             {% if source.received_at %}<span>Отримано {{ source.received_at|date:'d.m.Y' }}</span>{% endif %}
@@ -92,7 +97,7 @@
             <summary>Історія розподілу <span>{{ source.allocations|length }}</span></summary>
             <div>
                 {% for allocation in source.allocations %}
-                <p><span>{{ allocation.transaction.comment|default:'Операція' }}</span><b>{{ allocation.amount }} грн</b></p>
+                <p><span>{{ allocation.transaction.comment|default:'Операція' }} · {% if allocation.transaction.economic_kind == 'owner_draw' %}Тимчасове виведення{% else %}{{ allocation.get_allocation_type_display }}{% endif %}</span><b>{{ allocation.amount }} грн</b></p>
                 {% endfor %}
             </div>
         </details>

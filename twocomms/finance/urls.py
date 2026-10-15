@@ -31,6 +31,7 @@ urlpatterns = [
     path('api/v2/funding/', views.funding_sources_api, name='finance_v2_funding_sources_api'),
     path('api/v2/funding/<int:source_id>/allocate/', views.funding_allocate_api, name='finance_v2_funding_allocate_api'),
     path('api/v2/obligation-groups/', views.obligation_groups_api, name='finance_v2_obligation_groups_api'),
+    path('api/v2/grant-replenishments/<int:group_id>/confirm/', views.grant_replenishment_api, name='finance_grant_replenishment'),
     path('api/v2/obligation-groups/<int:group_id>/', views.obligation_group_api, name='finance_v2_obligation_group_api'),
     path('api/v2/obligation-groups/<int:group_id>/components/', views.obligation_component_api, name='finance_v2_obligation_component_api'),
     path('api/v2/obligation-components/<int:component_id>/payment-intent/', views.component_payment_intent_api, name='finance_v2_component_payment_intent_api'),

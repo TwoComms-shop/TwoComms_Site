@@ -4,7 +4,7 @@
 {% block title %}Планові платежі — TwoComms Finance{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{% static 'css/finance-planned.css' %}?v=20260920v4">
+<link rel="stylesheet" href="{% static 'css/finance-planned.css' %}?v=20261015v2">
 {% endblock %}
 
 {% block content %}
@@ -42,6 +42,9 @@
 </div>
 
 {% include 'finance/partials/v2_payment_modal.html' %}
+{% for repayment in grant_repayments %}
+    {% include 'finance/partials/grant_replenishment_card.html' %}
+{% endfor %}
 
 <div class="fin-plan-tl">
     {% for seg in timeline %}
@@ -92,5 +95,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{% static 'js/finance-planned.js' %}?v=20260920v4"></script>
+<script src="{% static 'js/finance-planned.js' %}?v=20261015v2"></script>
 {% endblock %}

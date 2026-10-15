@@ -359,7 +359,13 @@ def transaction_create_api(request):
 def transaction_detail_api(request, txn_id):
     company = get_default_company()
     txn = get_object_or_404(Transaction, id=txn_id, company=company)
-    return JsonResponse({'ok': True, 'transaction': ser.serialize_transaction(txn)})
+    payload = ser.serialize_transaction(txn)
+    grant_amount = sum((a.amount for a in txn.funding_allocations.filter(
+        allocation_type='spent', funding_source__source_type='grant')), Decimal('0'))
+    grant_amount = min(grant_amount, txn.amount)
+    payload['funding_split'] = {'grant_amount': str(grant_amount),
+                                'own_amount': str(txn.amount - grant_amount)}
+    return JsonResponse({'ok': True, 'transaction': payload})
 
 
 @finance_access_required(api=True)
@@ -378,7 +384,10 @@ def transaction_update_api(request, txn_id):
         return JsonResponse({'ok': False, 'error': str(e), 'field': e.field}, status=400)
 
     tags = kwargs.pop('tags', None)
-    txn_service.update_transaction(txn, user=request.user, tags=tags, **kwargs)
+    try:
+        txn_service.update_transaction(txn, user=request.user, tags=tags, **kwargs)
+    except ValueError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
     if request.FILES:
         _attach_files(request, txn)
 
@@ -426,7 +435,10 @@ def transaction_update_api(request, txn_id):
 def transaction_delete_api(request, txn_id):
     company = get_default_company()
     txn = get_object_or_404(Transaction, id=txn_id, company=company)
-    txn_service.delete_transaction(txn, user=request.user)
+    try:
+        txn_service.delete_transaction(txn, user=request.user)
+    except ValueError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
     return JsonResponse({'ok': True})
 
 
@@ -618,6 +630,12 @@ def transactions_bulk_api(request):
 
     affected = 0
     if action == 'delete':
+        from ..services.grant_replenishment import protect_bank_edit
+        try:
+            for t in qs:
+                protect_bank_edit(t, deleting=True)
+        except ValueError as exc:
+            return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
         for t in list(qs):
             txn_service.delete_transaction(t, user=request.user)
             affected += 1

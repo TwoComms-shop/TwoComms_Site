@@ -197,6 +197,8 @@ def classification_api(request, txn_id):
             raise ValueError('Грантовим надходженням може бути лише вхідна операція')
         funding = (company.funding_sources.filter(id=data.get('funding_source_id')).first()
                    if data.get('funding_source_id') else None)
+        if data.get('funding_source_id') and funding is None:
+            raise ValueError('Оберіть грантову програму цієї компанії')
         if economic_kind == 'grant_inflow' and funding is None:
             raise ValueError('Оберіть активну грантову програму')
         category = None
@@ -204,14 +206,20 @@ def classification_api(request, txn_id):
             category = company.categories.filter(id=data.get('category_id'), is_active=True).first()
             if category is None or category.type not in (Category.TYPE_BOTH, txn.type):
                 raise ValueError('Оберіть категорію, що відповідає напрямку операції')
-        obj = ledger_v2.classify_transaction(
-            txn, user=request.user,
-            ownership_scope=ownership_scope,
-            economic_kind=economic_kind,
-            confidence=data.get('confidence') or 100,
-            note=data.get('note') or '', source='manual',
-            funding_source=funding, force_category=True, category_override=category,
-        )
+        with db_transaction.atomic():
+            obj = ledger_v2.classify_transaction(
+                txn, user=request.user,
+                ownership_scope=ownership_scope,
+                economic_kind=economic_kind,
+                confidence=data.get('confidence') or 100,
+                note=data.get('note') or '', source='manual',
+                funding_source=funding, force_category=True, category_override=category,
+            )
+            if data.get('sync_grant_allocation'):
+                ledger_v2.sync_grant_allocation(
+                    txn, source=funding, amount=data.get('funding_amount'), user=request.user,
+                    note=data.get('note') or 'Розподіл грантових та власних коштів',
+                )
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)
     return JsonResponse({'ok': True, 'classification': _classification_row(obj)})
@@ -541,14 +549,14 @@ def funding_allocate_api(request, source_id):
 
 
 def _component_row(component):
-    row = obligations_v2.component_summary(component)
+    row = obligations_v2.component_summary(component, period_key=obligations_v2.payment_period())
     for key in ('planned', 'paid', 'remaining'):
         row[key] = str(row[key])
     return row
 
 
-def _group_row(group):
-    row = obligations_v2.group_summary(group)
+def _group_row(group, *, period_key=None):
+    row = obligations_v2.group_summary(group, period_key=obligations_v2.payment_period(period_key))
     row['remaining'] = str(row['remaining'])
     for component in row['components']:
         for key in ('planned', 'paid', 'remaining'):
@@ -584,7 +592,11 @@ def obligation_groups_api(request):
 def obligation_group_api(request, group_id):
     company = get_default_company()
     group = get_object_or_404(ObligationGroup, id=group_id, company=company)
-    return JsonResponse({'ok': True, 'group': _group_row(group)})
+    try:
+        period_key = obligations_v2.payment_period(request.GET.get('period_key'))
+    except ValueError as exc:
+        return _error(exc)
+    return JsonResponse({'ok': True, 'group': _group_row(group, period_key=period_key)})
 
 
 @finance_access_required(api=True)
@@ -646,6 +658,10 @@ def component_payment_context_api(request, component_id):
         id=component_id, group__company=company,
     )
     group = component.group
+    try:
+        period_key = obligations_v2.payment_period(request.GET.get('period_key'))
+    except ValueError as exc:
+        return _error(exc)
     ttype = Transaction.TYPE_INCOME if group.type == 'income' else Transaction.TYPE_EXPENSE
     candidates = payables_service.payable_candidates(
         company, ttype=ttype, counterparty=group.counterparty, limit=60,
@@ -653,7 +669,7 @@ def component_payment_context_api(request, component_id):
     card = component.recipient_card
     return JsonResponse({
         'ok': True,
-        'component': obligations_v2.component_summary(component),
+        'component': obligations_v2.component_summary(component, period_key=period_key),
         'counterparty': ({'id': group.counterparty_id, 'name': group.counterparty.name}
                          if group.counterparty_id else None),
         'recipient_card': ({
@@ -668,46 +684,74 @@ def component_payment_context_api(request, component_id):
 @require_POST
 def component_settle_existing_api(request, component_id):
     """Attach an already imported payment to one component atomically."""
-    from django.utils import timezone
-
     company = get_default_company()
-    component = get_object_or_404(
-        ObligationComponent.objects.select_related('group', 'group__counterparty'),
-        id=component_id, group__company=company,
-    )
     data = _body(request)
-    payment = get_object_or_404(
-        Transaction.objects.select_related('account'),
-        id=data.get('transaction_id'), company=company, status=Transaction.STATUS_ACTUAL,
-    )
-    expected_type = Transaction.TYPE_INCOME if component.group.type == 'income' else Transaction.TYPE_EXPENSE
-    if payment.type != expected_type:
-        return _error('Тип операции не совпадает с обязательством')
     try:
-        amount = _decimal(data.get('amount') or payment.amount)
-        planned = component.fixed_amount or component.forecast_amount or Decimal('0')
-        already = component.settlements.aggregate(v=Sum('amount'))['v'] or Decimal('0')
-        if amount > payment.amount or amount > max(planned - already, Decimal('0')):
-            raise ValueError('Сумма превышает остаток компонента или операцию')
-        if payment.settlements.exists():
-            raise ValueError('Операция уже привязана к обязательству')
+        period_key = obligations_v2.payment_period(data.get('period_key'))
         with db_transaction.atomic():
+            component = get_object_or_404(
+                ObligationComponent.objects.select_for_update().select_related('group'),
+                id=component_id, group__company=company, is_active=True,
+            )
+            payment = get_object_or_404(
+                Transaction.objects.select_for_update(),
+                id=data.get('transaction_id'), company=company, status=Transaction.STATUS_ACTUAL,
+            )
+            expected_type = Transaction.TYPE_INCOME if component.group.type == 'income' else Transaction.TYPE_EXPENSE
+            if component.group.forecast_policy.get('kind') == 'grant_replenishment':
+                raise ValueError('Оберіть повернення на грантовий рахунок у картці зобовʼязання')
+            if payment.type != expected_type:
+                raise ValueError('Тип операции не совпадает с обязательством')
+            amount = _decimal(data.get('amount') or payment.amount)
+            if amount > payment.amount:
+                raise ValueError('Сумма превышает сумму операции')
+            if payment.settlements.exists():
+                raise ValueError('Операция уже привязана к обязательству')
+            summary = obligations_v2.component_summary(component, period_key=period_key)
+            if summary['remaining'] <= 0 and not summary['needs_amount']:
+                raise ValueError('Компонент за обраний період уже закритий')
+            planned = None
+            if data.get('planned_txn_id'):
+                anchor = get_object_or_404(
+                    Transaction, id=data['planned_txn_id'], company=company,
+                )
+                if anchor.type != expected_type or anchor.counterparty_id != component.group.counterparty_id:
+                    raise ValueError('Планова операція не відповідає зобовʼязанню')
+                plans = Transaction.objects.select_for_update().filter(
+                    company=company, type=expected_type, status=Transaction.STATUS_PLANNED,
+                    date_actual__year=int(period_key[:4]), date_actual__month=int(period_key[5:]),
+                )
+                if anchor.recurrence_rule_id:
+                    plans = plans.filter(recurrence_rule_id=anchor.recurrence_rule_id)
+                else:
+                    plans = plans.filter(pk=anchor.pk)
+                planned = plans.order_by('date_actual', 'id').first()
             if component.group.counterparty_id and not payment.counterparty_id:
-                payment.counterparty = component.group.counterparty
+                payment.counterparty_id = component.group.counterparty_id
                 payment.save(update_fields=['counterparty', 'updated_at'])
             settlement = ObligationSettlement.objects.create(
-                company=company, payment=payment, rule=component.group.recurrence_rule,
-                period_key=timezone.localdate().strftime('%Y-%m'),
+                company=company, payment=payment, planned_txn=planned,
+                rule=planned.recurrence_rule if planned else component.group.recurrence_rule,
+                period_key=period_key,
                 period_label=component.name, amount=amount, currency=payment.currency,
                 created_by=request.user if request.user.is_authenticated else None,
             )
             obligations_v2.allocate_settlement(
                 settlement=settlement, allocations={str(component.id): str(amount)},
             )
+            summary = obligations_v2.group_summary(component.group, period_key=period_key)
+            if planned and summary['status'] == 'paid':
+                from ..services import transactions as transactions_service
+                transactions_service.update_transaction(
+                    planned, user=request.user, status=Transaction.STATUS_CANCELLED,
+                )
+                payables_service._advance_rule(
+                    planned.recurrence_rule, user=request.user, from_date=planned.date_actual.date(),
+                )
     except (ValueError, TypeError, InvalidOperation) as exc:
         return _error(exc)
     return JsonResponse({'ok': True, 'settlement_id': settlement.id,
-                         'component': obligations_v2.component_summary(component)})
+                         'component': obligations_v2.component_summary(component, period_key=period_key)})
 
 
 def _intent_row(intent):
@@ -793,7 +837,8 @@ def finance_v2_health_api(request):
     pending_reviews = ClassificationReview.objects.filter(company=company, status='pending')
     pending_intents = PaymentIntent.objects.filter(company=company, status__in=['awaiting_confirmation', 'submitted', 'detected'])
     groups = company.obligation_groups.filter(is_active=True).prefetch_related('components')
-    overdue = [g.id for g in groups if obligations_v2.group_summary(g)['status'] == 'overdue']
+    overdue = [g.id for g in groups if obligations_v2.group_summary(
+        g, period_key=obligations_v2.payment_period())['status'] == 'overdue']
     grant_rows = [_funding_row(s) for s in company.funding_sources.filter(is_active=True)]
     return JsonResponse({'ok': True, 'health': {
         'free_money': str(sum((a.current_balance for a in company.accounts.filter(is_active=True)), Decimal('0'))),

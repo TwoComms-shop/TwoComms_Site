@@ -100,6 +100,8 @@ def create_transaction(*, user, type, amount, account=None, to_account=None,
 @db_transaction.atomic
 def update_transaction(txn: Transaction, *, user, **fields) -> Transaction:
     """Оновлення: відкат впливу старої операції → застосування нової (§6)."""
+    from .grant_replenishment import protect_bank_edit
+    protect_bank_edit(txn, fields)
     company = txn.company
     before = _snapshot(txn)
     old_accounts = _affected_accounts(txn)
@@ -138,6 +140,8 @@ def update_transaction(txn: Transaction, *, user, **fields) -> Transaction:
 @db_transaction.atomic
 def delete_transaction(txn: Transaction, *, user) -> None:
     """Видалення з перерахунком балансів."""
+    from .grant_replenishment import protect_bank_edit
+    protect_bank_edit(txn, deleting=True)
     company = txn.company
     before = _snapshot(txn)
     accounts = _affected_accounts(txn)
@@ -186,6 +190,8 @@ def split_transaction(txn: Transaction, *, user, parts) -> list:
     parts: список dict(amount, category, project, comment).
     Оригінал стає parent і виключається зі звітів (його замінюють діти).
     """
+    from .grant_replenishment import protect_bank_edit
+    protect_bank_edit(txn, deleting=True)
     total = sum((Decimal(str(p['amount'])) for p in parts), Decimal('0'))
     if total != txn.amount:
         raise ValueError('Сума частин має дорівнювати сумі платежу')

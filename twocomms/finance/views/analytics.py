@@ -258,6 +258,7 @@ def report(request, kind):
             'owner_drawn': _m(company, data.get('owner_drawn', 0)),
             'net': _m(company, data['net'], signed=True),
             'targeted_in': _m(company, data['targeted_in']),
+            'targeted_out': _m(company, data['targeted_out']),
             'net_positive': net >= 0,
             'breakdown_income': bi,
             'breakdown_expense': be,
@@ -335,6 +336,7 @@ def report(request, kind):
             'owner_drawn': _m(company, data.get('owner_drawn', 0)),
             'profit': _m(company, data['profit'], signed=True),
             'targeted_in': _m(company, data['targeted_in']),
+            'targeted_out': _m(company, data['targeted_out']),
             'margin': round(data['margin'], 1),
             'profit_positive': profit >= 0,
             'breakdown_income': bi,
@@ -677,6 +679,24 @@ def report_export(request, kind):
         for r in data['rows']:
             ws.append([r['category'], float(r['plan']), float(r['fact']),
                        float(r['deviation']), round(r['completion'], 1)])
+    elif kind in ('pnl', 'cashflow'):
+        data = rep.pnl(company, request.GET) if kind == 'pnl' else rep.cash_flow(company, request.GET)
+        income_key, expense_key, net_key = ('income', 'expenses', 'profit') if kind == 'pnl' else ('cash_in', 'cash_out', 'net')
+        ws.append(['Звіт', 'P&L' if kind == 'pnl' else 'Cash Flow'])
+        ws.append(['Грантові кошти', 'Враховано' if data['include_grants'] else 'Виключено; власне співфінансування враховано'])
+        ws.append(['Доходи', float(data[income_key])])
+        ws.append(['Витрати', float(data[expense_key])])
+        ws.append(['Результат', float(data[net_key])])
+        ws.append(['Грантова частина витрат', float(data['targeted_out'])])
+        ws.append([])
+        ws.append(['Тип', 'Категорія', 'Сума'])
+        for label, key in [('Дохід', 'income_by_category'), ('Витрата', 'expense_by_category')]:
+            for row in data[key]:
+                ws.append([label, row['name'], float(row['total'])])
+        ws.append([])
+        ws.append(['Період', 'Доходи', 'Витрати'])
+        for row in data['series']:
+            ws.append([row['label'], row['in'], row['out']])
     elif kind in ('receivables', 'payables'):
         data = repd.receivables(company) if kind == 'receivables' else repd.payables(company)
         ws.append(['Контрагент', 'Сума', 'Дата', 'Проект', 'Статус', 'Коментар'])

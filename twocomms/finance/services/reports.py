@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import OrderedDict
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Q, Sum
+from django.db.models import OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
 
-from ..models import InternalTransferMatch, Invoice, Transaction
+from ..models import FundingAllocation, InternalTransferMatch, Invoice, Transaction
 from . import filters as filter_service
 from .timeutil import day_end, day_start
 
@@ -65,6 +65,30 @@ def _apply_scope_filter(qs, params, *, prefix=''):
 
 def _include_grants(params):
     return str(params.get('include_grants') or '').strip().lower() in {'1', 'true', 'on', 'yes'}
+
+
+def _without_grant_amounts(qs):
+    allocations = FundingAllocation.objects.filter(
+        Q(allocation_type='spent') | Q(allocation_type='reserved', transaction__economic_kind='owner_draw'),
+        transaction_id=OuterRef('pk'), funding_source__source_type='grant',
+    ).values('transaction_id').annotate(total=Sum('amount')).values('total')
+    return qs.annotate(_grant_native=Subquery(allocations[:1]))
+
+
+def _reported_amount(txn):
+    """Convert only the own-funded remainder, using decimal currency arithmetic."""
+    amount = txn.amount_base or txn.amount
+    grant = getattr(txn, '_grant_native', None) or Decimal('0')
+    if txn.type not in (Transaction.TYPE_EXPENSE, Transaction.TYPE_TRANSFER) or txn.amount <= 0 or grant <= 0:
+        return amount
+    own = max(txn.amount - grant, Decimal('0'))
+    return (amount * own / txn.amount).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def _reported_total(qs):
+    if '_grant_native' not in qs.query.annotations:
+        return qs.aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    return sum((_reported_amount(t) for t in qs.only('amount', 'amount_base', 'type')), Decimal('0'))
 
 
 def _apply_dim_filters(qs, params, *, apply_scope=True):
@@ -125,9 +149,9 @@ def _owner_draw_q(*, prefix=''):
 
 def _owner_draw_amount(qs):
     return sum(
-        (row.amount_base or row.amount for row in qs.filter(_owner_draw_q()).filter(
+        (_reported_amount(row) for row in qs.filter(_owner_draw_q()).filter(
             type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE],
-        ).only('amount_base', 'amount')),
+        ).only('amount_base', 'amount', 'type')),
         Decimal('0'),
     )
 
@@ -155,7 +179,7 @@ def _actual(company):
             .exclude(excluded_from_reports=True))
 
 
-def _unrepresented_transfer_fees(company, params, start, end, *, pnl_dates=False):
+def _unrepresented_transfer_fees(company, params, start, end, *, pnl_dates=False, as_series=False):
     """Sum confirmed match fees that have no standalone expense row."""
     qs = InternalTransferMatch.objects.filter(
         company=company, status='confirmed', fee_transaction__isnull=True,
@@ -178,7 +202,16 @@ def _unrepresented_transfer_fees(company, params, start, end, *, pnl_dates=False
         ids = [i for i in str(params['accounts']).split(',') if i.isdigit()]
         if ids:
             qs = qs.filter(source_account_id__in=ids)
-    return _apply_scope_filter(qs, params, prefix='source_transaction__').aggregate(
+    qs = _apply_scope_filter(qs, params, prefix='source_transaction__')
+    if as_series:
+        buckets = {}
+        for match in qs.select_related('source_transaction'):
+            source = match.source_transaction
+            date = (source.date_agreement if pnl_dates and source.date_agreement else source.date_actual).date()
+            key = f'{date.year}-{date.month:02d}' if (end - start).days > 62 else date.isoformat()
+            buckets[key] = buckets.get(key, Decimal('0')) + match.fee_amount
+        return [{'label': key, 'in': 0.0, 'out': float(value)} for key, value in sorted(buckets.items())]
+    return qs.aggregate(
         total=Sum('fee_amount'),
     )['total'] or Decimal('0')
 
@@ -208,13 +241,19 @@ def cash_flow(company, params):
     owner_qs = _owner_scope_qs(_apply_dim_filters(_actual(company), params, apply_scope=False), params).filter(
         date_actual__gte=day_start(start), date_actual__lte=day_end(end),
     ).filter(_owner_draw_q(), type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
+    if not include_grants:
+        owner_qs = _without_grant_amounts(owner_qs)
     management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(
         id__in=owner_qs.values('id'),
     ).exclude(category__name='Вивід на особисте', account__is_business=True)
+    expense_qs = management_qs.filter(type=Transaction.TYPE_EXPENSE)
+    targeted_out = _reported_total(expense_qs) - _reported_total(_without_grant_amounts(expense_qs))
+    if not include_grants:
+        management_qs = _without_grant_amounts(management_qs)
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end)
     cash_in = management_qs.filter(type=Transaction.TYPE_INCOME).exclude(
         economic_kind='expense_refund').aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
-    cash_out = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    cash_out = _reported_total(management_qs.filter(type=Transaction.TYPE_EXPENSE))
     cash_out += transfer_fees
     targeted_in = qs.filter(economic_kind='grant_inflow', type=Transaction.TYPE_INCOME).aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
@@ -232,7 +271,8 @@ def cash_flow(company, params):
     # операційний графік: окремий targeted_in показує цільове фінансування.
     by_period = _merge_series(_series_by_period(
         management_qs.exclude(type=Transaction.TYPE_TRANSFER), start, end,
-    ), _series_by_period(owner_qs, start, end, transfers_as_out=True))
+    ), _series_by_period(owner_qs, start, end, transfers_as_out=True),
+        _unrepresented_transfer_fees(company, params, start, end, as_series=True))
     in_by_cat = _group_by_category(management_qs.filter(type=Transaction.TYPE_INCOME).exclude(economic_kind='expense_refund'))
     cash_out += owner_drawn
     out_by_cat = _add_fee_category(_group_by_category(management_qs.filter(type=Transaction.TYPE_EXPENSE)), transfer_fees)
@@ -246,6 +286,7 @@ def cash_flow(company, params):
         'income_by_category': in_by_cat,
         'expense_by_category': out_by_cat,
         'targeted_in': targeted_in,
+        'targeted_out': targeted_out,
         'internal_in': internal_in,
         'internal_out': internal_out,
         'owner_drawn': owner_drawn,
@@ -258,22 +299,25 @@ def cash_flow(company, params):
     }
 
 
-def _series_by_period(qs, start, end, *, transfers_as_out=False):
+def _series_by_period(qs, start, end, *, transfers_as_out=False, pnl_dates=False):
     """Групування сум по днях (якщо період <= 62 днів) або місяцях."""
     span = (end - start).days
     buckets = OrderedDict()
     use_month = span > 62
-    for t in qs.only('date_actual', 'type', 'amount_base'):
-        d = t.date_actual.date()
+    fields = ['date_actual', 'type', 'amount_base', 'amount']
+    if pnl_dates:
+        fields.append('date_agreement')
+    for t in qs.only(*fields):
+        d = (t.date_agreement if pnl_dates and t.date_agreement else t.date_actual).date()
         key = f'{d.year}-{d.month:02d}' if use_month else d.isoformat()
         if key not in buckets:
             buckets[key] = {'in': Decimal('0'), 'out': Decimal('0')}
         if t.type == Transaction.TYPE_INCOME:
-            buckets[key]['in'] += (t.amount_base or t.amount)
+            buckets[key]['in'] += _reported_amount(t)
         elif t.type == Transaction.TYPE_EXPENSE:
-            buckets[key]['out'] += (t.amount_base or t.amount)
+            buckets[key]['out'] += _reported_amount(t)
         elif t.type == Transaction.TYPE_TRANSFER and transfers_as_out:
-            buckets[key]['out'] += (t.amount_base or t.amount)
+            buckets[key]['out'] += _reported_amount(t)
     return [{'label': k, 'in': float(v['in']), 'out': float(v['out'])}
             for k, v in sorted(buckets.items())]
 
@@ -289,9 +333,18 @@ def _merge_series(*series_list):
 
 
 def _group_by_category(qs):
-    rows = (qs.values('category_id', 'category__name', 'economic_kind', 'account__is_business')
-            .annotate(total=Coalesce(Sum('amount_base'), Decimal('0')))
-            .order_by('-total'))
+    if '_grant_native' in qs.query.annotations:
+        rows = [
+            {'category_id': t.category_id, 'category__name': t.category.name if t.category_id else '',
+             'economic_kind': t.economic_kind, 'account__is_business': t.account.is_business if t.account_id else None,
+             'total': _reported_amount(t)}
+            for t in qs.select_related('category', 'account').only(
+                'category__name', 'account__is_business', 'economic_kind', 'amount', 'amount_base', 'type')
+        ]
+    else:
+        rows = (qs.values('category_id', 'category__name', 'economic_kind', 'account__is_business')
+                .annotate(total=Coalesce(Sum('amount_base'), Decimal('0')))
+                .order_by('-total'))
     fallback_names = {'grant_inflow': 'Цільові гранти'}
     grouped = OrderedDict()
     for row in rows:
@@ -333,12 +386,18 @@ def pnl(company, params):
     owner_qs = _owner_scope_qs(_apply_dim_filters(_actual(company), params, apply_scope=False), params).filter(
         Q_or_date(start, end),
     ).filter(_owner_draw_q(), type__in=[Transaction.TYPE_TRANSFER, Transaction.TYPE_EXPENSE])
+    if not include_grants:
+        owner_qs = _without_grant_amounts(owner_qs)
     management_qs = qs.exclude(economic_kind__in=excluded_management).exclude(
         id__in=owner_qs.values('id'),
     ).exclude(category__name='Вивід на особисте', account__is_business=True)
+    expense_qs = management_qs.filter(type=Transaction.TYPE_EXPENSE)
+    targeted_out = _reported_total(expense_qs) - _reported_total(_without_grant_amounts(expense_qs))
+    if not include_grants:
+        management_qs = _without_grant_amounts(management_qs)
     transfer_fees = _unrepresented_transfer_fees(company, params, start, end, pnl_dates=True)
     income = management_qs.filter(type=Transaction.TYPE_INCOME).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
-    expenses = management_qs.filter(type=Transaction.TYPE_EXPENSE).aggregate(s=Sum('amount_base'))['s'] or Decimal('0')
+    expenses = _reported_total(management_qs.filter(type=Transaction.TYPE_EXPENSE))
     expenses += transfer_fees
     refunds = qs.filter(type=Transaction.TYPE_INCOME, economic_kind='expense_refund').aggregate(
         s=Sum('amount_base'))['s'] or Decimal('0')
@@ -346,7 +405,7 @@ def pnl(company, params):
         s=Sum('amount_base'))['s'] or Decimal('0')
     expenses = max(Decimal('0'), expenses - refunds)
     owner_drawn = _owner_draw_amount(owner_qs)
-    owner_drawn_series = _series_by_period(owner_qs, start, end, transfers_as_out=True)
+    owner_drawn_series = _series_by_period(owner_qs, start, end, transfers_as_out=True, pnl_dates=True)
     expenses += owner_drawn
     return {
         'income': income,
@@ -361,9 +420,11 @@ def pnl(company, params):
         'transfer_fees': transfer_fees,
         'unclassified_count': qs.filter(economic_kind='unknown').count(),
         'unclassified_amount': qs.filter(economic_kind='unknown').aggregate(s=Sum('amount_base'))['s'] or Decimal('0'),
-        'series': _merge_series(_series_by_period(management_qs, start, end), owner_drawn_series),
+        'series': _merge_series(_series_by_period(management_qs, start, end, pnl_dates=True), owner_drawn_series,
+                              _unrepresented_transfer_fees(company, params, start, end, pnl_dates=True, as_series=True)),
         'owner_drawn_series': owner_drawn_series,
         'targeted_in': targeted_in,
+        'targeted_out': targeted_out,
         'include_grants': include_grants,
         'scope': (params.get('scope') or 'all').strip() or 'all',
         'period': (start.isoformat(), end.isoformat()),

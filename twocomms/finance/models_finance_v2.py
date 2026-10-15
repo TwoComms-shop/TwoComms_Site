@@ -23,6 +23,8 @@ class FundingSource(models.Model):
     name = models.CharField(max_length=255)
     source_type = models.CharField(max_length=16, choices=TYPE_CHOICES, default='grant')
     received_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal('0'))
+    opening_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal('0'),
+                                        help_text='Підтверджені кошти гранту на початок обліку; не новий транш')
     received_at = models.DateField(blank=True, null=True)
     # Programme budget stays distinct from money actually received in the bank.
     program_total_amount = models.DecimalField(max_digits=18, decimal_places=2,
@@ -89,7 +91,7 @@ class FundingAllocation(models.Model):
     funding_source = models.ForeignKey(FundingSource, on_delete=models.CASCADE, related_name='allocations')
     transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='funding_allocations')
     amount = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
-    allocation_type = models.CharField(max_length=16, choices=[('received', 'Поступление'), ('spent', 'Расход'), ('reserved', 'Резерв')], default='spent')
+    allocation_type = models.CharField(max_length=16, choices=[('received', 'Поступление'), ('spent', 'Расход'), ('reserved', 'Резерв'), ('returned', 'Повернення виведених коштів')], default='spent')
     note = models.TextField(blank=True, default='')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

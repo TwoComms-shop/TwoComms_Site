@@ -1,11 +1,13 @@
 """Dedicated grant workspace for target funding and reviewable history."""
 from __future__ import annotations
 
-from django.shortcuts import render
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
 
-from ..models import ClassificationReview, Transaction, get_default_company
+from ..models import ClassificationReview, ObligationGroup, Transaction, get_default_company
 from ..permissions import finance_access_required
-from ..services import ledger_v2
+from ..services import grant_replenishment, ledger_v2
 
 
 @finance_access_required
@@ -16,7 +18,7 @@ def grants(request):
         type=Transaction.TYPE_INCOME, economic_kind='unknown',
     ).select_related('account', 'category').order_by('-date_actual', '-id')[:30])
     sources = []
-    for source in company.funding_sources.filter(is_active=True).select_related('project').order_by('-received_at', 'name'):
+    for source in company.funding_sources.filter(is_active=True).select_related('project', 'receipt_transaction__account').order_by('-received_at', 'name'):
         summary = ledger_v2.funding_summary(source)
         reviews = list(ClassificationReview.objects.filter(
             company=company, status='pending', proposal__funding_source_id=source.id,
@@ -25,7 +27,7 @@ def grants(request):
                            .order_by('-created_at')[:50])
         received_transactions = list(Transaction.objects.filter(
             company=company, funding_source=source, type=Transaction.TYPE_INCOME,
-            status=Transaction.STATUS_ACTUAL,
+            status=Transaction.STATUS_ACTUAL, economic_kind='grant_inflow',
         ).select_related('account').order_by('-date_actual', '-id')[:30])
         allocated_ids = [allocation.transaction_id for allocation in allocations]
         pending_expenses = list(Transaction.objects.filter(
@@ -44,6 +46,11 @@ def grants(request):
             'project': source.project.name if source.project else '',
             'notes': source.notes,
             'received': summary['received'],
+            'opening': summary['opening'],
+            'withdrawn': summary['withdrawn'],
+            'returned': summary['returned'],
+            'repayments': grant_replenishment.pending_rows(company, source=source),
+            'bank_balance': source.receipt_transaction.account.current_balance if source.receipt_transaction_id and source.receipt_transaction.account_id else None,
             'spent': summary['spent'],
             'reserved': summary['reserved'],
             'available': summary['available'],
@@ -58,3 +65,17 @@ def grants(request):
         'pending_reviews': sum(len(source['reviews']) for source in sources),
         'unclassified_incomes': unclassified_incomes,
     })
+
+
+@finance_access_required(api=True)
+@require_POST
+def grant_replenishment_api(request, group_id):
+    company = get_default_company()
+    group = get_object_or_404(ObligationGroup, pk=group_id, company=company)
+    payment = get_object_or_404(Transaction, pk=request.POST.get('transaction_id'), company=company)
+    try:
+        grant_replenishment.confirm_return(group, payment, user=request.user)
+    except ValueError as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
+    destination = request.POST.get('next')
+    return redirect(destination if destination in ('/planned/', '/grants/') else '/planned/')

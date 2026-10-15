@@ -5,11 +5,13 @@
 {% block content %}
 {% include 'finance/partials/report_header.html' %}
 
+<p>{% if include_grants %}Грантові надходження та витрати враховані.{% else %}Грантові надходження та грантова частина витрат виключені. Власне співфінансування враховане.{% endif %}</p>
 <div class="fin-kpi-row">
     <div class="fin-kpi fin-kpi--pos"><span>Поступлення</span><strong>{{ cash_in }}</strong></div>
     <div class="fin-kpi fin-kpi--neg"><span>Списання</span><strong>{{ cash_out }}</strong></div>
     <div class="fin-kpi {% if net_positive %}fin-kpi--pos{% else %}fin-kpi--neg{% endif %}"><span>Чистий потік</span><strong>{{ net }}</strong></div>
     {% if data.targeted_in %}<div class="fin-kpi fin-kpi--grant"><span>Цільові гранти</span><strong>{{ targeted_in }}</strong></div>{% endif %}
+    {% if data.targeted_out %}<div class="fin-kpi fin-kpi--grant"><span>Грантова частина витрат</span><strong>{{ targeted_out }}</strong></div>{% endif %}
     <div class="fin-kpi fin-kpi--info"><span>Виведено власнику</span><strong>{{ owner_drawn }}</strong><small>Окремо від операційних витрат</small></div>
 </div>
 

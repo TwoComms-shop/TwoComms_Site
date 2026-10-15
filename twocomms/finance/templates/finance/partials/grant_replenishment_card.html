@@ -1,0 +1,19 @@
+<section class="fin-insight-card">
+    <h3>{{ repayment.title }} · {{ repayment.amount }} грн</h3>
+    <p>Потрібно повернути на грантовий рахунок. Дату повернення ще не визначено.</p>
+    {% if repayment.candidates %}
+    <form method="post" action="{% url 'finance_grant_replenishment' repayment.id %}">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.path }}">
+        <label class="fin-field">Фактичне повернення
+            <select name="transaction_id" class="fin-select" required>
+                <option value="">Оберіть поповнення грантового рахунку</option>
+                {% for payment in repayment.candidates %}<option value="{{ payment.id }}">{{ payment.date_actual|date:'d.m.Y' }} · {{ payment.amount }} грн · {{ payment.account.name }}</option>{% endfor %}
+            </select>
+        </label>
+        <button class="fin-btn fin-btn--primary" type="submit">Підтвердити повернення</button>
+    </form>
+    {% else %}
+    <p>Коли повернення зʼявиться у виписці, тут можна буде обрати його та підтвердити закриття зобовʼязання.</p>
+    {% endif %}
+</section>

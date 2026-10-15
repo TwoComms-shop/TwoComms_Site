@@ -80,9 +80,15 @@
     grantToggle: document.getElementById('fin-txn-grant'),
     grantSource: document.getElementById('fin-txn-grant-source'),
     grantSourceWrap: document.getElementById('fin-txn-grant-source-wrap'),
+    grantAmount: document.getElementById('fin-txn-grant-amount'),
+    grantAmountWrap: document.getElementById('fin-txn-grant-amount-wrap'),
+    grantOwn: document.getElementById('fin-txn-grant-own'),
     grantToggleExtra: document.getElementById('fin-txn-grant-extra'),
     grantSourceExtra: document.getElementById('fin-txn-grant-source-extra'),
     grantSourceExtraWrap: document.getElementById('fin-txn-grant-source-extra-wrap'),
+    grantAmountExtra: document.getElementById('fin-txn-grant-amount-extra'),
+    grantAmountExtraWrap: document.getElementById('fin-txn-grant-amount-extra-wrap'),
+    grantOwnExtra: document.getElementById('fin-txn-grant-own-extra'),
     unclassifiedSave: document.getElementById('fin-unclassified-save'),
     quickClassify: document.getElementById('fin-quick-classify'),
     quickClassifyTitle: document.getElementById('fin-quick-classify-title'),
@@ -177,26 +183,78 @@
     });
   }
 
+  var grantSourceId = '';
+
+  function grantAmountError() {
+    if (!els.grantToggle || !els.grantToggle.checked || els.type.value !== 'expense' || !els.grantAmount) return '';
+    var raw = els.grantAmount.value.trim();
+    if ([els.grantAmount, els.grantAmountExtra].some(function (input) { return input && input.validity.badInput; })) {
+      return 'Вкажіть коректну суму грантової частини';
+    }
+    if (!raw) return '';
+    var amount = Number(raw);
+    if (!Number.isFinite(amount) || amount < 0) return 'Грантова частина не може бути від’ємною';
+    if (Math.round(amount * 100) > transferCents(els.amount.value)) return 'Грантова частина не може перевищувати суму оплати';
+    return '';
+  }
+
+  function renderGrantSplit() {
+    var visible = !!(els.grantToggle && els.grantToggle.checked && els.type.value === 'expense');
+    [els.grantAmountWrap, els.grantAmountExtraWrap].forEach(function (wrap) {
+      if (wrap) wrap.hidden = !visible;
+    });
+    [els.grantAmount, els.grantAmountExtra].forEach(function (input) {
+      if (input) input.disabled = !visible;
+    });
+    if (!visible || !els.grantAmount) return;
+    var total = Math.max(0, transferCents(els.amount.value));
+    var currency = els.currency ? els.currency.value : 'UAH';
+    var baseCurrency = DROPDOWNS.base_currency || 'UAH';
+    var baseToNative = currency === baseCurrency ? 1 : null;
+    if (baseToNative === null && activeTxn && activeTxn.currency === currency && Number(activeTxn.amount_base) > 0) {
+      baseToNative = Number(activeTxn.amount) / Number(activeTxn.amount_base);
+    }
+    var source = (DROPDOWNS.funding_sources || []).find(function (item) { return String(item.id) === grantSourceId; });
+    var available = source && baseToNative !== null ? Math.max(0, transferCents(Number(source.available) * baseToNative)) : 0;
+    if (activeTxn && String(activeTxn.funding_source_id) === grantSourceId && activeTxn.funding_split) {
+      available += Math.max(0, transferCents(activeTxn.funding_split.grant_amount));
+    }
+    var autoAmount = Math.min(total, available);
+    var amount = els.grantAmount.value.trim() ? transferCents(els.grantAmount.value) : autoAmount;
+    var error = grantAmountError();
+    function money(cents) {
+      return (cents / 100).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + currency;
+    }
+    var automatic = !els.grantAmount.value.trim();
+    var hint = error || (!source ? 'Оберіть грантову програму' : (automatic && baseToNative === null
+      ? 'Грантова частина визначиться за доступними коштами програми'
+      : 'Грантові кошти: ' + money(amount) + '. Власні кошти: ' + money(Math.max(0, total - amount)) + '.'));
+    [els.grantOwn, els.grantOwnExtra].forEach(function (el) { if (el) el.textContent = hint; });
+    [els.grantAmount, els.grantAmountExtra].forEach(function (input) {
+      if (!input) return;
+      input.placeholder = baseToNative === null ? 'Автоматично за доступними коштами гранту' : 'Автоматично: ' + money(autoAmount);
+      input.setAttribute('aria-invalid', error ? 'true' : 'false');
+    });
+  }
+
   function syncGrantClassification(origin) {
     if (!els.grantToggle || !els.grantSourceWrap) return;
     var isExtra = origin === 'extra';
     var enabled = isExtra && els.grantToggleExtra ? els.grantToggleExtra.checked : els.grantToggle.checked;
     var selected = isExtra && els.grantSourceExtra ? els.grantSourceExtra.value : els.grantSource.value;
-    if (!selected) selected = isExtra ? els.grantSource.value : (els.grantSourceExtra && els.grantSourceExtra.value);
+    selected = selected || '';
     els.grantToggle.checked = enabled;
     if (els.grantToggleExtra) els.grantToggleExtra.checked = enabled;
     els.grantSourceWrap.hidden = !enabled;
     if (els.grantSourceExtraWrap) els.grantSourceExtraWrap.hidden = !enabled;
-    if (enabled) {
-      fillGrantSources();
-      if (selected) {
-        els.grantSource.value = selected;
-        if (els.grantSourceExtra) els.grantSourceExtra.value = selected;
-      }
-    } else {
-      els.grantSource.value = '';
-      if (els.grantSourceExtra) els.grantSourceExtra.value = '';
+    els.grantSource.value = selected;
+    if (els.grantSourceExtra) els.grantSourceExtra.value = selected;
+    if (selected !== grantSourceId) {
+      grantSourceId = selected;
+      if (els.grantAmount) els.grantAmount.value = '';
+      if (els.grantAmountExtra) els.grantAmountExtra.value = '';
     }
+    renderGrantSplit();
   }
 
   function populateAccounts() {
@@ -232,6 +290,7 @@
       var diff = acc && toAcc && acc.currency !== toAcc.currency;
       els.toAmountWrap.hidden = !diff;
     }
+    renderGrantSplit();
   }
 
   // --- Статус Факт / План ---
@@ -852,6 +911,8 @@
     showAlert('');
     hideTerminalReview();
     populateAccounts();
+    fillGrantSources();
+    grantSourceId = '';
     if (els.grantToggle) els.grantToggle.checked = false;
     if (els.grantSource) els.grantSource.value = '';
     if (els.grantSourceExtra) els.grantSourceExtra.value = '';
@@ -879,6 +940,11 @@
         if (els.grantSourceExtra) els.grantSourceExtra.value = txn.funding_source_id || '';
       }
       syncGrantClassification();
+      if (txn.funding_split && els.grantAmount) {
+        els.grantAmount.value = txn.funding_split.grant_amount;
+        if (els.grantAmountExtra) els.grantAmountExtra.value = els.grantAmount.value;
+        renderGrantSplit();
+      }
       if (txn.type === 'transfer') {
         if (txn.account_id) els.from.value = txn.account_id;
         if (txn.to_account_id) els.to.value = txn.to_account_id;
@@ -1028,26 +1094,28 @@
   }
 
   function persistGrantClassification(txnId) {
-    if (!txnId || (els.type.value !== 'income' && els.type.value !== 'expense') || !els.grantToggle || !els.grantToggle.checked) {
+    if (!txnId || (els.type.value !== 'income' && els.type.value !== 'expense') || !els.grantToggle) {
       return Promise.resolve({ ok: true });
     }
-    if (!els.grantSource || !els.grantSource.value) {
+    var enabled = els.grantToggle.checked;
+    if (!enabled && !(activeTxn && (activeTxn.funding_source_id || activeTxn.economic_kind === 'grant_inflow'))) {
+      return Promise.resolve({ ok: true });
+    }
+    if (enabled && (!els.grantSource || !els.grantSource.value)) {
       return Promise.resolve({ ok: false, data: { error: 'Оберіть грантову програму' } });
     }
     var isIncome = els.type.value === 'income';
-    return api('/api/v2/transactions/' + txnId + '/classification/', 'POST', {
-      economic_kind: isIncome ? 'grant_inflow' : 'operating_expense',
-      ownership_scope: 'business',
-      funding_source_id: els.grantSource.value,
-      note: isIncome ? 'Позначено як цільове грантове надходження у модалці операції'
-        : 'Позначено як цільова грантова витрата у модалці операції',
-    }).then(function (result) {
-      if (!result.ok || !result.data.ok || isIncome) return result;
-      return api('/api/v2/funding/' + els.grantSource.value + '/allocate/', 'POST', {
-        transaction_id: txnId, amount: els.amount.value, allocation_type: 'spent',
-        note: 'Позначено як грантова витрата у модалці операції', replace: true,
-      });
-    });
+    var bizEl = document.getElementById('fin-txn-business');
+    var payload = {
+      economic_kind: isIncome ? (enabled ? 'grant_inflow' : 'unknown') : 'operating_expense',
+      ownership_scope: enabled ? 'business' : (bizEl && bizEl.checked ? 'business' : 'personal'),
+      funding_source_id: enabled ? els.grantSource.value : '',
+      note: enabled ? (isIncome ? 'Позначено як цільове грантове надходження у модалці операції'
+        : 'Позначено як цільова грантова витрата у модалці операції') : 'Знято ознаку грантової операції',
+    };
+    if (!isIncome || !enabled) payload.sync_grant_allocation = true;
+    if (!isIncome && enabled) payload.funding_amount = els.grantAmount ? els.grantAmount.value : '';
+    return api('/api/v2/transactions/' + txnId + '/classification/', 'POST', payload);
   }
 
   function save(keepOpen) {
@@ -1059,11 +1127,17 @@
       syncGrantClassification();
       return;
     }
+    var grantError = grantAmountError();
+    if (grantError) {
+      showAlert(grantError);
+      return;
+    }
     var url = id ? '/api/transactions/' + id + '/update/' : '/api/transactions/create/';
     showAlert('');
     return apiForm(url, collectFormData()).then(function (res) {
       if (res.ok && res.data.ok) {
         var savedTxn = res.data.transaction;
+        if (savedTxn && savedTxn.id) els.id.value = savedTxn.id;
         return persistGrantClassification(savedTxn && savedTxn.id).then(function (classification) {
           if (!classification.ok || (classification.data && classification.data.ok === false)) {
             showAlert((classification.data && classification.data.error) || 'Не вдалося зберегти ознаку гранту');
@@ -1071,8 +1145,11 @@
           }
         if (keepOpen) {
           var type = els.type.value;
+          activeTxn = null;
+          grantSourceId = '';
           form.reset(); els.id.value = ''; populateAccounts(); collapseDisclosures();
           renderAttachments([]); els.date.value = nowLocal(); setStatus('actual'); setType(type);
+          syncGrantClassification();
         } else {
           var txn = savedTxn;
           // Обернений потік: новий фактичний дохід/витрата може бути погашенням
@@ -1245,6 +1322,20 @@
   if (els.grantToggleExtra) els.grantToggleExtra.addEventListener('change', function () { syncGrantClassification('extra'); });
   if (els.grantSource) els.grantSource.addEventListener('change', function () { syncGrantClassification('main'); });
   if (els.grantSourceExtra) els.grantSourceExtra.addEventListener('change', function () { syncGrantClassification('extra'); });
+  [els.grantAmount, els.grantAmountExtra].forEach(function (input) {
+    if (!input) return;
+    input.addEventListener('input', function () {
+      var other = input === els.grantAmount ? els.grantAmountExtra : els.grantAmount;
+      if (other) other.value = input.value;
+      renderGrantSplit();
+    });
+    input.addEventListener('invalid', function () {
+      var error = grantAmountError();
+      if (error) showAlert(error);
+    });
+  });
+  els.amount.addEventListener('input', renderGrantSplit);
+  if (els.currency) els.currency.addEventListener('change', renderGrantSplit);
   if (els.unclassifiedSave) els.unclassifiedSave.addEventListener('click', saveUnclassifiedIncome);
   if (els.counterpartyPolicyAccept) els.counterpartyPolicyAccept.addEventListener('click', function () { resolveCounterpartyPolicyReview('accept'); });
   if (els.counterpartyPolicyReject) els.counterpartyPolicyReject.addEventListener('click', function () { resolveCounterpartyPolicyReview('reject'); });
