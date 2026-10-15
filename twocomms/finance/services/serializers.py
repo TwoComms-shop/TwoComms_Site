@@ -244,13 +244,19 @@ def settlement_labels_for(company, txn_ids) -> dict:
     grouped = {}
     qs = (ObligationSettlement.objects
           .filter(company=company, payment_id__in=list(txn_ids))
-          .select_related('rule'))
+          .select_related('rule').prefetch_related('component_allocations__component'))
     for s in qs:
         grouped.setdefault(s.payment_id, []).append(s)
     out = {}
     for pid, items in grouped.items():
-        title = next((s.rule.title for s in items if s.rule_id and s.rule.title), '') or "зобов'язання"
-        labels = sorted({s.period_label for s in items if s.period_label})
+        components = sorted({a.component.name for s in items for a in s.component_allocations.all()})
+        title = ', '.join(components) if components else (
+            next((s.rule.title for s in items if s.rule_id and s.rule.title), '') or "зобов'язання")
+        labels = sorted({
+            f'{s.period_key[5:7]}.{s.period_key[:4]}' if components and len(s.period_key) == 7
+            and s.period_key[4] == '-' else s.period_label
+            for s in items if s.period_key or s.period_label
+        })
         if not labels:
             period_label = ''
         elif len(labels) == 1:

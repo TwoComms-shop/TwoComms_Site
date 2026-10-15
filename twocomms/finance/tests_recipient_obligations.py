@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from .models import (Account, Company, Counterparty, CounterpartyAlias, CounterpartyCard,
                      ObligationComponent, ObligationGroup, ObligationSettlement, RecurrenceRule, Transaction, get_default_company)
-from .services import cards, mono, obligations_v2, payables, transactions
+from .services import cards, mono, obligations_v2, payables, serializers, transactions
 
 
 @override_settings(ALLOWED_HOSTS=['testserver','fin.twocomms.shop'], SECURE_SSL_REDIRECT=False)
@@ -115,6 +115,10 @@ class RecipientObligationTests(TestCase):
             self.assertEqual(review.proposal['component_id'],component.id)
             self.assertEqual(review.reviewed_by_id,self.user.id)
             self.assertIsNone(self.get_review(txn).json()['review'])
+        labels=serializers.settlement_labels_for(self.company,[utility.id,rent.id])
+        self.assertEqual(labels[utility.id]['title'],'Комунальні')
+        self.assertEqual(labels[rent.id]['title'],'Квартплата')
+        self.assertEqual(labels[rent.id]['period_label'],'11.2026')
         december=self.payment(date_actual=timezone.make_aware(dt.datetime(2026,12,10,12)))
         self.assertEqual(len(self.get_review(december).json()['review']['options']),2)
 
