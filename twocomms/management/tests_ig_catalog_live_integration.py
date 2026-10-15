@@ -215,6 +215,26 @@ class CatalogLiveIntegrationTests(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertIn("full category is on the cards", text)
 
+    def test_explicit_category_cards_start_before_optional_fit_print_color_or_size_clarification(self):
+        with patch.dict(sys.modules, {"management.services.ig_catalog_category_discovery":
+            module("management.services.ig_catalog_category_discovery", catalog_discovery_guidance=lambda: "breadth guidance")}):
+            text = function("_catalog_customer_guidance")()
+        for phrase in ("explicit shopping request to show cards or photos", "identifiable category",
+            "show_products with 1–3 actual published products from that category", "starting shortlist now",
+            "Optional fit, print, colour or size preferences are not prerequisites", "refine it afterward",
+            "do not replace the requested cards with only a preference question"):
+            self.assertIn(phrase, text)
+
+    def test_category_starting_shortlist_preserves_other_requests_and_existing_authority_limits(self):
+        with patch.dict(sys.modules, {"management.services.ig_catalog_category_discovery":
+            module("management.services.ig_catalog_category_discovery", catalog_discovery_guidance=lambda: "breadth guidance")}):
+            text = function("_catalog_customer_guidance")()
+        for phrase in ("Answer every question and remaining request", "If colors and sizes are also requested",
+            "verified configured choices", "after a product pick", "Never invent a category match or product ID",
+            "social-only suppression, source authority and request-budget limits", "never proof of physical stock",
+            "missing required choice", "manager confirmation"):
+            self.assertIn(phrase, text)
+
     def test_ready_category_notice_preserves_generated_delivery_answer_and_link(self):
         self.response.reply_text = "Доставку оплачує отримувач. Посилання: https://twocomms.test/product/model/"
         hint = "Кілька моделей для початку. Повний вибір у категорії — кнопка «Всі футболки»."

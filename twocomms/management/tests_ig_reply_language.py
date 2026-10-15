@@ -28,6 +28,39 @@ def resolve(text, **kwargs):
 
 
 class ReplyLanguageTests(TestCase):
+    def test_plain_notification_requests_follow_own_source_over_uk_profile(self):
+        cases = (
+            ("Сообщите, когда все позиции будут в наличии", "ru"),
+            ("Пожалуйста, сообщите, когда все позиции будут в наличии", "ru"),
+            ("Уведомите о поступлении товара", "ru"),
+            ("Notify me when all items are available", "en"),
+            ("Please notify me when all items are available", "en"),
+            ("Inform me about availability", "en"),
+            ("Повідомте, коли всі позиції будуть у наявності", "uk"),
+            ("Сповести, коли товар буде доступний", "uk"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                decision = resolve(text, profile_language="uk")
+                self.assertEqual(decision.reply_language, expected)
+                self.assertEqual(decision.basis, "current_source_observed")
+
+    def test_notification_words_in_quotes_urls_handles_or_one_token_do_not_prove_english(self):
+        for text in ('"Notify me when all items are available"', "«Сообщите, когда все позиции будут в наличии»",
+            "https://example.com/notify/when/available", "@notify_when_available", "Notify XS", "Availability L", "Night Shift XL"):
+            with self.subTest(text=text):
+                decision = resolve(text, profile_language="uk")
+                self.assertEqual(decision.reply_language, "")
+                self.assertEqual(decision.basis, "stored_profile_hint")
+
+    def test_notification_request_before_reset_cannot_override_current_profile(self):
+        for text in ("Сообщите, когда все позиции будут в наличии", "Notify me when all items are available"):
+            with self.subTest(text=text):
+                decision = resolve_own_source_reply_language(sources=[source(text, pk=30)],
+                    reset_floor=31, profile_language="uk")
+                self.assertEqual(decision.reply_language, "")
+                self.assertEqual(decision.template_family, "uk")
+
     def test_source_english_projects_into_media_renderer_without_mutating_uk_profile(self):
         from management.services.ig_media_response import media_limitation_reply
 
