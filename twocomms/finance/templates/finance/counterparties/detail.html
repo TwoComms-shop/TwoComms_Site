@@ -12,6 +12,7 @@
         <span class="fin-cp-ava fin-cp-ava--lg" style="background:{{ color }}1f;color:{{ color }};border-color:{{ color }}55">{{ initials }}</span>
         <div>
             <h1 class="fin-page-title">{{ cp.name }}</h1>
+            {% if bank_aliases %}<p class="fin-page-subtitle">Імена у виписці: {% for alias in bank_aliases %}{{ alias.value }}{% if not forloop.last %} · {% endif %}{% endfor %}</p>{% endif %}
             <p class="fin-page-subtitle">
                 <span class="fin-cp-type fin-cp-type--{{ cp.type }}">{{ cp_type_display }}</span>
                 {% if cp.group %} · {{ cp.group }}{% endif %}

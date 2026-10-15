@@ -190,12 +190,19 @@ def payable_candidates(company, *, ttype, counterparty=None, limit=60) -> list:
           .filter(company=company, type=ttype, status=Transaction.STATUS_ACTUAL)
           .filter(settlements__isnull=True)
           .select_related('account', 'account__counterparty', 'counterparty')
-          .order_by('-date_actual')[:200])
+          .order_by('-date_actual'))
+    # Retrieve known recipients before applying the recent-history window.
+    # Otherwise a busy account can hide an older matching payment entirely.
+    known = list(qs.filter(counterparty=counterparty)[:limit]) if counterparty else []
+    rows = {t.pk: t for t in [*known, *qs[:200]]}
+    index = cards_service.recipient_index(company) if counterparty else None
     out = []
-    for t in qs:
+    for t in rows.values():
         prio = 0
         if counterparty is not None:
             if t.counterparty_id == counterparty.id:
+                prio = 4
+            elif not t.counterparty_id and cards_service.match_counterparty_by_payment(company, t, index=index)['strong'] == counterparty:
                 prio = 3
             elif t.account_id and t.account.counterparty_id == counterparty.id:
                 prio = 2

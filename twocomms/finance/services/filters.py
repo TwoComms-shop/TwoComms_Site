@@ -107,8 +107,14 @@ def filter_transactions(company, params, *, include_planned=True):
     # Пошук.
     search = (params.get('search') or params.get('q') or '').strip()
     if search:
+        from .cards import normalize_alias
+        from ..models import CounterpartyAlias
+        alias_parties = CounterpartyAlias.objects.filter(
+            company=company, is_active=True, normalized=normalize_alias(search),
+        ).values('counterparty_id')
         qs = qs.filter(
             Q(comment__icontains=search)
+            | Q(counterparty_id__in=alias_parties)
             | Q(account__name__icontains=search)
             | Q(to_account__name__icontains=search)
             | Q(counterparty__name__icontains=search)

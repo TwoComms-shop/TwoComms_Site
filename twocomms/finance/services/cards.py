@@ -11,15 +11,29 @@ counter_name з Monobank) та з маски картки в коментарі.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from django.utils import timezone
 
-from ..models import CounterpartyCard
+from ..models import Counterparty, CounterpartyAlias, CounterpartyCard
 from .serializers import bank_from_iban
 
 # 4-6 цифр + зірочки + 2-4 цифри (маска monobank), або групи цифр із хвостом.
 _MASK_RE = re.compile(r'\b(\d{4,6}\*{2,}\d{2,4})\b')
 _TAIL_RE = re.compile(r'(\d{4})\b')
+
+
+def normalize_alias(value):
+    return re.sub(r'[\W_]+', '', unicodedata.normalize('NFKC', value or '').casefold())
+
+
+def assign_recognized_counterparty(txn):
+    """Assign only an unambiguous saved recipient, preserving explicit choices."""
+    if txn.counterparty_id or txn.type not in ('income', 'expense') or txn.status != 'actual':
+        return
+    match = match_counterparty_by_payment(txn.company, txn)
+    if match['strong'] is not None:
+        txn.counterparty = match['strong']
 
 
 def extract_card_hint(txn) -> dict:
@@ -54,7 +68,20 @@ def extract_card_hint(txn) -> dict:
             'iban': iban, 'counter_name': counter_name}
 
 
-def match_counterparty_by_payment(company, txn) -> dict:
+def recipient_index(company):
+    index = {key: {} for key in ('iban', 'mask', 'last4', 'alias')}
+    for card in CounterpartyCard.objects.filter(company=company, counterparty__company=company).select_related('counterparty'):
+        for key, value in (('iban', card.iban), ('mask', card.pan_mask), ('last4', card.last4)):
+            if value:
+                index[key].setdefault(value, {})[card.counterparty_id] = card.counterparty
+    for cp in Counterparty.objects.filter(company=company).exclude(iban=''):
+        index['iban'].setdefault(cp.iban, {})[cp.id] = cp
+    for alias in CounterpartyAlias.objects.filter(company=company, counterparty__company=company, is_active=True).select_related('counterparty'):
+        index['alias'].setdefault(alias.normalized, {})[alias.counterparty_id] = alias.counterparty
+    return index
+
+
+def match_counterparty_by_payment(company, txn, *, index=None) -> dict:
     """Підбирає контрагента за реквізитами платежу.
 
     Повертає {'strong': Counterparty|None, 'candidates': [Counterparty,...],
@@ -62,28 +89,32 @@ def match_counterparty_by_payment(company, txn) -> dict:
     — слабкі збіги за останніми 4 цифрами (перепитати в UI).
     """
     hint = extract_card_hint(txn)
-    qs = CounterpartyCard.objects.filter(company=company).select_related('counterparty')
+    index = recipient_index(company) if index is None else index
 
     # Сильний матч: IBAN.
     if hint['iban']:
-        card = qs.filter(iban=hint['iban']).first()
-        if card:
-            return {'strong': card.counterparty, 'candidates': [], 'reason': 'iban'}
+        people = index['iban'].get(hint['iban'], {})
+        if people:
+            return {'strong': next(iter(people.values())) if len(people) == 1 else None,
+                    'candidates': list(people.values()) if len(people) > 1 else [], 'reason': 'iban'}
     # Сильний матч: повна маска.
     if hint['pan_mask']:
-        card = qs.filter(pan_mask=hint['pan_mask']).first()
-        if card:
-            return {'strong': card.counterparty, 'candidates': [], 'reason': 'mask'}
+        people = index['mask'].get(hint['pan_mask'], {})
+        if people:
+            return {'strong': next(iter(people.values())) if len(people) == 1 else None,
+                    'candidates': list(people.values()) if len(people) > 1 else [], 'reason': 'mask'}
+
+    # Exact aliases are saved only after a person confirms the bank name.
+    # Do not match substrings such as another person with the same first name.
+    names = {normalize_alias(hint['counter_name']), normalize_alias(txn.comment)} - {''}
+    people = {cp_id: cp for name in names for cp_id, cp in index['alias'].get(name, {}).items()}
+    if people:
+        return {'strong': next(iter(people.values())) if len(people) == 1 else None,
+                'candidates': list(people.values()) if len(people) > 1 else [], 'reason': 'confirmed_alias'}
 
     # Слабкий матч: останні 4 цифри. Колізії можливі → кандидати.
     if hint['last4']:
-        cards = list(qs.filter(last4=hint['last4']))
-        cps = []
-        seen = set()
-        for c in cards:
-            if c.counterparty_id not in seen:
-                seen.add(c.counterparty_id)
-                cps.append(c.counterparty)
+        cps = list(index['last4'].get(hint['last4'], {}).values())
         if len(cps) == 1:
             # Один кандидат за last4 — все одно слабкий, але зручно підказати.
             return {'strong': None, 'candidates': cps, 'reason': 'last4_single'}

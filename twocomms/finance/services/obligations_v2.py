@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import datetime as dt
 import re
 
 from django.db import transaction as db_transaction
@@ -17,6 +18,16 @@ def payment_period(value=None):
     if not re.fullmatch(r'[0-9]{4}-(?:0[1-9]|1[0-2])', value) or value.startswith('0000'):
         raise ValueError('Некоректний період оплати (РРРР-ММ)')
     return value
+
+
+def payment_period_bounds(value):
+    """UTC-compatible boundaries; MySQL timezone tables are not required."""
+    value = payment_period(value)
+    year, month = map(int, value.split('-'))
+    start = dt.datetime(year, month, 1)
+    end = dt.datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    zone = timezone.get_default_timezone()
+    return timezone.make_aware(start, zone), timezone.make_aware(end, zone)
 
 
 def component_summary(component, *, period_key=None):

@@ -79,6 +79,7 @@ def counterparty_detail_page(request, counterparty_id):
         'actual_transactions': data['actual_transactions'],
         'obligations': data['obligations'],
         'cards': data['cards'],
+        'bank_aliases': cp.aliases.filter(is_active=True).order_by('id'),
         'chart_data': json.dumps({
             'monthly': data['monthly'],
             'categories': [{'name': c['name'], 'turnover': c['turnover'],

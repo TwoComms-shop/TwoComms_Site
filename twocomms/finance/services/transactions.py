@@ -73,6 +73,8 @@ def create_transaction(*, user, type, amount, account=None, to_account=None,
         created_by=user if getattr(user, 'is_authenticated', False) else None,
     )
     txn.amount_base = _compute_amount_base(company, txn)
+    from .cards import assign_recognized_counterparty
+    assign_recognized_counterparty(txn)
     txn.save()
     if tags:
         txn.tags.set(tags)
@@ -92,6 +94,8 @@ def create_transaction(*, user, type, amount, account=None, to_account=None,
             from .ledger_v2 import ensure_grant_account_review, process_counterparty_policy
             ensure_grant_account_review(txn)
             process_counterparty_policy(txn, user=user)
+            from .obligation_payments import ensure_review
+            ensure_review(txn)
         except Exception:  # noqa: BLE001 — review creation must not block imports
             pass
     return txn
@@ -111,6 +115,9 @@ def update_transaction(txn: Transaction, *, user, **fields) -> Transaction:
     for key, value in fields.items():
         setattr(txn, key, value)
     txn.is_recurring = bool(txn.recurrence_rule_id)
+    if 'counterparty' not in fields and 'counterparty_id' not in fields:
+        from .cards import assign_recognized_counterparty
+        assign_recognized_counterparty(txn)
     txn.amount_base = _compute_amount_base(company, txn)
     txn.updated_by = user if getattr(user, 'is_authenticated', False) else None
     txn.save()
@@ -132,6 +139,8 @@ def update_transaction(txn: Transaction, *, user, **fields) -> Transaction:
         try:
             from .ledger_v2 import process_counterparty_policy
             process_counterparty_policy(txn, user=user)
+            from .obligation_payments import ensure_review
+            ensure_review(txn)
         except Exception:  # noqa: BLE001 - optional review must not block updates
             pass
     return txn

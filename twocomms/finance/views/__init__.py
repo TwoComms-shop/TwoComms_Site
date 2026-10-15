@@ -155,6 +155,7 @@ from .finance_v2 import (  # noqa: F401
     funding_sources_api,
     funding_allocate_api,
     obligation_groups_api,
+    obligation_payment_review_api,
     obligation_group_api,
     obligation_component_api,
     component_payment_intent_api,

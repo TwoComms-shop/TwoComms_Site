@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from ..models import (
-    Account, Category, Counterparty, InternalTransferMatch, Project, Tag, Transaction,
+    Account, Category, ClassificationReview, Counterparty, InternalTransferMatch, Project, Tag, Transaction,
     get_default_company,
 )
 from ..permissions import finance_access_required
@@ -120,6 +120,12 @@ def payments(request):
     # bank rows remain intact, while the journal explains the principal and
     # any fee directly in both records.
     row_ids = [row['id'] for row in actual_rows]
+    pending_expenses = set(ClassificationReview.objects.filter(
+        company=company, transaction_id__in=row_ids, status='pending',
+        proposal__kind='obligation_payment',
+    ).values_list('transaction_id', flat=True))
+    for row in actual_rows:
+        row['needs_expense_confirmation'] = row['id'] in pending_expenses
     transfer_matches = InternalTransferMatch.objects.filter(
         company=company, status='confirmed',
     ).filter(Q(source_transaction_id__in=row_ids) | Q(destination_transaction_id__in=row_ids)).select_related(

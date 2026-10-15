@@ -395,6 +395,7 @@
   }
 
   function hideTerminalReview() {
+    resetObligationPaymentReview();
     if (!els.incomingReview) return;
     terminalReviewState = { txnId: null, review: null };
     els.incomingReview.hidden = true;
@@ -426,6 +427,90 @@
     els.counterpartyPolicyQuestion.textContent = review.prompt || 'Підтвердьте запропоновану категорію';
     els.counterpartyPolicyDetail.textContent = [review.counterparty, review.category].filter(Boolean).join(' · ');
   }
+
+  var obligationReview = null;
+  var obligationReviewRequest = 0;
+  var obligationUI = {
+    panel: document.getElementById('fin-obligation-payment-review'),
+    context: document.getElementById('fin-obligation-payment-context'),
+    period: document.getElementById('fin-obligation-payment-period'),
+    component: document.getElementById('fin-obligation-payment-component'),
+    confirm: document.getElementById('fin-obligation-payment-confirm'),
+    skip: document.getElementById('fin-obligation-payment-skip')
+  };
+
+  function resetObligationPaymentReview() {
+    ++obligationReviewRequest;
+    obligationReview = null;
+    if (obligationUI.panel) obligationUI.panel.hidden = true;
+    if (obligationUI.confirm) obligationUI.confirm.disabled = true;
+  }
+
+  function loadObligationPaymentReview(txn, period) {
+    if (!txn || !txn.id || txn.type !== 'expense' || txn.status !== 'actual' || !obligationUI.panel) return;
+    var request = ++obligationReviewRequest;
+    obligationUI.confirm.disabled = true;
+    obligationReview = null;
+    var query = period ? '?period_key=' + encodeURIComponent(period) : '';
+    api('/api/v2/transactions/' + txn.id + '/obligation-payment-review/' + query).then(function (res) {
+      if (request !== obligationReviewRequest || modal.hidden || String(els.id.value) !== String(txn.id)) return;
+      var data = res.ok && res.data.ok ? res.data.review : null;
+      obligationUI.panel.hidden = !data;
+      if (!data) return;
+      obligationReview = data;
+      obligationUI.context.textContent = data.counterparty.name + ' · ' + data.amount + ' ' + data.currency;
+      obligationUI.period.value = data.period_key;
+      obligationUI.component.replaceChildren();
+      var blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = data.options.length ? 'Оберіть призначення' : 'За цей період відкритих компонентів немає';
+      obligationUI.component.appendChild(blank);
+      data.options.forEach(function (row) {
+        var option = document.createElement('option');
+        option.value = String(row.component_id);
+        option.textContent = row.name + ' · ' + (row.is_variable ? 'змінна сума' : row.remaining + ' ' + data.currency) +
+          (row.suggested ? ' · сума збігається' : '');
+        obligationUI.component.appendChild(option);
+      });
+      obligationUI.skip.disabled = false;
+    }).catch(function () {
+      if (request === obligationReviewRequest && !modal.hidden) showAlert('Не вдалося завантажити підтвердження витрати');
+    });
+  }
+
+  if (obligationUI.component) obligationUI.component.addEventListener('change', function () {
+    obligationUI.confirm.disabled = !obligationReview || !obligationUI.component.value;
+  });
+  if (obligationUI.period) obligationUI.period.addEventListener('change', function () {
+    if (activeTxn && obligationUI.period.value) loadObligationPaymentReview(activeTxn, obligationUI.period.value);
+  });
+  if (obligationUI.confirm) obligationUI.confirm.addEventListener('click', function () {
+    var data = obligationReview;
+    var row = data && data.options.find(function (item) { return String(item.component_id) === obligationUI.component.value; });
+    if (!row || !activeTxn) return;
+    if (Number(String(els.amount.value).replace(',', '.')) !== Number(data.amount) ||
+        String(els.counterparty.value) !== String(activeTxn.counterparty_id || '')) {
+      showAlert('Спершу збережіть зміни суми або контрагента'); return;
+    }
+    obligationUI.confirm.disabled = true;
+    api('/api/v2/obligation-components/' + row.component_id + '/settle-existing/', 'POST', {
+      transaction_id: activeTxn.id, amount: data.amount, period_key: data.period_key,
+      planned_txn_id: row.planned_txn_id, confirm_expense: true
+    }).then(function (res) {
+      if (res.ok && res.data.ok) { window.location.reload(); return; }
+      showAlert(res.data.error || 'Не вдалося привʼязати витрату');
+      obligationUI.confirm.disabled = false;
+    }).catch(function () { showAlert('Помилка мережі'); obligationUI.confirm.disabled = false; });
+  });
+  if (obligationUI.skip) obligationUI.skip.addEventListener('click', function () {
+    if (!obligationReview) return;
+    obligationUI.skip.disabled = true;
+    api('/api/v2/reviews/' + obligationReview.id + '/action/', 'POST', {action:'reject'}).then(function (res) {
+      if (res.ok && res.data.ok) { resetObligationPaymentReview(); return; }
+      showAlert(res.data.error || 'Не вдалося зберегти рішення');
+      obligationUI.skip.disabled = false;
+    }).catch(function () { showAlert('Помилка мережі'); obligationUI.skip.disabled = false; });
+  });
 
   function loadCounterpartyPolicyReview(txn) {
     if (!txn || !txn.id || txn.status !== 'actual') return;
@@ -975,6 +1060,7 @@
     document.body.classList.add('fin-modal-open');
     if (txn) {
       loadCounterpartyPolicyReview(txn);
+      loadObligationPaymentReview(txn);
       loadTerminalReview(txn);
     }
     if (txn && txn.economic_kind === 'internal_transfer' && txn.type !== 'transfer') loadTransferMatch(txn);
@@ -1170,6 +1256,18 @@
 
   // --- Обернений потік: «Цей переказ у рахунок зобовʼязання?» ---
   function maybeReversePrompt(txn) {
+    if (txn.type === 'expense') {
+      api('/api/v2/transactions/' + txn.id + '/obligation-payment-review/').then(function (res) {
+        if (res.ok && res.data.ok && res.data.review) { openModal(txn.type, txn); return; }
+        if (res.ok && res.data.supports_components) { window.location.reload(); return; }
+        legacyReversePrompt(txn);
+      }).catch(function () { window.location.reload(); });
+      return;
+    }
+    legacyReversePrompt(txn);
+  }
+
+  function legacyReversePrompt(txn) {
     api('/api/payments/' + txn.id + '/reverse-candidates/').then(function (res) {
       var obligations = (res.ok && res.data.ok) ? (res.data.obligations || []) : [];
       if (!obligations.length) { window.location.reload(); return; }

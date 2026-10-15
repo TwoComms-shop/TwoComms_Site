@@ -35,8 +35,10 @@ def counterparties_overview(company, *, search='', type_filter='', sort='turnove
     """
     qs = Counterparty.objects.filter(company=company)
     if search:
+        from .cards import normalize_alias
         qs = qs.filter(Q(name__icontains=search) | Q(group__icontains=search)
-                       | Q(edrpou__icontains=search))
+                       | Q(edrpou__icontains=search)
+                       | Q(aliases__normalized=normalize_alias(search), aliases__is_active=True)).distinct()
     if type_filter:
         qs = qs.filter(type=type_filter)
 

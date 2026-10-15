@@ -270,7 +270,9 @@ def review_action_api(request, review_id):
             if action == 'accept':
                 proposal = review.proposal or {}
                 kind = proposal.get('kind') or proposal.get('economic_kind')
-                if kind == 'terminal_cash_transfer':
+                if kind == 'obligation_payment':
+                    raise ValueError('Оберіть компонент і період у підтвердженні витрати')
+                elif kind == 'terminal_cash_transfer':
                     ledger_v2.confirm_terminal_cash_transfer(
                         review.transaction,
                         source_cash_account_id=proposal.get('source_cash_account_id'),
@@ -650,6 +652,23 @@ def component_payment_intent_api(request, component_id):
 
 @finance_access_required(api=True)
 @require_GET
+def obligation_payment_review_api(request, txn_id):
+    from ..services import obligation_payments
+    txn = get_object_or_404(Transaction, pk=txn_id, company=get_default_company())
+    try:
+        review = obligation_payments.ensure_review(txn, period_key=request.GET.get('period_key'))
+        data = obligation_payments.context(txn, period_key=request.GET.get('period_key')) if review else None
+    except ValueError as exc:
+        return _error(exc)
+    supports_components = bool(txn.counterparty_id and txn.company.obligation_groups.filter(
+        counterparty_id=txn.counterparty_id, is_active=True, type='expense',
+    ).exists())
+    return JsonResponse({'ok': True, 'supports_components': supports_components,
+                         'review': ({'id': review.id, **data} if data else None)})
+
+
+@finance_access_required(api=True)
+@require_GET
 def component_payment_context_api(request, component_id):
     """Return existing unlinked payments and saved recipient details."""
     company = get_default_company()
@@ -688,10 +707,16 @@ def component_settle_existing_api(request, component_id):
     data = _body(request)
     try:
         period_key = obligations_v2.payment_period(data.get('period_key'))
+        component_hint = get_object_or_404(
+            ObligationComponent, pk=component_id, group__company=company, is_active=True,
+        )
         with db_transaction.atomic():
+            locked_group = get_object_or_404(
+                ObligationGroup.objects.select_for_update(), pk=component_hint.group_id, company=company,
+            )
             component = get_object_or_404(
                 ObligationComponent.objects.select_for_update().select_related('group'),
-                id=component_id, group__company=company, is_active=True,
+                id=component_id, group=locked_group, is_active=True,
             )
             payment = get_object_or_404(
                 Transaction.objects.select_for_update(),
@@ -702,7 +727,12 @@ def component_settle_existing_api(request, component_id):
                 raise ValueError('Оберіть повернення на грантовий рахунок у картці зобовʼязання')
             if payment.type != expected_type:
                 raise ValueError('Тип операции не совпадает с обязательством')
+            if (payment.counterparty_id and component.group.counterparty_id
+                    and payment.counterparty_id != component.group.counterparty_id):
+                raise ValueError('Контрагент платежу не відповідає зобовʼязанню')
             amount = _decimal(data.get('amount') or payment.amount)
+            if data.get('confirm_expense') and amount != payment.amount:
+                raise ValueError('Сума операції змінилася. Оновіть підтвердження витрати')
             if amount > payment.amount:
                 raise ValueError('Сумма превышает сумму операции')
             if payment.settlements.exists():
@@ -717,18 +747,25 @@ def component_settle_existing_api(request, component_id):
                 )
                 if anchor.type != expected_type or anchor.counterparty_id != component.group.counterparty_id:
                     raise ValueError('Планова операція не відповідає зобовʼязанню')
+                period_start, period_end = obligations_v2.payment_period_bounds(period_key)
                 plans = Transaction.objects.select_for_update().filter(
                     company=company, type=expected_type, status=Transaction.STATUS_PLANNED,
-                    date_actual__year=int(period_key[:4]), date_actual__month=int(period_key[5:]),
+                    date_actual__gte=period_start, date_actual__lt=period_end,
                 )
                 if anchor.recurrence_rule_id:
                     plans = plans.filter(recurrence_rule_id=anchor.recurrence_rule_id)
                 else:
                     plans = plans.filter(pk=anchor.pk)
                 planned = plans.order_by('date_actual', 'id').first()
+            payment_fields = []
             if component.group.counterparty_id and not payment.counterparty_id:
                 payment.counterparty_id = component.group.counterparty_id
-                payment.save(update_fields=['counterparty', 'updated_at'])
+                payment_fields.append('counterparty')
+            if planned and planned.category_id:
+                payment.category_id = planned.category_id
+                payment_fields.append('category')
+            if payment_fields:
+                payment.save(update_fields=[*payment_fields, 'updated_at'])
             settlement = ObligationSettlement.objects.create(
                 company=company, payment=payment, planned_txn=planned,
                 rule=planned.recurrence_rule if planned else component.group.recurrence_rule,
@@ -739,6 +776,16 @@ def component_settle_existing_api(request, component_id):
             obligations_v2.allocate_settlement(
                 settlement=settlement, allocations={str(component.id): str(amount)},
             )
+            if expected_type == 'expense' and payment.economic_kind == 'unknown':
+                ledger_v2.classify_transaction(
+                    payment, user=request.user, economic_kind='operating_expense',
+                    ownership_scope=payment.ownership_scope if payment.ownership_scope != 'unknown'
+                    else ('business' if payment.is_business else 'personal'),
+                    funding_source=payment.funding_source,
+                    note=f'Підтверджено: {component.name}, {period_key}',
+                )
+            from ..services import obligation_payments
+            obligation_payments.resolve_review(payment, component, settlement, user=request.user)
             summary = obligations_v2.group_summary(component.group, period_key=period_key)
             if planned and summary['status'] == 'paid':
                 from ..services import transactions as transactions_service
