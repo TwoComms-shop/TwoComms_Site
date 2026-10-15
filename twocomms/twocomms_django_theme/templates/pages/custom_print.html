@@ -40,11 +40,12 @@
 {% block extra_css %}
   {{ block.super }}
   <link rel="stylesheet" href="{% static 'css/custom-print-guided-studio.css' %}?v=20260729-color-fallback-v1">
-  <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261002-mobile-hero-v2">
+  <link rel="stylesheet" href="{% static 'css/custom-print-mobile-hero.css' %}?v=20261015-responsive-hero-v2">
   <link rel="stylesheet" href="{% static 'css/custom-print-purpose.css' %}?v=20261007-layout-v7">
   <link rel="stylesheet" href="{% static 'css/custom-print-collection.css' %}?v=20261007-layout-v7">
   <link rel="stylesheet" href="{% static 'css/custom-print-gift-options.css' %}?v=20261007-layout-v7">
   <link rel="stylesheet" href="{% static 'css/custom-print-refinements.css' %}?v=20261007-layout-v7">
+  <link rel="stylesheet" href="{% static 'css/custom-print-desktop.css' %}?v=20261015-desktop-v2">
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -74,93 +75,6 @@
     </div>
     {% endif %}
     {% include 'partials/custom_print_mobile_hero.html' %}
-    <header class="cp-hero cp-hero--premium cp-hero--reference" data-hero data-custom-print-hero>
-      <div class="cp-hero-copy">
-        <div class="cp-animate-in cp-delay-1">
-          <div class="cp-hero-brand">
-            <span class="cp-hero-brandmark" aria-hidden="true">
-              <img src="{% static 'img/logo.svg' %}" alt="" loading="eager" width="44" height="44">
-            </span>
-            <div class="cp-hero-brandcopy">
-              <strong>TwoComms Custom Print</strong>
-              <span>{% trans 'Худі, футболки, лонгсліви та ваші речі під DTF-друк.' %}</span>
-            </div>
-          </div>
-        </div>
-
-        {% comment %}
-        SEO v1.0 Phase 2 (2026-05-12) — finding (B2). Add a space
-        before the line break so the plaintext extraction
-        (textContent) used by Google/SGE/screen-readers reads
-        «Створи річ, що говорить за тебе» instead of the run-on
-        «Створи річ,що говорить за тебе». WCAG 1.3.1 fix.
-        {% endcomment %}
-        <h2 class="cp-hero-title cp-animate-in cp-delay-3" aria-label="{% trans 'Створи річ, що говорить за тебе' %}">{% blocktrans %}Створи річ, <br> що&nbsp;говорить <span>за тебе</span>{% endblocktrans %}</h2>
-        <p class="cp-hero-desc cp-animate-in cp-delay-4">
-          {% trans 'Кастомний одяг та аксесуари під ваші ідеї. Будь-який дизайн, будь-який колір, преміальна якість без компромісів.' %}
-        </p>
-
-        <div class="cp-hero-actions cp-animate-in cp-delay-5">
-          <button class="cp-btn cp-btn--primary cp-btn--glow" type="button" data-start-flow data-action-start>
-            <span class="cp-btn-shimmer"></span>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4"/><path d="M12 18v4"/><path d="m4.93 4.93 2.83 2.83"/><path d="m16.24 16.24 2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="m4.93 19.07 2.83-2.83"/><path d="m16.24 7.76 2.83-2.83"/></svg>
-            {% trans 'Створи свій одяг' %}
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
-          </button>
-
-        </div>
-
-      </div>
-
-      <div class="cp-hero-theatre cp-animate-in cp-delay-3" aria-label="{% trans 'Приклад кастомного одягу TwoComms' %}">
-        <figure class="cp-hero-stage">
-          <img src="{% static 'img/configurator/hero/custom-print-stage.jpg' %}" alt="{% trans 'Худі, футболка та лонгслів з кастомним друком TwoComms' %}" loading="eager" fetchpriority="high">
-
-          <figcaption class="visually-hidden">{% trans 'Три чорні речі на подіумі з логотипами TwoComms: худі, футболка та лонгслів.' %}</figcaption>
-
-          <span class="cp-hero-garment-label cp-hero-garment-label--hoodie">{% trans 'Худі' %}</span>
-          <span class="cp-hero-garment-label cp-hero-garment-label--tee">{% trans 'Футболка' %}</span>
-          <span class="cp-hero-garment-label cp-hero-garment-label--longsleeve">{% trans 'Лонгслів' %}</span>
-
-          <span class="cp-hero-print-zone cp-hero-print-zone--hoodie" aria-hidden="true">
-            <span class="cp-hero-print-zone__frame cp-hero-print-zone__frame--a6">
-              <span>{% trans 'ваш принт' %}</span>
-              <strong>A6</strong>
-            </span>
-            <span class="cp-hero-print-zone__frame cp-hero-print-zone__frame--a5">
-              <span>{% trans 'ваш принт' %}</span>
-              <strong>A5</strong>
-            </span>
-            <span class="cp-hero-print-zone__frame cp-hero-print-zone__frame--a4">
-              <span>{% trans 'ваш принт' %}</span>
-              <strong>A4</strong>
-            </span>
-          </span>
-          <span class="cp-hero-logo-on-cloth cp-hero-logo-on-cloth--tee" aria-hidden="true">
-            <img src="{% static 'img/logo.svg' %}" alt="">
-            <strong>TWOCOMMS</strong>
-            <small>FOR THE ONES WHO CREATE</small>
-          </span>
-          <span class="cp-hero-print-zone cp-hero-print-zone--longsleeve" aria-hidden="true">
-            <span class="cp-hero-print-zone__frame cp-hero-print-zone__frame--a6">
-              <span>{% trans 'ваш принт' %}</span>
-              <strong>A6</strong>
-            </span>
-            <span class="cp-hero-print-zone__frame cp-hero-print-zone__frame--a5">
-              <span>{% trans 'ваш принт' %}</span>
-              <strong>A5</strong>
-            </span>
-            <span class="cp-hero-print-zone__frame cp-hero-print-zone__frame--a4">
-              <span>{% trans 'ваш принт' %}</span>
-              <strong>A4</strong>
-            </span>
-          </span>
-        </figure>
-
-      </div>
-
-    </header>
-
     <section class="cp-draft-resume" data-draft-resume-card hidden aria-live="polite">
       <div>
         <small>{% trans 'Збережена конфігурація' %}</small>
@@ -187,8 +101,9 @@
       <button type="button" class="cp-icon-button" data-preview-open aria-label="{% trans 'Переглянути одяг і принт' %}">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.8"/></svg>
       </button>
-      <button type="button" class="cp-icon-button" data-manager-open aria-label="{% trans 'Написати в Telegram' %}" title="{% trans 'Написати в Telegram' %}">
+      <button type="button" class="cp-icon-button cp-studio-telegram" data-manager-open aria-label="{% trans 'Написати в Telegram' %}" title="{% trans 'Написати в Telegram' %}">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m20.6 4.2-3.2 15.1c-.2 1.1-.8 1.4-1.6.9l-4.4-3.3-2.1 2c-.2.2-.4.4-.8.4l.3-4.5 8.2-7.4c.4-.4-.1-.6-.6-.2L6.3 13 2 11.6c-.9-.3-.9-.9.2-1.3L19 3.8c.8-.3 1.8.2 1.6.4Z" fill="currentColor"/></svg>
+        <span>Telegram</span>
       </button>
     </header>
 
@@ -266,10 +181,18 @@
         <!-- ═══ WATERFALL: вертикальний список кроків ═══ -->
         <div class="cp-waterfall" data-waterfall>
           <div class="cp-step-viewport" data-step-viewport>
+          <div class="cp-studio-toolbar">
           <div class="cp-collection-strip" data-collection-strip hidden>
             <span data-collection-strip-label></span>
             <button type="button" data-collection-show aria-label="{% trans 'Повернутися до списку збережених речей' %}"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16 10H4m5-5-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>{% trans 'До добірки' %}</button>
             <button type="button" data-collection-cancel hidden>{% trans 'Скасувати зміни' %}</button>
+          </div>
+          <div class="cp-studio-contact-slot">
+            <button type="button" class="cp-studio-contact" data-studio-contact data-manager-quick-contact hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.6 4.2-3.2 15.1c-.2 1.1-.8 1.4-1.6.9l-4.4-3.3-2.1 2c-.2.2-.4.4-.8.4l.3-4.5 8.2-7.4c.4-.4-.1-.6-.6-.2L6.3 13 2 11.6c-.9-.3-.9-.9.2-1.3L19 3.8c.8-.3 1.8.2 1.6.4Z"/></svg>
+              <span>{% trans 'Обговорити в Telegram' %}</span>
+            </button>
+          </div>
           </div>
           <div class="cp-studio-step" data-studio-step="format">
           <!-- STEP 1: Mode (B2C / B2B) -->
@@ -1314,7 +1237,7 @@
   <script src="{% static 'js/custom-print-state.js' %}?v=20260719-responsive-v2" defer></script>
   <script src="{% static 'js/custom-print-render-plan.js' %}?v=20260813-render-plan-v1" defer></script>
   <script src="{% static 'js/custom-print-preview.js' %}?v=20260729-color-fallback-v1" defer></script>
-  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261007-layout-v7" defer></script>
+  <script src="{% static 'js/custom-print-mobile-shell.js' %}?v=20261015-contact-v4" defer></script>
   <script src="{% static 'js/custom-print-submit-flow.js' %}?v=20260726-dialog-focus-v3" defer></script>
   <script src="{% static 'js/custom-print-mobile-hero.js' %}?v=20261002-mobile-hero-v1" defer></script>
   <script src="{% static 'js/custom-print-purpose.js' %}?v=20261007-layout-v7" defer></script>

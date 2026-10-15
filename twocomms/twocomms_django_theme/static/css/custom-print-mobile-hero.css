@@ -31,7 +31,7 @@
   src: url(../fonts/Montserrat-custom-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
-.cp-mobile-hero { display: none; }
+.cp-mobile-hero__wordmark { display: none; }
 
 @media (max-width: 991.98px) {
   html:has(.cp-page), body:has(.cp-page) { min-width: 0; }
@@ -45,7 +45,9 @@
   .cp-context-banner, .cp-draft-resume { margin: 12px; }
   .cp-support-stack { margin: 28px 16px 0; }
   body.cp-studio-active .cp-mobile-hero { display: none; }
+}
 
+/* The same garment preview and visual language across every screen. */
   .cp-mobile-hero {
     --hero-gold: #efbb54;
     display: block;
@@ -240,7 +242,7 @@
   .cp-mobile-hero__identity span { display: block; }
   .cp-mobile-hero__identity::after { content: ""; display: block; width: 26px; height: 1px; margin: 6px 0 0 auto; background: #cca33f; }
 
-  .cp-mobile-hero__actions { position: relative; z-index: 3; display: grid; justify-items: center; gap: 11px; margin: 0 9%; }
+  .cp-mobile-hero__actions { position: relative; z-index: 3; display: grid; justify-items: center; gap: 14px; margin: 0 9%; }
   .cp-mobile-hero__start {
     position: relative;
     display: flex;
@@ -272,17 +274,21 @@
     justify-content: center;
     gap: 8px;
     max-width: 100%;
-    padding: 4px 13px 4px 8px;
-    border: 1px solid #393732;
+    min-height: 44px;
+    padding: 8px 14px 8px 9px;
+    border: 1px solid #609fc24d;
     border-radius: 999px;
-    background: linear-gradient(115deg, #171613ed, #0b0b0ce8);
-    color: #e7e7e7;
-    font-size: clamp(9px, 2.44cqw, 15px);
+    background: linear-gradient(115deg, #13232b, #0b1115);
+    color: #d9eff9;
+    font-family: inherit;
+    font-size: clamp(11px, 2.7cqw, 14px);
     font-weight: 500;
     line-height: 1.2;
     text-decoration: none;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
   }
-  .cp-mobile-hero__telegram:hover { color: #fff; border-color: #6b5d44; }
+  .cp-mobile-hero__telegram:hover { color: #fff; border-color: #62b6e2; background: #153040; }
   .cp-mobile-hero__telegram-icon { display: grid; place-items: center; width: 25px; height: 25px; flex: 0 0 auto; border-radius: 50%; background: linear-gradient(150deg, #26baff, #008fce); }
   .cp-mobile-hero__telegram-icon svg { width: 19px; height: 19px; fill: #fff; }
   .cp-mobile-hero__chevron { width: 7px; height: 12px; flex: 0 0 auto; margin-left: 4px; fill: none; stroke: currentColor; stroke-width: 1.5; }
@@ -302,6 +308,114 @@
   .cp-mobile-hero__benefits li:last-child { padding-right: 0; }
   .cp-mobile-hero__benefits li + li { border-left: 1px solid #ffffff2b; }
   .cp-mobile-hero__benefits svg { width: clamp(21px, 5.72cqw, 35px); height: clamp(21px, 5.72cqw, 35px); flex: 0 0 auto; fill: none; stroke: #f3c15c; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 5px #eca92635); }
+
+@media (min-width: 992px) {
+  .cp-mobile-hero {
+    display: grid;
+    grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr);
+    grid-template-rows: auto auto 1fr auto;
+    column-gap: 12px;
+    row-gap: 26px;
+    align-items: start;
+    width: 100%;
+    max-width: none;
+    min-height: 680px;
+    padding: 58px 48px 26px;
+    border: 1px solid #d5af5c26;
+    border-radius: 28px;
+    background:
+      radial-gradient(ellipse at 75% 48%, #a8752017, transparent 48%),
+      radial-gradient(ellipse at 8% 3%, #a8752010, transparent 44%), #030303;
+    text-align: left;
+  }
+  .cp-mobile-hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 1px 0 #ffe4aa0d;
+    pointer-events: none;
+  }
+  .cp-mobile-hero__intro { grid-area: 1 / 1; padding: 0; }
+  .cp-mobile-hero__wordmark {
+    display: block;
+    margin: 0 0 32px;
+    color: #f4f1e9;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .025em;
+  }
+  .cp-mobile-hero__wordmark span {
+    margin-left: 9px;
+    padding-left: 12px;
+    border-left: 1px solid #ad8b4b66;
+    color: #c4ac7d;
+    font-weight: 400;
+  }
+  .cp-mobile-hero__eyebrow { margin-bottom: 14px; font-size: 10px; letter-spacing: .27em; }
+  .cp-mobile-hero__title { font-size: clamp(52px, 5.1vw, 78px); line-height: 1.04; letter-spacing: -.045em; }
+  .cp-mobile-hero__title span { margin-inline: 0; }
+  .cp-mobile-hero__description {
+    max-width: 420px;
+    margin: 24px 0 0;
+    color: #bcbab5;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .cp-mobile-hero__description br { display: none; }
+  .cp-mobile-hero__choices { grid-area: 2 / 1; width: 100%; max-width: 440px; margin: 0; gap: 7px; }
+  .cp-mobile-hero__choice { min-height: 43px; padding: 9px 6px; gap: 6px; font-size: 11px; }
+  .cp-mobile-hero__choice svg { width: 21px; height: 21px; }
+  .cp-mobile-hero__choice:hover { color: #fff1ce; border-color: #b58d47; }
+  .cp-mobile-hero__scene {
+    grid-area: 1 / 2 / 4 / 3;
+    align-self: stretch;
+    min-height: 535px;
+    height: auto;
+    margin: -32px -36px -10px -14px;
+  }
+  .cp-mobile-hero__art { inset: 0; overflow: hidden; }
+  .cp-mobile-hero__art picture {
+    mask-image: linear-gradient(transparent, #000 10% 74%, transparent 100%);
+    -webkit-mask-image: linear-gradient(transparent, #000 10% 74%, transparent 100%);
+  }
+  .cp-mobile-hero__art img { top: -22%; left: 0; width: 100%; }
+  .cp-mobile-hero__art::after { background: linear-gradient(90deg, #030303, transparent 12% 90%, #030303); }
+  .cp-mobile-hero__scene::after { bottom: 0; }
+  .cp-mobile-hero__annotations { padding: 46px 20px 0 10px; gap: 20px; }
+  .cp-mobile-hero__handwriting { font-size: 23px; }
+  .cp-mobile-hero__identity { flex-basis: auto; max-width: 190px; font-size: 8px; line-height: 1.8; }
+  .cp-mobile-hero__actions { grid-area: 3 / 1; justify-items: start; gap: 16px; margin: 0; }
+  .cp-mobile-hero__start { width: clamp(300px, 26vw, 340px); min-height: 54px; padding: 16px 18px; border-radius: 15px; font-size: clamp(14px, 1.2vw, 17px); gap: 15px; }
+  .cp-mobile-hero__start:hover { filter: brightness(1.08); transform: translateY(-2px); }
+  .cp-mobile-hero__telegram { font-size: clamp(12px, 1vw, 14px); gap: 10px; }
+  .cp-mobile-hero__telegram-icon { width: 23px; height: 23px; }
+  .cp-mobile-hero__telegram-icon svg { width: 16px; height: 16px; }
+  .cp-mobile-hero__benefits {
+    grid-area: 4 / 1 / 5 / 3;
+    grid-template-columns: 1fr .95fr 1.12fr 1.45fr;
+    margin: 8px 0 0;
+    padding-top: 22px;
+    border-top: 1px solid #d9bd811f;
+  }
+  .cp-mobile-hero__benefits li { gap: 12px; padding: 6px 25px; font-size: 12px; line-height: 1.45; }
+  .cp-mobile-hero__benefits svg { width: 29px; height: 29px; stroke-width: 1.3; }
+}
+
+@media (min-width: 1400px) {
+  .cp-mobile-hero { min-height: 730px; padding: 68px 64px 30px; column-gap: 22px; }
+  .cp-mobile-hero__scene { min-height: 570px; margin-right: -48px; }
+  .cp-mobile-hero__description { max-width: 440px; font-size: 16px; }
+  .cp-mobile-hero__choices { max-width: 460px; }
+  .cp-mobile-hero__choice { font-size: 12px; }
+  .cp-mobile-hero__benefits li { font-size: 13px; }
+}
+
+@media (min-width: 992px) and (max-width: 1100px) {
+  .cp-mobile-hero { padding-inline: 32px; column-gap: 6px; }
+  .cp-mobile-hero__choice { font-size: 10px; }
+  .cp-mobile-hero__benefits li { padding-inline: 16px; gap: 9px; font-size: 11px; }
+  body.cp-studio-active .cp-mobile-hero { display: none; }
 }
 
 @media (max-width: 359px) {

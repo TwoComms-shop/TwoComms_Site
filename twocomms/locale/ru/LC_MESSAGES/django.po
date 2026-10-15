@@ -17490,3 +17490,63 @@ msgstr "Дату изготовления согласовываем после 
 #: storefront/views/static_pages.py twocomms_django_theme/templates/pages/custom_print.html
 msgid "Кастомний друк на футболках, худі та лонгслівах"
 msgstr "Кастомная печать на футболках, худи и лонгсливах"
+
+#: twocomms_django_theme/templates/partials/header.html twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Створи свій одяг"
+msgstr "Создай свою одежду"
+
+#: twocomms_django_theme/templates/partials/header.html twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Конструктор одягу: обери виріб, колір і принт"
+msgstr "Конструктор одежды: выбери изделие, цвет и принт"
+
+#: twocomms_django_theme/templates/partials/header.html twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Відкрити конструктор"
+msgstr "Открыть конструктор"
+
+#: twocomms_django_theme/templates/partials/header.html twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Худі, футболки, лонгсліви чи твій одяг. Обери колір, додай принт — створи річ для себе, подарунка або команди."
+msgstr "Худи, футболки, лонгсливы или твоя одежда. Выбери цвет, добавь принт — создай вещь для себя, подарка или команды."
+
+#: twocomms_django_theme/templates/partials/header.html twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Створи"
+msgstr "Создай"
+
+#: twocomms_django_theme/templates/partials/header.html twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "свій одяг"
+msgstr "свою одежду"
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Твої ідеї. Наше втілення."
+msgstr "Твои идеи. Наше воплощение."
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Твій дизайн"
+msgstr "Твой дизайн"
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "тут"
+msgstr "здесь"
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Більше ніж одяг."
+msgstr "Больше, чем одежда."
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Це твоя ідентичність."
+msgstr "Это твоя индивидуальность."
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Преміальна якість"
+msgstr "Премиальное качество"
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Швидке виготовлення"
+msgstr "Быстрое изготовление"
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Для команд, брендів та підрозділів"
+msgstr "Для команд, брендов и подразделений"
+
+#: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
+msgid "Переглянути одяг для свого принта"
+msgstr "Посмотреть одежду для своего принта"

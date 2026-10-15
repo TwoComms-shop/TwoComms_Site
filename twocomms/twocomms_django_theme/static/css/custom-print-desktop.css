@@ -1,0 +1,88 @@
+/* The same illustrated choice cards and explicit contact action on larger screens. */
+.cp-studio-contact-slot, .cp-studio-contact { display: none; }
+.cp-studio-toolbar { display: contents; }
+@media (min-width: 992px) {
+  :is(html[lang|="ru"], html[lang|="en"]) .cp-mobile-hero__title { font-size: clamp(44px, 4.55vw, 68px); }
+  .cp-purpose-grid { gap: 14px; align-items: stretch; }
+  .cp-purpose-grid .cp-purpose-card {
+    display: grid; grid-template-columns: minmax(0, 1fr) 24px;
+    align-content: start; align-items: center; gap: 18px 8px;
+    min-height: 224px; padding: clamp(16px, 1.7vw, 24px);
+    border-radius: 22px; border-color: #ffffff24;
+    background: linear-gradient(125deg, #242129, #17171d);
+    box-shadow: 0 10px 24px #0002; isolation: isolate;
+  }
+  .cp-purpose-grid .cp-purpose-card::after { display: none; }
+  .cp-purpose-grid .cp-purpose-icon { display: grid; place-items: center; width: 58px; height: 66px; border-radius: 16px; color: #e9d3a7; background: linear-gradient(145deg, #f4dcae1a, #f4dcae06); }
+  .cp-purpose-icon > svg { width: 32px; height: 32px; stroke-width: 1.5; }
+  .cp-purpose-grid .cp-purpose-copy { grid-column: 1 / -1; grid-row: 2; gap: 9px; }
+  .cp-purpose-grid .cp-purpose-copy small { color: #cbbfa8; font-size: 10px; line-height: 1.4; letter-spacing: .04em; text-transform: uppercase; }
+  .cp-purpose-grid .cp-purpose-copy strong { font-size: clamp(17px, 1.4vw, 21px); font-weight: 750; line-height: 1.25; letter-spacing: -.025em; }
+  .cp-purpose-grid .cp-purpose-copy > span { font-size: 13px; line-height: 1.5; color: #c4bec8; }
+  .cp-purpose-grid .cp-purpose-arrow { position: relative; display: grid; place-items: center; grid-column: 2; grid-row: 1; width: 24px; height: 24px; font-size: 25px; color: #d2c4aa; }
+  .cp-purpose-arrow > span { transition: opacity 180ms, transform 180ms; }
+  .cp-purpose-arrow .cp-purpose-check { position: absolute; inset: 0; display: block; width: 24px; height: 24px; opacity: 0; transform: scale(.65); transition: opacity 220ms, transform 300ms; color: #f3d390; }
+  .cp-purpose-card.is-active .cp-purpose-arrow > span { opacity: 0; transform: translateX(4px); }
+  .cp-purpose-card.is-active .cp-purpose-check { opacity: 1; transform: scale(1); }
+  .cp-purpose-grid .cp-purpose-card--gift { border-color: #e8bf6c5c; background: radial-gradient(ellipse at 4% 10%, #cc8f4024, transparent 65%), linear-gradient(125deg, #29231f, #1c191c); }
+  .cp-purpose-card--gift .cp-purpose-icon { background: transparent; }
+  .cp-purpose-grid .cp-purpose-card:hover { border-color: #edc77e99; transform: translateY(-3px); }
+  .cp-purpose-grid .cp-purpose-card:active { transform: scale(.985); }
+  .cp-purpose-grid .cp-purpose-card:focus-visible { outline: 2px solid #f3d798; outline-offset: 4px; }
+  .cp-studio-telegram span { display: none; }
+}
+@media (min-width: 1101px) {
+  body.cp-studio-active .cp-studio-toolbar {
+    position: sticky; top: 78px; z-index: 20;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 8px 12px; margin-bottom: 14px;
+    border: 1px solid #ffffff14; border-radius: 16px; background: #111017;
+  }
+  .cp-studio-toolbar .cp-collection-strip { flex: 1 1 240px; padding: 0; margin: 0; border: 0; background: none; }
+  body.cp-studio-active .cp-studio-contact-slot { display: flex; flex: 0 0 auto; margin-left: auto; }
+  body.cp-studio-active .cp-studio-contact {
+    display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 11px 18px;
+    border: 1px solid #6dc5f477; border-radius: 999px; background: #102936; color: #e6f6ff;
+    box-shadow: 0 8px 24px #0005; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  body.cp-purpose-step .cp-studio-toolbar { display: none; }
+  .cp-studio-contact svg { width: 22px; height: 22px; fill: #6bcaff; }
+  .cp-studio-contact:hover { background: #194158; border-color: #85d3ff; }
+  .cp-studio-contact:focus-visible { outline: 2px solid #85d3ff; outline-offset: 4px; }
+  .cp-gift-options { grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+  .cp-gift-option > .cp-gift-option-toggle { min-height: 136px; grid-template-columns: 48px minmax(0, 1fr) 44px; gap: 14px; padding: 20px; }
+  .cp-gift-option-icon { width: 42px; height: 48px; }
+  .cp-gift-option-copy strong { font-size: 17px; line-height: 1.3; }
+  .cp-gift-option-panel { padding: 20px; gap: 20px; }
+  .cp-gift-option-panel .cp-gift-preview { min-width: 0; }
+  :is([data-gift-text-wrap], [data-gift-wrapping-panel], [data-gift-certificate-panel]) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; align-content: start;
+  }
+  :is([data-gift-text-wrap], [data-gift-wrapping-panel], [data-gift-certificate-panel]) > * { grid-column: 2; }
+  [data-gift-text-wrap] > .cp-gift-preview { grid-column: 1; grid-row: 1 / span 5; }
+  [data-gift-wrapping-panel] > .cp-gift-exterior-preview { grid-column: 1; grid-row: 1 / span 6; }
+  [data-gift-certificate-panel] > .cp-gift-certificate-preview { grid-column: 1; grid-row: 1 / span 3; }
+  [data-gift-certificate-panel] > [data-gift-card-flip] { grid-column: 1; grid-row: 4; }
+  .cp-size-grid:not([hidden]) { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .cp-size-grid .cp-mini-chip { min-height: 48px; font-size: 16px; }
+  .cp-stage-card { grid-auto-rows: max-content; scrollbar-width: thin; scrollbar-color: #b99a624d transparent; }
+  .cp-stage-card .cp-stage-frame { width: min(100%, clamp(220px, calc((100svh - 480px) * .85714), 430px)); justify-self: center; }
+  .cp-stage-receipt-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .cp-stage-receipt-list li > :first-child { min-width: 0; overflow-wrap: anywhere; }
+  .cp-stage-receipt-list li > :last-child { flex-shrink: 0; white-space: nowrap; }
+}
+@media (min-width: 1101px) and (max-height: 800px) {
+  .cp-stage-card .cp-stage-copy > span { display: none; }
+}
+@media (min-width: 360px) and (max-width: 1100px) {
+  body.cp-studio-active > .cp-studio-appbar { grid-template-columns: 40px 40px minmax(0, 1fr) 40px 96px; }
+  .cp-studio-appbar .cp-studio-telegram { display: flex; align-items: center; justify-content: center; gap: 5px; width: 96px; color: #a5dfff; border-color: #3596c45c; background: #112a36; font-size: 11px; }
+  .cp-studio-telegram svg { width: 19px; height: 19px; }
+}
+@media (max-width: 359px) {
+  .cp-studio-telegram span { display: none; }
+  .cp-studio-appbar .cp-studio-telegram { color: #a5dfff; border-color: #3596c45c; background: #112a36; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cp-purpose-grid .cp-purpose-card:hover, .cp-purpose-grid .cp-purpose-card:active { transform: none; }
+  .cp-purpose-arrow > span, .cp-purpose-arrow .cp-purpose-check { transition: none; }
+}

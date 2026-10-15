@@ -1,0 +1,54 @@
+/* Keep the desktop navigation on one line, down to its 992px breakpoint. */
+@media (min-width: 992px) {
+  [data-storefront-header] > .container-xxl { flex-wrap: nowrap; gap: clamp(10px, 1.1vw, 18px); }
+  [data-storefront-header] .navbar-brand--twocomms {
+    flex: 0 0 auto;
+    gap: clamp(6px, .65vw, 10px) !important;
+    margin-right: 0;
+    font-size: clamp(17px, 1.52vw, 20px) !important;
+    white-space: nowrap;
+  }
+  [data-storefront-header] .navbar-brand img { width: clamp(22px, 2vw, 28px); height: clamp(22px, 2vw, 28px); }
+  [data-storefront-header] #navMain { flex-wrap: nowrap; gap: clamp(8px, .8vw, 14px); min-width: 0; }
+  [data-storefront-header] .navbar-nav { flex: 1 0 auto; flex-wrap: nowrap; align-items: center; }
+  [data-storefront-header] .navbar-nav .nav-link {
+    display: flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 8px clamp(4px, .5vw, 10px) !important;
+    font-size: clamp(12.5px, .96vw, 14px) !important;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+  [data-storefront-header] .site-header-search { flex: 0 1 150px; width: clamp(84px, 10vw, 150px); min-width: 84px; margin-right: 0 !important; }
+  [data-storefront-header] .site-header-search .form-control { width: 100%; min-width: 0; height: 36px !important; font-size: clamp(12.5px, .96vw, 14px) !important; }
+  [data-storefront-header] .site-header-actions { flex: 0 0 auto; gap: clamp(8px, .8vw, 12px); }
+  [data-storefront-header] .site-header-customizer {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 40px;
+    margin-right: 0 !important;
+    padding: 10px clamp(10px, 1vw, 15px) !important;
+    border-radius: 12px;
+    font-size: clamp(12.5px, .96vw, 14px) !important;
+    font-weight: 650;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  [data-storefront-header] .site-header-customizer svg { flex: 0 0 auto; width: 17px; height: 17px; }
+  [data-storefront-header] .user-profile-container { flex: 0 0 auto; margin-left: 0 !important; }
+  [data-storefront-header] :is(.favorites-btn, .cart-btn, .user-avatar-btn, .avatar-wrapper, .favorites-icon-wrapper, .cart-icon-wrapper) { width: clamp(34px, 2.8vw, 40px); height: clamp(34px, 2.8vw, 40px); }
+  [data-storefront-header] :is(.favorites-btn, .cart-btn, .user-avatar-btn) { min-width: 0; padding: 0; }
+  [data-storefront-header] .avatar-image { width: 100%; height: 100%; }
+  [data-storefront-header] .site-header-customizer:focus-visible { outline: 2px solid #e0ccff; outline-offset: 4px; }
+}
+@media (min-width: 992px) and (max-width: 1040px) {
+  [data-storefront-header] .navbar-brand--twocomms { font-size: 16px !important; }
+  [data-storefront-header] #navMain { gap: 6px; }
+  [data-storefront-header] .navbar-nav .nav-link { padding-inline: 4px !important; }
+  [data-storefront-header] .site-header-actions { gap: 6px; }
+  [data-storefront-header] .site-header-customizer { gap: 5px; }
+}

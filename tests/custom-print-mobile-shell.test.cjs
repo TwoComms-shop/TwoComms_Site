@@ -27,6 +27,9 @@ const appbar = element();
 const mobileBar = element();
 const exitButton = element();
 const managerButton = element();
+const desktopContact = element();
+const contactSlot = element();
+desktopContact.parentNode = contactSlot;
 const stepLabel = element();
 const progress = element();
 const root = element();
@@ -34,6 +37,7 @@ root.querySelector = (selector) => ({
   "[data-studio-appbar]": appbar,
   "[data-studio-exit]": exitButton,
   "[data-manager-open]": managerButton,
+  "[data-studio-contact]": desktopContact,
   "[data-appbar-step]": stepLabel,
   "[data-appbar-progress]": progress,
 }[selector] || null);
@@ -63,7 +67,9 @@ const shell = context.CustomPrintMobileShell.create({
 
 assert.equal(appbar.parentNode, body, "top app bar must escape the page scroll container");
 assert.equal(mobileBar.parentNode, body, "bottom action bar must escape the page scroll container");
+assert.equal(desktopContact.parentNode, contactSlot, "desktop contact keeps its reserved place above the step");
 shell.setActive(true);
+assert.equal(desktopContact.hidden, false);
 assert.equal(appbar.hidden, false);
 assert.equal(mobileBar.hidden, true, "purpose selection must never show the bottom action");
 currentStep = "product";
@@ -74,6 +80,7 @@ shell.setActive(true);
 assert.equal(mobileBar.hidden, true, "back to purpose hides the bar even with existing state");
 assert.equal(body.classList.contains("cp-studio-active"), true);
 shell.setActive(false);
+assert.equal(desktopContact.hidden, true, "contact disappears when the studio is closed");
 assert.equal(appbar.hidden, true);
 assert.equal(mobileBar.hidden, true);
 

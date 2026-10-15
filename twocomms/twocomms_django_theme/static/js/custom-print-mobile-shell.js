@@ -4,6 +4,7 @@
     const exitButton = root.querySelector("[data-studio-exit]");
     const backButton = root.querySelector("[data-studio-back]");
     const managerButton = root.querySelector("[data-manager-open]");
+    const desktopContact = root.querySelector("[data-studio-contact]");
     const previewButtons = root.querySelectorAll("[data-preview-open]");
     const stepLabel = root.querySelector("[data-appbar-step]");
     const progress = root.querySelector("[data-appbar-progress]");
@@ -83,6 +84,7 @@
       root.classList.toggle("is-studio-active", active);
       document.body.classList.toggle("cp-studio-active", active);
       if (appbar) appbar.hidden = !active;
+      if (desktopContact) desktopContact.hidden = !active;
       if (mobileBar) mobileBar.hidden = !active || !showMobileBar();
       updatePreviewCue();
       measurePanels();

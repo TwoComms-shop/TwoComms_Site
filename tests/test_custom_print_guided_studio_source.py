@@ -33,11 +33,11 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertIn("{% trans 'Крок 1 з 8' %}", self.template)
         self.assertIn("data-step-pattern=\"{% trans 'Крок {current} з {total}' %}\"", self.template)
 
-    def test_hero_has_one_primary_start_action_and_no_telegram(self):
-        hero = self.template.split('data-custom-print-hero', 1)[1].split('</header>', 1)[0]
+    def test_hero_has_one_primary_start_action_and_draft_aware_contact(self):
+        hero = (REPO_ROOT / "twocomms/twocomms_django_theme/templates/partials/custom_print_mobile_hero.html").read_text()
         self.assertEqual(hero.count('data-action-start'), 1)
-        self.assertNotIn("Telegram", hero)
-        self.assertNotIn("telegram", hero.lower())
+        self.assertEqual(hero.count("data-manager-quick-contact"), 1)
+        self.assertNotIn("href=", hero, "the secondary action must preserve the draft before handing off")
         for legacy_contract in (
             "cp-hero-badge",
             "cp-hero-feature",
@@ -61,14 +61,11 @@ class CustomPrintGuidedStudioSourceTests(unittest.TestCase):
         self.assertNotIn("window.open(buildManagerTelegramUrl", configurator)
 
     def test_hero_heading_has_a_non_concatenated_accessible_name(self):
-        self.assertIn("aria-label=\"{% trans 'Створи річ, що говорить за тебе' %}\"", self.template)
-        translations = {
-            "en": "Create a piece that speaks for you",
-            "ru": "Создай вещь, которая говорит за тебя",
-        }
-        for language, expected in translations.items():
-            catalog = (REPO_ROOT / f"twocomms/locale/{language}/LC_MESSAGES/django.po").read_text(encoding="utf-8")
-            self.assertIn('msgid "Створи річ, що говорить за тебе"', catalog)
+        hero = (REPO_ROOT / "twocomms/twocomms_django_theme/templates/partials/custom_print_mobile_hero.html").read_text()
+        self.assertIn("</span> <span>", hero)
+        for language, expected in {"en": "your clothes", "ru": "свою одежду"}.items():
+            catalog = (REPO_ROOT / f"twocomms/locale/{language}/LC_MESSAGES/django.po").read_text()
+            self.assertIn('msgid "свій одяг"', catalog)
             self.assertIn(f'msgstr "{expected}"', catalog)
 
     def test_preview_uses_png_scene_without_legacy_garment_rotor(self):
