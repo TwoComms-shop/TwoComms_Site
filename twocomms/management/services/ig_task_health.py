@@ -476,6 +476,19 @@ def release_queue_snapshot() -> dict:
             pk__in=Subquery(owned_source_ids),
         ).count()
         legacy_inbound_pending = inbound_pending - revision_owned_pending
+        # Pending source history is often intentional. A live head whose
+        # execution lease and reply deadline both expired without any recovery
+        # disposition is different: a healthy process must not conceal it.
+        from management.models import IgCustomerTurnRevision
+
+        now = timezone.now()
+        revision_execution_overdue = IgCustomerTurnRevision.objects.filter(
+            active_slot=1, state="claimed", recovery_state="",
+            overall_deadline__lte=now, lease_until__lte=now,
+            client__privacy_erasure_started_at__isnull=True,
+        ).exclude(claim_token="").exclude(claim_token__startswith="debt:").exclude(
+            claim_token__startswith="finalize:",
+        ).count()
         reply_pending = InstagramBotMessage.objects.filter(
             role=InstagramBotMessage.Role.MODEL,
             status__in=(InstagramBotMessage.Status.PENDING, InstagramBotMessage.Status.PROCESSING),
@@ -544,6 +557,7 @@ def release_queue_snapshot() -> dict:
             "legacy_inbound_pending": 0,
             "revision_owned_pending": 0,
             "revision_owned_pending_reason": "preserved_revision_debt_evidence",
+            "revision_execution_overdue": 0,
             "reply_pending": 0,
             "notification_unresolved": 0,
             "analysis_pending": 0,
@@ -563,6 +577,7 @@ def release_queue_snapshot() -> dict:
         + notification_unresolved
         + analysis_pending
         + recovery_unresolved
+        + revision_execution_overdue
         + binotel_counts["eligible"]
         + binotel_counts["metadata_pending"]
         + binotel_counts["ineligible"]
@@ -575,6 +590,7 @@ def release_queue_snapshot() -> dict:
         "legacy_inbound_pending": legacy_inbound_pending,
         "revision_owned_pending": revision_owned_pending,
         "revision_owned_pending_reason": "preserved_revision_debt_evidence",
+        "revision_execution_overdue": revision_execution_overdue,
         "reply_pending": reply_pending,
         "notification_unresolved": notification_unresolved,
         "analysis_pending": analysis_pending,

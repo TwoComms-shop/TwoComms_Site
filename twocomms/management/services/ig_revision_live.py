@@ -328,7 +328,8 @@ def _captured_reply_truth(plan, response, context, *, revision=None):
     return validate_reply_truth(response.reply_text, context=context)
 
 
-def _revision_response_coverage(plan, response, *, revision, local=False, checkout_cart_binding=None):
+def _revision_response_coverage(plan, response, *, revision, local=False, checkout_cart_binding=None,
+    catalog_media_evidence=None):
     """A service handoff does not answer unrelated shopping questions."""
     from management.services.ig_service_complaints import revision_service_complaint
 
@@ -338,7 +339,8 @@ def _revision_response_coverage(plan, response, *, revision, local=False, checko
         # information-handoff credit cannot discharge a service-first turn's
         # unanswered retail questions.
         response = replace(response, controls=())
-    coverage = plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+    coverage = plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding,
+        catalog_media_evidence=catalog_media_evidence)
     from management.services.ig_assisted_commerce_context import AssistedCommerceContext
     assisted = getattr(revision, "_assisted_commerce_context", None)
     if isinstance(assisted, AssistedCommerceContext) and not revision_service_complaint(revision):
@@ -1230,6 +1232,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     from management.services.ig_response_debt import record_response_coverage
     if not record_response_coverage(revision.pk, token, _revision_response_coverage(
         boundary.response_plan, response, revision=revision, checkout_cart_binding=boundary.checkout_cart_binding,
+        catalog_media_evidence={"artifact": artifact, "binding": media_manifest},
     )):
         return None, boundary, ("response_coverage_cas_failed",)
     from management.services.ig_fulfillment_context import retained_fulfillment_frame
@@ -2235,6 +2238,20 @@ def process_revision_finalizations(*, max_items=15):
     return handled
 
 
+def _log_revision_blocked(revision_id, client_id, outcome, *, event="revision_execution"):
+    """Keep proven identity and finite failure codes in the operational console."""
+    from management.services import instagram_bot as bot
+    from management.services.ig_console_read_model import REASONS
+
+    reason = next((code for code in outcome.reasons if code in REASONS), "failed")
+    bot.log(
+        "warning", event,
+        f"revision={revision_id} state={outcome.state} reasons={','.join(outcome.reasons)}",
+        kind="reply_failed", scope={"revision_id": revision_id, "client_id": client_id},
+        reason=reason,
+    )
+
+
 def process_pending_revisions(settings_row, *, max_items=15, create_new=True) -> int:
     """Bounded optional worker; flag rollback only resumes canonical effects."""
     from management.services import instagram_bot as bot
@@ -2278,10 +2295,8 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                 if outcome.state == "completed":
                     handled += 1
                 elif outcome.reasons:
-                    bot.log(
-                        "warning", "revision_collaboration_recovery",
-                        f"revision={revision_id} state={outcome.state} reasons={','.join(outcome.reasons)}",
-                    )
+                    _log_revision_blocked(revision_id, identity["client_id"], outcome,
+                        event="revision_collaboration_recovery")
             except Exception as exc:
                 bot.log("error", "revision_collaboration_recovery", f"revision={revision_id} error={type(exc).__name__}")
             finally:
@@ -2387,7 +2402,7 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                         from management.services.ig_turn_revisions import create_refresh_successor
 
                         create_refresh_successor(revision_id, token, reason=successor_reason)
-                bot.log("warning", "revision_execution", f"revision={revision_id} state={outcome.state} reasons={','.join(outcome.reasons)}")
+                _log_revision_blocked(revision_id, identity["client_id"], outcome)
         except Exception as exc:
             # A durable lease/proposal/effect remains the recovery authority.
             # No source attempts, transcript, or legacy send key are reset.

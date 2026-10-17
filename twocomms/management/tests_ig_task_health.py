@@ -649,6 +649,7 @@ class BotHealthEndpointTests(TestCase):
                 "legacy_inbound_pending": 0,
                 "revision_owned_pending": 0,
                 "revision_owned_pending_reason": "preserved_revision_debt_evidence",
+                "revision_execution_overdue": 0,
                 "reply_pending": 0,
                 "notification_unresolved": 0,
                 "analysis_pending": 0,

@@ -202,6 +202,119 @@ def asks_next_selector(text, selector):
     return False
 
 
+def _catalog_inquiry_context(sources):
+    """Retain sealed source identities for the narrow photo inquiry contract."""
+    from types import SimpleNamespace
+    from management.services.ig_turn_intent import _product_interest_signal, _NEGATED_ORDER, _customer_text
+    from management.services.instagram_bot import _has_meaningful_media_caption
+
+    interests = []
+    media = []
+    for source in sources:
+        signal = _product_interest_signal(source.get("text"))
+        if signal is False or _NEGATED_ORDER.search(_customer_text(source.get("text"))):
+            interests = []
+        elif signal is True:
+            interests.append(source["message_id"])
+        parts = source.get("media_parts") or []
+        if parts:
+            media.append({"source_message_id": source["message_id"],
+                "source_digest": source.get("source_digest") or "",
+                "bare": not _has_meaningful_media_caption(SimpleNamespace(text=source.get("text") or "")),
+                "parts": [{key: deepcopy(part.get(key)) for key in
+                    ("source_part_id", "original_index", "content_hash", "mime", "capture_outcome")} for part in parts]})
+    return {"interest_source_ids": interests, "media_sources": media} if interests and media else {}
+
+
+def _catalog_inquiry_coverage(plan, response, evidence):
+    """A selected catalog match covers only its exact, understood photo source.
+
+    Neither a candidate alone nor source text/current selection supplies image
+    understanding. The bound request must prove every sealed part of the source.
+    """
+    from management.services.ig_media_analysis import MediaAnalysisError, validate_bound_media_analysis
+
+    context = plan.catalog_inquiry
+    if not context or not isinstance(evidence, dict) or plan.line_plans:
+        return set(), set()
+    # Catalog candidates currently have no per-image relation. A global match
+    # can answer one reference photo; it cannot identify two distinct garments
+    # or discharge an unrelated receipt/document sibling.
+    media_sources = context.get("media_sources") or []
+    if len(media_sources) != 1 or len(media_sources[0].get("parts") or []) != 1:
+        return set(), set()
+    artifact, binding = evidence.get("artifact"), evidence.get("binding")
+    if not isinstance(artifact, dict) or not isinstance(binding, dict):
+        return set(), set()
+    request = artifact.get("media_request") or {}
+    if (not isinstance(request, dict) or not isinstance(binding.get("items"), list)
+        or len(binding["items"]) != 1 or binding.get("actual_inline_count") != 1):
+        return set(), set()
+    # Revision collector manifests use sealed_capture_outcome; the existing
+    # analysis validator consumes the equivalent owned-part projection.
+    normalized_binding = {**binding, "items": [{**row, "capture_state": row.get("capture_state") or
+        ("owned" if row.get("sealed_capture_outcome") == "owned" else "unavailable")}
+        for row in binding["items"] if isinstance(row, dict)]}
+    try:
+        analysis = validate_bound_media_analysis(artifact.get("media_analysis"), media=normalized_binding,
+            request_id=request.get("request_id"), provider_model=request.get("provider_model"),
+            legacy_images=artifact.get("image_observations") or ())
+    except (MediaAnalysisError, TypeError, ValueError):
+        return set(), set()
+    selected = str(response.control.get("product") or "")
+    candidates = artifact.get("catalog_candidates") or []
+    if (not selected or artifact.get("catalog_resolution") != "auto_select"
+        or str(artifact.get("auto_product_id") or "") != selected or not any(isinstance(row, dict) and str(row.get("product_id") or "") == selected
+            and type(row.get("confidence")) in {int, float} and row["confidence"] >= .9 for row in candidates)):
+        return set(), set()
+    rows = analysis["parts"]
+    covered_media = set()
+    for source in context["media_sources"]:
+        parts = source["parts"]
+        if not parts:
+            continue
+        matched = []
+        for expected in parts:
+            matches = [row for row in rows if row.get("source_message_id") == source["source_message_id"]
+                and all(row.get(key) == expected.get(key) for key in
+                    ("source_part_id", "original_index", "content_hash", "mime"))]
+            if (expected.get("capture_outcome") != "owned" or len(matches) != 1
+                or not str(expected.get("mime") or "").startswith("image/")):
+                break
+            row = matches[0]
+            if (row.get("outcome") != "understood" or row.get("origin") not in
+                    {"provider_observation", "legacy_observation"}):
+                break
+            if row["origin"] == "legacy_observation":
+                product = any(isinstance(observation, dict)
+                    and observation.get("source_image_index") == row.get("source_inline_index")
+                    and observation.get("source_part_id") == row["source_part_id"]
+                    and observation.get("content_hash") == row["content_hash"]
+                    and observation.get("outcome") == "understood" and observation.get("type_code") == "product"
+                    for observation in artifact.get("image_observations") or ())
+            else:
+                product = row.get("content_kind") == "product_photo"
+            if not product:
+                break
+            matched.append(row)
+        if len(matched) == len(parts):
+            covered_media.add(source["source_message_id"])
+    if not covered_media:
+        return set(), set()
+    # A factual garment identification answers this question without claiming
+    # the customer already chose it. Financial/catalog truth runs separately.
+    from management.services.ig_reply_truth import _locally_negated
+    garment = str(plan.choices.get("garment_type") or "")
+    mentioned = any(not _locally_negated(clause, match.start())
+        for clause in re.split(r"[.!?;\n]+", _unquoted_text(response.reply_text))
+        for alias in CHOICE_ALIASES.get(garment, ())
+        for match in re.finditer(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", clause, re.I))
+    if not mentioned:
+        return set(), set()
+    bare_ids = {source["source_message_id"] for source in context["media_sources"] if source["bare"]}
+    return set(context["interest_source_ids"]), covered_media & bare_ids
+
+
 def _requested_topics(text, parsed_topics=()):
     """Retain information requests independently from a choice in that source."""
     from management.services.ig_reply_truth import _locally_negated
@@ -310,6 +423,7 @@ class ResponsePlan:
     # In-process frozen communication input. Business authority and dispatch
     # remain with the separately captured native payment/source fences.
     communication_context: object | None = field(default=None, repr=False, compare=False)
+    catalog_inquiry: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -329,6 +443,8 @@ class ResponsePlan:
             payload["next_selector_line"] = self.next_selector_line
         if self.plan_gap:
             payload["plan_gap"] = self.plan_gap
+        if self.catalog_inquiry:
+            payload["catalog_inquiry"] = deepcopy(self.catalog_inquiry)
         return payload
 
     @property
@@ -581,7 +697,7 @@ class ResponsePlan:
             return "revision_cart_selection_unsupported"
         return ""
 
-    def coverage(self, response, *, local=False, checkout_cart_binding=None):
+    def coverage(self, response, *, local=False, checkout_cart_binding=None, catalog_media_evidence=None):
         if self.plan_gap:
             return {"version": 1, "plan_digest": self.digest,
                 "source_message_ids": sorted({row["source_message_id"] for row in self.obligations}),
@@ -589,6 +705,7 @@ class ResponsePlan:
                 "next_selector": "", "local": bool(local), "gap": self.plan_gap}
         if self.line_plans:
             return self._line_coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+        inquiry_ids, media_ids = _catalog_inquiry_coverage(self, response, catalog_media_evidence) if not local else (set(), set())
         text = response.reply_text
         covered, remaining = [], []
         question = asks_next_selector(text, self.next_selector)
@@ -601,6 +718,8 @@ class ResponsePlan:
                 str(response.control.get("product") or "") == str(self.choices["product_id"])
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
             done = bool(acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
+                        or (kind == "garment_type" and obligation["source_message_id"] in inquiry_ids)
+                        or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
                         or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self))
                         or (kind.startswith("withdrawal:") and asks_next_selector(text, kind.split(":", 1)[1])))
@@ -718,6 +837,8 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
                  "timing_claims": list(context.approved_timing_claims)[:16],
                  "recruitment_status": context.recruitment_status}
     current_sources = [row for row in sources[:64] if row.get("role") == "user"]
+    inquiry_context = _catalog_inquiry_context(current_sources)
+    bare_media = {row["source_message_id"] for row in inquiry_context.get("media_sources", ()) if row["bare"]}
     payment_observation = _captured_payment_observation(payment_observation, current_sources)
     receipt_ids = set(payment_observation.get("source_message_ids") or [])
     payment_claim_ids = set()
@@ -764,7 +885,8 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
         if topics:
             kinds.extend(topics)
         if not kinds:
-            kinds = [] if re.fullmatch(r"\s*(?:привіт|вітаю|добрий\s+день|привет|здравствуйте|hello|hi|дякую|спасиб[оа]|thanks?|thank you|ок|okay|👍|❤|❤️)[.!\s]*", str(source.get("text") or ""), re.I) else ["unclassified"]
+            kinds = (["media:catalog_reference"] if source["message_id"] in bare_media else
+                [] if re.fullmatch(r"\s*(?:привіт|вітаю|добрий\s+день|привет|здравствуйте|hello|hi|дякую|спасиб[оа]|thanks?|thank you|ок|okay|👍|❤|❤️)[.!\s]*", str(source.get("text") or ""), re.I) else ["unclassified"])
         for kind in kinds:
             obligations_list.append({"id": f"{source['message_id']}:{kind}", "kind": kind,
                                      "source_message_id": source["message_id"]})
@@ -776,7 +898,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
     scope = {key: preferences[key] for key in ("session_id", "generation", "revision", "line_id", "active_index") if key in preferences}
     return ResponsePlan(choices, evidence, scope, configuration, next_selector, authority, obligations,
         payment_observation=payment_observation, payment_claim_source_ids=tuple(sorted(payment_claim_ids)),
-        communication_context=context)
+        communication_context=context, catalog_inquiry=inquiry_context)
 
 
 def _capture_payment_context(client, revision, sources, session, line):

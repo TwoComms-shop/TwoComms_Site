@@ -332,6 +332,62 @@ class RevisionLiveTests(TransactionTestCase):
         inline = [part for part in prompt["contents"][-1]["parts"] if "inline_data" in part]
         self.assertEqual(len(inline), 2)
 
+    def test_product_interest_text_and_owned_photo_reach_one_sent_reply_and_replay_no_send(self):
+        """The original incident passes intent, media, selection and outbox gates."""
+        from productcolors.models import Color, ProductColorVariant
+        from storefront.models import Category, Product
+
+        category = Category.objects.create(name="Футболки", slug="interest-live")
+        product = Product.objects.create(title="Правил немає", slug="interest-no-rules",
+            category=category, price=900, status="published")
+        color = Color.objects.create(name="Білий", primary_hex="#ffffff")
+        ProductColorVariant.objects.create(product=product, color=color,
+            price_override=900, stock=10, is_default=True)
+        self.source.text = "Вітаю\nЦікавить ця футболка"
+        self.source.save(update_fields=["text"])
+        photo = self._message("", "interest-owned-photo")
+        body = b"owned-incident-catalog-photo"
+        content_hash = hashlib.sha256(body).hexdigest()
+        part_id = "mp1_" + "7" * 32
+        photo.private_media_state = InstagramBotMessage.PrivateMediaState.ACTIVE
+        photo.attachment_media = [{"source_part_id": part_id, "original_index": 0,
+            "identity_origin": "ingress", "type": "image", "status": "owned", "mime": "image/jpeg",
+            "bytes": len(body), "content_hash": content_hash,
+            "private_storage": True, "storage_name": f"ig-private/source-{photo.pk}"}]
+        photo.save(update_fields=["private_media_state", "attachment_media"])
+        IgTurnMessage.objects.create(turn=self.turn, message=photo, ordinal=2, role="user")
+        self.revision = create_collecting_revision(self.turn, [self.source, photo], bypass_quiet=True).revision
+        self._prepare()
+        self.actual_inline_count = 1
+        reply = "Вітаю! Це футболка «Правил немає». Можу допомогти підібрати розмір."
+        self.parsed = {"reply_text": reply, "controls": [{"kind": "product", "value": str(product.pk)}],
+            "turn_intelligence": {"catalog_candidates": [{"product_id": product.pk, "confidence": 1.0,
+                "evidence": "Футболка з відповідним принтом на фото"}],
+                "intent": "visual_question", "confidence": 1.0, "audio_status": "not_applicable", "transcript": "",
+                "image_observations": [{"source_image_index": 0, "outcome": "understood",
+                    "evidence_code": "visual_content", "type_code": "product"}]}}
+        with patch("management.services.instagram_bot._owned_media_bytes", return_value=("image/jpeg", body)):
+            result, generate, http = self._execute()
+        self.revision.refresh_from_db()
+        self.assertEqual(result.state, "completed", (result.reasons, self.revision.action_receipts.get("response_coverage")))
+        self.assertEqual((generate.call_count, http.call_count), (1, 1))
+        effect = self.revision.delivery_effects.get(group="substantive_text")
+        self.assertEqual(effect.state, "sent")
+        self.assertEqual(effect.payload["message"]["text"], reply)
+        self.assertNotIn("Не вдалося розібрати", effect.payload["message"]["text"])
+        self.assertEqual(GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{self.revision.pk}").count(), 1)
+        self.assertIn("client_configuration_update", self.revision.action_receipts)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.current_product_id, product.pk)
+        photo.refresh_from_db()
+        inspection = photo.attachment_media[0]["inspection"]
+        self.assertEqual((inspection["revision_id"], inspection["source_part_id"], inspection["content_hash"]),
+            (self.revision.pk, part_id, content_hash))
+        self.assertEqual((inspection["state"], inspection["outcome"]), ("inspected", "understood"))
+        _replayed, generation, send = self._execute()
+        generation.assert_not_called()
+        send.assert_not_called()
+
     def test_actual_missing_hash_evidence_fails_closed(self):
         _second, body = self._prepare_two_images()
         self.actual_hash_override = None

@@ -1312,6 +1312,7 @@ def bot_health(request):
         tasks.get("available")
         and tasks.get("healthy")
         and queues.get("available")
+        and not queues.get("revision_execution_overdue")
         and operations.get("available")
         and operations.get("healthy")
     )

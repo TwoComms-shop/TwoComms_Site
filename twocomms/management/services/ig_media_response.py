@@ -79,6 +79,22 @@ def _understood(rows):
         and row.get("outcome") == "understood" and row.get("origin") == "provider_observation"]
 
 
+def _legacy_image_readable(row):
+    # The adapter preserves the legacy provider's outcome on the exact admitted
+    # image, but has no new content taxonomy or sentiment. Unknown taxonomy is
+    # not a failed image read. This only suppresses a contradictory limitation;
+    # it deliberately does not add the row to _understood or social guidance.
+    return (row.get("analysis_state") == "legacy_unknown"
+        and row.get("origin") == "legacy_observation" and row.get("outcome") == "understood"
+        and str(row.get("mime", "")).startswith("image/")
+        and type(row.get("source_inline_index")) is int and row["source_inline_index"] >= 0
+        and type(row.get("original_index")) is int and row["original_index"] >= 0
+        and isinstance(row.get("source_part_id"), str)
+        and re.fullmatch(r"mp1_[0-9a-f]{32}", row["source_part_id"]) is not None
+        and isinstance(row.get("content_hash"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", row["content_hash"]) is not None)
+
+
 def _media_kinds(values):
     if isinstance(values, str):
         values = (values,)
@@ -156,7 +172,8 @@ def _limitation(client, analysis, rows, understood):
     # Ephemeral kinds are supplied only by the caller's fresh sealed-source
     # check. They do not belong in the persisted strict analysis schema.
     explicit = _media_kinds(analysis.get("unavailable_kinds", ()))
-    unresolved = [row for row in rows if row not in understood]
+    legacy_readable = [row for row in rows if _legacy_image_readable(row)]
+    unresolved = [row for row in rows if row not in understood and row not in legacy_readable]
     captured = analysis.get("capture_outcomes", ())
     captured = captured if isinstance(captured, (list, tuple)) else ()
     unavailable = any(isinstance(row, Mapping) and row.get("collection_outcome") != "admitted"
@@ -164,7 +181,7 @@ def _limitation(client, analysis, rows, understood):
     if not explicit and not unresolved and not unavailable:
         return ""
     kinds = explicit | _media_kinds([row.get("mime", "") for row in unresolved])
-    return _partial_limitation_reply(client, kinds) if understood else media_limitation_reply(client, media_kinds=kinds)
+    return _partial_limitation_reply(client, kinds) if understood or legacy_readable else media_limitation_reply(client, media_kinds=kinds)
 
 
 def _append_limitation(text, limitation):

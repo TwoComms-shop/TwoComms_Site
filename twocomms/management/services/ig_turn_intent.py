@@ -42,6 +42,29 @@ _SELECTION_POLITE = re.compile(r"^(?:(?:привіт|вітаю|доброго\s
 _SELECTION_SHORT_STOP = re.compile(r"^(?:(?:ні|нет|no)[, ]+)?(?:не\s+треба|не\s+потрібно|не\s+нужно|не\s+надо|no\s+thanks|not\s+anymore)[, ]*$", re.I)
 _SIZE_QUESTION = re.compile(r"^(?:який|какой|what|which)\s+(?:розмір|размер|size)\b(?:\s+\w+){0,4}\s+(?:підій\w*|подойд\w*|fit\w*)\b", re.I)
 _PRICE_REQUEST = re.compile(r"^(?:(?:тільки|лише|просто|только|just|only)\s+)?(?:скажіть|підкажіть|скажите|подскажите|tell\s+me)\s+(?:(?:мені|мне|the)\s+)?(?:ціну|цену|price)\b", re.I)
+# Interest in a concrete garment is a consultation request even before a
+# customer chooses a size or says they want to buy. Keep this separate from
+# ordering and bound the target: interest in an article about shirts is not it.
+_PRODUCT_INTEREST = re.compile(
+    r"^(?:(?:(?:мене|меня)\s+)?(?:цікавить|цікавлять|интересует|интересуют)"
+    r"|(?:мені\s+цікав(?:а|і|ий|е)|мне\s+интересн(?:а|ы|ый|ое))"
+    r"|(?:(?:i\s+am|i['’]m)\s+)?interested\s+in)\s+"
+    r"(?:(?:ц[яеію]|цей|та|той|те|ті|ту|эт[аоиу]|этот|эти|ваш\w*|"
+    r"чорн\w*|черн\w*|біл\w*|бел\w*|сір\w*|сер\w*|син\w*|червон\w*|красн\w*|"
+    r"зелен\w*|класичн\w*|классическ\w*|оверсайз|this|that|these|those|the|a|an|your|"
+    r"black|white|grey|gray|blue|red|green|oversized?|regular)\s+){0,5}"
+    r"(?:футболк\w*|футболочк\w*|худі|худи|світшот\w*|свитшот\w*|t[ -]?shirts?|shirts?|hoodies?|sweatshirts?)\b", re.I,
+)
+_PRODUCT_INTEREST_POLITE = re.compile(
+    r"^(?:(?:привіт|вітаю|доброго\s+дня|добрий\s+день|привет|здравствуйте|добрый\s+день|hello|hi)[, ]+)?"
+    r"(?:(?:а|але|но|but)\s+)?(?:(?:будь\s+ласка|пожалуйста|please)[, ]+)?", re.I,
+)
+_PRODUCT_INTEREST_SELF = re.compile(r"^(?:(?:а|але|но|but)\s+)?(?:мене|мені|меня|мне|i\s+am|i['’]m)\b", re.I)
+_PRODUCT_INTEREST_NEGATED = re.compile(
+    r"^(?:(?:(?:мене|меня|мені|мне)\s+)?(?:(?:більше|больше)\s+)?не\s+"
+    r"(?:цікавить|цікавлять|интересует|интересуют|цікав(?:а|і|ий|е)|интересн(?:а|ы|ый|ое))"
+    r"|(?:(?:i\s+am|i['’]m)\s+)?(?:not|no\s+longer)\s+interested\s+in)\b", re.I,
+)
 _RETAIL = re.compile(r"(?:хочу|хот[еі]л|можна|можно|want|can i|i would like|i['’]d like).{0,35}(?:купит|купув|покуп|замов|заказ|buy|order)|(?:є|есть|have).{0,30}(?:футболк|худі|худи|t.?shirt|hoodie)", re.I)
 _ORDER_IMPERATIVE = re.compile(
     r"(?:^|[.!?;\n])\s*(?:(?:будь ласка|пожалуйста|please)[, ]+)?"
@@ -237,6 +260,31 @@ def _selection_history(client, sources, floor):
     return signal is False, refs, len(recent) > 4 and signal is None
 
 
+def _product_interest_signal(text):
+    """Keep the last own interest or retraction, excluding reported copy."""
+    reported = False
+    signal = None
+    for part in re.split(r"[.!?;\n]+", _customer_text(text)):
+        clause = part.strip()
+        clause = _PRODUCT_INTEREST_POLITE.sub("", clause, count=1).strip()
+        if _SELECTION_REPORTED.match(clause):
+            reported = True
+            continue
+        if reported and not _PRODUCT_INTEREST_SELF.match(clause):
+            continue
+        negative = _PRODUCT_INTEREST_NEGATED.match(clause)
+        if negative and _PRODUCT_INTEREST.match("interested in" + clause[negative.end():]):
+            signal = False
+            continue
+        if _PRODUCT_INTEREST.match(clause):
+            signal = True
+    return signal
+
+
+def _product_interest(text):
+    return _product_interest_signal(text) is True
+
+
 def _purpose(text):
     value = _customer_text(text)
     if _PRICE.search(value) or any(_PRICE_REQUEST.match(part.strip()) for part in re.split(r"[.!?;\n,]+", value)):
@@ -246,10 +294,14 @@ def _purpose(text):
         return "requested_selection"
     if selection is False:
         return "selection_withdrawal"
+    if _product_interest_signal(text) is False:
+        return "product_interest_withdrawal"
     # A customer imperative can permit checkout discussion, but cannot itself
     # supply the separate product/payment authority required by checkout.
     if not _NEGATED_ORDER.search(value) and (_RETAIL.search(value) or _ORDER_IMPERATIVE.search(value)):
         return "retail"
+    if _product_interest(text):
+        return "product_inquiry"
     return ""
 
 
@@ -285,6 +337,9 @@ def build_turn_intent(client, revision=None, source_messages=None):
             # current sales acts after an explicit observed refusal.
             purpose = "purchase_refusal"
             evidence = []
+            continue
+        if _product_interest_signal(row.text) is False:
+            purpose, evidence = "product_interest_withdrawal", []
             continue
         selection = _selection_signal(row.text, selection_context=purpose == "requested_selection")
         if selection is not None:

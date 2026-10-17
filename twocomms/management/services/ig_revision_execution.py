@@ -54,19 +54,25 @@ class RevisionCompletionResult:
     states: tuple[str, ...] = ()
 
 
-def _owned_revision_q() -> Q:
+def _source_owned_revision_q() -> Q:
     from management.services.ig_revision_source_coverage import source_transfer_owned_q
     from management.services.ig_revision_commerce import source_producer_owned_q
 
+    return source_transfer_owned_q() | source_producer_owned_q()
+
+
+def _execution_owned_revision_q() -> Q:
     return (
         Q(media_prepare_deadline__isnull=False)
         | Q(sealed_at__isnull=False)
         | Q(snapshot_digest__gt="")
         | Q(generation_proposal_digest__gt="")
         | Q(has_delivery_effect=True)
-        | source_transfer_owned_q()
-        | source_producer_owned_q()
     )
+
+
+def _owned_revision_q() -> Q:
+    return _execution_owned_revision_q() | _source_owned_revision_q()
 
 
 def _rollout_eligible_q(cutover_at) -> Q:
@@ -838,7 +844,7 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
 def expired_revision_debt_ids(
     *, now=None, limit=25, owned_only=False, cutover_at=None,
 ):
-    from django.db.models import CharField, Value
+    from django.db.models import Case, CharField, Count, F, IntegerField, Subquery, Value, When
     from django.db.models.functions import Cast, Concat, Collate
 
     now = now or timezone.now()
@@ -853,6 +859,14 @@ def expired_revision_debt_ids(
         ),
         has_source=Exists(source_rows),
         has_ineligible_source=Exists(ineligible_sources),
+        actual_source_count=Subquery(
+            source_rows.order_by().values("revision_id")
+            .annotate(total=Count("pk")).values("total")[:1]
+        ),
+        pending_source_count=Subquery(
+            source_rows.filter(message__status=InstagramBotMessage.Status.PENDING, message__send_state="")
+            .order_by().values("revision_id").annotate(total=Count("pk")).values("total")[:1]
+        ),
     ).filter(
         overall_deadline__lte=now, client__privacy_erasure_started_at__isnull=True,
         state__in=("collecting", "preparing", "sealed", "claimed"),
@@ -873,24 +887,31 @@ def expired_revision_debt_ids(
         turn__terminal_reason="",
         has_source=True,
         has_ineligible_source=False,
+        actual_source_count=F("source_count"),
+        pending_source_count=F("source_count"),
     )
+    # Ingress receipts retain ownership across cutover/rollback, but do not
+    # prove an unsealed source is still owed. Apply the writer's exact source
+    # checks before LIMIT so answered/malformed shadows cannot occupy every
+    # bounded pass without ever recording a debt case.
+    unsealed_sources = ordinary
+    source_owned = ordinary & _source_owned_revision_q()
     if cutover_at is not None:
         ordinary &= Q(created_at__gte=cutover_at)
-    # An expired claimed/preparing row is already a durable execution claim,
-    # even when it never sealed a source snapshot.  Excluding it behind the
-    # rollout ownership predicate strands crash leftovers forever (and keeps
-    # technical-debt alerts open).  Keep the normal shadow/rollout guards for
-    # collecting rows, while admitting only rows whose lease is actually due.
+    # A crashed preparation claim retains its pending sources across rollback
+    # or cutover. An expired lease does not prove already answered or malformed
+    # unsealed sources are owed, so retain the source checks for that admission.
     expired_claim = Q(
         state__in=("preparing", "claimed"),
         lease_until__isnull=False,
         lease_until__lte=now,
     )
     queue = queue.filter(
-        _owned_revision_q()
+        _execution_owned_revision_q()
         | Q(origin__in=("manual_resume", "auto_refresh", "outage_recovery"))
         | ordinary
-        | expired_claim
+        | source_owned
+        | (unsealed_sources & expired_claim)
     )
     # A permission/takeover cancellation releases the execution claim. Once
     # that terminal recovery disposition is persisted, do not rediscover the
@@ -916,7 +937,11 @@ def expired_revision_debt_ids(
     return list(
         queue.annotate(debt_recorded=debt_recorded)
         .filter(Q(debt_recorded=False) | expired_claim)
-        .order_by("overall_deadline", "id")
+        .alias(debt_priority=Case(
+            When(expired_claim | Q(generation_proposal_digest__gt="") | Q(has_delivery_effect=True), then=Value(0)),
+            default=Value(1), output_field=IntegerField(),
+        ))
+        .order_by("debt_priority", "overall_deadline", "id")
         .values_list("id", flat=True)[:max(1, min(int(limit), MAX_DUE_SCAN))]
     )
 
@@ -944,6 +969,13 @@ def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
             "manual_resume", "auto_refresh", "outage_recovery",
         }
         if not owned and not sticky_origin:
+            source_owned = IgCustomerTurnRevision.objects.filter(pk=revision.pk).filter(
+                _source_owned_revision_q()
+            ).exists()
+            expired_claim = (
+                revision.state in {"preparing", "claimed"}
+                and revision.lease_until is not None and revision.lease_until <= now
+            )
             turn = IgCustomerTurn.objects.select_for_update().filter(
                 pk=revision.turn_id,
                 claim_state=IgCustomerTurn.ClaimState.OPEN,
@@ -960,7 +992,7 @@ def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
             messages_by_id = {message.pk: message for message in source_messages}
             if (
                 revision.origin != "inbound"
-                or (cutover_at is not None and revision.created_at < cutover_at)
+                or (cutover_at is not None and revision.created_at < cutover_at and not (source_owned or expired_claim))
                 or turn is None
                 or not sources
                 or len(sources) != revision.source_count

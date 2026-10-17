@@ -87,6 +87,9 @@ REASONS = frozenset({
     "source_scope_changed", "permission_changed", "manager_owned", "manager_takeover",
     "bot_paused", "maintenance", "lease_busy", "owner_changed", "retry_deferred",
     "recovered", "healthy", "stalled", "observation_unavailable", "legacy_unstructured",
+    "current_purpose_disallows_sales", "generation_reconciliation_required",
+    "provider_dispatch_budget", "provider_candidates_exhausted", "provider_horizon_exhausted",
+    "revision_deadline_exhausted", "proposal_not_dispatched",
 })
 ACTIONABLE_REASONS = frozenset({"failed", "delivery_unknown", "partial_delivery", "provider_unavailable",
     "provider_timeout", "provider_error", "quota_denied", "quota_exhausted", "stalled", "observation_unavailable"})
