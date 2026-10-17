@@ -173,7 +173,7 @@ class SelectionLivePipelineTests(TransactionTestCase):
 
     def test_actual_positive_selection_sends_one_helpful_question_without_manager(self):
         case = self.prepare_case("Підберіть футболку, будь ласка")
-        case.parsed = {"reply_text": "Який стиль вам подобається — мінімалізм чи яскравий принт?", "controls": []}
+        case.parsed = {"reply_text": "Врахую ваше побажання підібрати футболку. Який стиль вам подобається — мінімалізм чи яскравий принт?", "controls": []}
         result, generation, send = case._execute()
         self.assertEqual(result.state, "completed", result.reasons)
         generation.assert_called_once()
@@ -183,7 +183,9 @@ class SelectionLivePipelineTests(TransactionTestCase):
 
     def test_actual_withdrawal_sends_neutral_ack_without_sales_followup(self):
         case = self.prepare_case("Не підбирайте мені іншу футболку")
-        case.parsed = {"reply_text": "Добре, врахую ваше прохання.", "controls": []}
+        case.parsed = {"reply_text": "Добре, врахую ваше прохання.", "controls": [],
+            "turn_intelligence": {"catalog_candidates": [], "intent": "selection_withdrawal", "confidence": 0.99,
+                "audio_status": "not_applicable", "transcript": "", "image_observations": []}}
         result, generation, send = case._execute()
         self.assertEqual(result.state, "completed", result.reasons)
         generation.assert_called_once()

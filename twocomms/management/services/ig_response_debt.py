@@ -183,6 +183,7 @@ REASON_LABELS = {
     "generation_outcome_unresolved": "Результат підготовки відповіді потребує звірки",
     "generation_result_missing": "Підготовлена відповідь не збережена для відправлення",
     "generation_not_started": "Підготовка відповіді не почалася вчасно",
+    "generation_semantic_rejected": "Відповідь потребує перевірки змісту командою",
     "preparation_expired": "Обробка запиту не завершилася вчасно",
     "proposal_not_dispatched": "Відповідь підготовлена, але ще не відправлена",
     "provider_horizon_exhausted": "Час автоматичного відновлення відповіді вичерпано",

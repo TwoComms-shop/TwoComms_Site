@@ -645,6 +645,11 @@ _EXACT_STOCK_RE = re.compile(
     r"\b(?:products?|items?|hoodies?|t[- ]?shirts?)\b[^,;.!?]{0,60}\bavailable\b|"
     r"\bavailable\b[^,;.!?]{0,60}\b(?:products?|items?|hoodies?|t[- ]?shirts?)\b", re.I,
 )
+_PHOTO_EXISTENCE_RE = re.compile(
+    r"\b(?:є|есть|маємо|имеем|we\s+have|have)\s+"
+    r"(?:(?:окрем\w*|отдельн\w*|підтверджен\w*|подтвержд[её]н\w*|confirmed|separate|a|an|some)\s+){0,3}"
+    r"(?:фото\w*|зображен\w*|изображен\w*|photos?|pictures?|images?)\b", re.I,
+)
 _STOCK_NONASSERTION_RE = re.compile(
     r"\b(?:якщо|если|if|when|чи|ли|whether)\b[^,;.!?]*$|"
     r"\b(?:після|после|after)\b[^,;.!?]{0,70}"
@@ -961,11 +966,15 @@ def _subject_token(sentence: str, value: str) -> bool:
 
 def _product_availability_claim(sentence: str) -> bool:
     """Positive product stock only; availability checks are not stock facts."""
+    # Remove only the photo-existence predicate, preserving positions and all
+    # neighboring clauses. A greedy stock regex must not let "є фото oversize"
+    # hide a later independent "є розмір M" assertion in the same sentence.
+    stock_sentence = _PHOTO_EXISTENCE_RE.sub(lambda match: " " * len(match.group()), sentence)
     for pattern in (_AVAILABILITY_RE, _EXACT_STOCK_RE):
-        for match in pattern.finditer(sentence):
-            prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", sentence[:match.start()], flags=re.I)[-1]
+        for match in pattern.finditer(stock_sentence):
+            prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", stock_sentence[:match.start()], flags=re.I)[-1]
             if (
-                not _locally_negated(sentence, match.start())
+                not _locally_negated(stock_sentence, match.start())
                 and not _NEGATED_STATUS_RE.search(match.group(0))
                 and not _STOCK_NONASSERTION_RE.search(prefix)
             ):

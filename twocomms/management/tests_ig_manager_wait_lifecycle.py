@@ -59,6 +59,27 @@ class ManagerWaitLifecycleTests(TransactionTestCase):
             text="Ціна цієї футболки 900 грн.", operation_id="98111111-1111-1111-1111-111111111111")
         return dispatch_human_reply_command(accepted.command.pk)
 
+    @override_settings(ROOT_URLCONF="twocomms.urls_management", SECURE_SSL_REDIRECT=False)
+    def test_detail_terminal_manager_debt_uses_final_status_despite_pending_approval(self):
+        from django.urls import reverse
+
+        tasks = [IgFollowUpTask.objects.create(client=self.customer, due_at=timezone.now(),
+            kind=IgFollowUpTask.Kind.MANAGER_TASK, reason="revision_case:execution_debt",
+            status=status, manager_approval_status=IgFollowUpTask.ManagerApprovalStatus.PENDING,
+            skip_reason="manager_reply_confirmed" if status == IgFollowUpTask.Status.COMPLETED else "")
+            for status in (IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED,
+                           IgFollowUpTask.Status.SKIPPED)]
+        self.client.force_login(self.actor)
+        response = self.client.get(reverse("management_bot_client_detail_api", args=[self.customer.pk]))
+        self.assertEqual(response.status_code, 200)
+        rows = {row["id"]: row for row in response.json()["followups"]}
+        for task in tasks[:2]:
+            self.assertEqual(rows[task.pk]["status"], task.status)
+            self.assertEqual(rows[task.pk]["status_label"], task.get_status_display())
+            self.assertNotEqual(rows[task.pk]["status_label"], "Потребує перевірки")
+        self.assertEqual(rows[tasks[2].pk]["status_label"], "Потребує перевірки")
+        self.http.assert_not_called()
+
     def test_handled_is_durable_and_new_independent_source_still_runs(self):
         from management.services.ig_manual_resume import _latest_unanswered_reference
         from management.services.ig_revision_recovery import _set_state, schedule_revision_recovery, due_recovery_revision_ids

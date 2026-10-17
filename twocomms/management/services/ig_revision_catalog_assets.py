@@ -19,12 +19,161 @@ from management.services.ig_revision_outbox import _digest
 CLAIM = "catalog_asset_references"
 MAX_PRODUCTS = 8
 MAX_MATCHES = 32
+FIT_PHOTO_SCHEMA = "fit-photo-capability.v1"
 _REF_KEYS = frozenset({
     "asset_kind", "asset_id", "product_id", "variant_id", "mode", "part_index",
     "url_digest", "payload_digest", "projection_digest", "reference_digest",
     "legacy_response",
 })
 _HASH = re.compile(r"[0-9a-f]{64}")
+
+
+def _explicit_photo_fit(text):
+    """A merchant-authored photo description can depict one cut, never two.
+
+    Asset filenames and available/default product options supply no evidence
+    about the cut shown in a photograph.
+    """
+    text = str(text or "").strip()
+    if not text or "?" in text:
+        return ""
+    # A design called “Classic” is not a declaration of the depicted cut.
+    text = re.sub(r'«[^»\n]*»|“[^”\n]*”|„[^“\n]*“|‹[^›\n]*›|"[^"\n]*"|‘[^’\n]*’|(?<!\w)\'[^\'\n]*\'(?!\w)',
+                  lambda match: " " * len(match.group()), text)
+    patterns = {"classic": r"\b(?:classic|regular)\b|\bкласичн\w*|\bклассическ\w*",
+                "oversize": r"\boversiz(?:e|ed)\b|\bоверсайз\w*"}
+    matches = [(code, match) for code, pattern in patterns.items()
+               for match in re.finditer(pattern, text, re.I)]
+    if len({code for code, _match in matches}) != 1:
+        return ""
+    for _code, match in matches:
+        before = text[max(0, match.start() - 70):match.start()]
+        if re.search(r"\b(?:не|ні|not|no|без|without)\b[^.!;\n]{0,65}$", before, re.I):
+            return ""
+        after = text[match.end():match.end() + 45]
+        if not (re.match(r"\s*[-–—:]?\s*(?:футболк\w*|худ[иі]|t[ -]?shirts?|hoodies?|fits?|cuts?|крій|кро[йюїієе]\w*|посадк\w*)\b", after, re.I)
+                or re.search(r"\b(?:fits?|cuts?|крій|кро[йюїієе]\w*|посадк\w*)\s*[-–—:]?\s*$", before, re.I)):
+            return ""
+    return matches[0][0]
+
+
+def _photo_garment(text):
+    kinds = [kind for kind, pattern in (("tshirt", r"футболк\w*|\bt-?shirts?\b"),
+                                       ("hoodie", r"худ[иі]|\bhoodies?\b"))
+             if re.search(pattern, str(text or ""), re.I)]
+    return kinds[0] if len(kinds) == 1 else ""
+
+
+def _fit_photo(product, *, kind, asset_id, variant_id, field, alt):
+    url = _url(field)
+    fit = _explicit_photo_fit(alt)
+    return {"asset_kind": kind, "asset_id": asset_id, "product_id": product.pk,
+        "variant_id": variant_id, "title": str(product.title or "TwoComms")[:200],
+        "fit_code": fit, "fit_basis": "native_image_alt" if fit else "unverified",
+        "alt_digest": _digest(str(alt or "")), "garment_type": _photo_garment(alt),
+        "image_name_digest": _digest(str(field.name)), "url_digest": _digest(url), "url": url}
+
+
+def _fit_product_photos(product):
+    from productcolors.models import ProductColorImage
+    from storefront.models import ProductImage
+
+    variants = list(ProductColorImage.objects.filter(variant__product_id=product.pk)
+        .exclude(image="").order_by("variant__order", "variant_id", "order", "id")[:MAX_MATCHES + 1])
+    generic = list(ProductImage.objects.filter(product_id=product.pk).exclude(image="")
+        .order_by("order", "id")[:MAX_MATCHES + 1])
+    if len(variants) + len(generic) > MAX_MATCHES:
+        raise _Unavailable("fit_photo_reference_limit")
+    photos = []
+    for row in variants:
+        photos.append(_fit_photo(product, kind="variant_image", asset_id=row.pk,
+            variant_id=row.variant_id, field=row.image, alt=row.alt_text))
+    for row in generic:
+        photos.append(_fit_photo(product, kind="product_image", asset_id=row.pk,
+            variant_id=0, field=row.image, alt=row.alt_text))
+    for kind in ("main_image", "home_card_image"):
+        field = getattr(product, kind)
+        if field:
+            photos.append(_fit_photo(product, kind=kind, asset_id=product.pk, variant_id=0,
+                field=field, alt=product.main_image_alt if kind == "main_image" else ""))
+    # Prefer the explicitly described native row when a cover repeats its URL.
+    seen, result = set(), []
+    for photo in sorted(photos, key=lambda row: not bool(row["fit_code"])):
+        if photo["url"] not in seen:
+            seen.add(photo["url"])
+            result.append(photo)
+    return result
+
+
+def _fit_example_photos(product, missing, garment):
+    """Same-garment merchant-described illustrations; never catalog choices."""
+    from productcolors.models import ProductColorImage
+    from storefront.models import Product, ProductImage, ProductStatus
+    from django.db.models import Q
+
+    if not missing or not garment:
+        return []
+    descriptions = Q(alt_text__iregex=r"classic|regular|[Кк][Лл][Аа][Сс][Ии][Чч]|[Кк][Лл][Аа][Сс][Сс][Ии][Чч][Ее][Сс]|oversiz|[Оо][Вв][Ее][Рр][Сс][Аа][Йй][Зз]")
+    variants = list(ProductColorImage.objects.filter(descriptions,
+        variant__product__category_id=product.category_id, variant__product__status=ProductStatus.PUBLISHED)
+        .exclude(variant__product_id=product.pk).exclude(image="").select_related("variant__product")
+        .order_by("variant__product_id", "order", "id")[:MAX_MATCHES])
+    generic = list(ProductImage.objects.filter(descriptions,
+        product__category_id=product.category_id, product__status=ProductStatus.PUBLISHED)
+        .exclude(product_id=product.pk).exclude(image="").select_related("product")
+        .order_by("product_id", "order", "id")[:MAX_MATCHES])
+    examples, found = [], set()
+    for row in [*variants, *generic]:
+        fit = _explicit_photo_fit(row.alt_text)
+        if fit not in missing or fit in found or _photo_garment(row.alt_text) != garment:
+            continue
+        owner = row.variant.product if isinstance(row, ProductColorImage) else row.product
+        photo = _fit_photo(owner, kind="variant_image" if isinstance(row, ProductColorImage) else "product_image",
+            asset_id=row.pk, variant_id=row.variant_id if isinstance(row, ProductColorImage) else 0,
+            field=row.image, alt=row.alt_text)
+        photo["illustration_only"] = True
+        examples.append(photo)
+        found.add(fit)
+    return examples
+
+
+def capture_fit_photo_capability(product_id, *, metadata_only=False):
+    """Read native depicted-cut evidence independently of stock/selection.
+
+    Both modes use DB references and pure local URL construction only. File
+    existence/size is checked separately when preparing physical attachments.
+    """
+    del metadata_only
+    from management.services.ig_catalog_configured_choices import capture_configured_choices
+    from storefront.models import Product, ProductStatus
+
+    result = {"schema": FIT_PHOTO_SCHEMA, "product_id": product_id, "title": "",
+        "supported_fits": [], "photos": [], "missing_fit_photos": [],
+        "examples": [], "example_product_ids": [], "capability_digest": "", "error": ""}
+    try:
+        product_id = _id(product_id)
+        product = Product.objects.filter(pk=product_id, status=ProductStatus.PUBLISHED).first()
+        if product is None:
+            raise _Unavailable("fit_photo_product_unavailable")
+        configured = capture_configured_choices(product_id, metadata_only=True)
+        fits = sorted({row["fit_code"] for row in configured.get("configurations", ())
+                       if row.get("fit_code") in {"classic", "oversize"}})
+        photos = _fit_product_photos(product)
+        missing = [fit for fit in fits if not any(row["fit_code"] == fit for row in photos)]
+        garment = _photo_garment(product.title) or _photo_garment(product.category.name)
+        if not garment:
+            kinds = {row["garment_type"] for row in photos if row["garment_type"]}
+            garment = next(iter(kinds)) if len(kinds) == 1 else ""
+        examples = _fit_example_photos(product, missing, garment)
+        result.update(title=str(product.title or "TwoComms")[:200], supported_fits=fits, photos=photos,
+            missing_fit_photos=missing, examples=examples,
+            example_product_ids=list(dict.fromkeys(row["product_id"] for row in examples)),
+            configuration_digest=configured.get("configuration_digest", ""))
+        result["capability_digest"] = _digest({key: value for key, value in result.items()
+                                               if key != "capability_digest"})
+    except (_Unavailable, ValueError, TypeError) as exc:
+        result["error"] = str(exc)
+    return result
 
 
 class _Unavailable(Exception):
@@ -230,6 +379,23 @@ def _descriptor(client, product, asset, index, legacy):
 
 def prepare_catalog_asset_control(client, effects, *, control=None):
     """Bind only prepared catalog parts; a response without images needs no claim."""
+    illustrations = [row for row in effects or () if isinstance(row, Mapping)
+        and "fit_illustration" in (row.get("projection_metadata") or {})]
+    if illustrations:
+        from management.services.ig_product_inquiry_presentation import (
+            fit_illustration_reference, validate_fit_illustration_metadata,
+        )
+        manifest = illustrations[0]["projection_metadata"]["fit_illustration"]
+        if any(row["projection_metadata"]["fit_illustration"] != manifest or not
+            validate_fit_illustration_metadata(row["projection_metadata"], payload=row.get("payload"),
+                group=row.get("group"), kind=row.get("kind")) for row in illustrations):
+            return {}, ("fit_illustration_effect_invalid",)
+        if (len(illustrations) != len(manifest["items"]) + 2 or sum(
+            row["projection_metadata"]["delivery"] == "native" for row in illustrations) != 1
+            or any(row.get("group") == "catalog_media" or "catalog_choice" in (row.get("projection_metadata") or {})
+                   for row in effects or ())):
+            return {}, ("fit_illustration_effect_invalid",)
+        return {"fit_illustration_reference": fit_illustration_reference(manifest)}, ()
     charts = [row for row in effects or () if isinstance(row, Mapping)
         and "catalog_chart" in (row.get("projection_metadata") or {})]
     if charts:
@@ -298,6 +464,25 @@ def prepare_catalog_asset_control(client, effects, *, control=None):
 def build_catalog_asset_reference_binding(client, control):
     """Rebuild one claim from exact DB rows without reading asset bytes."""
     from management.services.ig_revision_authority import _base_binding
+
+    if "fit_illustration_reference" in control:
+        from management.models import InstagramBotSettings
+        from management.services.ig_product_inquiry_presentation import validate_fit_illustration_reference
+
+        reference = control["fit_illustration_reference"]
+        try:
+            settings_row = InstagramBotSettings.objects.select_related("active_instruction_publication").filter(
+                pk=reference["scope"]["settings_id"]).first()
+            if settings_row is None:
+                return None, "fit_illustration_settings_missing"
+            reason = validate_fit_illustration_reference(reference, client, settings_row)
+            if reason:
+                return None, reason
+            return _base_binding(CLAIM, client, None, {"fit_illustration_reference": reference}, reference,
+                product_ids=sorted({row["product_id"] for row in reference["items"]}),
+                part_count=len(reference["items"]), asset_reference_digest=reference["digest"]), ""
+        except (KeyError, TypeError, ValueError):
+            return None, "fit_illustration_reference_invalid"
 
     if "catalog_chart_reference" in control:
         from management.models import InstagramBotSettings

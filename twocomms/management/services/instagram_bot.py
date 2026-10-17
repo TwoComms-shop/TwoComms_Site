@@ -8965,6 +8965,8 @@ def _assemble_system_instruction(
         ("shown_products", lambda: shown_products_note(client)),
         ("funnel_journal", lambda: _funnel_journal_note(client)),
         ("objection_lifecycle", lambda: _objection_lifecycle_note(client)),
+        ("product_focus", lambda: ""),
+        ("fit_consultation", lambda: ""),
         ("catalog", lambda: get_catalog_context(compact=True)),
     ):
         if key == "client_state" and state_render is not None:

@@ -395,10 +395,29 @@ def build_turn_intent(client, revision=None, source_messages=None):
         purpose, evidence = "service_complaint", []
     elif service_hold:
         purpose, evidence = "support", []
+    focused_candidate = {}
+    if revision is not None and not complaint and not service_hold:
+        if getattr(revision, "_focused_selection_snapshot", None) == revision.snapshot_digest:
+            focused_candidate = getattr(revision, "_focused_selection_candidate", {})
+        elif revision.snapshot_digest:
+            from management.services.ig_commerce_projection import capture_current_selection_lines
+            from management.services.ig_product_focus import capture_product_focus, focus_selection_candidate
+
+            cart = capture_current_selection_lines(client.pk)
+            focused = capture_product_focus(revision, source_cart_capture=cart)
+            focused_candidate = focus_selection_candidate(revision, focused, source_cart_capture=cart)
+    from management.services.ig_fit_consultation import fit_consultation_request
+
+    fit_request = fit_consultation_request([{"message_id": row.pk, "role": row.role, "text": row.text} for row in sources])
+    if (fit_request and not complaint and not service_hold
+        and purpose not in {"purchase_refusal", "product_interest_withdrawal", "selection_withdrawal", "support", "custom_print", "dtf"}):
+        purpose, evidence = "fit_consultation", fit_request["source_message_ids"]
+    elif (focused_candidate and purpose not in {"purchase_refusal", "product_interest_withdrawal", "selection_withdrawal", "support", "custom_print", "dtf"}):
+        purpose, evidence = "focused_selection", [focused_candidate["source_message_id"]]
     acts = ["answer_current_question", "acknowledge_current_topic"]
     if evidence:
         acts += ["retail_consultation"]
-        if not selection_withdrawn and not continuity_uncertain:
+        if not selection_withdrawn and not continuity_uncertain and purpose not in {"fit_consultation", "focused_selection"}:
             acts += ["optional_retail_next_step"]
     cycle_basis = f"{client.pk}:{floor}:{purpose}:{','.join(map(str, sorted(evidence)))}"
     return {"version": VERSION, "purpose": purpose, "commerce_evidence_refs": sorted(evidence),
@@ -410,13 +429,18 @@ def build_turn_intent(client, revision=None, source_messages=None):
             "selection_withdrawn": selection_withdrawn, "selection_withdrawal_refs": withdrawal_refs,
             "selection_continuity_uncertain": continuity_uncertain,
             "service_complaint": complaint, "service_hold_reason": service_hold,
-            "source_scope": _accepted_scope(journal, ids) if fresh else {}}
+            "source_scope": _accepted_scope(journal, ids) if fresh else {},
+            "fit_consultation": fit_request, "focused_selection_candidate": focused_candidate}
 
 
 def intent_generation_guidance(decision):
     if decision.get("service_complaint"):
         return ("Current purpose: customer-reported service complaint. Apologize for this situation, acknowledge the customer's concrete concern without minimizing the amount, and explain that their complaint will be passed to the team for review. "
                 "Do not introduce a bonus, discount, coupon, story/UGC, product review pitch or a new purchase. The report does not authorize a refund or prove the carrier's charge. Do not claim leadership already read/approved anything or promise a resolution deadline. Other shopping topics must wait for service review.")
+    if decision.get("purpose") == "fit_consultation":
+        from management.services.ig_fit_consultation import fit_consultation_guidance
+
+        return fit_consultation_guidance(decision.get("fit_consultation"))
     allowed = "retail_consultation" in decision.get("allowed_response_acts", ())
     restriction = ("The customer withdrew clothing selection. Answer any explicit factual question, but do not offer alternatives, optional sales steps or follow-ups. This is not a price objection or a refusal of an independently requested checkout. "
                    if decision.get("selection_withdrawn") else

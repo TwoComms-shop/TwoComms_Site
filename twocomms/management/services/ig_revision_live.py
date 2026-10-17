@@ -148,6 +148,37 @@ class RevisionLiveResult:
     sent_parts: int = 0
 
 
+def _unanswered_generation_result(revision, reasons):
+    """After safe replies abstain, settle a proved semantic stop immediately."""
+    from management.services.ig_revision_recovery import (
+        schedule_revision_recovery, terminal_semantic_failure_reason,
+    )
+
+    if terminal_semantic_failure_reason(revision):
+        recovery = schedule_revision_recovery(revision.pk)
+        if recovery.state == "manual":
+            reasons = tuple(dict.fromkeys((*reasons, recovery.reason)))
+    return RevisionLiveResult(revision.pk, "blocked", tuple(reasons))
+
+
+def _focused_selection_clarification(plan, language):
+    """A proved current fit preference advances only its missing-size question."""
+    candidate = plan.configuration.get("focus_selection_candidate") or {}
+    controls = candidate.get("candidate_controls") or {}
+    fit = controls.get("fit")
+    if (candidate.get("schema") != "focused-selection-candidate.v1" or not candidate.get("digest")
+        or candidate.get("next_selector_hint") != "size" or plan.next_selector != "size"
+        or set(controls) != {"product", "fit"} or fit not in {"classic", "oversize"}
+        or language not in {"uk", "ru", "en"}):
+        return ""
+    label = {"uk": {"classic": "класична посадка", "oversize": "оверсайз"},
+        "ru": {"classic": "классическая посадка", "oversize": "оверсайз"},
+        "en": {"classic": "classic fit", "oversize": "oversize"}}[language][fit]
+    return {"uk": f"Врахую ваше побажання: {label}. Принт залишається той самий. Який розмір ви зазвичай носите?",
+        "ru": f"Учту ваше пожелание: {label}. Принт остаётся тот же. Какой размер вы обычно носите?",
+        "en": f"I will use your preference: {label}. Keeping the same print. What size do you usually wear?"}[language]
+
+
 def revision_execution_enabled() -> bool:
     from management.services.ig_revision_rollout import revision_execution_rollout
 
@@ -621,6 +652,45 @@ class RevisionGenerationBoundary:
             from management.services.ig_response_plan import capture_response_plan
             self.response_plan = capture_response_plan(IgClient.objects.get(pk=self.revision.client_id), revision=self.revision)
         client = IgClient.objects.get(pk=self.revision.client_id)
+        from management.services.ig_reply_language import resolve_own_source_reply_language
+        language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+            profile_language=client.language).template_family
+        selection_text = _focused_selection_clarification(self.response_plan, language)
+        if selection_text:
+            candidate = ValidatedResponse(reply_text=selection_text)
+            if self.validate(candidate, policy_manifest=policy_manifest).valid:
+                return candidate, {"kind": "focused_selection_clarification", "version": 1,
+                    "revision_id": self.revision.pk, "snapshot_digest": self.revision.snapshot_digest,
+                    "candidate_digest": self.response_plan.configuration["focus_selection_candidate"]["digest"],
+                    "language": language, "source_cart_capture": self.response_plan.source_cart_capture,
+                    "coverage": _revision_response_coverage(self.response_plan, candidate, revision=self.revision, local=True),
+                    "authority_digest": self.authority.authority_digest}
+        fit_context = self.response_plan.fit_consultation
+        if fit_context and fit_context.get("focus"):
+            from management.services.ig_fit_consultation import deterministic_fit_reply
+            from management.services.ig_reply_language import resolve_own_source_reply_language
+
+            language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+                profile_language=client.language).template_family
+            text = deterministic_fit_reply(fit_context, language=language)
+            presentation_id = (fit_context["focus"]["product_id"] if fit_context.get("photos_requested")
+                and (fit_context.get("fit_photo_capability") or {}).get("photos") else None)
+            candidate = ValidatedResponse(reply_text=text, controls=(ResponseControl("show_products", str(presentation_id)),)
+                if presentation_id else ())
+            if text and self.validate(candidate, policy_manifest=policy_manifest).valid:
+                coverage = _revision_response_coverage(self.response_plan, candidate, revision=self.revision, local=True)
+                kinds = {row["kind"] for row in self.response_plan.obligations}
+                proof = {"kind": "fit_consultation_fallback", "version": 1,
+                    "revision_id": self.revision.pk, "snapshot_digest": self.revision.snapshot_digest,
+                    "fit_context_digest": _digest(fit_context), "language": language,
+                    "approved_fact_keys": fit_context.get("approved_fact_keys") or [],
+                    "presentation_product_id": presentation_id, "coverage": coverage,
+                    "source_cart_capture": self.response_plan.source_cart_capture,
+                    "pure_approved_facts": bool(kinds and kinds <= {"info:fit", "info:audience"}
+                        and not fit_context.get("photos_requested") and not coverage.get("remaining")
+                        and not self.authority.allowed_actions),
+                    "authority_digest": self.authority.authority_digest}
+                return candidate, proof
         response, proof = build_source_preference_fallback(client, revision=self.revision,
             response_plan=self.response_plan if self.response_plan.line_plans else None)
         if response is None:
@@ -1475,7 +1545,7 @@ def _catalog_prepared_reply(reply, prepared):
     return reply.rstrip() + "\n\n" + hint
 
 
-def _prepare_visible_content(revision, response, settings_row):
+def _prepare_visible_content(revision, response, settings_row, *, response_plan=None):
     from management.services import instagram_bot as bot
     from management.services.ig_catalog_media import prepare_catalog_media
 
@@ -1510,6 +1580,12 @@ def _prepare_visible_content(revision, response, settings_row):
                 return prepared.effects, reply, prepared.reasons
             reason = _catalog_unavailable_chart_reason(reply)
             return (), reply, (reason,) if reason else ()
+        from management.services.ig_product_inquiry_presentation import prepare_fit_illustration
+
+        illustrated = prepare_fit_illustration(revision, response, settings_row,
+            context=response_plan.fit_consultation if response_plan is not None else None)
+        if illustrated.handled:
+            return illustrated.effects, _catalog_prepared_reply(reply, illustrated), illustrated.reasons
         prepared = prepare_catalog_choice_presentations(revision, response, settings_row)
         if prepared.handled:
             return prepared.effects, _catalog_prepared_reply(reply, prepared), prepared.reasons
@@ -1539,7 +1615,7 @@ def _prepare_effects(revision, response, settings_row, *, response_plan=None):
     from management.services import instagram_bot as bot
     from management.services.ig_revision_transport import prepare_text_effects
 
-    prior, reply, reasons = _prepare_visible_content(revision, response, settings_row)
+    prior, reply, reasons = _prepare_visible_content(revision, response, settings_row, response_plan=response_plan)
     if reasons:
         return (), reasons
     effects = list(prior)
@@ -1601,6 +1677,21 @@ def _revision_response_purpose_reason(revision):
         return "pending_inbound"
     if not revision_sources_current(current):
         return "revision_sources_changed"
+    fallback = (current.action_receipts or {}).get("source_preference_fallback") or {}
+    proof = fallback.get("proof") or {}
+    if proof.get("kind") in {"focused_selection_clarification", "fit_consultation_fallback"}:
+        from management.services.ig_response_plan import capture_response_plan
+        plan = capture_response_plan(current.client, revision=current,
+            source_cart_capture=proof.get("source_cart_capture"))
+        if proof["kind"] == "focused_selection_clarification":
+            if (proof.get("candidate_digest") != (plan.configuration.get("focus_selection_candidate") or {}).get("digest")
+                or _focused_selection_clarification(plan, proof.get("language")) != fallback.get("reply_text")):
+                return "deterministic_focused_selection_changed"
+        else:
+            from management.services.ig_fit_consultation import deterministic_fit_reply
+            if (proof.get("fit_context_digest") != _digest(plan.fit_consultation)
+                or deterministic_fit_reply(plan.fit_consultation, language=proof.get("language")) != fallback.get("reply_text")):
+                return "deterministic_fit_facts_changed"
     if catalog_reason := _catalog_source_effect_reason(current):
         return catalog_reason
     text_effects = tuple(current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
@@ -1783,13 +1874,29 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     from management.services.ig_response_plan import capture_response_plan
     original_cart = (receipt.get("proof") or {}).get("source_cart_capture")
     plan = capture_response_plan(revision.client, revision=revision, source_cart_capture=original_cart)
+    fit_proof = (receipt.get("proof") or {}).get("kind") == "fit_consultation_fallback"
+    local_response = ValidatedResponse(reply_text=reply)
+    if (receipt.get("proof") or {}).get("kind") == "focused_selection_clarification":
+        proof = receipt["proof"]
+        if (proof.get("candidate_digest") != (plan.configuration.get("focus_selection_candidate") or {}).get("digest")
+            or _focused_selection_clarification(plan, proof.get("language")) != reply):
+            return RevisionLiveResult(revision.pk, "blocked", ("deterministic_focused_selection_changed",))
+    if fit_proof:
+        from management.services.ig_fit_consultation import deterministic_fit_reply
+
+        proof = receipt["proof"]
+        if (proof.get("fit_context_digest") != _digest(plan.fit_consultation)
+            or deterministic_fit_reply(plan.fit_consultation, language=proof.get("language")) != reply):
+            return RevisionLiveResult(revision.pk, "blocked", ("deterministic_fit_facts_changed",))
+        if proof.get("presentation_product_id"):
+            local_response = replace(local_response, controls=(ResponseControl("show_products", str(proof["presentation_product_id"])),))
     from management.services.ig_reply_authority import build_reply_truth_context
     context = (build_reply_truth_context(revision.client) if plan.line_plans
         else bot._provider_reply_truth_context(revision.client, {}, reply))
     from management.services.ig_fulfillment_context import current_fulfillment_frame
     from management.services.ig_reply_authority import apply_fulfillment_timing_context
     context = apply_fulfillment_timing_context(context, current_fulfillment_frame(revision, plan.source_cart_capture))
-    truth = _captured_reply_truth(plan, ValidatedResponse(reply_text=reply), context)
+    truth = _captured_reply_truth(plan, local_response, context, revision=revision)
     if not truth.valid:
         return RevisionLiveResult(revision.pk, "blocked", truth.reasons)
     if plan.source_cart_capture.get("lines"):
@@ -1829,6 +1936,24 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     )
     if prepared.error:
         return RevisionLiveResult(revision.pk, "blocked", (prepared.error,))
+    effects = prepared.effects
+    if fit_proof and plan.fit_consultation.get("photos_requested"):
+        effects, reasons = _prepare_effects(revision, local_response, settings_row, response_plan=plan)
+        if reasons:
+            return RevisionLiveResult(revision.pk, "blocked", reasons)
+        from management.services.ig_revision_catalog_assets import prepare_catalog_asset_control
+        from management.services.ig_revision_authority import CLAIM_CATALOG_ASSET_REFERENCES
+
+        control, reasons = prepare_catalog_asset_control(revision.client, effects, control=local_response.control)
+        if reasons:
+            return RevisionLiveResult(revision.pk, "blocked", reasons)
+        assets = build_revision_authority_bindings(revision.client, claims=(CLAIM_CATALOG_ASSET_REFERENCES,),
+            control=control, settings_obj=settings_row)
+        if not assets.ready:
+            return RevisionLiveResult(revision.pk, "blocked", assets.reasons)
+        facts = (*authority.fact_bindings, *assets.fact_bindings)
+        authority = replace(authority, fact_bindings=facts,
+            authority_digest=_digest(sorted((*facts, *authority.offer_bindings), key=lambda row: row["claim"])))
     access_token = bot.get_page_token(settings_row)
     if not access_token:
         return RevisionLiveResult(revision.pk, "blocked", ("provider_not_configured",))
@@ -1836,7 +1961,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         revision.pk, token, source_message_id=(receipt.get("source_message_id") or receipt["source_message_ids"][-1]),
         settings_id=receipt["settings_id"], settings_permission_epoch=receipt["settings_permission_epoch"],
         publication=publication, authority_context_digest=authority.authority_digest,
-        effects=prepared.effects, fact_bindings=authority.fact_bindings,
+        effects=effects, fact_bindings=authority.fact_bindings,
         fact_checker=check_fact_bindings, offer_checker=check_offer_bindings,
         purpose=receipt.get("purpose") or "normal_reply",
     )
@@ -2038,6 +2163,16 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         )
         boundary.publication = publication
     else:
+        # Pure source-proved fit/audience facts use the existing local receipt
+        # and outbox without opening a provider graph. Mixed requests retain
+        # the normal generation path and its complete obligation plan.
+        if not GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").exists():
+            from management.services.ig_revision_input import record_source_preference_fallback
+
+            local = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk,
+                approved_fit_facts=True)
+            if local.ready:
+                return _execute_deterministic_input(revision, token, settings_row, local.receipt)
         # A crashed request without its successful proposal is reconciliation
         # debt, never an excuse to open another two-dispatch request.
         if GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").exists():
@@ -2054,7 +2189,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             )
             if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
-            return RevisionLiveResult(revision_id, "blocked", ("generation_reconciliation_required",))
+            return _unanswered_generation_result(revision, ("generation_reconciliation_required",))
         from management.services.ig_revision_media import collect_revision_media
 
         collection = collect_revision_media(revision.pk, token)
@@ -2097,7 +2232,7 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             )
             if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
-            return RevisionLiveResult(revision_id, "blocked", reasons)
+            return _unanswered_generation_result(revision, reasons)
     # Both fresh generation and execution-only continuation use the same sealed
     # proposal. Topic acceptance is optional and never authorizes send/actions.
     if revision.generation_proposal.get("customer_routes") is not None:

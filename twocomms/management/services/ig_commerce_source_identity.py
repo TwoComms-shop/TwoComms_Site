@@ -149,6 +149,23 @@ def _current_presentations(client, source):
     matched = next((row for row in rows if row.provider_message_id == reply_to), None) if reply_to else rows[0]
     if matched is None:
         return ()
+    if not reply_to and IgRevisionDeliveryEffect.objects.filter(
+        revision__client_id=client.pk,
+        source_message_id__gte=matched.source_message_id,
+        source_message_id__lt=source.pk,
+        recipient_igsid=client.igsid,
+        provider_namespace=source.provider_namespace,
+        client_permission_epoch=client.reply_permission_epoch,
+        pk__gt=matched.pk,
+        group__in=("template", "template_fallback"),
+        projection_metadata__has_key="fit_illustration",
+    ).exclude(state__in=("definite_failed", "cancelled", "superseded")).exists():
+        # Fit examples deliberately create no catalog choices. They nevertheless
+        # replace the visual context of an unreferenced "this one": neither a
+        # delivered example nor an uncertain/incomplete newer illustration may
+        # silently revive the product from an older catalog presentation.
+        # An explicit reply reference retains its separately verified identity.
+        return ()
     group = [row for row in rows if row.revision_id == matched.revision_id]
     if not group or len(group) != matched.part_count or {row.part_index for row in group} != set(range(matched.part_count)):
         return ()
@@ -298,6 +315,13 @@ def resolve_source_product_request(client, source, request, *, catalog_graph=Non
         from management.services.ig_commerce_types import CommerceTurnRequest
         return CommerceTurnRequest(pending_line_clarification="line_source_unverified")
     binding = {"source_message_id": source.pk, "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest()}
+    if not request.field_updates.get("fit"):
+        from management.services.ig_fit_consultation import contextual_fit_choice
+
+        fit_choice = contextual_fit_choice(client, source)
+        if fit_choice:
+            request = replace(request, field_updates={**request.field_updates, "fit": fit_choice["fit"]})
+            binding["contextual_fit_choice"] = fit_choice
     if request.line_operations or request.pending_line_clarification:
         if (source.client_id != client.pk or source.sender_id != client.igsid
             or source.role != "user" or source.source != "webhook" or source.status == "failed"

@@ -246,11 +246,13 @@ def record_unavailable_media_reply(revision_id, token, *, settings_id, collectio
         return RevisionInputDecision(True, "media_unavailable", "owned_media_unavailable", receipt)
 
 
-def record_source_preference_fallback(revision_id, token, *, settings_id):
-    """Admit a separate local reply after a conclusive failed provider graph.
+def record_source_preference_fallback(revision_id, token, *, settings_id, approved_fit_facts=False):
+    """Admit a local reply after failure, or narrowly scoped approved fit facts.
 
     This is an input/action receipt, not a fabricated successful Gemini proposal.
     Every retry recomputes its exact text/provenance and ordinary send authority.
+    `approved_fit_facts` requires no existing graph and a complete pure scoped
+    fact proof; it never manufactures a failed or successful provider outcome.
     """
     from management.models import GeminiRequest, IgRevisionDeliveryEffect
     from management.services.ig_revision_live import RevisionGenerationBoundary
@@ -273,11 +275,20 @@ def record_source_preference_fallback(revision_id, token, *, settings_id):
         if reason or IgRevisionDeliveryEffect.objects.filter(revision_id__in=[row.pk for row in rows]).exists():
             return RevisionInputDecision(reason="fallback_lineage_delivery_or_invalid")
         graph = GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").first()
-        if graph is None or graph.client_id != client.pk or graph.terminal_resolution != "failed" or graph.winner_attempt_id:
+        if graph is None and not approved_fit_facts:
+            return RevisionInputDecision(reason="fallback_generation_not_failed")
+        if graph is not None and (approved_fit_facts or graph.client_id != client.pk
+            or graph.terminal_resolution != "failed" or graph.winner_attempt_id):
             return RevisionInputDecision(reason="fallback_generation_not_failed")
         sources = revision.bundle_snapshot.get("sources") or []
         if any(source.get("media_parts") for source in sources):
             return RevisionInputDecision(reason="fallback_media_not_supported")
+        if approved_fit_facts:
+            from management.services.ig_fit_consultation import fit_consultation_request
+
+            request = fit_consultation_request(sources)
+            if not request or request.get("photos_requested") or request.get("assortment_requested"):
+                return RevisionInputDecision(reason="fallback_not_pure_approved_fit_facts")
         pub = settings_row.active_instruction_publication
         publication = PublicationBinding(pub.pk, pub.version, pub.snapshot_hash)
         policy = {"instruction_publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash}}
@@ -286,12 +297,15 @@ def record_source_preference_fallback(revision_id, token, *, settings_id):
         response, proof = boundary.contextual_fallback(policy_manifest=policy)
         if response is None:
             return RevisionInputDecision(reason=proof.get("reason") or "fallback_preference_not_admitted")
+        if approved_fit_facts and (proof.get("kind") != "fit_consultation_fallback"
+            or proof.get("pure_approved_facts") is not True or response.controls):
+            return RevisionInputDecision(reason="fallback_not_pure_approved_fit_facts")
         authority = boundary.authority
         receipt = {
             "version": "revision-preference-fallback-v1", "origin": "source_preference_fallback",
-            "reason": "provider_failed_source_preference", "snapshot_digest": revision.snapshot_digest,
+            "reason": "approved_fit_facts" if approved_fit_facts else "provider_failed_source_preference", "snapshot_digest": revision.snapshot_digest,
             "source_message_ids": [source["message_id"] for source in sources],
-            "failed_request_id": graph.request_id, "proof": proof,
+            "failed_request_id": graph.request_id if graph is not None else "", "proof": proof,
             "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,
             "publication": policy["instruction_publication"],
             "authority": {"allowed_actions": [], "fact_bindings": list(authority.fact_bindings),

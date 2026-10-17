@@ -152,7 +152,23 @@ def _project_part(client, effect):
     attachments = ""
     shown = None
     metadata = effect.projection_metadata or {}
-    if "catalog_chart" in metadata:
+    if "fit_illustration" in metadata:
+        from management.services.ig_product_inquiry_presentation import _caption, validate_fit_illustration_metadata
+        if (effect.projection_digest != _digest(metadata) or effect.payload_digest != _digest(effect.payload)
+            or not validate_fit_illustration_metadata(metadata, payload=effect.payload, group=effect.group, kind=effect.kind)):
+            raise ReplyProjectionError("fit_illustration_projection_changed")
+        manifest = metadata["fit_illustration"]
+        items = manifest["items"]
+        if metadata["delivery"] == "native":
+            text = "(приклади посадки: " + " | ".join(" — ".join(_caption(row, manifest["locale"])) for row in items) + ")"
+            attachments = json.dumps([row["url"] for row in items], ensure_ascii=False)
+        elif effect.kind == "image":
+            row = items[metadata["part_index"] - 1]
+            text = "(приклад посадки: " + " — ".join(_caption(row, manifest["locale"])) + ")"
+            attachments = json.dumps([row["url"]], ensure_ascii=False)
+        # An illustrative photo is never a shown-product candidate. It cannot
+        # change selection when a later customer says "this one" or "buy it".
+    elif "catalog_chart" in metadata:
         from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
         if (effect.projection_digest != _digest(metadata) or effect.payload_digest != _digest(effect.payload)
             or not validate_catalog_chart_metadata(metadata, payload=effect.payload, group=effect.group, kind=effect.kind)):

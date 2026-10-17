@@ -452,10 +452,16 @@ def _normalize_specs(specs, recipient: str) -> list[dict]:
         projection = dict(projection)
         if ((group == "template" and kind in {"image", "text"})
             or (group == "template_fallback" and kind == "image")) and not (
-                "catalog_choice" in projection or "catalog_chart" in projection):
+                "catalog_choice" in projection or "catalog_chart" in projection or "fit_illustration" in projection):
             raise ValueError("effect_projection_invalid")
         if projection:
-            if "catalog_chart" in projection:
+            if "fit_illustration" in projection:
+                from management.services.ig_product_inquiry_presentation import validate_fit_illustration_metadata
+                if not validate_fit_illustration_metadata(projection, payload=payload, group=group, kind=kind):
+                    raise ValueError("effect_projection_invalid")
+                if projection["part_index"] != part_index:
+                    raise ValueError("effect_projection_invalid")
+            elif "catalog_chart" in projection:
                 from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
                 if not validate_catalog_chart_metadata(projection, payload=payload, group=group, kind=kind):
                     raise ValueError("effect_projection_invalid")

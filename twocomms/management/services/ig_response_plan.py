@@ -320,11 +320,21 @@ def _requested_topics(text, parsed_topics=()):
     from management.services.ig_reply_truth import _locally_negated
     topics = {"info:" + str(topic).split(":", 1)[0] for topic in parsed_topics}
     for clause in re.findall(r"[^.!?\n]+[?]?", _unquoted_text(text)):
+        from management.services.ig_fit_consultation import fit_consultation_request
+
+        fit_request = fit_consultation_request([{"role": "user", "text": clause}])
         presentation = bool(re.search(
             r"(?:покаж\w*|надішл\w*|пришл\w*|show|send)[^.!?\n]{0,30}(?:фото|photos?|pictures?|images?)"
             r"|^\s*(?:фото|photos?|pictures?|images?)\s*\?\s*$", clause, re.I))
-        if presentation:
+        if presentation and not fit_request:
             topics.add("info:presentation")
+        if fit_request:
+            if fit_request.get("fit_explanation_requested"):
+                topics.add("info:fit")
+            if fit_request.get("photos_requested"):
+                topics.add("info:fit_presentation")
+            if fit_request.get("audience_requested"):
+                topics.add("info:audience")
         markers = list(re.finditer(
             r"\b(?:скільки|сколько|яка|який|какой|коли|когда|where|when|how|what|чи|ли|tell)\b"
             r"|\b(?:підкаж|подскаж)", clause, re.I))
@@ -335,7 +345,7 @@ def _requested_topics(text, parsed_topics=()):
             for marker in markers)
         if not asking:
             continue
-        matched = presentation
+        matched = presentation or bool(fit_request)
         for topic, pattern in (
             ("payment", _PAYMENT_WORDS.pattern),
             ("price", r"ціна|ціну|вартість|кошту|цена|цену|стоим|стоит|price|cost|how\s+much"),
@@ -364,6 +374,10 @@ def _topic_covered(kind, response, plan):
         _RECRUITMENT_STATUS_RE, _RECRUITMENT_UNCERTAINTY_RE,
     )
     authority = plan.authority
+    if kind in {"info:fit", "info:fit_presentation", "info:audience"}:
+        from management.services.ig_fit_consultation import fit_topic_covered
+
+        return fit_topic_covered(kind, response, plan.fit_consultation) or bool(response.control.get("manager"))
     if kind == "info:presentation" and response.control.get("show_products"):
         return True
     prices = tuple(Decimal(value) for value in authority["prices"])
@@ -424,6 +438,8 @@ class ResponsePlan:
     # remain with the separately captured native payment/source fences.
     communication_context: object | None = field(default=None, repr=False, compare=False)
     catalog_inquiry: dict = field(default_factory=dict)
+    fit_consultation: dict = field(default_factory=dict)
+    product_focus: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -445,7 +461,21 @@ class ResponsePlan:
             payload["plan_gap"] = self.plan_gap
         if self.catalog_inquiry:
             payload["catalog_inquiry"] = deepcopy(self.catalog_inquiry)
+        if self.fit_consultation:
+            payload["fit_consultation"] = deepcopy(self.fit_consultation)
+        if self.product_focus:
+            payload["product_focus"] = deepcopy(self.product_focus)
         return payload
+
+    @property
+    def focused_candidate_line_id(self):
+        candidate = self.configuration.get("focus_selection_candidate") or {}
+        if (len(self.line_plans) == 1 and self.product_focus
+            and candidate.get("line_id") == self.line_plans[0].line_id
+            and candidate.get("product_id") == self.product_focus.get("product_id")
+            and candidate.get("focus_proof_digest") == self.product_focus.get("proof_digest")):
+            return self.line_plans[0].line_id
+        return ""
 
     @property
     def next_selector_line(self):
@@ -453,9 +483,11 @@ class ResponsePlan:
             return {}
         for line in self.line_plans:
             row = line.as_dict()
-            if row["next_selector"]:
+            selector = (self.configuration["focus_selection_candidate"]["next_selector_hint"]
+                if row["line_id"] == self.focused_candidate_line_id else row["next_selector"])
+            if selector:
                 return {"line_id": row["line_id"], "recipient_id": row["recipient_id"],
-                    "field": row["next_selector"], "label": row["configuration"].get("next_selector_label") or row["next_selector"],
+                    "field": selector, "label": row["configuration"].get("next_selector_label") or selector,
                     "product_title": row["configuration"].get("product_title") or "",
                     "ordinal": row["index"] + 1}
         return {}
@@ -580,6 +612,12 @@ class ResponsePlan:
             payload["payment_claim_source_ids"] = list(self.payment_claim_source_ids)
         if self.plan_gap:
             payload["plan_gap"] = self.plan_gap
+        if self.fit_consultation:
+            payload["fit_consultation"] = deepcopy(self.fit_consultation)
+        if self.product_focus:
+            payload["product_focus"] = deepcopy(self.product_focus)
+        if self.configuration.get("focus_selection_candidate"):
+            payload["focused_selection_candidate"] = deepcopy(self.configuration["focus_selection_candidate"])
         if self.configuration.get("reorder_observations"):
             payload["reorder_resolution"] = self.configuration["reorder_observations"]
         return payload
@@ -621,6 +659,20 @@ class ResponsePlan:
             guidance += ("\nThe exact historical reorder remains unresolved. Current context describes the prior purchase; "
                 "no new cart or purchase has been admitted. Clarify the exact owned order/position or the stated unavailable "
                 "configuration. Never invent the latest order, promote old payment/shipping to a new purchase, or submit selection/payment controls.")
+        if self.fit_consultation:
+            from management.services.ig_fit_consultation import fit_consultation_guidance
+
+            guidance += "\n" + fit_consultation_guidance(self.fit_consultation)
+        if self.product_focus:
+            from management.services.ig_product_focus import product_focus_guidance
+
+            guidance += "\n" + product_focus_guidance(self.product_focus)
+        if self.configuration.get("focus_selection_candidate"):
+            guidance += ("\nThe focused_selection_candidate is a bounded hint for this fresh customer selector/purchase assent. "
+                "Use its candidate_controls only as a new current-generation proposal to the existing selection action owner. "
+                "It has not selected a product or authorized availability, price or checkout. Keep the discussed print; "
+                "ask its next_selector_hint only when needed, never ask for the print again. A payment link still requires "
+                "canonical selection persistence and fresh checkout authority.")
         return guidance
 
     def _audited_size(self):
@@ -634,6 +686,18 @@ class ResponsePlan:
     def validate(self, response):
         if self.plan_gap:
             return self.plan_gap
+        if self.fit_consultation:
+            from management.services.ig_fit_consultation import validate_fit_consultation
+
+            reason = validate_fit_consultation(self.fit_consultation, response)
+            if reason:
+                return reason
+        elif self.product_focus:
+            from management.services.ig_fit_consultation import validate_fit_consultation
+
+            reason = validate_fit_consultation({"focus": self.product_focus}, response)
+            if reason:
+                return reason
         if any(row["kind"].startswith(("payment:", "info:payment")) for row in self.obligations):
             from management.services.ig_reply_truth import _claim_sentences, _has_positive_claim
             if any("?" not in clause and _has_positive_claim(_PAYMENT_FORWARDED, clause)
@@ -648,6 +712,8 @@ class ResponsePlan:
                     continue
                 matches = matching_line_ids(question, self.line_plans)
                 expected = self.next_selector_line
+                if not matches and self.focused_candidate_line_id:
+                    matches = (self.focused_candidate_line_id,)
                 if len(matches) != 1 or not expected or matches[0] != expected["line_id"] or selectors != [expected["field"].split(":", 1)[0]]:
                     return "response_plan_line_selector_mismatch"
             if "items" in response.control and not (response.control.get("paylink") or response.control.get("payment")):
@@ -745,12 +811,17 @@ class ResponsePlan:
             admitted_checkout_line_ids, line_clauses, matching_line_ids,
         )
         clauses = line_clauses(response.reply_text, self.line_plans)
+        if self.focused_candidate_line_id:
+            from management.services.ig_response_cart_plan import scoped_claim_clauses
+
+            clauses[self.focused_candidate_line_id] = list(scoped_claim_clauses(_unquoted_text(response.reply_text)))
         admitted = admitted_checkout_line_ids(checkout_cart_binding, self.source_cart_capture, local=local)
         covered, remaining = [], []
         rows = {line.line_id: line.as_dict() for line in self.line_plans}
         selector = self.next_selector_line
         question = any(asks_next_selector(text, selector.get("field", ""))
-            and matching_line_ids(text, self.line_plans) == (selector.get("line_id"),)
+            and (matching_line_ids(text, self.line_plans) == (selector.get("line_id"),)
+                or selector.get("line_id") == self.focused_candidate_line_id)
             for text in re.findall(r"[^.!?\n]*[?]", _unquoted_text(response.reply_text))) if selector else False
         for obligation in self.obligations:
             kind, line_id = obligation["kind"], obligation.get("line_id")
@@ -849,6 +920,15 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
         parsed = parse_turn(str(source.get("text") or ""))
         kinds = ["fit_option_code" if key == "fit" else "quantity" if key == "qty" else key
                  for key in parsed.field_updates if key in {"size", "fit", "color", "qty", "quantity"}]
+        # A contextual answer such as "Звична" keeps its raw source text. The
+        # canonical reducer's exact current-source preference proof, rather
+        # than a global word alias, retains that fit as a reply obligation.
+        text_digest = hashlib.sha256(str(source.get("text") or "").encode()).hexdigest()
+        for field in ("fit_option_code", "size", "color", "quantity"):
+            proof = original_evidence.get(field) or {}
+            if (field in choices and proof.get("source_message_id") == source["message_id"]
+                and proof.get("source_digest") == text_digest and field not in kinds):
+                kinds.append(field)
         if (evidence.get("model_query") or {}).get("source_message_id") == source["message_id"]:
             # A catalog title such as Classic may resemble a parser preference.
             # Canonical ambiguity evidence cannot manufacture that choice.
@@ -880,7 +960,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             kinds.extend(sorted(payment_kinds))
             if "payment:claim" in payment_kinds:
                 payment_claim_ids.add(source["message_id"])
-        if any(topic in topics for topic in ("info:presentation", "info:price")):
+        if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience")):
             commerce_present = True
         if topics:
             kinds.extend(topics)
@@ -896,9 +976,12 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
     if obligations and all(row["kind"].startswith(("payment:", "info:payment")) for row in obligations):
         next_selector = ""
     scope = {key: preferences[key] for key in ("session_id", "generation", "revision", "line_id", "active_index") if key in preferences}
+    from management.services.ig_fit_consultation import build_fit_consultation
+
     return ResponsePlan(choices, evidence, scope, configuration, next_selector, authority, obligations,
         payment_observation=payment_observation, payment_claim_source_ids=tuple(sorted(payment_claim_ids)),
-        communication_context=context, catalog_inquiry=inquiry_context)
+        communication_context=context, catalog_inquiry=inquiry_context,
+        fit_consultation=build_fit_consultation(current_sources))
 
 
 def _capture_payment_context(client, revision, sources, session, line):
@@ -1042,6 +1125,32 @@ def _provided_source_cart(client, revision, capture):
 
 def capture_response_plan(client, *, revision=None, source_cart_capture=None):
     plan = _capture_response_plan_inputs(client, revision=revision, source_cart_capture=source_cart_capture)
+    if revision is not None:
+        from management.services.ig_fit_consultation import capture_fit_consultation
+        from management.services.ig_product_focus import capture_product_focus, focus_selection_candidate
+
+        cart = source_cart_capture or plan.source_cart_capture
+        focus = capture_product_focus(revision, source_cart_capture=cart)
+        fit = capture_fit_consultation(revision, source_cart_capture=cart, product_focus=focus)
+        candidate = focus_selection_candidate(revision, focus, source_cart_capture=cart)
+        # Request-local reuse only. The immutable revision digest fences these
+        # hints; a newly loaded dispatch owner recomputes its own source proof.
+        revision._focused_selection_candidate = candidate
+        revision._focused_selection_snapshot = revision.snapshot_digest
+        configuration = {**plan.configuration}
+        if candidate:
+            configuration["focus_selection_candidate"] = candidate
+        # Discussion focus can replace a request to choose the already known
+        # print. Existing canonical readiness (including audited clears) owns
+        # every other selector; absent fit evidence is not a new fit request.
+        next_selector = (candidate["next_selector_hint"] if candidate else
+            fit.get("next_consultation_selector", "")
+            if fit and focus.get("status") == "focused" and plan.next_selector == "product"
+            else plan.next_selector)
+        if fit and focus.get("status") == "focused":
+            fit = {**fit, "next_consultation_selector": next_selector}
+        plan = replace(plan, fit_consultation=fit, product_focus=focus if focus.get("status") == "focused" else {},
+            configuration=configuration, next_selector=next_selector)
     observations = ((getattr(revision, "action_receipts", None) or {}).get("commerce_reduction") or {}).get("observations") or []
     if not isinstance(observations, (list, tuple)) or len(observations) > 32 or any(not isinstance(row, dict) for row in observations):
         return replace(plan, plan_gap="reorder_observation_changed")

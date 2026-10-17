@@ -137,6 +137,18 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             {"present": context.facts.objection_present,
              "source_message_ids": list(boundary["source_ids"])}, separators=(",", ":")),
     }
+    fit = getattr(generation_boundary.response_plan, "fit_consultation", {})
+    if fit:
+        from management.services.ig_fit_consultation import fit_consultation_guidance
+
+        dynamic_notes["fit_consultation"] = "[CAPTURED FIT CONSULTATION]\n" + json.dumps(
+            fit, ensure_ascii=False, separators=(",", ":")) + "\n" + fit_consultation_guidance(fit)
+    focus = getattr(generation_boundary.response_plan, "product_focus", {})
+    if focus:
+        from management.services.ig_product_focus import product_focus_guidance
+
+        dynamic_notes["product_focus"] = "[CAPTURED DISCUSSED PRINT]\n" + json.dumps(
+            focus, ensure_ascii=False, separators=(",", ":")) + "\n" + product_focus_guidance(focus)
     return PreparedTurnContext(context, state, tuple(detached_payload(context.provider_history)),
         dynamic_notes, request_metadata, "\n".join(str(source.get("text") or "") for source in sources),
         policy_inputs)

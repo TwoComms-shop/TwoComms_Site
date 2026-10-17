@@ -16,7 +16,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from management.models import (
-    GeminiRequest, IgClient, IgCustomerTurn, IgCustomerTurnRevision,
+    GeminiRequest, GeminiRequestAttempt, IgClient, IgCustomerTurn, IgCustomerTurnRevision,
     IgProviderIncident, IgRevisionDeliveryEffect, IgWebhookInboxEvent,
     InstagramBotMessage, InstagramBotSettings,
 )
@@ -279,6 +279,46 @@ def recovery_lineage_for_authority(head):
     validates its actor/audit/epoch receipt; lineage alone grants no permission.
     """
     return _lineage(head, lock=False)
+
+
+def terminal_semantic_failure_reason(revision):
+    """A conclusive content rejection is not an unchanged-source outage retry.
+
+    The provider's bounded repair/rotation already finished inside this graph.
+    A new user source or explicit manual resume has separate source authority;
+    only the identical immutable recovery lineage shares this disposition.
+    """
+    rows, reason = _lineage(revision, lock=False)
+    if reason:
+        return ""
+    # An audited policy/fact refresh has new context. Only outage successors
+    # inherit a completed semantic rejection without producing a new graph.
+    unchanged = [rows[0]]
+    for previous, parent in zip(rows, rows[1:]):
+        if previous.origin != RECOVERY_ORIGIN:
+            break
+        unchanged.append(parent)
+    rows = unchanged
+    owners = {f"ig-revision:{row.pk}": row for row in rows}
+    graph = GeminiRequest.objects.filter(
+        Q(logical_turn_id__in=owners) | Q(source_execution_key__in=owners),
+    ).order_by("-pk").first()
+    if (graph is None or graph.logical_turn_id != graph.source_execution_key
+        or graph.logical_turn_id not in owners or graph.client_id != revision.client_id
+        or graph.lane != "live" or graph.terminal_resolution != "failed"
+        or graph.terminal_reason != "local_semantic_rejection" or graph.winner_attempt_id):
+        return ""
+    owner = owners[graph.logical_turn_id]
+    if graph.source_message_id not in [row.get("message_id") for row in (owner.bundle_snapshot or {}).get("sources", ())]:
+        return ""
+    attempt = GeminiRequestAttempt.objects.filter(
+        request_graph=graph, provider_started_at__isnull=False,
+    ).order_by("-pk").first()
+    if (attempt is None or attempt.fsm_state != "failed" or attempt.http_code != 200
+        or attempt.failure_kind != "local_semantic_rejection" or not attempt.error_detail
+        or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}(?:,[a-z][a-z0-9_]{0,63}){0,15}", attempt.error_detail)):
+        return ""
+    return "generation_semantic_rejected"
 
 
 def continuous_wait_revisions(revision, *, limit=64):
@@ -608,6 +648,19 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
     return _set_state(revision, "execution", "recovery_existing_proposal_requires_execution", due_at=now)
 
 
+def _classify_terminal_semantic_failure(revision, client, *, now):
+    reason = terminal_semantic_failure_reason(revision)
+    if not reason:
+        return None
+    rows, lineage_reason = _lineage(revision)
+    if lineage_reason:
+        return _set_state(revision, "manual", lineage_reason)
+    state, eligibility_reason = _eligibility(revision, client, rows, now)
+    if state:
+        return _set_state(revision, state, eligibility_reason)
+    return _set_state(revision, "manual", reason)
+
+
 def schedule_revision_recovery(revision_id, *, now=None):
     """Queue an expired generation for DB-only classification and bounded retry."""
     now = now or timezone.now()
@@ -622,6 +675,11 @@ def schedule_revision_recovery(revision_id, *, now=None):
             return RecoveryResult(reason="revision_missing")
         if revision.recovery_state == "execution" and not execution_resume_is_current(revision, now=now):
             return _set_state(revision, "manual", "proposal_execution_resume_expired")
+        if (client is not None and revision.active_slot == 1 and revision.state in {"sealed", "claimed"}
+            and revision.recovery_state in {"", "waiting"}):
+            semantic = _classify_terminal_semantic_failure(revision, client, now=now)
+            if semantic is not None:
+                return semantic
         if revision.recovery_state:
             return RecoveryResult(revision.pk, revision.recovery_state, revision.recovery_code)
         if revision.overall_deadline > now or revision.active_slot != 1 or revision.state not in {"sealed", "claimed"}:
@@ -634,7 +692,26 @@ def schedule_revision_recovery(revision_id, *, now=None):
 
         continuation = inspect_revision_provider_execution(revision, now=now)
         if not continuation.ready and continuation.reason != "provider_wait":
-            return _set_state(revision, "manual", continuation.reason)
+            reason = continuation.reason
+            if reason == "provider_manifest_missing":
+                from management.services.ig_revision_burst_budget import economic_family, economic_root
+                from management.services.ig_revision_provider_execution import MANIFEST_KEY
+
+                root = economic_root(revision)
+                family = economic_family(root) if root is not None else []
+                turn_ids = [f"ig-revision:{row.pk}" for row in family]
+                # An input/permission/ingress fence can expire a sealed claim
+                # before generation admission. That is unanswered input, not
+                # a lost provider budget. Any admitted generation, persisted
+                # manifest (even invalid), or graph keeps the strict diagnostic.
+                if (root is not None and family
+                    and MANIFEST_KEY not in (root.action_receipts or {})
+                    and not any("generation_admission" in (row.action_receipts or {}) for row in family)
+                    and not GeminiRequest.objects.filter(
+                        Q(logical_turn_id__in=turn_ids) | Q(source_execution_key__in=turn_ids),
+                    ).exists()):
+                    reason = "generation_not_started"
+            return _set_state(revision, "manual", reason)
         lineage = (revision.action_receipts or {}).get("recovery_lineage") or {}
         round_number = lineage.get("round", 0)
         delay = RETRY_DELAYS[min(round_number, len(RETRY_DELAYS) - 1)] if isinstance(round_number, int) and round_number >= 0 else RETRY_DELAYS[-1]
@@ -671,6 +748,10 @@ def prepare_outage_recovery(revision_id, *, now=None):
             return RecoveryResult(revision.pk, "spawned", "recovery_existing_child", child.pk if child else 0)
         if revision.recovery_state == "manual" and revision.recovery_code == "recovery_existing_proposal_requires_execution":
             return _authorize_proposal_execution(revision, client, settings_row, now=now)
+        if revision.recovery_state == "waiting":
+            semantic = _classify_terminal_semantic_failure(revision, client, now=now)
+            if semantic is not None:
+                return semantic
         if revision.recovery_state != "waiting" or not revision.recovery_due_at or revision.recovery_due_at > now:
             return RecoveryResult(revision.pk, revision.recovery_state, "recovery_not_due")
         rows, code = _lineage(revision)

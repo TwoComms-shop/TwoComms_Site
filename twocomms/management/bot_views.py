@@ -6355,6 +6355,7 @@ def bot_client_detail_api(request, client_id):
             "status_label": (
                 "Потребує перевірки"
                 if f.kind == IgFollowUpTask.Kind.MANAGER_TASK
+                and f.status not in {IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED}
                 and (
                     f.reason.startswith("prize_review:")
                     or f.reason in {
