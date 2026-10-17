@@ -183,13 +183,20 @@ def transition_ig_technical_debt_case(
         current_status = case.status
         stored_evidence = dict(case.evidence) if isinstance(case.evidence, dict) else {}
         handled_fingerprint = stored_evidence.get("handled_observation_fingerprint", case.observation_fingerprint)
+        recurrent_triage = (
+            current_status in _PRESERVED_STATUSES
+            and target_status in {"acknowledged", "claimed"}
+            and bool(case.observation_fingerprint)
+            and handled_fingerprint != case.observation_fingerprint
+        )
         if current_status == target_status and handled_fingerprint == case.observation_fingerprint:
             if target_status == "claimed" and actor is not None and case.owner_id not in (None, actor.pk):
                 return {"ok": False, "status": 409, "error": "case_claimed_by_other"}
             return {"ok": True, "status": 200, "idempotent": True, "case": _case_payload(case)}
-        if current_status != target_status and target_status not in _LIFECYCLE_TRANSITIONS.get(current_status, set()):
+        if (current_status != target_status and not recurrent_triage
+            and target_status not in _LIFECYCLE_TRANSITIONS.get(current_status, set())):
             return {"ok": False, "status": 409, "error": "invalid_transition", "current_status": current_status}
-        if target_status == "claimed" and case.owner_id not in (None, getattr(actor, "pk", None)):
+        if target_status == "claimed" and not recurrent_triage and case.owner_id not in (None, getattr(actor, "pk", None)):
             return {"ok": False, "status": 409, "error": "case_claimed_by_other"}
 
         before = _case_payload(case)
@@ -200,7 +207,17 @@ def transition_ig_technical_debt_case(
             "action": action,
             "evidence": evidence,
             "actor_id": getattr(actor, "pk", None),
+            "observation_fingerprint": case.observation_fingerprint,
         }
+        if recurrent_triage:
+            # Only an explicit operator action can triage a new observation.
+            # Retain the previous terminal disposition and ownership in history.
+            event["previous_observation"] = {
+                "handled_fingerprint": handled_fingerprint,
+                "owner_id": case.owner_id,
+                "acknowledged_at": before["acknowledged_at"],
+                "resolved_at": before["resolved_at"],
+            }
         events = list(stored_evidence.get("operator_events") or [])
         events.append(event)
         stored_evidence["operator_events"] = events[-100:]
@@ -211,6 +228,10 @@ def transition_ig_technical_debt_case(
         case.evidence = stored_evidence
         if note:
             case.operator_note = note
+        if recurrent_triage:
+            case.owner = None
+            case.acknowledged_at = now
+            case.resolved_at = None
         if target_status == "claimed":
             case.owner = actor
         if target_status in {"acknowledged", "claimed"} and case.acknowledged_at is None:

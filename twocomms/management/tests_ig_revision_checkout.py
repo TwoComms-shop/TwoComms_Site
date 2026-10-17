@@ -397,7 +397,9 @@ class RevisionCheckoutV2PrepayTests(TransactionTestCase):
         self.source.save(update_fields=["text"])
         result = self._prepare()
         self.assertFalse(result.planned)
-        self.assertIn("checkout_payment_source_changed", result.reasons)
+        # The shared immutable-source fence rejects drift before the narrower
+        # payment-source authorizer can construct a token or quote.
+        self.assertIn("readiness:revision_sources_changed", result.reasons)
         self.assertEqual(IgCheckoutAccessToken.objects.count(), 0)
         self.assertEqual(IgCheckoutProposal.objects.count(), 0)
 

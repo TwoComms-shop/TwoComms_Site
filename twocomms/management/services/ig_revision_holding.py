@@ -7,11 +7,14 @@ import secrets
 from datetime import timedelta
 
 from django.db import connection, transaction
+from django.db.models import CharField, Exists, F, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Cast, Collate, Concat
 from django.utils import timezone
 
 from management.models import (
     GeminiRequest, IgBotNotification, IgClient, IgCustomerTurnRevision,
-    IgFollowUpTask, IgRevisionDeliveryEffect, InstagramBotSettings,
+    IgFollowUpTask, IgRevisionDeliveryEffect, IgTurnRevisionSource,
+    InstagramBotMessage, InstagramBotSettings,
 )
 from management.services.ig_revision_authority import (
     CLAIM_PUBLIC_POLICY_INPUTS, build_revision_authority_bindings, check_fact_bindings, check_offer_bindings,
@@ -28,6 +31,7 @@ SAFE_RECEIPT_KEY = "provider_safe_reply"
 SAFE_VERSION = "revision-provider-safe-reply-v1"
 logger = logging.getLogger(__name__)
 PARKED_COLLABORATION_CODE = "provider_dispatch_budget"
+PARKED_DISPOSITION_KEY = "parked_holding_disposition"
 
 
 def parked_collaboration_revision_ids(*, limit=25):
@@ -35,15 +39,68 @@ def parked_collaboration_revision_ids(*, limit=25):
 
     These revisions have already exhausted provider generation and were moved
     to manual debt, so the normal sealed-revision queue cannot reclaim them.
-    The selector is deliberately narrow: no delivery effect or proposal may
-    exist and the immutable source snapshot must still classify as a creator
-    offer when the row is claimed.
+    The selector admits only no-dispatch debt or the exact expired holding
+    plan. The immutable source snapshot must still classify as a creator offer
+    when the row is claimed.
     """
-    return list(IgCustomerTurnRevision.objects.filter(
+    # Apply cheap, exact impossibility checks before LIMIT. Purpose/content
+    # checks below require the sealed reader and receive a durable disposition
+    # once, rather than occupying this bounded queue on every worker cycle.
+    effects = IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
+    blocked_effects = effects.exclude(
+        purpose=PURPOSE, state="cancelled", failure_code="revision_deadline_exhausted",
+    )
+    sources = IgTurnRevisionSource.objects.filter(revision_id=OuterRef("pk"))
+    graph_key = Concat(Value("ig-revision:"), Cast(OuterRef("pk"), CharField()))
+    if connection.vendor == "mysql":
+        graph_key = Collate(graph_key, "utf8mb4_unicode_ci")
+    failed_graph = GeminiRequest.objects.filter(logical_turn_id=graph_key,
+        client_id=OuterRef("client_id"), terminal_resolution="failed", winner_attempt__isnull=True)
+    queue = IgCustomerTurnRevision.objects.filter(
         active_slot=1, state=IgCustomerTurnRevision.State.CLAIMED,
         recovery_state="manual", recovery_code=PARKED_COLLABORATION_CODE,
-        generation_proposal_digest="",
-    ).order_by("id").values_list("id", flat=True)[:max(0, min(int(limit), 50))])
+        generation_proposal_digest="", client__hidden_at__isnull=True,
+        client__is_blocked=False, client__bot_paused=False, client__manager_takeover=False,
+        client__privacy_erasure_started_at__isnull=True,
+        client__reply_permission_epoch=F("permission_epoch"),
+    ).exclude(client__stage=IgClient.Stage.SPAM).exclude(
+        action_receipts__has_key=PARKED_DISPOSITION_KEY,
+    ).filter(Q(lease_until__isnull=True) | Q(lease_until__lte=timezone.now())).annotate(
+        holding_blocked_effect=Exists(blocked_effects), holding_failed_graph=Exists(failed_graph),
+        holding_has_source=Exists(sources),
+        holding_latest_source=Subquery(sources.order_by("-message_id").values("message_id")[:1]),
+    ).filter(holding_blocked_effect=False, holding_failed_graph=True, holding_has_source=True).annotate(
+        holding_newer_source=Exists(InstagramBotMessage.objects.filter(
+            client_id=OuterRef("client_id"), role="user", pk__gt=OuterRef("holding_latest_source"),
+        )),
+    ).filter(holding_newer_source=False)
+    return list(queue.order_by("id").values_list("id", flat=True)[:max(0, min(int(limit), 50))])
+
+
+def settle_parked_holding(revision, reason):
+    """Stop unchanged parked work; retain its exact manager-owned obligation."""
+    from management.services.ig_response_debt import park_manual_revision
+
+    revision.action_receipts = {**(revision.action_receipts or {}), PARKED_DISPOSITION_KEY: {
+        "version": 1, "snapshot_digest": revision.snapshot_digest,
+        "reason": reason, "recorded_at": timezone.now().isoformat(),
+    }}
+    park_manual_revision(revision, reason)
+
+
+def settle_parked_collaboration_revision(revision_id, token, *, reason):
+    """Relinquish a conclusively blocked attempt without retrying its effects."""
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if not identity:
+        return
+    with transaction.atomic():
+        IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(
+            pk=revision_id, claim_token=token, recovery_state="manual",
+            recovery_code=PARKED_COLLABORATION_CODE,
+        ).first()
+        if revision is not None:
+            settle_parked_holding(revision, reason)
 
 
 def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None):
@@ -61,17 +118,20 @@ def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None)
         revision_id = int(revision_id)
     except (TypeError, ValueError):
         return None, "revision_id_invalid"
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return None, "parked_collaboration_missing"
     with transaction.atomic():
         settings_row = InstagramBotSettings.objects.select_for_update().filter(
             pk=settings_id, is_enabled=True,
         ).first()
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(
             pk=revision_id, active_slot=1, state=IgCustomerTurnRevision.State.CLAIMED,
             recovery_state="manual", recovery_code=PARKED_COLLABORATION_CODE,
             generation_proposal_digest="",
-        ).first()
-        client = IgClient.objects.select_for_update().filter(
-            pk=getattr(revision, "client_id", None),
+        ).exclude(action_receipts__has_key=PARKED_DISPOSITION_KEY).filter(
+            Q(lease_until__isnull=True) | Q(lease_until__lte=now),
         ).first()
         if settings_row is None or revision is None or client is None:
             return None, "parked_collaboration_missing"
@@ -82,6 +142,7 @@ def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None)
             and effects[0].state == effects[0].State.CANCELLED
             and effects[0].failure_code == "revision_deadline_exhausted"
         ):
+            settle_parked_holding(revision, "parked_collaboration_delivery_uncertain")
             return None, "parked_collaboration_delivery_uncertain"
         if (
             client.reply_permission_epoch != revision.permission_epoch
@@ -89,21 +150,26 @@ def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None)
             or client.manager_takeover or client.privacy_erasure_started_at is not None
             or client.stage == IgClient.Stage.SPAM
         ):
+            settle_parked_holding(revision, "parked_collaboration_ineligible")
             return None, "parked_collaboration_ineligible"
         if revision_has_newer_source(revision):
+            settle_parked_holding(revision, "parked_collaboration_newer_source")
             return None, "parked_collaboration_newer_source"
         if not revision.snapshot_digest or not _sources_unchanged(revision):
+            settle_parked_holding(revision, "parked_collaboration_snapshot_invalid")
             return None, "parked_collaboration_snapshot_invalid"
         if not any(
             extract_collaboration_brief(str(row.get("text") or ""))
             for row in revision.bundle_snapshot.get("sources", ())
             if row.get("role") == "user"
         ):
+            settle_parked_holding(revision, "parked_collaboration_not_creator_offer")
             return None, "parked_collaboration_not_creator_offer"
         if not GeminiRequest.objects.filter(
             logical_turn_id=f"ig-revision:{revision.pk}", client_id=client.pk,
             terminal_resolution="failed", winner_attempt__isnull=True,
         ).exists():
+            settle_parked_holding(revision, "parked_collaboration_generation_not_failed")
             return None, "parked_collaboration_generation_not_failed"
         token = secrets.token_hex(16)
         revision.claim_token = token
@@ -124,17 +190,9 @@ def claim_parked_collaboration_revision(revision_id, *, settings_id=1, now=None)
 
 
 def _sources_unchanged(revision):
-    from management.services.ig_turn_revisions import _source_payload
+    from management.services.ig_revision_outbox import revision_sources_current
 
-    snapshots = (revision.bundle_snapshot or {}).get("sources") or []
-    rows = list(revision.sources.select_related("message").order_by("ordinal", "id"))
-    return bool(snapshots and len(rows) == len(snapshots) and all(
-        row.message_id == snapshot.get("message_id")
-        and row.source_digest == snapshot.get("source_digest")
-        and row.message.client_id == revision.client_id
-        and _source_payload(row.message, previous=row, ordinal=row.ordinal)["source_digest"] == row.source_digest
-        for row, snapshot in zip(rows, snapshots, strict=True)
-    ))
+    return revision_sources_current(revision)
 
 
 def _positive_current_request(client, revision):

@@ -382,6 +382,54 @@ def _selection(plan, scope):
     return dict(scope=scope, capture={}, omission_reason="selection_capture_missing")
 
 
+def _human_history_receipt_times(rows, *, reset_floor):
+    """Read exact immutable part receipts for timestamp-less human transcripts."""
+    human = [row for row in rows if row.role == "manager" and row.source == "human_reply"
+        and row.provider_created_at is None and row.status == "done" and row.send_state == "sent"
+        and row.provider_message_id and row.send_completed_at]
+    if not human:
+        return {}
+    from collections import defaultdict
+    from django.db.models import Subquery
+    from management.ig_human_reply_models import HumanReplyPart
+    from management.services.ig_human_reply_delivery import DEFAULT_MAX_CHUNKS, _valid_plan
+
+    owners = HumanReplyPart.objects.filter(
+        provider_namespace__in={row.provider_namespace for row in human},
+        provider_message_id__in={row.provider_message_id for row in human},
+    ).values("command_id")
+    cap = MAX_HISTORY * DEFAULT_MAX_CHUNKS
+    parts = list(HumanReplyPart.objects.filter(command_id__in=Subquery(owners))
+        .select_related("command").order_by("command_id", "ordinal")[:cap + 1])
+    if len(parts) > cap:
+        return {}
+    grouped = defaultdict(list)
+    for part in parts:
+        grouped[part.command_id].append(part)
+    proven = {}
+    for command_parts in grouped.values():
+        command = command_parts[0].command
+        if command.purpose != "human_reply" or not _valid_plan(command, command_parts, current_owner=False):
+            continue
+        for part in command_parts:
+            # Late transcript projection gets a new ID; the immutable context
+            # source still belongs to its original conversation reset scope.
+            if (part.state != "sent" or not part.provider_message_id or not part.terminal_at
+                or not part.provider_started_at or part.provider_started_at > part.terminal_at
+                or part.context_message_id_snapshot < reset_floor):
+                continue
+            for row in human:
+                if (row.client_id == part.client_id and row.sender_id == part.recipient_igsid
+                    and row.provider_namespace == part.provider_namespace
+                    and row.provider_message_id == part.provider_message_id
+                    and row.send_idempotency_key == f"human:{part.operation_id_snapshot}:part:{part.ordinal}"
+                    and row.text == part.text and row.send_completed_at == part.terminal_at
+                    and row.delivery_provider_message_ids == [part.provider_message_id]
+                    and not row.delivery_failure_boundary):
+                    proven[row.pk] = part.terminal_at
+    return proven
+
+
 def _history(client, boundary, sources, supplied):
     from management.models import InstagramBotMessage
     from management.services.ig_revision_conversation_context import historical_message_text
@@ -397,11 +445,14 @@ def _history(client, boundary, sources, supplied):
             sender_id=client.igsid, provider_namespace=boundary["source_namespace"],
             pk__gte=boundary["reset_floor"], pk__lt=min(boundary["source_ids"]),
             pk__in=[row["message_id"] for row in rows])[:MAX_HISTORY]}
+        human_times = _human_history_receipt_times(proofs.values(), reset_floor=boundary["reset_floor"])
         for item in rows:
             row = proofs.get(item["message_id"])
             manager = item.get("role") == "manager"
-            if (row is None or row.role != item.get("role") or row.provider_created_at is None
-                or item.get("event_at") != row.provider_created_at.isoformat()
+            stamp = (row.provider_created_at or human_times.get(row.pk)) if row is not None else None
+            if (row is None or row.role != item.get("role") or stamp is None
+                or item.get("event_at") != stamp.isoformat()
+                or stamp > _stamp(boundary["watermark"]["event_at"])
                 or item.get("scope") != _scope(boundary)
                 or item.get("text") != historical_message_text(row, manager=manager)
                 or (manager and not (item.get("receipt_confirmed") is True and row.status == "done"
@@ -413,10 +464,18 @@ def _history(client, boundary, sources, supplied):
         previous = list(InstagramBotMessage.objects.filter(client_id=client.pk,
             sender_id=client.igsid, provider_namespace=boundary["source_namespace"],
             pk__gte=boundary["reset_floor"], pk__lt=min(boundary["source_ids"]),
-            provider_created_at__lte=_stamp(boundary["watermark"]["event_at"]),
-            role__in=("user", "model", "manager")).exclude(status="failed").order_by("-pk")[:MAX_HISTORY])
+            role__in=("user", "model", "manager")).filter(
+                Q(provider_created_at__lte=_stamp(boundary["watermark"]["event_at"]))
+                | Q(role="manager", source="human_reply", provider_created_at__isnull=True,
+                    send_completed_at__lte=_stamp(boundary["watermark"]["event_at"]),
+                    status="done", send_state="sent"),
+            ).exclude(status="failed").order_by("-pk")[:MAX_HISTORY])
+        human_times = _human_history_receipt_times(previous, reset_floor=boundary["reset_floor"])
         for row in reversed(previous):
             if not row.text.strip():
+                continue
+            stamp = row.provider_created_at or human_times.get(row.pk)
+            if stamp is None:
                 continue
             manager = row.role == "manager"
             if manager and not (row.status == "done" and row.send_state not in {"unknown", "sending", "failed"}
@@ -426,7 +485,7 @@ def _history(client, boundary, sources, supplied):
                 continue
             if row.role == "user" and row.source not in {"webhook", "poll"}:
                 continue
-            rows.append(dict(message_id=row.pk, event_at=row.provider_created_at.isoformat(),
+            rows.append(dict(message_id=row.pk, event_at=stamp.isoformat(),
                 role=row.role, text=historical_message_text(row, manager=manager), scope=_scope(boundary),
                 **({"receipt_confirmed": True} if manager else {})))
     return rows, ""

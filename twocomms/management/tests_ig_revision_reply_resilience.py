@@ -28,14 +28,21 @@ class RevisionReplyResilienceTests(TransactionTestCase):
     _assert_waiting_purchase = fallback_fixtures.RevisionPreferenceFallbackIntegrationTests._assert_waiting_purchase
 
     def _selected_product(self, *, size=""):
+        from product_catalog.models import VariantSizeRule
         from productcolors.models import Color, ProductColorVariant
-        from storefront.models import Category, Product
+        from storefront.models import Category, Product, ProductFitOption
 
         category = Category.objects.create(name="Resilience fixture", slug="resilience-fixture")
         product = Product.objects.create(title="Selected fixture", slug="selected-fixture", category=category,
                                          price=900, status="published")
         color = Color.objects.create(name="Resilience black", primary_hex="#111111")
-        variant = ProductColorVariant.objects.create(product=product, color=color, is_default=True, price_override=900)
+        variant = ProductColorVariant.objects.create(product=product, color=color, is_default=True, price_override=900, stock=3)
+        for fit in ("classic", "oversize"):
+            ProductFitOption.objects.create(product=product, code=fit, label=fit,
+                is_active=True, is_default=fit == "classic")
+            for available_size in ("M", "L"):
+                VariantSizeRule.objects.create(variant=variant, fit_code=fit, size=available_size,
+                    is_enabled=True, stock=3)
         self.customer.current_product = product
         self.customer.current_color = "black"
         self.customer.current_size = size
@@ -185,13 +192,9 @@ class RevisionReplyResilienceTests(TransactionTestCase):
         self.assertIn("Remove the unverified price", guidance)
 
     def _failed_nonfit_request(self, text, *, no_action=False):
-        original = self._message
-        def message(value, mid):
-            # A true no-action bundle contains actual greetings/thanks; blank
-            # synthetic purchase/fit sources cannot certify that disposition.
-            return original(text if no_action or mid == "fit-order" else "", mid)
-        with patch.object(self, "_message", side_effect=message):
-            return self._fit_fixture(fit_text="")
+        # Keep the actual source text rather than patching a historical MID
+        # name that the shared fixture no longer creates.
+        return self._fit_fixture(source_texts=[text])
 
     @override_settings(IG_REVISION_OPTIONAL_HOLDING_ENABLED=True)
     def test_holding_case_exists_before_http_and_remains_open_after_sent_and_restart(self):

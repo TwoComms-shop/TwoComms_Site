@@ -5,6 +5,7 @@ answers messages nor closes legacy turns or manager cases. Active generation
 shares its existing economics only through a validated paired burst-budget
 link; historical debt reconciliation remains a separate consumer.
 """
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from management.models import (
@@ -39,6 +40,7 @@ class SourceTransferPlan:
     reason: str = ""
     source_refs: tuple = ()
     budget_binding: dict = field(default_factory=dict)
+    observation_receipts: dict = field(default_factory=dict)
 
     @property
     def ready(self):
@@ -90,6 +92,53 @@ def validate_source_transfer(revision, *, revision_rows=None, sources_by_revisio
     ))
 
 
+def _source_observation_receipts(head, client, receipts):
+    """Admit only inert observations proven against original current sources."""
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_revision_commerce import (
+        INGRESS_SOURCE_PRODUCER, OBSERVATION_KEY, _valid_observation,
+    )
+
+    keys = {key for key in receipts if key.startswith("commerce_observation:")}
+    if not keys and OBSERVATION_KEY not in receipts:
+        return {}
+    if not keys or receipts.get(OBSERVATION_KEY) != {
+        "schema": "revision-commerce-observations.v1", "producer": INGRESS_SOURCE_PRODUCER,
+    }:
+        return None
+    messages = {row.message_id: row.message for row in head.sources.select_related("message")}
+    floor = conversation_route_reset_floor(client.pk)
+    valid = {OBSERVATION_KEY: deepcopy(receipts[OBSERVATION_KEY])}
+    for key in keys:
+        observation = receipts[key]
+        source_id = observation.get("source_message_id") if isinstance(observation, dict) else None
+        message = messages.get(source_id) if type(source_id) is int else None
+        if (message is None or key != f"commerce_observation:{source_id}"
+            or not _valid_observation(observation, client, message, floor)):
+            return None
+        valid[key] = deepcopy(observation)
+    return valid
+
+
+def _undelivered_proposal_valid(head):
+    """A won generation can become stale before any delivery plan exists."""
+    from management.services.ig_revision_proposal import _generation_graph_matches, _snapshot_sources
+    from management.services.ig_turn_revisions import _digest
+
+    proposal = head.generation_proposal
+    if (not isinstance(proposal, dict) or not head.generation_proposal_digest
+        or _digest(proposal) != head.generation_proposal_digest
+        or _digest(head.bundle_snapshot) != head.snapshot_digest):
+        return False
+    sources, _parts = _snapshot_sources(head)
+    generation = proposal.get("generation") or {}
+    return bool(sources and proposal.get("sources") == sources and _generation_graph_matches(
+        revision=head, source_ids={row["message_id"] for row in sources},
+        request_id=generation.get("request_id"), model=generation.get("actual_model"),
+        policy_manifest=proposal.get("policy_manifest") or {}, lock=False,
+    ))
+
+
 def plan_source_transfer(head, client, fresh_messages, *, now):
     from management.services.ig_customer_turns import MAX_TURN_WAIT, bypasses_debounce
     from management.services.ig_turn_revisions import (
@@ -126,8 +175,8 @@ def plan_source_transfer(head, client, fresh_messages, *, now):
     if head.delivery_effects.exists():
         return denied("delivery_already_planned")
     receipts = head.action_receipts or {}
-    if head.generation_proposal_digest:
-        return denied("generation_already_proposed")
+    if (head.generation_proposal_digest or head.generation_proposal) and not _undelivered_proposal_valid(head):
+        return denied("generation_proposal_invalid")
     budget_binding = {}
     provider_started = ("provider_execution_manifest" in receipts or "provider_execution_reference" in receipts
                         or GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{head.pk}").exists())
@@ -139,8 +188,17 @@ def plan_source_transfer(head, client, fresh_messages, *, now):
         budget_binding = transfer_budget_binding(head)
         if not budget_binding:
             return denied("provider_budget_unproven")
+    observations = _source_observation_receipts(head, client, receipts)
+    if observations is None:
+        return denied("commerce_observation_invalid")
+    if "response_coverage" in receipts:
+        from management.services.ig_response_debt import response_coverage
+
+        if response_coverage(head) != receipts["response_coverage"]:
+            return denied("response_coverage_invalid")
     if set(receipts) - {TRANSFER_IN, "input_decision", "generation_admission", "commerce_reduction",
-                        "provider_execution_manifest", "provider_execution_reference", "burst_budget_in"}:
+                        "provider_execution_manifest", "provider_execution_reference", "burst_budget_in",
+                        "response_coverage", *observations}:
         return denied("existing_action_ownership")
     if receipts.get("input_decision") and receipts["input_decision"].get("origin") != "generate":
         return denied("existing_input_disposition")
@@ -186,7 +244,8 @@ def plan_source_transfer(head, client, fresh_messages, *, now):
     refs = tuple({"message_id": row.message_id, "source_digest": row.source_digest,
                   "predecessor_source_id": row.pk} for row in rows)
     return SourceTransferPlan(tuple(payloads), (receipts.get(TRANSFER_IN) or {}).get("root_revision_id", head.pk),
-                              source_refs=refs, budget_binding=budget_binding)
+                              source_refs=refs, budget_binding=budget_binding,
+                              observation_receipts=observations)
 
 
 def record_source_transfer(previous, successor, plan):
@@ -208,7 +267,9 @@ def record_source_transfer(previous, successor, plan):
     if TRANSFER_OUT in (previous.action_receipts or {}) or TRANSFER_IN in (successor.action_receipts or {}):
         raise ValueError("source_transfer_already_recorded")
     previous.action_receipts = {**(previous.action_receipts or {}), TRANSFER_OUT: receipt}
-    successor.action_receipts = {**(successor.action_receipts or {}), TRANSFER_IN: receipt}
+    successor.action_receipts = {
+        **(successor.action_receipts or {}), **deepcopy(plan.observation_receipts), TRANSFER_IN: receipt,
+    }
     successor.save(update_fields=["action_receipts", "updated_at"])
     previous.state = previous.State.SUPERSEDED
     previous.claim_token = ""

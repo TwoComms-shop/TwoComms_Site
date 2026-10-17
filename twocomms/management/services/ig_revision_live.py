@@ -251,7 +251,8 @@ def build_sealed_history(revision) -> list[dict]:
     return history
 
 
-def capture_revision_source(*, message_id, deadline_at, remaining_seconds):
+def capture_revision_source(*, message_id, deadline_at, remaining_seconds,
+                            revision_id=None, preparation_token=""):
     """Capture the original source under the preparation's real wall deadline."""
     if connection.in_atomic_block:
         raise ValueError("caller_transaction_active")
@@ -265,7 +266,32 @@ def capture_revision_source(*, message_id, deadline_at, remaining_seconds):
         return
     from management.services.instagram_bot import _capture_message_media
 
-    _capture_message_media(row, deadline_at=deadline_at)
+    kwargs = {"deadline_at": deadline_at}
+    if revision_id is not None and preparation_token:
+        def still_owned():
+            from management.services.ig_turn_revisions import preparation_claim_is_current
+            from management.services.ig_revision_outbox import _active_opt_out
+
+            now = timezone.now()
+            if deadline_at <= now or not preparation_claim_is_current(revision_id, preparation_token, now=now):
+                return False
+            owner = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision_id).first()
+            if owner is None:
+                return False
+            client = owner.client
+            if (client.reply_permission_epoch != owner.permission_epoch or client.hidden_at
+                or client.is_blocked or client.bot_paused or client.manager_takeover
+                or client.privacy_erasure_started_at is not None or _active_opt_out(client)):
+                return False
+            ids = list(owner.sources.values_list("message_id", flat=True))
+            return bool(message_id in ids and ids and not InstagramBotMessage.objects.filter(
+                client_id=owner.client_id, role="user", pk__gt=max(ids),
+            ).exists())
+
+        if not still_owned():
+            return
+        kwargs["on_progress"] = still_owned
+    _capture_message_media(row, **kwargs)
 
 
 def _authority_from_projection(value) -> RevisionAuthorityBindingSet:
@@ -1566,13 +1592,15 @@ def _revision_response_purpose_reason(revision):
     This gate has no business mutations and also runs on crash-resumed outboxes.
     """
     from management.services.ig_turn_intent import build_turn_intent, validate_turn_response, service_complaint_manual_reply_owned
-    from management.services.ig_revision_outbox import revision_has_newer_source
+    from management.services.ig_revision_outbox import revision_has_newer_source, revision_sources_current
 
     current = IgCustomerTurnRevision.objects.select_related("client").get(pk=revision.pk)
     if service_complaint_manual_reply_owned(current):
         return "service_complaint_manager_reply_owned"
     if revision_has_newer_source(current):
         return "pending_inbound"
+    if not revision_sources_current(current):
+        return "revision_sources_changed"
     if catalog_reason := _catalog_source_effect_reason(current):
         return catalog_reason
     text_effects = tuple(current.delivery_effects.filter(group="substantive_text").order_by("order_index"))
@@ -1649,20 +1677,20 @@ def _drain_effects(revision, token, settings_row, access_token):
                 return ProviderPartResult(
                     provider_namespace=effect.provider_namespace,
                     outcome="known_not_dispatched",
-                    explicit_rejection_code=allowed.reason or "payment_reminder_scope_changed",
+                    explicit_rejection_code="payment_reminder_scope_changed",
                 )
             with restock_provider_boundary(revision.pk) as restock_allowed:
                 if not restock_allowed:
                     return ProviderPartResult(
                         provider_namespace=effect.provider_namespace,
                         outcome="known_not_dispatched",
-                        explicit_rejection_code=getattr(restock_allowed, "reason", "") or "restock_subscription_scope_changed",
+                        explicit_rejection_code="restock_subscription_scope_changed",
                     )
                 from management.services.ig_fulfillment_context import validate_retained_fulfillment
                 current = IgCustomerTurnRevision.objects.get(pk=revision.pk)
                 if reason := validate_retained_fulfillment(current, (current.generation_proposal or {}).get("fulfillment_capture")):
                     return ProviderPartResult(provider_namespace=effect.provider_namespace,
-                        outcome="known_not_dispatched", explicit_rejection_code=reason)
+                        outcome="known_not_dispatched", explicit_rejection_code="fulfillment_scope_changed")
                 return original_transport(payload)
 
     transport = RevisionProviderTransport(original_transport.preflight, guarded_send)
@@ -2021,8 +2049,9 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             from management.services.ig_revision_holding import record_technical_holding
 
             holding = record_technical_holding(
-                revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
-            ) if getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False) else None
+                revision.pk, token, settings_id=settings_row.pk,
+                allow_neutral=getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False),
+            )
             if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", ("generation_reconciliation_required",))
@@ -2062,9 +2091,10 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             from management.services.ig_revision_holding import record_technical_holding
 
             holding = record_technical_holding(
-                revision.pk, token, settings_id=settings_row.pk, allow_neutral=True,
+                revision.pk, token, settings_id=settings_row.pk,
+                allow_neutral=getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False),
                 product_inquiry_capture=getattr(boundary.revision, "_product_inquiry_capture", None),
-            ) if getattr(django_settings, "IG_REVISION_OPTIONAL_HOLDING_ENABLED", False) else None
+            )
             if holding is not None and holding.ready:
                 return _execute_deterministic_input(revision, token, settings_row, holding.receipt)
             return RevisionLiveResult(revision_id, "blocked", reasons)
@@ -2273,9 +2303,12 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
         # narrow, idempotent pass before ordinary generation recovery.
         from management.services.ig_revision_holding import (
             claim_parked_collaboration_revision, parked_collaboration_revision_ids,
+            settle_parked_collaboration_revision,
         )
 
-        for revision_id in parked_collaboration_revision_ids(limit=limit):
+        # Historical handoffs must make progress without occupying the entire
+        # front of a worker pass while a fresh customer revision is due.
+        for revision_id in parked_collaboration_revision_ids(limit=1):
             identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
             if not identity or bot.maintenance_status()["active"]:
                 continue
@@ -2295,6 +2328,9 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                 if outcome.state == "completed":
                     handled += 1
                 elif outcome.reasons:
+                    settle_parked_collaboration_revision(
+                        revision_id, token, reason=outcome.reasons[0],
+                    )
                     _log_revision_blocked(revision_id, identity["client_id"], outcome,
                         event="revision_collaboration_recovery")
             except Exception as exc:
@@ -2373,6 +2409,8 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                     except Exception:
                         logging.getLogger(__name__).info("ig_presence outcome=preparation_unavailable")
                     try:
+                        capture_kwargs.setdefault("revision_id", revision_id)
+                        capture_kwargs.setdefault("preparation_token", preparation_token)
                         return capture_revision_source(**capture_kwargs)
                     finally:
                         handle = presence_scope.get("handle")

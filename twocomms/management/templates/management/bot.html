@@ -3235,7 +3235,7 @@ body.bot-drawer-open{overflow:hidden;}
       const sourceId=(debt.source_message_ids||[]).slice(-1)[0];
       if(sourceId){const button=node('button','bot-order-action','До запиту');button.type='button';button.addEventListener('click',()=>{requestedMessageId=Number(sourceId);const messages=document.getElementById('bot-msgs');const older=conversationEl.querySelector('[data-older-messages]');if(messages&&older)void revealRequestedMessage(messages,older);});strip.append(button);}
       {% if bot_can_operate %}
-      if(debt.task_id&&debt.revision_id){const reviewed=node('button','bot-order-action','Опрацьовано');reviewed.type='button';reviewed.title='Зняти це сповіщення без надсилання відповіді. Дію буде збережено в журналі.';reviewed.addEventListener('click',async()=>{
+      if(debt.task_id&&debt.revision_id){const reviewed=node('button','bot-order-action','Опрацьовано');reviewed.type='button';reviewed.title='Позначити цей запит опрацьованим і завершити його автоматичні спроби без надсилання відповіді. Дію буде збережено в журналі.';reviewed.addEventListener('click',async()=>{
         const id=Number(clientId),taskId=Number(debt.task_id);reviewed.disabled=true;reviewed.textContent='Зберігаємо…';
         const body=new FormData();body.append('expected_revision_id',String(debt.revision_id));
         const url='{% url "management_bot_client_reply_debt_review_api" 0 0 %}'.replace('/0/','/'+id+'/').replace('/0/','/'+taskId+'/');

@@ -68,17 +68,36 @@ def try_bind_paid_shipping_order(order_id):
 
 def reconcile_paid_shipping_plans(*, limit=10):
     """Recover a lost post-commit wakeup only for actual, still-unbound agreements."""
-    from management.models import IgSplitShippingChoice
-    from orders.models import Order
+    from django.db.models import BigIntegerField, Exists, OuterRef
+    from django.db.models.functions import Cast
+    from management.models import IgCheckoutProposal, IgSplitShippingChoice
+    from orders.models import Order, PaymentAttempt
     from django.utils import timezone
     if not reviews._enabled():
         return 0
-    client_ids = list(IgSplitShippingChoice.objects.filter(plan__isnull=True,
-        created_at__gte=timezone.now() - timedelta(hours=24), client__privacy_erasure_started_at__isnull=True)
-        .order_by("created_at", "pk").values_list("client_id", flat=True)[:max(0, min(int(limit), 20))])
-    if not client_ids:
+    bound = max(0, min(int(limit), 20))
+    if not bound:
         return 0
-    ids = Order.objects.filter(payment_payload__source_cart_provenance__owner__client_id__in=client_ids,
-        instagram_split_plan__isnull=True).exclude(status__in=("done", "cancelled", "refunded"))
+    now = timezone.now()
+    owner_id = Cast(OuterRef("payment_payload__source_cart_provenance__owner__client_id"), BigIntegerField())
+    proposal_id = Cast(OuterRef("payment_payload__source_cart_provenance__owner__proposal_pk"), BigIntegerField())
+    choices = IgSplitShippingChoice.objects.filter(client_id=owner_id, plan__isnull=True,
+        created_at__gte=now - timedelta(hours=24), created_at__lte=now,
+        offer__decision__created_at__gte=now - reviews.FRESHNESS,
+        offer__decision__created_at__lte=now, client__privacy_erasure_started_at__isnull=True)
+    paid = IgCheckoutProposal.objects.filter(pk=proposal_id, client_id=owner_id,
+        status=IgCheckoutProposal.Status.PAID, deal__order_id=OuterRef("pk"),
+        commercial_episode__intended_order_id=OuterRef("pk"),
+        payment_attempt__order_id=OuterRef("pk"), payment_attempt__status=PaymentAttempt.Status.CONVERTED,
+        payment_attempt__paid_amount__gt=0, payment_attempt__monobank_invoice_id=OuterRef("payment_invoice_id"),
+    ).exclude(payment_attempt__monobank_invoice_id="")
+    # Select actual paid orders before LIMIT. An older unpaid agreement must
+    # not consume every bounded pass while a later paid order awaits binding.
+    # Discovery grants no logistics authority: bind_paid_shipping_order still
+    # revalidates the exact signed choice, winner, item map and allocations.
+    ids = Order.objects.filter(instagram_split_plan__isnull=True, payment_status__in=("paid", "prepaid"))
+    ids = ids.exclude(status__in=("done", "cancelled", "refunded")).annotate(
+        has_fresh_choice=Exists(choices), has_paid_owner=Exists(paid),
+    ).filter(has_fresh_choice=True, has_paid_owner=True)
     return sum(bool(try_bind_paid_shipping_order(identity).get("created"))
-        for identity in ids.order_by("created", "pk").values_list("pk", flat=True)[:max(0, min(int(limit), 20))])
+        for identity in ids.order_by("created", "pk").values_list("pk", flat=True)[:bound])

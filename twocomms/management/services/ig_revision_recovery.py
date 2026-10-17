@@ -219,6 +219,13 @@ def record_policy_readiness_failure(
 
 
 def _set_state(revision, state, code, *, due_at=None, child_id=0):
+    from management.services.ig_response_debt import response_obligation_paused
+
+    # A stale recovery callback cannot wake the exact request after a customer
+    # wait, an explicit handled decision, or a confirmed manager reply. A new
+    # relevant source or audited resume owns a separate successor revision.
+    if response_obligation_paused(revision):
+        return RecoveryResult(revision.pk, revision.recovery_state, revision.recovery_code)
     revision.recovery_state = state
     revision.recovery_code = code
     revision.recovery_due_at = due_at

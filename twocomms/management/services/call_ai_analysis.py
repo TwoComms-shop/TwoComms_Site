@@ -1855,16 +1855,12 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             # including admission rejection, restores the original request.
             working_payload = copy.deepcopy(original_payload)
 
-    def _alternative_for_last_scarce_slot(model):
-        if (scarce_diversification_used or dispatch_budget is None or empty_response_count < 2
-            or dispatch_budget.remaining_dispatches <= 0
-            or dispatch_budget.max_scarce_dispatches - dispatch_budget.consumed_scarce_dispatches != 1
-            or _chat_timeout(deadline - time.monotonic(), preserve_fallback=False) is None):
-            return False
+    def _eligible_frozen_alternative(model, *, scarce_only=False):
+        """Read current eligibility without adding/reordering frozen candidates."""
         later = set(models[models.index(model) + 1:])
         frozen = {(row["key_name"], row["model"], row["project_identity"])
                   for row in candidate_plan if row["model"] in later and not row["skip_reason"]
-                  and row.get("scarce") is True and row.get("identity_status") == "known"}
+                  and (not scarce_only or row.get("scarce") is True) and row.get("identity_status") == "known"}
         if not frozen:
             return False
         # Read eligibility once; keep the original order, capabilities and
@@ -1876,6 +1872,14 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             return False
         return any(not row["skip_reason"] and (row["key_name"], row["model"], row["project_identity"]) in frozen
                    for row in fresh)
+
+    def _alternative_for_last_scarce_slot(model):
+        if (scarce_diversification_used or dispatch_budget is None or empty_response_count < 2
+            or dispatch_budget.remaining_dispatches <= 0
+            or dispatch_budget.max_scarce_dispatches - dispatch_budget.consumed_scarce_dispatches != 1
+            or _chat_timeout(deadline - time.monotonic(), preserve_fallback=False) is None):
+            return False
+        return _eligible_frozen_alternative(model, scarce_only=True)
 
     def _defer_resumed_scarce_tier(model, tier_candidates, slow_limit):
         nonlocal scarce_diversification_used, deferred_scarce_tier
@@ -2140,7 +2144,7 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             )
             _emit(f"{key_name}/{model}: {kind} ({time.monotonic() - call_started_at:.1f}с)")
             _release()
-            return None, "transient"
+            return None, "read_timeout" if kind == "read_timeout" else "transient"
         except _GeminiEmpty as exc:
             last_actual_failure_kind = exc.failure_kind
             if exc.failure_kind == "empty":
@@ -2666,6 +2670,21 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                     primary, primary_attempts[position + 1:], primary_slow_calls + 1,
                     dispatch_budget.consumed_dispatches, CHAT_PRIMARY_ATTEMPT_LIMIT,
                 )
+                break
+            if (state == "read_timeout" and primary_slow_calls == 0
+                and dispatch_budget is not None and candidate_scarcity.get(index) is True
+                and dispatch_budget.remaining_dispatches > 0
+                and _chat_timeout(deadline - time.monotonic(), preserve_fallback=False) is not None
+                and _eligible_frozen_alternative(primary)):
+                # One observed read timeout is enough to try a distinct model
+                # before spending the final scarce slot on the same primary.
+                # Keep the original remainder if every alternative loses local
+                # admission before HTTP; never classify this timeout as EMPTY.
+                deferred_scarce_tier = (
+                    primary, primary_attempts[position + 1:], 1,
+                    dispatch_budget.consumed_dispatches, CHAT_PRIMARY_ATTEMPT_LIMIT,
+                )
+                _emit(f"{primary}: read timeout — trying the next frozen model tier")
                 break
             if state in {
                 "invalid_response_model",

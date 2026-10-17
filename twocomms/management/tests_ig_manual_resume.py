@@ -1,4 +1,5 @@
 from datetime import timedelta
+import json
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -118,12 +119,18 @@ class ManualResumeTests(TestCase):
             ).count(),
             0,
         )
-        self.assertTrue(
-            InstagramBotLog.objects.filter(
-                event="manual_resume",
-                detail__contains=f"client={client.pk}; user={self.user.pk}; epoch=4->5",
-            ).exists()
-        )
+        log = InstagramBotLog.objects.get(event="manual_resume")
+        self.assertEqual(json.loads(log.detail), {
+            "schema_version": 1, "kind": "manager_action",
+            "scope": {"client_id": client.pk}, "reason": "completed",
+        })
+        self.assertNotIn("user=", log.detail)
+        self.assertNotIn(latest.text, log.detail)
+        from management.models import AdminAuditLog
+        audit = AdminAuditLog.objects.get(action="ig_bot.manual_resume", entity_id=str(client.pk))
+        self.assertEqual(audit.actor_id, self.user.pk)
+        self.assertEqual(audit.before["permission_epoch"], 4)
+        self.assertEqual(audit.after["permission_epoch"], 5)
 
     def test_manager_answer_after_latest_customer_turn_creates_no_successor(self):
         client = self.paused_client("answered")

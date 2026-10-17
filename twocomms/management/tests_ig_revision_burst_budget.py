@@ -404,6 +404,12 @@ class RevisionBurstDeliveryTests(TransactionTestCase):
 
     def test_actual_live_successor_sends_once_and_covers_both_original_sources(self):
         from management.services.ig_revision_execution import finalize_sent_revision_effects
+        # The combined request for another print is a complex live turn and
+        # therefore needs the same typed interpretation as the real provider.
+        self.parsed["turn_intelligence"] = {
+            "catalog_candidates": [], "intent": "catalog_question", "confidence": 0.9,
+            "audio_status": "not_applicable", "transcript": "", "image_observations": [],
+        }
         self._prepare()
         previous = self._handoff_during_generation(2, "Підкажіть також про інший принт")
         result, generation, http = self._execute()

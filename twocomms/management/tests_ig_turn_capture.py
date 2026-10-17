@@ -446,6 +446,124 @@ class RevisionTurnCaptureTests(TestCase):
         self.assertTrue(any(item["block_id"] == "context:history" and item["reason"] == "history_identity_unavailable"
             for item in result.components["capture_omissions"]["items"]))
 
+    def delivered_human_context(self, *, project=True):
+        """Use the real command/part/receipt projector; never invoke transport."""
+        from django.contrib.auth import get_user_model
+        from management.services.ig_human_reply import create_human_reply_command
+        from management.services.ig_human_reply_delivery import claim_next_human_part, record_human_part_started, settle_human_part
+        from management.services.ig_human_reply_transport import project_human_part_receipt
+
+        original = self.message("Цікавить ця футболка", at=self.now - timedelta(minutes=2))
+        InstagramBotSettings.objects.create(pk=1, is_enabled=True, ig_user_id="owner-1", page_id="owner-1")
+        actor = get_user_model().objects.create_superuser(username="capture-human-manager", email="capture@example.test")
+        sent_at = self.now - timedelta(minutes=1)
+        with patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"}), patch(
+                "management.services.instagram_bot._provider_http", side_effect=AssertionError("capture called transport")):
+            command = create_human_reply_command(self.client_row.pk, actor=actor,
+                text="Це футболка «Правил немає». Який фасон вам потрібний?",
+                context_message_id=original.pk, now=sent_at).command
+            claimed = claim_next_human_part(command.pk, now=sent_at)
+            self.assertTrue(claimed.ready, claimed.reason)
+            started = record_human_part_started(claimed.part.pk, claimed.token, now=sent_at)
+            self.assertTrue(started.ready, started.reason)
+            settled = settle_human_part(claimed.part.pk, claimed.token,
+                provider_namespace="instagram_login:owner-1", http_status=200,
+                provider_message_id="capture-confirmed-human-mid", now=sent_at + timedelta(seconds=1))
+            self.assertTrue(settled.ready, settled.reason)
+            projected = project_human_part_receipt(claimed.part.pk) if project else None
+            if project:
+                self.assertIsNotNone(projected.message, projected.reason)
+        self.client_row.refresh_from_db()
+        IgClient.objects.filter(pk=self.client_row.pk).update(manager_takeover=False, bot_paused=False)
+        self.client_row.refresh_from_db()
+        return projected.message if projected else None, claimed.part
+
+    def test_confirmed_human_answer_without_provider_time_reaches_next_fit_question(self):
+        from management.services.ig_turn_capture import detached_payload
+
+        manager, _part = self.delivered_human_context()
+        self.assertIsNone(manager.provider_created_at)
+        followup = self.message("А які є фасони?", at=self.now + timedelta(seconds=1))
+        revision, collection, boundary = self.seal(followup)
+        original_snapshot = deepcopy(revision.bundle_snapshot)
+        with CaptureQueriesContext(connection) as queries, patch(
+                "management.services.instagram_bot._provider_http") as http:
+            result = self.capture(revision, collection, boundary)
+        http.assert_not_called()
+        self.assertReadBudget(queries, maximum=15)
+        self.assertIn(manager.pk, result.metadata["captured_history_ids"])
+        history = next(row for row in result.provider_history if row.get("message_id") == manager.pk)
+        self.assertIn("Правил немає", history["text"])
+        self.assertIn("DELIVERED HUMAN MANAGER MESSAGE", history["text"])
+        self.assertIn("not current delay or business authority", history["text"])
+        captured = next(row for row in result.captured_history if row["message_id"] == manager.pk)
+        self.assertEqual(captured["event_at"], manager.send_completed_at.isoformat())
+        # Supplied captures must prove the same receipt, rather than dropping
+        # timestamp-less human rows when that capture is reused.
+        reused = self.capture(revision, collection, boundary, history=detached_payload(result.captured_history))
+        self.assertEqual(reused.metadata["captured_history_ids"], result.metadata["captured_history_ids"])
+        self.client_row.refresh_from_db()
+        self.assertIsNone(self.client_row.current_product_id)
+        self.assertNotIn("product_id", boundary.response_plan.choices)
+        revision.refresh_from_db()
+        self.assertEqual(revision.bundle_snapshot, original_snapshot)
+
+    def test_timestamp_less_human_history_requires_exact_sent_part_before_watermark(self):
+        from management.ig_human_reply_models import HumanReplyPart
+
+        manager, part = self.delivered_human_context()
+        followup = self.message("А які є фасони?", at=self.now + timedelta(seconds=1))
+        revision, collection, boundary = self.seal(followup)
+        for label, message_changes, part_changes in (
+                ("unknown receipt", {}, {"state": "unknown"}),
+                ("unsent transcript", {"send_state": "sending"}, {}),
+                ("changed transcript", {"text": "Інша модель"}, {}),
+                ("unproven receipt", {"provider_message_id": "unproven-mid"}, {}),
+                ("after watermark", {"send_completed_at": self.now + timedelta(seconds=2)}, {})):
+            with self.subTest(reason=label):
+                HumanReplyPart.objects.filter(pk=part.pk).update(state="sent")
+                InstagramBotMessage.objects.filter(pk=manager.pk).update(send_state="sent", text=manager.text,
+                    provider_message_id=manager.provider_message_id, send_completed_at=manager.send_completed_at)
+                if message_changes:
+                    InstagramBotMessage.objects.filter(pk=manager.pk).update(**message_changes)
+                if part_changes:
+                    HumanReplyPart.objects.filter(pk=part.pk).update(**part_changes)
+                result = self.capture(revision, collection, boundary)
+                self.assertNotIn(manager.pk, result.metadata["captured_history_ids"])
+
+    def test_late_human_projection_after_reset_cannot_restore_old_conversation(self):
+        from management.models import HumanReplyCommand
+        from management.services.ig_funnel_reset import reset_funnel
+        from management.services.ig_human_reply_transport import project_human_part_receipt
+        from management.services.ig_revision_conversation_context import historical_message_text
+        from management.services.ig_turn_capture import _scope
+
+        _message, part = self.delivered_human_context(project=False)
+        command = HumanReplyCommand.objects.select_related("actor").get(pk=part.command_id)
+        reset = reset_funnel(client_id=self.client_row.pk, actor=command.actor, reason="new conversation")
+        self.assertTrue(reset["ok"], reset)
+        self.client_row.refresh_from_db()
+        floor = IgFunnelResetAudit.objects.filter(client=self.client_row).latest("pk").reset_after_message_id + 1
+        self.assertLess(part.context_message_id_snapshot, floor)
+        # The durable SENT receipt still projects for the historical transcript,
+        # but its new row ID cannot move its old context across the reset.
+        projected = project_human_part_receipt(part.pk)
+        self.assertIsNotNone(projected.message, projected.reason)
+        manager = projected.message
+        self.assertGreaterEqual(manager.pk, floor)
+        followup = self.message("А які є фасони?", at=self.now + timedelta(seconds=1))
+        revision, collection, boundary = self.seal(followup)
+        result = self.capture(revision, collection, boundary)
+        self.assertEqual(result.boundary["reset_floor"], floor)
+        self.assertNotIn(manager.pk, result.metadata["captured_history_ids"])
+        self.assertNotIn("Правил немає", str(result.provider_history))
+        supplied = [dict(message_id=manager.pk, event_at=manager.send_completed_at.isoformat(),
+            role="manager", text=historical_message_text(manager, manager=True),
+            scope=_scope(result.boundary), receipt_confirmed=True)]
+        reused = self.capture(revision, collection, boundary, history=supplied)
+        self.assertNotIn(manager.pk, reused.metadata["captured_history_ids"])
+        self.assertNotIn("Правил немає", str(reused.provider_history))
+
     def test_source_changed_after_seal_halts(self):
         source = self.message("Хочу M")
         revision, collection, boundary = self.seal(source)

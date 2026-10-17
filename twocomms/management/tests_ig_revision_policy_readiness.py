@@ -62,6 +62,7 @@ class RevisionPolicyReadinessTests(unittest.TestCase):
         self.cas = Mock(return_value=SimpleNamespace(ready=True, reasons=()))
         self.sources = Mock(return_value=True)
         self.park = Mock()
+        self.paused = Mock(return_value=False)
         self.ns = load_functions({"re": re, "_digest": digest, "transaction": SimpleNamespace(atomic=nullcontext),
             "timezone": SimpleNamespace(now=lambda: self.now), "IgCustomerTurnRevision": self.revisions,
             "IgClient": self.clients, "InstagramBotSettings": self.settings, "GeminiRequest": self.graphs,
@@ -72,7 +73,8 @@ class RevisionPolicyReadinessTests(unittest.TestCase):
 
     def record(self, *, details=None, code="mandatory_policy_exceeds_budget"):
         modules = {"management.services.ig_revision_holding": module("management.services.ig_revision_holding", _sources_unchanged=self.sources),
-            "management.services.ig_response_debt": module("management.services.ig_response_debt", park_manual_revision=self.park)}
+            "management.services.ig_response_debt": module("management.services.ig_response_debt",
+                park_manual_revision=self.park, response_obligation_paused=self.paused)}
         with patch.dict(sys.modules, modules):
             return self.ns["record_policy_readiness_failure"](218, "real-token", settings_id=1,
                 settings_permission_epoch=6, publication=self.publication, code=code, details=details, now=self.now)
@@ -92,6 +94,7 @@ class RevisionPolicyReadinessTests(unittest.TestCase):
         self.assertEqual(self.revision.recovery_state, "manual")
         self.assertEqual(self.revision.recovery_code, "mandatory_policy_exceeds_budget")
         self.park.assert_called_once_with(self.revision, "mandatory_policy_exceeds_budget")
+        self.paused.assert_called_once_with(self.revision)
         self.graphs.objects.create.assert_not_called()
 
     def test_any_real_provider_graph_forbids_zero_dispatch_proof_even_without_effects(self):

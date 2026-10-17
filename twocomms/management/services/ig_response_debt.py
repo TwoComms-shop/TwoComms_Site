@@ -6,7 +6,7 @@ answered message, and a later unrelated reply is not proof that this debt ended.
 import re
 
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Subquery
+from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.db.models.functions import Now
 from django.utils import timezone
 
@@ -14,6 +14,38 @@ from management.models import IgClient, IgCustomerTurnRevision, IgFollowUpTask
 
 
 COVERAGE_KEY = "response_coverage"
+PAUSED_RESPONSE_CODES = ("waiting_on_customer", "operator_handled", "manager_reply_confirmed")
+
+
+def paused_response_obligation_q():
+    """Durable execution dispositions, scoped to this revision's sources.
+
+    They do not acknowledge customer sources or prove transport delivery. A
+    fresh inbound has its own successor and is not paused by this predicate.
+    """
+    return Q(recovery_state="manual", recovery_code__in=PAUSED_RESPONSE_CODES,
+             claim_token="", lease_until__isnull=True)
+
+
+def response_obligation_paused(revision):
+    return (revision.recovery_state == "manual" and revision.recovery_code in PAUSED_RESPONSE_CODES
+            and not revision.claim_token and revision.lease_until is None)
+
+
+def _pause_response_obligation(revision, code):
+    """Stop the exact execution owner without rewriting its physical ledger."""
+    if (revision.recovery_state == "manual" and revision.recovery_code == code
+        and revision.recovery_due_at is None and not revision.claim_token
+        and revision.claimed_at is None and revision.lease_until is None):
+        return
+    revision.recovery_state = "manual"
+    revision.recovery_code = code
+    revision.recovery_due_at = None
+    revision.claim_token = ""
+    revision.claimed_at = None
+    revision.lease_until = None
+    revision.save(update_fields=["recovery_state", "recovery_code", "recovery_due_at",
+                                "claim_token", "claimed_at", "lease_until", "updated_at"])
 
 
 def response_coverage(revision):
@@ -233,10 +265,11 @@ def park_manual_revision(revision, reason, *, now=None):
         "disposition": (task.manager_context or {}).get("disposition", "manager_reply"),
         "source_message_ids": list(revision.sources.order_by("ordinal", "id").values_list("message_id", flat=True))}
     revision.action_receipts = {**(revision.action_receipts or {}), "response_debt": (revision.action_receipts or {}).get("response_debt", receipt)}
-    revision.claim_token = ""
-    revision.claimed_at = None
-    revision.lease_until = None
-    revision.save(update_fields=["action_receipts", "claim_token", "claimed_at", "lease_until", "updated_at"])
+    revision.save(update_fields=["action_receipts", "updated_at"])
+    context = task.manager_context or {}
+    code = ("operator_handled" if context.get("operator_review") else
+            "manager_reply_confirmed" if context.get("reply_resolution") else reason)
+    _pause_response_obligation(revision, code)
     return task
 
 
@@ -261,7 +294,8 @@ def review_reply_debt(client_id, task_id, *, actor, expected_revision_id, now=No
 
     The caller checks bot-operation and conversation permissions. Client-first
     locking serializes this action with delivery finalization and new debt.
-    Sources, revisions, outbox receipts and customer reminders stay untouched.
+    Sources, outbox receipts and customer reminders stay untouched. The exact
+    revision relinquishes execution ownership with an operator disposition.
     """
     from django.db import transaction
     from management.models import AdminAuditLog, IgClient
@@ -282,7 +316,15 @@ def review_reply_debt(client_id, task_id, *, actor, expected_revision_id, now=No
         payload = task.event_payload or {}
         if payload.get("revision_id") != expected_revision_id:
             return {"ok": False, "status": 409, "error": "Сповіщення змінилося. Оновіть картку."}
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(
+            pk=expected_revision_id, client=client,
+        ).first()
         if task.status in (task.Status.COMPLETED, task.Status.CANCELLED):
+            # Older alert-only reviews can be replayed once to release their
+            # stale execution lease; an unchanged durable disposition is a no-op.
+            review = (task.manager_context or {}).get("operator_review") or {}
+            if revision is not None and review.get("revision_id") == expected_revision_id:
+                _pause_response_obligation(revision, "operator_handled")
             return {"ok": True, "idempotent": True, "task_id": task.pk}
         before_status = task.status
         review = {"version": 1, "outcome": "reviewed_no_reply", "actor_id": actor.pk,
@@ -297,6 +339,8 @@ def review_reply_debt(client_id, task_id, *, actor, expected_revision_id, now=No
         task.manager_approval_decided_at = now
         task.save(update_fields=["manager_context", "status", "skip_reason", "manager_approval_status",
                                  "manager_approval_actor", "manager_approval_decided_at", "updated_at"])
+        if revision is not None:
+            _pause_response_obligation(revision, "operator_handled")
         AdminAuditLog.objects.create(
             actor=actor, actor_role="staff", action="ig_reply_debt_reviewed",
             entity_type="IgFollowUpTask", entity_id=str(task.pk),
@@ -304,6 +348,83 @@ def review_reply_debt(client_id, task_id, *, actor, expected_revision_id, now=No
             reason="Сповіщення опрацьовано командою; доставка відповіді не підтверджується.",
         )
         return {"ok": True, "idempotent": False, "task_id": task.pk}
+
+
+def settle_human_reply_obligation(command_id, *, now=None):
+    """Settle only a confirmed human command's exact single-source reply debt.
+
+    A later message is not evidence that unrelated questions were answered.
+    Ambiguous bot transport remains a separate reconciliation obligation even
+    when a manager subsequently sends a useful answer.
+    """
+    from management.models import AdminAuditLog, InstagramBotMessage
+    from management.ig_bot_models import HumanReplyCommand
+    from management.services.ig_human_reply_delivery import _part_rows, _valid_plan, _current_context_reason
+    from management.services.ig_human_reply_transport import has_planned_human_delivery
+
+    identity = HumanReplyCommand.objects.filter(pk=command_id).values("client_id").first()
+    if identity is None:
+        return 0
+    now = now or timezone.now()
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        command = HumanReplyCommand.objects.select_for_update().select_related("context_message", "reply_message").filter(pk=command_id).first()
+        if (client is None or command is None or client.hidden_at or client.privacy_erasure_started_at
+            or command.state != command.State.SENT or not command.context_message_id
+            or not command.provider_started_at or not command.terminal_at
+            or not command.provider_message_ids or len(set(command.provider_message_ids)) != len(command.provider_message_ids)):
+            return 0
+        source = command.context_message
+        if (source is None or source.client_id != client.pk or source.role != "user"
+            or source.sender_id != client.igsid or command.recipient_igsid != client.igsid
+            or (source.provider_namespace and source.provider_namespace != command.provider_namespace)):
+            return 0
+        if has_planned_human_delivery(command):
+            parts = _part_rows(command)
+            if (not _valid_plan(command, parts, current_owner=False) or _current_context_reason(command)
+                or any(part.state != part.State.SENT or not part.provider_started_at
+                       or not part.terminal_at or not part.provider_message_id for part in parts)
+                or [part.provider_message_id for part in parts] != command.provider_message_ids):
+                return 0
+        else:
+            reply = command.reply_message
+            if (reply is None or reply.client_id != client.pk or reply.role != "manager"
+                or reply.source != "human_reply" or reply.status != "done" or reply.send_state != "sent"
+                or reply.provider_namespace != command.provider_namespace or reply.text != command.text
+                or reply.delivery_provider_message_ids != command.provider_message_ids
+                or reply.provider_message_id != command.provider_message_ids[0]
+                or command.context_revision != str(source.pk)):
+                return 0
+        tasks = list(unresolved_reply_debts().filter(
+            client=client, event_payload__source_message_ids=[source.pk],
+        ).order_by("pk"))
+        settled = 0
+        for candidate in tasks:
+            revision_id = (candidate.event_payload or {}).get("revision_id")
+            revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id, client=client).first()
+            task = IgFollowUpTask.objects.select_for_update().get(pk=candidate.pk)
+            if (revision is None or task.event_key != f"ig-revision-debt:{revision.pk}"
+                or list(revision.sources.order_by("ordinal", "id").values_list("message_id", flat=True)) != [source.pk]
+                or task.status in (task.Status.COMPLETED, task.Status.CANCELLED)
+                or (task.event_payload or {}).get("reason") in {
+                    "delivery_unknown", "provider_started_unreconciled", "recovery_delivery_reconciliation",
+                }
+                or revision.delivery_effects.filter(state__in=("unknown", "provider_started", "claimed")).exists()
+                or InstagramBotMessage.objects.filter(pk=source.pk, send_state__in=("unknown", "sending", "ambiguous")).exists()):
+                continue
+            resolution = {"version": 1, "outcome": "manager_replied", "command_id": command.pk,
+                          "source_message_ids": [source.pk], "provider_message_ids": command.provider_message_ids,
+                          "reply_confirmed": True, "at": now.isoformat()}
+            task.manager_context = {**(task.manager_context or {}), "reply_resolution": resolution}
+            task.status = task.Status.COMPLETED
+            task.skip_reason = "manager_reply_confirmed"
+            task.save(update_fields=["manager_context", "status", "skip_reason", "updated_at"])
+            _pause_response_obligation(revision, "manager_reply_confirmed")
+            AdminAuditLog.objects.create(actor=command.actor, actor_role="staff",
+                action="ig_reply_debt_manager_replied", entity_type="IgFollowUpTask", entity_id=str(task.pk),
+                after=resolution, reason="Confirmed human reply to the exact customer source.")
+            settled += 1
+        return settled
 
 
 def with_reply_debt(queryset):

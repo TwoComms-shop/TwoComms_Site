@@ -1164,6 +1164,7 @@ _SERVICE_LANES = _ServiceLaneScheduler()
 def reset_service_lanes() -> None:
     """Точка сброса планировщика полос для тестов."""
     _SERVICE_LANES.reset()
+    reset_followup_slices()
 
 
 def service_lane_timings() -> dict:
@@ -1266,8 +1267,66 @@ def _reclaim_lease_guard() -> None:
         )
 
 
+FOLLOWUP_SLICE_SECONDS = 2.0
+FOLLOWUP_FAIR_WAIT_SECONDS = 30.0
+_FOLLOWUP_CURSOR = 0
+_FOLLOWUP_ACTIVE_SINCE = None
+
+
+def reset_followup_slices():
+    global _FOLLOWUP_CURSOR, _FOLLOWUP_ACTIVE_SINCE
+    _FOLLOWUP_CURSOR = 0
+    _FOLLOWUP_ACTIVE_SINCE = None
+
+
+def _active_customer_input(settings_obj):
+    """DB-only work signal, including a fresh bundle still inside quiet time."""
+    if not settings_obj.pk:
+        return False
+    from django.db.models import F, Q
+    from management.models import IgCustomerTurnRevision, IgWebhookInboxEvent, InstagramBotMessage
+    from management.services.ig_revision_live import legacy_claimable_messages, revision_execution_enabled
+
+    namespace = bot.ingress_provider_namespace(settings_obj)
+    if not namespace:
+        return False
+    now = timezone.now()
+    if IgWebhookInboxEvent.objects.filter(
+        namespace=namespace, decision="accepted", processed_at__isnull=True,
+    ).filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now)).exists():
+        return True
+    eligible = Q(client__hidden_at__isnull=True, client__is_blocked=False,
+                 client__bot_paused=False, client__manager_takeover=False,
+                 client__privacy_erasure_started_at__isnull=True)
+    opted_out = Q(client__opted_out_at__isnull=False) & (
+        Q(client__opted_in_at__isnull=True) | Q(client__opted_out_at__gt=F("client__opted_in_at")))
+    if IgCustomerTurnRevision.objects.filter(
+        eligible, active_slot=1, overall_deadline__gt=now,
+        state__in=("collecting", "preparing", "sealed", "claimed"), recovery_state="",
+        client__reply_permission_epoch=F("permission_epoch"), sources__source_namespace=namespace,
+    ).exclude(opted_out).exists():
+        return True
+    # With canonical execution enabled process_pending never consumes the
+    # legacy queue. Ownerless historical rows must not become a permanent
+    # dialogue signal for work this runner cannot execute.
+    if revision_execution_enabled():
+        return False
+    pending = InstagramBotMessage.objects.filter(
+        eligible, provider_namespace=namespace, role="user", status="pending", send_state="",
+    ).exclude(opted_out)
+    return legacy_claimable_messages(pending).exists()
+
+
 def _drain_customer_followups(settings_obj):
-    """Use the existing daemon cadence for agreed-time and ordinary queues."""
+    """Rotate bounded queue slices and yield promptly to newly queued input.
+
+    Each callback can finish one existing send; no in-flight provider call is
+    interrupted. Under continuous input one queue still receives a fair slice
+    every thirty seconds, without starting the former 20/50-item send batches.
+    """
+    global _FOLLOWUP_CURSOR, _FOLLOWUP_ACTIVE_SINCE
+    if not settings_obj.pk:
+        return
     from management.services.ig_payment_reminders import process_due_payment_reminders
     from management.services.ig_restock_subscriptions import reconcile_subscriptions, process_due_restock_notifications
     from management.services.ig_fulfillment_delivery import process_due_fulfillment_updates
@@ -1275,14 +1334,35 @@ def _drain_customer_followups(settings_obj):
     from management.services.ig_assisted_partial_delivery import process_due_assisted_partial_offers
     from management.services.ig_split_order_binding import reconcile_paid_shipping_plans
 
-    process_due_fulfillment_updates(settings_obj, limit=20)
-    process_due_split_offers(settings_obj, limit=20)
-    process_due_assisted_partial_offers(settings_obj, limit=20)
-    reconcile_paid_shipping_plans(limit=10)
-    reconcile_subscriptions(limit=50)
-    process_due_restock_notifications(settings_obj, limit=50)
-    process_due_payment_reminders(settings_obj)
-    bot_followups.process_due_followups(settings_obj)
+    queues = (
+        lambda: process_due_fulfillment_updates(settings_obj, limit=1),
+        lambda: process_due_split_offers(settings_obj, limit=1),
+        lambda: process_due_assisted_partial_offers(settings_obj, limit=1),
+        lambda: reconcile_paid_shipping_plans(limit=10),
+        lambda: reconcile_subscriptions(limit=1),
+        lambda: process_due_restock_notifications(settings_obj, limit=1),
+        lambda: process_due_payment_reminders(settings_obj, limit=1),
+        lambda: bot_followups.process_due_followups(settings_obj, limit=1),
+    )
+    started = time.monotonic()
+    for _ in queues:
+        current = time.monotonic()
+        active = _active_customer_input(settings_obj)
+        if active:
+            if _FOLLOWUP_ACTIVE_SINCE is None:
+                _FOLLOWUP_ACTIVE_SINCE = current
+            if current - _FOLLOWUP_ACTIVE_SINCE < FOLLOWUP_FAIR_WAIT_SECONDS:
+                return
+        else:
+            _FOLLOWUP_ACTIVE_SINCE = None
+        queue = queues[_FOLLOWUP_CURSOR]
+        _FOLLOWUP_CURSOR = (_FOLLOWUP_CURSOR + 1) % len(queues)
+        queue()
+        if active:
+            _FOLLOWUP_ACTIVE_SINCE = time.monotonic()
+            return
+        if time.monotonic() - started >= FOLLOWUP_SLICE_SECONDS:
+            return
 
 
 def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]:
@@ -1291,16 +1371,16 @@ def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]
     enabled = bool(settings_obj.is_enabled)
     interval = max(2, settings_obj.poll_interval_seconds or 3)
     try:
-        bot.drain_manager_notifications(limit=10)
+        bot.drain_manager_notifications(limit=1)
     except Exception as exc:
         # Manager-alert availability must never become a global customer-reply
         # kill switch. The next cycle retries and the error remains visible in
         # the operational log/status surface.
         bot.log("error", "notification_outbox", repr(exc))
     profile_key = f"ig_profile_batch:{bot._provider_owner_id(settings_obj)}"
-    if cache.add(profile_key, "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
+    if not _active_customer_input(settings_obj) and cache.add(profile_key, "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
         try:
-            bot.refresh_profiles_batch(settings_obj)
+            bot.refresh_profiles_batch(settings_obj, limit=1)
         except Exception as exc:
             bot.log("warning", "profile_refresh_batch", repr(exc))
     if enabled:
@@ -1401,14 +1481,16 @@ def _run_service_lanes(settings_obj) -> None:
     """Обслуживающие полосы — ПОСЛЕ клиентской, каждая со своим pulse и бюджетом."""
     _run_service_lane(
         SERVICE_LANE_NOTIFICATIONS,
-        lambda: bot.drain_manager_notifications(limit=10),
+        lambda: bot.drain_manager_notifications(limit=1),
         error_event="notification_outbox",
     )
     profile_key = f"ig_profile_batch:{bot._provider_owner_id(settings_obj)}"
-    if cache.add(profile_key, "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
+    # A message can arrive during the notification send. Do not start profile
+    # I/O behind it or consume the profile cooldown without doing that work.
+    if not _active_customer_input(settings_obj) and cache.add(profile_key, "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
         _run_service_lane(
             SERVICE_LANE_PROFILES,
-            lambda: bot.refresh_profiles_batch(settings_obj),
+            lambda: bot.refresh_profiles_batch(settings_obj, limit=1),
             error_event="profile_refresh_batch",
             error_level="warning",
         )

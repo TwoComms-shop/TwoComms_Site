@@ -18,6 +18,7 @@ from management.services.ig_revision_live import RevisionGenerationBoundary
 from management.services.ig_response_control import parse_structured_response
 from management.services.ig_response_guard import ProviderResponseGuard, build_source_preference_fallback
 from management.services.ig_reply_truth import ReplyTruthContext
+from management.services.ig_response_plan import build_response_plan
 
 
 class RevisionPreferenceTests(TestCase):
@@ -66,10 +67,16 @@ class RevisionPreferenceTests(TestCase):
     def test_matching_fit_control_does_not_authorize_configuration_action(self):
         self.fit_sequence()
         boundary = RevisionGenerationBoundary.__new__(RevisionGenerationBoundary)
-        boundary.revision = SimpleNamespace(client_id=self.client.pk, bundle_snapshot={"sources": []})
+        boundary.revision = SimpleNamespace(client_id=self.client.pk, client=self.client,
+            bundle_snapshot={"sources": []}, snapshot_digest="a" * 64,
+            action_receipts={}, generation_proposal={})
         boundary.settings = None
         boundary.baseline = build_revision_authority_bindings(self.client, claims=(CLAIM_SOURCE_PREFERENCES,))
         boundary.programme = None
+        boundary.assisted_context = None
+        boundary.source_cart_fence = None
+        boundary.response_plan = build_response_plan(preferences=source_preferences_for(self.client),
+            readiness={}, context=ReplyTruthContext())
         response = parse_structured_response({"reply_text": "Учту пожелание «оверсайз». Какой принт?", "controls": [{"kind": "fit", "value": "oversize"}]})
         authority = boundary.response_authority(response)
         self.assertTrue(authority.ready, authority.reasons)
@@ -101,12 +108,16 @@ class RevisionPreferenceTests(TestCase):
     def test_fallback_requires_current_source_receipt_and_no_delivery_effect(self):
         source, decision = self.fit_sequence()
         effects = SimpleNamespace(exists=lambda: False)
-        revision = SimpleNamespace(pk=123, client_id=self.client.pk, snapshot_digest="a" * 64,
+        revision = SimpleNamespace(pk=123, client_id=self.client.pk, client=self.client,
+                                   snapshot_digest="a" * 64, generation_proposal={},
                                    bundle_snapshot={}, delivery_effects=effects, action_receipts={})
         boundary = RevisionGenerationBoundary.__new__(RevisionGenerationBoundary)
         boundary.revision = revision
         boundary.has_images = False
         boundary.authority = build_revision_authority_bindings(self.client, claims=(CLAIM_SOURCE_PREFERENCES,))
+        boundary.product_inquiries = {"status": "none"}
+        boundary.response_plan = build_response_plan(preferences=source_preferences_for(self.client),
+            readiness={}, context=ReplyTruthContext())
         with patch.object(boundary, "validate", return_value=SimpleNamespace(valid=True)):
             self.assertEqual(boundary.contextual_fallback(policy_manifest={}), (None, {}))
             revision.action_receipts = {"commerce_reduction": {"snapshot_digest": revision.snapshot_digest, "decisions": [
@@ -171,7 +182,7 @@ class RevisionPreferenceTests(TestCase):
             ("не оверсайз і не класика", {}, ""),
             ("не чёрную, белую футболку", {"color": "white"}, "tshirt"),
             ("чёрная или белая?", {}, ""),
-            ("не футболку, а худи", {}, "hoodie"),
+            ("не футболку, а худи", {}, ""),
             ("В описании товара «оверсайз, чёрная футболка»", {}, ""),
             ("оверсайз", {"fit": "oversize"}, ""),
         )
@@ -180,6 +191,12 @@ class RevisionPreferenceTests(TestCase):
                 request = parse_turn(text)
                 self.assertEqual(dict(request.field_updates), expected_updates)
                 self.assertEqual(request.garment_type, expected_garment)
+
+        replacement = parse_turn("не футболку, а худи")
+        self.assertEqual(len(replacement.line_operations), 1)
+        operation = replacement.line_operations[0]
+        self.assertEqual((operation.operation, operation.target_garment_type, operation.garment_type),
+                         ("replace", "tshirt", "hoodie"))
 
         self.reduce("не хочу оверсайз")
         self.assertNotIn("fit_option_code", source_preferences_for(self.client).get("values", {}))

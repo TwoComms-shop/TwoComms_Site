@@ -27,17 +27,18 @@ from management.ig_bot_models import (
     IgFunnelResetAudit,
     IgObjection,
 )
-from management.models import InstagramBotSettings
+from management.models import BotPolicyPublication, InstagramBotSettings
 from management.services import instagram_bot as bot
 from management.services import ig_turn_snapshot
 from management.services.bot_payment_truth import client_has_verified_payment
 from management.services.ig_funnel_reset import latest_reset_after_message_id
 
-# Ограничение сверху, а не точное равенство «17»: новый блок промпта имеет право
-# добавить свои запросы. Что здесь ловится — возврат N+1: повторное чтение одного
-# и того же факта разными блоками. Если бюджет вырос осознанно — поднимите число
-# и объясните в `04_IMPLEMENTATION.md`, чем именно.
-PROMPT_ASSEMBLY_QUERY_BUDGET = 17
+# Historical snapshot baseline: 17. Current service policy adds two live owner
+# scope checks (instruction tags and automation guardrails), while checkout
+# readiness adds one episode/permission/privacy binding read. Keep these strict
+# authority reads in the measured path; they are not the cached episode-pointer
+# lookup whose duplication this regression originally prevented.
+PROMPT_ASSEMBLY_QUERY_BUDGET = 17 + 2 + 1
 
 WRITE = re.compile(r"^\s*(INSERT|UPDATE|DELETE)\b", re.IGNORECASE)
 
@@ -49,7 +50,17 @@ class PromptAssemblySnapshotTests(TestCase):
         self.settings.is_enabled = True
         self.settings.system_prompt = "Ти менеджер TwoComms."
         self.settings.knowledge_base = "Доставка Новою Поштою."
+        # Live generation captures the immutable published policy before prompt
+        # assembly. Exercise the same strict contract outside the query budget.
+        from management.services.ig_policy_publication import load_active_policy_snapshot, snapshot_hash
+        snapshot = {"schema_version": 1, "instructions": []}
+        self.settings.active_instruction_publication = BotPolicyPublication.objects.create(
+            version=1, kind=BotPolicyPublication.Kind.PUBLISH, schema_version=1,
+            snapshot=snapshot, snapshot_hash=snapshot_hash(snapshot),
+            compiler_version="instruction-set-v1", instruction_count=0,
+        )
         self.settings.save()
+        self.publication = load_active_policy_snapshot(self.settings)
         self.igc = IgClient.get_or_create_for_sender("snapshot-8-5")
         self.igc.stage = IgClient.Stage.PRODUCT_MATCHED
         self.igc.save()
@@ -72,6 +83,7 @@ class PromptAssemblySnapshotTests(TestCase):
             self.settings,
             client=self.igc,
             turn_text="Скільки коштує худі і які розміри є?",
+            instruction_publication=self.publication,
         )
 
     def test_prompt_assembly_stays_within_the_measured_query_budget(self):
@@ -97,7 +109,12 @@ class PromptAssemblySnapshotTests(TestCase):
 
         self.assertEqual(tables["management_igpostsalecase"], 1, "open_service_case")
         self.assertEqual(tables["management_igfunnelresetaudit"], 1, "граница сброса")
-        self.assertEqual(tables["management_igclient"], 1, "указатель эпизода")
+        pointer_reads = [query for query in captured.captured_queries if query["sql"].startswith(
+            'SELECT "management_igclient"."id", "management_igclient"."current_commercial_episode_id" FROM '
+        )]
+        self.assertEqual(len(pointer_reads), 1, "cached objection episode pointer")
+        self.assertEqual(tables["management_igclient"], 4,
+            "one cached pointer, two live service-owner checks, one checkout binding")
         self.assertEqual(
             tables["management_igpaymentconfirmationreview"], 1, "confirmed_purchase"
         )

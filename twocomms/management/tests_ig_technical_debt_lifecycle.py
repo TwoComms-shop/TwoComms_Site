@@ -169,6 +169,83 @@ class TechnicalDebtCommandOutputTests(TestCase):
 class TechnicalDebtHandledObservationTests(TestCase):
     setUp = TechnicalDebtLifecycleTests.setUp
 
+    def test_terminal_observation_cannot_be_acknowledged_or_claimed_again(self):
+        from management.services.ig_technical_debt import transition_ig_technical_debt_case
+        from management.models import AdminAuditLog
+
+        for status in ("resolved", "dismissed"):
+            with self.subTest(status=status):
+                result = transition_ig_technical_debt_case(self.case.pk,
+                    target_status=status, actor=self.actor, action="review_original",
+                    evidence={"review": "original observation"})
+                self.assertTrue(result["ok"])
+                audit_count = AdminAuditLog.objects.count()
+                for target in ("acknowledged", "claimed"):
+                    rejected = transition_ig_technical_debt_case(self.case.pk,
+                        target_status=target, actor=self.actor, action="triage_same_observation")
+                    self.assertEqual(rejected["error"], "invalid_transition")
+                self.assertEqual(AdminAuditLog.objects.count(), audit_count)
+                # Start the other terminal-status scenario with a separate open observation.
+                self.case.status = "open"
+                self.case.save(update_fields=["status", "updated_at"])
+
+    def test_changed_terminal_observation_accepts_explicit_triage_and_keeps_history(self):
+        from django.contrib.auth import get_user_model
+        from management.services.ig_technical_debt import (
+            reconcile_ig_technical_debt_once, transition_ig_technical_debt_case,
+        )
+        from management.services.ig_daemon_health import _unhandled_technical_debt_cases
+        from management.models import AdminAuditLog
+
+        previous_actor = get_user_model().objects.create_user(username="ig-debt-prior-owner", is_staff=True)
+        for status in ("resolved", "dismissed"):
+            for target in ("acknowledged", "claimed"):
+                with self.subTest(status=status, target=target):
+                    self.case.status = "open"
+                    self.case.owner = previous_actor
+                    self.case.evidence = {}
+                    self.case.observation_fingerprint = "original-fingerprint"
+                    self.case.save(update_fields=["status", "owner", "evidence", "observation_fingerprint", "updated_at"])
+                    closed = transition_ig_technical_debt_case(self.case.pk,
+                        target_status=status, actor=previous_actor, action="review_original",
+                        evidence={"review": "original evidence"})
+                    self.assertTrue(closed["ok"])
+                    old_event = closed["case"]["evidence"]["operator_events"][0]
+                    changed = {"reason": self.case.reason, "scope": self.case.scope,
+                        "count": 1, "sample_ids": [999], "has_more": False}
+                    reconcile_ig_technical_debt_once(dry_run=False,
+                        snapshot={"cases": [changed], "coverage_complete": True})
+                    self.case.refresh_from_db()
+                    self.assertEqual(self.case.status, status)
+                    self.assertEqual(_unhandled_technical_debt_cases([changed]), [changed])
+
+                    triaged = transition_ig_technical_debt_case(self.case.pk,
+                        target_status=target, actor=self.actor, action="triage_recurrence")
+                    self.assertTrue(triaged["ok"], triaged)
+                    self.assertFalse(triaged["idempotent"])
+                    current = triaged["case"]
+                    self.assertEqual(current["status"], target)
+                    self.assertIsNone(current["resolved_at"])
+                    self.assertEqual(current["owner_id"], self.actor.pk if target == "claimed" else None)
+                    self.assertEqual(current["evidence"]["operator_events"][0], old_event)
+                    event = current["evidence"]["operator_events"][-1]
+                    self.assertEqual(event["from_status"], status)
+                    self.assertEqual(event["previous_observation"]["resolved_at"], closed["case"]["resolved_at"])
+                    self.assertEqual(event["previous_observation"]["owner_id"], previous_actor.pk)
+                    self.assertEqual(event["previous_observation"]["handled_fingerprint"], "original-fingerprint")
+                    self.assertEqual(event["observation_fingerprint"], current["observation_fingerprint"])
+                    self.assertEqual(_unhandled_technical_debt_cases([changed]), [])
+                    audit_count = AdminAuditLog.objects.count()
+                    repeated = transition_ig_technical_debt_case(self.case.pk,
+                        target_status=target, actor=self.actor, action="triage_recurrence")
+                    self.assertTrue(repeated["idempotent"])
+                    self.assertEqual(AdminAuditLog.objects.count(), audit_count)
+
+                    later = {**changed, "sample_ids": [1000]}
+                    reconcile_ig_technical_debt_once(dry_run=False,
+                        snapshot={"cases": [later], "coverage_complete": True})
+                    self.assertEqual(_unhandled_technical_debt_cases([later]), [later])
+
     def test_observation_refresh_cannot_silently_acknowledge_new_source_ids(self):
         from management.services.ig_technical_debt import acknowledge_ig_technical_debt_case, reconcile_ig_technical_debt_once
         from management.services.ig_daemon_health import _unhandled_technical_debt_cases

@@ -121,11 +121,17 @@ class AuditedSizeResponsePlanTests(TestCase):
         self.assertEqual(revision.bundle_snapshot["sources"][0]["text"], self.source.text)
 
     def test_real_fallback_is_neutral_in_each_language_and_does_zero_provider_work(self):
-        revision, _ = self.audited()
-        for language, expected in (("uk", "Уточнений розмір — L."), ("ru", "Уточнённый размер — L."),
-                ("en", "The corrected size requirement is L.")):
+        for language, source_text, expected in (
+                ("uk", "Хочу футболку розмір M", "Уточнений розмір — L."),
+                ("ru", "Хочу футболку размер M", "Уточнённый размер — L."),
+                ("en", "I want a t-shirt in size M", "The corrected size requirement is L.")):
             with self.subTest(language=language):
-                self.row.language = language
+                self.source = self.message(source_text)
+                apply_turn(self.row, self.source, parse_turn(source_text), reply_payload={})
+                self.row.refresh_from_db()
+                revision, _ = self.audited()
+                # A conflicting profile hint cannot override the sealed source.
+                self.row.language = {"uk": "ru", "ru": "en", "en": "uk"}[language]
                 with patch("management.services.call_ai_analysis.gemini_generate_text") as generate, patch(
                         "management.services.instagram_bot._provider_http") as http:
                     response, proof = build_source_preference_fallback(self.row, revision=revision)
@@ -133,12 +139,14 @@ class AuditedSizeResponsePlanTests(TestCase):
                 http.assert_not_called()
                 self.assertIsNotNone(response, proof)
                 self.assertIn(expected, response.reply_text)
+                self.assertEqual(proof["language"], language)
                 self.assertFalse(any(text in response.reply_text for text in ("Ви обрали розмір L", "Вы выбрали размер L", "You selected size L")))
                 self.assertEqual(response.control, {})
                 self.assertEqual(proof["response_plan"]["evidence"]["size"]["authority"], "audited_correction")
                 self.assertIn(f"{self.source.pk}:size", proof["coverage"]["covered"])
-        self.source.refresh_from_db()
-        self.assertIn("розмір M", self.source.text)
+                self.assertEqual(revision.bundle_snapshot["sources"][0]["text"], source_text)
+                self.source.refresh_from_db()
+                self.assertEqual(self.source.text, source_text)
 
     def test_real_catalog_legacy_m_controls_and_checkout_denied_after_audited_l(self):
         _, plan = self.audited(sku=True)

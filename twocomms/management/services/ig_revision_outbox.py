@@ -37,6 +37,10 @@ KNOWN_NO_DISPATCH_REASONS = frozenset({
     "transport_preflight_check_failed",
     "current_purpose_disallows_sales",
     "pending_inbound",
+    "revision_sources_changed",
+    "payment_reminder_scope_changed",
+    "restock_subscription_scope_changed",
+    "fulfillment_scope_changed",
 })
 CLAIM_LEASE_SECONDS = 60
 GROUP_KINDS = {
@@ -214,6 +218,33 @@ def revision_has_newer_source(revision):
     ).exists()
 
 
+def revision_sources_current(revision):
+    """Compare source identities/content, excluding mutable inspection results.
+
+    The frozen bundle alone cannot detect an edit to an existing message ID.
+    `_source_payload` retains discovery identity but omits capture/inspection
+    projections, so completing a bound image inspection does not stale a reply.
+    """
+    from management.services.ig_turn_revisions import _source_payload
+
+    snapshots = (revision.bundle_snapshot or {}).get("sources") or []
+    rows = list(revision.sources.select_related("message").order_by("ordinal", "id"))
+    if not rows or len(rows) != revision.source_count or len(rows) != len(snapshots):
+        return False
+    try:
+        return all(
+            isinstance(snapshot, Mapping)
+            and source.message_id == snapshot.get("message_id")
+            and source.ordinal == snapshot.get("ordinal")
+            and source.source_digest == snapshot.get("source_digest")
+            and source.message.client_id == revision.client_id
+            and _source_payload(source.message, previous=source, ordinal=source.ordinal)["source_digest"] == source.source_digest
+            for source, snapshot in zip(rows, snapshots, strict=True)
+        )
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
 def _cas_readiness(
     revision,
     *,
@@ -244,6 +275,8 @@ def _cas_readiness(
         _append(reasons, "revision_not_current")
     elif _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         _append(reasons, "revision_snapshot_invalid")
+    if not revision_sources_current(revision):
+        _append(reasons, "revision_sources_changed")
     # Inbox work may already be acknowledged while its new revision/reducer
     # has not run yet. The durable USER watermark remains an independent fence.
     if revision_has_newer_source(revision):

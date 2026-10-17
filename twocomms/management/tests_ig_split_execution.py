@@ -36,6 +36,12 @@ class _SplitExecutionFixture(_RestockFixture):
     _create_invoice = _runtime_tests.CheckoutGenerationRuntimeTests._create_invoice
 
     def setUp(self):
+        # Exact native card/invoice helpers override these guards with their
+        # own receipt stubs. Ancillary payment callbacks must stay local too.
+        for target in ("management.services.instagram_bot._provider_http", "requests.sessions.Session.request"):
+            guard = patch(target, side_effect=AssertionError("split execution fixture attempted external transport"))
+            guard.start()
+            self.addCleanup(guard.stop)
         super().setUp()
         from django.contrib.auth import get_user_model
         self.manager = get_user_model().objects.create_superuser(username="split-execution-manager",

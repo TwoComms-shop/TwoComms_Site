@@ -63,6 +63,8 @@ def manual_resume_message(result: ManualResumeResult) -> str:
         return "Клієнта повернуто боту, але автоматичні відповіді глобально вимкнено."
     if result.successor_reason in {"manager_answered", "model_answered"}:
         return "Клієнта повернуто боту. Після запиту вже є відповідь у переписці; повтор не створено."
+    if result.successor_reason == "operator_handled":
+        return "Клієнта повернуто боту. Цей запит уже опрацьовано командою; бот чекатиме нового повідомлення."
     if result.successor_reason == "successor_revision_unavailable":
         return "Клієнта повернуто боту. Останній нерозв’язаний запит залишено в історії без автоматичного повтору."
     return "Клієнта повернуто боту; повторної відповіді не створено."
@@ -109,7 +111,15 @@ def _reject_ineligible_client(client: IgClient) -> None:
 
 
 def _dangerous_delivery_exists(client_id: int, source_ids: list[int]) -> bool:
+    from management.models import IgCustomerTurnRevision
+    from management.services.ig_revision_holding import confirmed_holding_effect_ids
+
     dangerous_send_states = ("sending", "unknown", "ambiguous")
+    # A proven holding is an acknowledgement, not the substantive answer that
+    # this explicit resume would replay. Unverified/partial sends still block.
+    holding_ids = [effect_id for revision in IgCustomerTurnRevision.objects.filter(
+        client_id=client_id, sources__message_id__in=source_ids,
+    ).distinct() for effect_id in confirmed_holding_effect_ids(revision)]
     if IgRevisionDeliveryEffect.objects.filter(
         revision__client_id=client_id,
         revision__sources__message_id__in=source_ids,
@@ -118,7 +128,7 @@ def _dangerous_delivery_exists(client_id: int, source_ids: list[int]) -> bool:
             IgRevisionDeliveryEffect.State.PROVIDER_STARTED,
             IgRevisionDeliveryEffect.State.UNKNOWN,
         ),
-    ).exists():
+    ).exclude(pk__in=holding_ids).exists():
         return True
     if InstagramBotMessage.objects.filter(
         client_id=client_id,
@@ -181,6 +191,13 @@ def _latest_unanswered_reference(client: IgClient):
         if len(siblings) > MAX_SOURCES or not any(classify(row).substantive_reply_owed for row in siblings):
             return None, None, "latest_turn_needs_no_reply"
 
+    from management.models import IgCustomerTurnRevision
+    if IgCustomerTurnRevision.objects.filter(
+        client=client, sources__message_id=source.pk,
+        recovery_state="manual", recovery_code="operator_handled",
+    ).exists():
+        return None, None, "operator_handled"
+
     manager_answered = InstagramBotMessage.objects.filter(
         client_id=client.pk,
         role=InstagramBotMessage.Role.MANAGER,
@@ -189,13 +206,16 @@ def _latest_unanswered_reference(client: IgClient):
     if manager_answered:
         return None, None, "manager_answered"
 
-    model_answered = InstagramBotMessage.objects.filter(
+    from management.services.ig_revision_holding import is_confirmed_holding_transcript
+
+    later_model_replies = InstagramBotMessage.objects.filter(
         client_id=client.pk,
         role=InstagramBotMessage.Role.MODEL,
         id__gt=source.pk,
     ).exclude(status=InstagramBotMessage.Status.FAILED).filter(
         Q(provider_message_id__gt="") | Q(send_state="sent")
-    ).exists()
+    )
+    model_answered = any(not is_confirmed_holding_transcript(message) for message in later_model_replies)
     if model_answered:
         return None, None, "model_answered"
 
@@ -229,6 +249,20 @@ def _latest_unanswered_reference(client: IgClient):
         status=InstagramBotMessage.Status.DONE,
         send_state="",
     ).first()
+    if claimable is None:
+        from management.services.ig_revision_holding import confirmed_holding_effect_ids
+
+        # The legacy projection stamps SENT on the customer watermark even
+        # for a holding acknowledgement, and takeover cleanup preserves SENT.
+        # Only its exact canonical holding proof may bypass that legacy marker.
+        holding_proved = any(confirmed_holding_effect_ids(revision)
+            for revision in IgCustomerTurnRevision.objects.filter(
+                client=client, turn=turn, sources__message_id=claimable_id,
+            ).distinct())
+        if holding_proved:
+            claimable = InstagramBotMessage.objects.filter(
+                pk=claimable_id, client=client, role="user", status__in=("pending", "done"), send_state="sent",
+            ).first()
     if claimable is None:
         return None, None, "turn_not_safely_replayable"
     if _dangerous_delivery_exists(client.pk, source_ids):
@@ -343,6 +377,7 @@ def resume_client_automation(client_id: int, *, actor=None) -> ManualResumeResul
                     f"epoch={previous_epoch}->{client.reply_permission_epoch}; "
                     f"successor={successor_reason}"
                 ),
+                kind="manager_action", scope={"client_id": client.pk}, reason="completed",
             )
 
             return ManualResumeResult(

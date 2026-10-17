@@ -1466,7 +1466,7 @@ class DaemonHeartbeatTests(SimpleTestCase):
 
         self.assertFalse(enabled)
         self.assertEqual(last_poll, 17.0)
-        drain.assert_called_once_with(limit=10)
+        drain.assert_called_once_with(limit=1)
         pending.assert_not_called()
         followups.assert_not_called()
 
@@ -1483,7 +1483,7 @@ class DaemonHeartbeatTests(SimpleTestCase):
         _run_work_cycle(settings, 17.0)
 
         cache_add.assert_called_once()
-        refresh_profiles.assert_called_once_with(settings)
+        refresh_profiles.assert_called_once_with(settings, limit=1)
 
     @patch("management.management.commands.run_instagram_bot.bot.refresh_profiles_batch")
     @patch("management.management.commands.run_instagram_bot.cache.add", return_value=False)
@@ -1505,6 +1505,7 @@ class DaemonHeartbeatTests(SimpleTestCase):
         )
 
         with (
+            patch("management.management.commands.run_instagram_bot._drain_customer_followups"),
             patch(
                 "management.services.bot_payments.poll_pending_deals_locked"
             ) as payment_poll,
@@ -1575,9 +1576,9 @@ class DaemonHeartbeatTests(SimpleTestCase):
 
         self.assertTrue(enabled)
         self.assertEqual(last_poll, 23.0)
-        drain.assert_called_once_with(limit=10)
+        drain.assert_called_once_with(limit=1)
         pending.assert_called_once_with(settings)
-        followups.assert_called_once_with(settings)
+        followups.assert_not_called()
         log.assert_called_once()
 
     @patch("management.management.commands.run_instagram_bot._run_work_cycle")

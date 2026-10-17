@@ -72,13 +72,17 @@ class RevisionFunnelProjectionTests(TransactionTestCase):
         return IgFunnelStepEvent.objects.filter(event_type="bot_replied_first")
 
     def test_actual_live_plan_admits_episode_and_completed_reply_projects_once(self):
-        # A normal explicit selection answer avoids claiming an unbound price.
-        self.parsed = {"reply_text": "Який стиль футболки вам подобається?", "controls": []}
+        # The fixture source asks the price of an unidentified shirt. Ask the
+        # required model selector without inventing a price or leaving that
+        # source obligation unaddressed.
+        self.parsed = {"reply_text": "Яку саме модель футболки ви обрали? Уточніть модель, щоб перевірити ціну.", "controls": []}
         self._prepare()
         result, _, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual((result.state, result.reasons), ("delivery_pending", ("waiting_on_customer",)))
         self.assertEqual(http.call_count, 1)
         self.revision.refresh_from_db()
+        self.assertTrue(all(row.state == "sent" for row in self.revision.delivery_effects.all()))
+        self.assertEqual(self.revision.action_receipts["response_coverage"]["disposition"], "waiting_on_customer")
         self.assertEqual(self.revision.action_receipts[ADMISSION_KEY]["funnel"]["episode_id"], self.episode.pk)
         receipt = self.revision.action_receipts[RECEIPT_KEY]
         self.assertEqual(receipt["funnel_projection"]["outcome"], "projected")
@@ -88,7 +92,7 @@ class RevisionFunnelProjectionTests(TransactionTestCase):
         self.assertEqual(self._events().count(), 1)
 
     def test_actual_http_receipt_after_episode_reset_uses_pre_send_admission(self):
-        self.parsed = {"reply_text": "Який стиль футболки вам подобається?", "controls": []}
+        self.parsed = {"reply_text": "Яку саме модель футболки ви обрали? Уточніть модель, щоб перевірити ціну.", "controls": []}
         self._prepare()
         def provider_response(*args, **kwargs):
             admitted = IgCustomerTurnRevision.objects.get(pk=self.revision.pk).action_receipts[ADMISSION_KEY]["funnel"]
@@ -98,8 +102,9 @@ class RevisionFunnelProjectionTests(TransactionTestCase):
             self._episode()
             return 200, '{"message_id":"confirmed-after-reset"}'
         result, _, http = self._execute(send_results=provider_response)
-        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual((result.state, result.reasons), ("delivery_pending", ("waiting_on_customer",)))
         self.assertEqual(http.call_count, 1)
+        self.assertTrue(all(row.state == "sent" for row in self.revision.delivery_effects.all()))
         self.assertEqual(self._events().get().episode_id, self.episode.pk)
         self.assertEqual(IgCommercialEpisode.objects.count(), 2)
 

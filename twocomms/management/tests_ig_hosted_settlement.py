@@ -44,12 +44,14 @@ class HostedSettlementFixture:
         raw, _token = IgCheckoutAccessToken.issue(proposal=proposal)
         opened = self.client.get(reverse("ig_checkout_token_entry", kwargs={"token": raw}))
         self.assertEqual(opened.status_code, 302)
+        proposal.refresh_from_db()
         delivery = {"full_name": "Іван Петренко", "phone": "+380501112233", "email": "buyer@example.com",
             "city": "Київ", "np_settlement_ref": "settlement-ref", "np_city_ref": "city-ref",
             "np_city_token": build_city_choice_token({"label": "Київ", "settlement_ref": "settlement-ref", "city_ref": "city-ref"}),
             "np_office": "Відділення №12", "np_warehouse_ref": "warehouse-ref",
             "np_warehouse_token": build_warehouse_choice_token({"label": "Відділення №12", "ref": "warehouse-ref",
-                "kind": "branch", "city_ref": "city-ref"}), "payment_choice": payment_choice}
+                "kind": "branch", "city_ref": "city-ref"}), "payment_choice": payment_choice,
+            "expected_revision": proposal.revision, "expected_digest": proposal.items_digest}
         with patch("storefront.views.monobank._monobank_api_request", return_value={
             "invoiceId": invoice_id, "pageUrl": f"https://pay.example/{invoice_id}"}):
             response = self.client.post(reverse("ig_checkout_proposal", kwargs={"proposal_id": proposal.public_id}),
@@ -331,8 +333,22 @@ class HostedSettlementTests(HostedSettlementFixture, TestCase):
         self.assertEqual(IgPaymentEvent.objects.count(), 0)
 
     def test_two_orders_same_client_keep_exact_invoice_settlement_scope(self):
+        from management.models import InstagramBotMessage
+        from management.services.ig_checkout import CheckoutConfigurationError
+        from management.services.ig_commercial_episodes import start_repeat_episode
+
         first_proposal, first_attempt, first_order = self.paid("settlement-order-one")
         new_deal = IgDeal.objects.create(client=self.client_row, amount=Decimal("900.00"), currency="UAH")
+        with self.assertRaises(CheckoutConfigurationError) as converted:
+            self.proposal(deal=new_deal)
+        self.assertEqual(converted.exception.code, "checkout_episode_converted")
+        source = InstagramBotMessage.objects.create(
+            client=self.client_row, sender_id=self.client_row.igsid, role="user", source="webhook",
+            text="Хочу ще одну таку футболку", mid="hosted-second-order-request", provider_created_at=timezone.now(),
+        )
+        start_repeat_episode(self.client_row, repeat_kind="explicit_more", evidence_message_ids=[source.pk],
+            confidence=Decimal("1.00"), analysis_model="source_parser", analysis_prompt_version="hosted-settlement-tests")
+        self.client_row.refresh_from_db()
         second_proposal = self.proposal(deal=new_deal)
         second_attempt = self.invoice(second_proposal, "settlement-order-two")
         second_order, _created = _apply_payment_attempt_status(second_attempt, "success",

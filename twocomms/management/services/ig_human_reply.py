@@ -651,10 +651,17 @@ def create_human_reply_command_from_draft(client_id, *, actor, operation_id, doc
 def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None) -> HumanReplyCommand:
     """Claim and send once; an ambiguous provider outcome is terminal UNKNOWN."""
     from management.services.ig_human_reply_transport import has_planned_human_delivery, dispatch_planned_human_reply
+    from management.services.ig_response_debt import settle_human_reply_obligation
 
     existing = HumanReplyCommand.objects.get(pk=command_id)
     if has_planned_human_delivery(existing):
-        return dispatch_planned_human_reply(command_id, now=now)
+        command = dispatch_planned_human_reply(command_id, now=now)
+        if command is not None and command.state == command.State.SENT:
+            settle_human_reply_obligation(command.pk, now=now)
+        return command
+    if existing.state == existing.State.SENT:
+        settle_human_reply_obligation(existing.pk, now=now)
+        return existing
     now = now or timezone.now()
     with transaction.atomic():
         command = HumanReplyCommand.objects.select_for_update().select_related("client").get(pk=command_id)
@@ -779,4 +786,6 @@ def dispatch_human_reply_command(command_id: int, *, now: datetime | None = None
             transaction.on_commit(lambda message_id=message.pk: _enqueue_memory_source_event(message_id))
         if command.state == HumanReplyCommand.State.UNKNOWN:
             _ensure_unknown_reconciliation(command, now=terminal)
+    if command.state == command.State.SENT:
+        settle_human_reply_obligation(command.pk, now=terminal)
     return command

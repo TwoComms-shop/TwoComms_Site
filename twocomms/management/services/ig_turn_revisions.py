@@ -455,12 +455,15 @@ def claim_revision_preparation(revision_id: int, *, now=None) -> RevisionClaim:
         reserve_boundary = revision.overall_deadline - timedelta(
             seconds=SEND_RESERVE_SECONDS
         )
-        media_deadline = min(
-            now + timedelta(seconds=MEDIA_PREPARE_BUDGET_SECONDS),
-            reserve_boundary,
-        )
-        if media_deadline < now:
-            media_deadline = now
+        # A lease rotation recovers the same preparation, not a fresh media
+        # budget. Moving this clock on every quick retry could keep pending
+        # media unsealed until the whole reply deadline expires.
+        media_deadline = revision.media_prepare_deadline if reclaim else None
+        if media_deadline is None:
+            media_deadline = max(now, min(
+                now + timedelta(seconds=MEDIA_PREPARE_BUDGET_SECONDS),
+                reserve_boundary,
+            ))
         token = secrets.token_hex(16)
         revision.state = revision.State.PREPARING
         revision.claim_token = token
@@ -475,6 +478,18 @@ def claim_revision_preparation(revision_id: int, *, now=None) -> RevisionClaim:
             "lease_until", "updated_at",
         ])
         return RevisionClaim(revision, token, media_deadline, "claimed")
+
+
+def preparation_claim_is_current(revision_id: int, token: str, *, now=None) -> bool:
+    """Read the exact preparation owner before starting another source fetch."""
+    if not token:
+        return False
+    now = _aware(now)
+    return IgCustomerTurnRevision.objects.filter(
+        pk=revision_id, active_slot=1,
+        state=IgCustomerTurnRevision.State.PREPARING, claim_token=token,
+        lease_until__gt=now, overall_deadline__gt=now,
+    ).exists()
 
 
 def _capture_state(item: Mapping) -> str:
@@ -1135,7 +1150,7 @@ __all__ = [
     "claim_revision_preparation", "claim_sealed_revision",
     "create_collecting_revision", "create_refresh_successor",
     "current_revision_for_turn",
-    "prospective_overflow_reason", "replay_snapshot",
+    "preparation_claim_is_current", "prospective_overflow_reason", "replay_snapshot",
     "revision_claim_is_current", "seal_revision",
     "terminalize_legacy_shadow_revision",
 ]

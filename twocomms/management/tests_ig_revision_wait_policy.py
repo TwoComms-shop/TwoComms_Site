@@ -235,7 +235,9 @@ class RevisionWaitPolicyTests(TransactionTestCase):
         self._assert_prior_sentence_apology_suppression("Sorry to have kept you waiting.")
 
     def test_whole_generation_boundary_removes_ineligible_nonleading_apology(self):
-        self._issue("Хочу замовити худі")
+        # Historical dates above test wait arithmetic; a real send still needs
+        # a current customer reply window.
+        self._issue("Хочу замовити худі", start=timezone.now())
         clean = "Яку модель худі ви хочете замовити?"
         self.parsed = {"reply_text": clean + " Вибачте за довге очікування.", "controls": []}
         _result, generate, send = self._execute()
@@ -329,7 +331,7 @@ class RevisionWaitPolicyTests(TransactionTestCase):
             accounting_mode="shadow")
 
     def test_recorded_no_action_ack_has_no_future_promise(self):
-        self._issue("Дякую!")
+        self._issue("Дякую!", start=timezone.now())
         self._failed_graph()
         decision = record_technical_holding(self.revision.pk, self.token, settings_id=1, allow_neutral=True)
         self.assertTrue(decision.ready, decision.reason)

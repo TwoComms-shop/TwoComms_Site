@@ -95,6 +95,56 @@ class NativeSplitOrderBindingTests(_SplitExecutionFixture, TransactionTestCase):
         self.assertFalse(IgSplitOrderPlan.objects.exists())
         self.assertEqual(self._economic_state(), before)
 
+    def test_unpaid_authentic_choice_cannot_hide_later_paid_order_with_limit_one(self):
+        from management.models import IgClient
+        from management.services import ig_split_shipping as shipping
+
+        # The poison is a real customer choice after an exact native card and
+        # manager review, with no payment/order. Its evidence stays untouched.
+        offer, receipt = self.sent_offer()
+        accepted, source, _revision = self.answer(offer)
+        self.assertTrue(accepted.ready, accepted)
+        unpaid = IgSplitShippingChoice.objects.get(pk=accepted.choice_id)
+        self.assertEqual(unpaid.receipt_id, receipt.pk)
+        self.assertEqual(unpaid.source_id, source.pk)
+        self.assertTrue(shipping.validated_choice_history(unpaid)["ready"])
+        self.complete_input()
+        unpaid_client = self.client_row
+        self.assertFalse(Order.objects.exists())
+        self.assertFalse(PaymentAttempt.objects.exists())
+
+        self.now += timedelta(minutes=1)
+        clock = patch("django.utils.timezone.now", return_value=self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+        self.client_row = IgClient.objects.create(igsid="split-later-paid-customer", language="uk",
+            reply_permission_epoch=3, last_user_message_at=self.now)
+        self.canonical(f"добавьте {self.product.title}, количество 2, размер M, цвет black, крій classic")
+        self.canonical("добавьте Storm, количество 2, размер L, цвет pink, крій classic")
+        self.canonical("Хочу купити")
+        data = self._paid_split_plan(bind=False)
+        self.assertLess(unpaid.created_at, data["choice"].created_at)
+        before = self._economic_state()
+        with patch("requests.sessions.Session.request", side_effect=AssertionError("reconciliation must stay local")) as provider:
+            self.assertEqual(binding.reconcile_paid_shipping_plans(limit=1), 1)
+            self._assert_exact_plan(data)
+            self.assertEqual(binding.reconcile_paid_shipping_plans(limit=1), 0)
+            self.assertEqual(binding.reconcile_paid_shipping_plans(limit=1), 0)
+        provider.assert_not_called()
+        unpaid.refresh_from_db()
+        self.assertFalse(IgSplitOrderPlan.objects.filter(choice=unpaid).exists())
+        self.assertEqual(unpaid.client_id, unpaid_client.pk)
+        self.assertTrue(shipping.validated_choice_history(unpaid)["ready"])
+        self.assertEqual(self._economic_state(), before)
+
+    def test_order_paid_label_without_converted_winner_never_consumes_binding_slice(self):
+        data = self._paid_split_plan(bind=False)
+        PaymentAttempt.objects.filter(pk=data["generation"].payment_attempt_id).update(status=PaymentAttempt.Status.PROCESSING)
+        with patch.object(binding, "try_bind_paid_shipping_order") as bind:
+            self.assertEqual(binding.reconcile_paid_shipping_plans(limit=1), 0)
+        bind.assert_not_called()
+        self.assertFalse(IgSplitOrderPlan.objects.exists())
+
     def test_eleven_authentic_expired_unbound_choices_do_not_starve_new_paid_agreement(self):
         from management.services import ig_split_shipping as shipping
         initial_clock = self.now

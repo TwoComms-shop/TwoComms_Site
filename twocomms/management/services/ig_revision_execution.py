@@ -24,6 +24,7 @@ from management.services.ig_turn_revisions import (
     RevisionClaim,
     claim_revision_preparation,
     claim_sealed_revision,
+    preparation_claim_is_current,
     replay_snapshot,
     seal_revision,
 )
@@ -243,6 +244,12 @@ def prepare_revision(
     callback_failures: list[int] = []
     for message_id in source_ids:
         current = timezone.now()
+        if not preparation_claim_is_current(revision.pk, token, now=current):
+            return RevisionPreparationResult(
+                revision_id=revision.pk, source_message_ids=source_ids,
+                preparation_token=token, media_prepare_deadline=media_deadline,
+                reason="preparation_claim_stale", callback_failures=tuple(callback_failures),
+            )
         remaining = max(
             0.0,
             (media_deadline - current).total_seconds()
@@ -265,6 +272,13 @@ def prepare_revision(
         now=timezone.now(),
     )
     if not sealed.sealed or sealed.revision is None:
+        if sealed.reason == "media_pending" and media_deadline is not None:
+            # Capture has returned; release this claim for a deadline-driven
+            # continuation rather than waiting past the fixed media budget.
+            IgCustomerTurnRevision.objects.filter(
+                pk=revision.pk, active_slot=1, state=IgCustomerTurnRevision.State.PREPARING,
+                claim_token=token, lease_until__gt=media_deadline,
+            ).update(lease_until=media_deadline)
         return RevisionPreparationResult(
             revision_id=revision.pk,
             source_message_ids=source_ids,
@@ -848,6 +862,8 @@ def expired_revision_debt_ids(
     from django.db.models.functions import Cast, Concat, Collate
 
     now = now or timezone.now()
+    from management.services.ig_response_debt import paused_response_obligation_q
+
     source_rows = IgTurnRevisionSource.objects.filter(revision_id=OuterRef("pk"))
     ineligible_sources = source_rows.exclude(
         message__status=InstagramBotMessage.Status.PENDING,
@@ -918,7 +934,7 @@ def expired_revision_debt_ids(
     # old sealed row as expired technical debt on every worker cycle.
     queue = queue.exclude(
         recovery_state="cancelled", claim_token="", lease_until__isnull=True,
-    )
+    ).exclude(paused_response_obligation_q())
     if owned_only:
         from management.services.ig_revision_live import _owned_revisions
 

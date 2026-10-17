@@ -420,9 +420,26 @@ class ResponsePlanSourceTests(TransactionTestCase):
         self.assertEqual(http.call_count, 2)
         self.revision.refresh_from_db()
         self.assertEqual(self.revision.action_receipts["response_coverage"]["remaining"], [])
-        effects = self.revision.delivery_effects.all()
-        self.assertTrue(any(effect.group == "catalog_media" and effect.state == "sent" for effect in effects))
-        self.assertTrue(all(effect.state == "sent" for effect in effects))
+        effects = list(self.revision.delivery_effects.order_by("order_index", "id"))
+        native = [effect for effect in effects if effect.group == "template"]
+        self.assertEqual(len(native), 1)
+        presentation = native[0]
+        self.assertEqual((presentation.state, presentation.provider_message_id, presentation.provider_http_status),
+            ("sent", "photo-sent", 200))
+        self.assertIsNotNone(presentation.terminal_at)
+        manifest = presentation.projection_metadata["catalog_choice"]
+        self.assertEqual([card["product_id"] for card in manifest["cards"]], [product.pk])
+        elements = presentation.payload["message"]["attachment"]["payload"]["elements"]
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["image_url"], manifest["cards"][0]["image_url"])
+        self.assertIn(product.main_image.name, elements[0]["image_url"])
+        sent = [effect for effect in effects if effect.state == "sent"]
+        self.assertEqual({effect.provider_message_id for effect in sent}, {"photo-sent", "photo-answer-sent"})
+        self.assertTrue(all(effect.state == "sent" or
+            (effect.group == "template_fallback" and effect.state == "cancelled") for effect in effects))
+        from management.services.ig_revision_execution import _whole_sent_proof
+        verified, reason = _whole_sent_proof(self.revision, effects)
+        self.assertTrue(verified, reason)
 
     def test_mixed_size_canonical_dispatch_answer_completes_actual_delivery(self):
         self._replace_bundle(["L. Коли відправите?"])
