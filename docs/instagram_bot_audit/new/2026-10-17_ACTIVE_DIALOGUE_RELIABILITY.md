@@ -123,3 +123,21 @@ scoped run and deployment.
   wrapper's additional zero-attempt assertion returned nonzero despite the
   entire Django suite passing; this is recorded separately from test outcomes.
   These callbacks were denied, not replaced with successful delivery receipts.
+
+## Follow-up: native template echo and current T-shirt audience
+
+Live inbox event 803 was an echo of confirmed native carousel effect 68 from
+revision 229. An earlier human reply caused the echo to enter a parser that
+cannot represent a generic template, producing `echo_empty`. Accepted template
+echoes now use exact namespace/owner/recipient and immutable SENT effect proof;
+the existing local transcript projection supplies history without another send.
+An explicit one-shot repair accepts only a named, freshly proven blocked event;
+unknown historical echoes are not periodically rescanned or requeued.
+
+The merchant's current classic/regular and oversize T-shirt unisex rule is now
+a versioned approved public fact in Ukrainian, Russian and English. It is scoped
+to those T-shirt bases, preserves the selected print, and grants no stock, size,
+photo, checkout or delivery authority. Product 112's native audience metadata
+also independently includes unisex.
+
+Follow-up facts/parity/brand/inbox/echo validation: **70 tests passed**.

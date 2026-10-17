@@ -182,6 +182,82 @@ def accept_webhook(raw_body: bytes, settings_obj) -> InboxAcceptance:
     return InboxAcceptance(accepted, rejected, duplicates)
 
 
+def _owned_template_echo_effect(row, namespace, owner_id):
+    """An exact committed bot receipt, never the unsupported echo body, owns it."""
+    from management.models import IgRevisionDeliveryEffect
+    from management.ig_human_reply_models import HumanReplyPart
+    from management.services.ig_revision_outbox import _digest
+
+    if row.namespace != namespace or row.owner_id != owner_id:
+        return None
+    event = _row_event(row.payload)
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    recipient_row = event.get("recipient") if isinstance(event.get("recipient"), dict) else {}
+    sender_row = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+    recipient = recipient_row.get("id")
+    attachments = message.get("attachments")
+    if (message.get("is_echo") is not True or sender_row.get("id") != owner_id
+        or not recipient or recipient != row.customer_igsid
+        or not isinstance(attachments, list)
+        or not any(isinstance(item, dict) and item.get("type") == "template"
+            for item in attachments)):
+        return None
+    mid = message.get("mid")
+    if not isinstance(mid, str) or not mid:
+        return None
+    # A competing receipt cannot be resolved by choosing the convenient actor
+    # or recipient. The exact namespace/MID must have just one canonical owner.
+    if HumanReplyPart.objects.filter(provider_namespace=namespace, provider_message_id=mid).exists():
+        return None
+    effects = list(IgRevisionDeliveryEffect.objects.select_related("revision__client").filter(
+        provider_namespace=namespace, provider_message_id=mid, state="sent",
+    ).order_by("id")[:2])
+    if len(effects) != 1:
+        return None
+    effect = effects[0]
+    if not isinstance(effect.payload, dict) or not isinstance(effect.payload.get("message"), dict):
+        return None
+    message_payload = effect.payload["message"]
+    attachment = message_payload.get("attachment")
+    if not isinstance(attachment, dict) or not isinstance(attachment.get("payload"), dict):
+        return None
+    if (effect.actor != "bot" or effect.recipient_igsid != recipient or effect.terminal_at is None
+        or effect.revision.client.igsid != recipient or effect.revision.client.privacy_erasure_started_at is not None
+        or attachment.get("type") != "template" or (attachment.get("payload") or {}).get("template_type") != "generic"
+        or _digest(effect.payload) != effect.payload_digest
+        or (effect.payload.get("recipient") or {}).get("id") != recipient):
+        return None
+    return effect
+
+
+def reconcile_owned_template_echo(event_id, settings_obj):
+    """One-shot DB-only repair of an exact owned template's blocked receipt.
+
+    This intentionally does not rescan or requeue unknown historic echo_empty
+    events. Operators must name the receipt; all ownership proof is fresh.
+    """
+    from management.models import IgWebhookInboxEvent
+    from management.services.ig_revision_live import _project_sent_history
+
+    namespace, owner = _namespace(settings_obj)
+    with transaction.atomic():
+        row = IgWebhookInboxEvent.objects.select_for_update().filter(pk=event_id).first()
+        if row is None or row.processed_at is not None:
+            return {"reconciled": False, "reason": "missing_or_processed"}
+        if row.decision != "blocked" or row.reason != "echo_empty":
+            return {"reconciled": False, "reason": "not_blocked_empty_echo"}
+        effect = _owned_template_echo_effect(row, namespace, owner)
+        if effect is None:
+            return {"reconciled": False, "reason": "owned_template_receipt_unproven"}
+        _project_sent_history(effect.revision_id)
+        row.decision, row.reason = "accepted", "owned_template_receipt"
+        row.processed_at, row.next_attempt_at, row.last_error = timezone.now(), None, ""
+        row.payload = {**_processed_payload(row.payload), "owned_template_receipt": {
+            "effect_id": effect.pk, "revision_id": effect.revision_id, "provider_message_id": effect.provider_message_id}}
+        row.save(update_fields=["decision", "reason", "processed_at", "next_attempt_at", "last_error", "payload"])
+        return {"reconciled": True, "event_id": row.pk, "effect_id": effect.pk, "revision_id": effect.revision_id}
+
+
 def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
     """Consume one namespace under a short DB transaction; root wires daemon."""
     from management.models import IgWebhookInboxEvent
@@ -218,7 +294,16 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
                         continue
                     # persistence_only is verified to do only durable DB work:
                     # no provider, model, media, or notification transport calls.
-                    bot.handle_webhook_payload(settings_obj, row.payload, persistence_only=True)
+                    template_effect = _owned_template_echo_effect(row, namespace, _owner)
+                    if template_effect is not None:
+                        # Native templates have no ordinary text/media to feed
+                        # the manager-echo parser. Their immutable SENT effect
+                        # supplies the transcript and attribution authority.
+                        from management.services.ig_revision_live import _project_sent_history
+
+                        _project_sent_history(template_effect.revision_id)
+                    else:
+                        bot.handle_webhook_payload(settings_obj, row.payload, persistence_only=True)
                     if _mid_namespace_state(row, namespace, require_materialized=True) == "blocked":
                         row.decision = IgWebhookInboxEvent.Decision.BLOCKED
                         row.reason = "provider_mid_namespace_unproven"
@@ -232,7 +317,11 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
                     row.last_error = ""
                     row.next_attempt_at = None
                     row.payload = _processed_payload(row.payload)
-                    row.save(update_fields=["processed_at", "attempts", "last_error", "next_attempt_at", "payload"])
+                    if template_effect is not None:
+                        row.reason = "owned_template_receipt"
+                        row.payload["owned_template_receipt"] = {"effect_id": template_effect.pk,
+                            "revision_id": template_effect.revision_id, "provider_message_id": template_effect.provider_message_id}
+                    row.save(update_fields=["processed_at", "attempts", "last_error", "next_attempt_at", "payload", "reason"])
         except Exception as exc:
             if isinstance(exc, DbActiveCapacityError):
                 break

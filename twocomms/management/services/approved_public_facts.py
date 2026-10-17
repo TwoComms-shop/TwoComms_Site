@@ -13,7 +13,7 @@ import json
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
 
 
-APPROVED_PUBLIC_FACTS_VERSION = "2026-09-07.b02.8.1"
+APPROVED_PUBLIC_FACTS_VERSION = "2026-10-17.tshirt-fit-audience.1"
 SUPPORTED_PUBLIC_FACT_LANGUAGES = ("uk", "ru", "en")
 
 
@@ -73,6 +73,17 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "основи, з вільнішими проймою, рукавом і горловиною.",
             "current_regular_and_oversize_tshirt_bases",
             "Називай ці дані лише для відповідної підтвердженої основи з каталогу.",
+        ),
+        ApprovedPublicFact(
+            "current_tshirt_audience",
+            "Поточні футболки TwoComms у класичному крої (regular) та oversize — "
+            "унісекс: їх носять і жінки, і чоловіки. Класика має звичну посадку, "
+            "oversize — вільнішу; крій обирають за бажаним силуетом.",
+            "current_regular_and_oversize_tshirt_bases",
+            "Правило підтверджене власником магазину 17.10.2026 для цих основ футболок. "
+            "Прив'язуй його до підтвердженої футболки; не поширюй на весь каталог чи майбутні основи. "
+            "Питання про жіночу або чоловічу посадку не змінює вибраний принт. "
+            "Крій не підтверджує наявність, розмір або фото кожного варіанта.",
         ),
         ApprovedPublicFact(
             "unconfirmed_bases",
@@ -145,6 +156,17 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "Называй эти данные только для соответствующей подтверждённой основы из каталога.",
         ),
         ApprovedPublicFact(
+            "current_tshirt_audience",
+            "Текущие футболки TwoComms классического кроя (regular) и oversize — "
+            "унисекс: их носят и женщины, и мужчины. Классика имеет привычную посадку, "
+            "oversize — более свободную; крой выбирают по желаемому силуэту.",
+            "current_regular_and_oversize_tshirt_bases",
+            "Правило подтверждено владельцем магазина 17.10.2026 для этих основ футболок. "
+            "Привязывай его к подтверждённой футболке; не распространяй на весь каталог или будущие основы. "
+            "Вопрос о женской или мужской посадке не меняет выбранный принт. "
+            "Крой не подтверждает наличие, размер или фото каждого варианта.",
+        ),
+        ApprovedPublicFact(
             "unconfirmed_bases",
             "Текущие худи на флисе, но их состав и плотность публично не "
             "подтверждены. Состав и плотность лонгслива требуют спецификации "
@@ -214,6 +236,17 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "the base, with a roomier armhole, sleeve and neckline.",
             "current_regular_and_oversize_tshirt_bases",
             "State these facts only for the matching confirmed catalogue base.",
+        ),
+        ApprovedPublicFact(
+            "current_tshirt_audience",
+            "Current TwoComms classic (regular) and oversize T-shirts are unisex: "
+            "women and men wear the same styles. Classic has a regular fit; "
+            "oversize is roomier. Choose the cut for the silhouette you prefer.",
+            "current_regular_and_oversize_tshirt_bases",
+            "The shop owner confirmed this rule on 2026-10-17 for these T-shirt bases. "
+            "Bind it to a confirmed T-shirt, not the entire catalogue or future bases. "
+            "A women's or men's fit question does not change the chosen print. "
+            "Cut does not prove stock, size or a photo of every variant.",
         ),
         ApprovedPublicFact(
             "unconfirmed_bases",
