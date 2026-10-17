@@ -7,7 +7,7 @@ singleton bootstrap, alert or repair is called by this module.
 from datetime import timedelta
 
 from django.db import DatabaseError
-from django.db.models import CharField, Exists, F, Func, JSONField, Max, OuterRef, Q, Subquery, Value
+from django.db.models import BooleanField, CharField, Exists, F, Func, Max, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Cast, Concat
 from django.utils import timezone
 
@@ -30,6 +30,27 @@ _MANUAL_OWNER_ACTIVE_STATUSES = tuple(
     status for status, _label in IgFollowUpTask.Status.choices
     if status not in (IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED)
 )
+
+
+class _SameReceiptArray(Func):
+    """Ordered JSON identity independent of stored serialization whitespace."""
+    arity = 2
+    output_field = BooleanField()
+
+    def _comparison(self, compiler, normalizer):
+        left, left_params = compiler.compile(self.source_expressions[0])
+        right, right_params = compiler.compile(self.source_expressions[1])
+        return f"({normalizer}({left}) = {normalizer}({right}))", (*left_params, *right_params)
+
+    def as_sql(self, compiler, connection, **extra_context):
+        return self._comparison(compiler, "JSON")
+
+    def as_mysql(self, compiler, connection, **extra_context):
+        if connection.mysql_is_mariadb:
+            return self._comparison(compiler, "JSON_COMPACT")
+        left, left_params = compiler.compile(self.source_expressions[0])
+        right, right_params = compiler.compile(self.source_expressions[1])
+        return f"(JSON_EXTRACT({left}, '$') = JSON_EXTRACT({right}, '$'))", (*left_params, *right_params)
 
 
 def _age(now, moment):
@@ -110,7 +131,8 @@ def _manual_owner_tasks():
         | Q(provider_message_id=""),
     )
     command = HumanReplyCommand.objects.annotate(
-        physical_mids=Func(F("provider_message_ids"), Value("$"), function="JSON_EXTRACT", output_field=JSONField()),
+        exact_receipts=_SameReceiptArray(
+            F("provider_message_ids"), OuterRef("manager_context__reply_resolution__provider_message_ids")),
     ).filter(
         pk=OuterRef("manager_context__reply_resolution__command_id"),
         client_id=OuterRef("client_id"), state="sent",
@@ -119,7 +141,7 @@ def _manual_owner_tasks():
         context_message__sender_id=F("client__igsid"),
         recipient_igsid=F("client__igsid"),
         provider_started_at__isnull=False, terminal_at__isnull=False,
-        physical_mids=OuterRef("manager_context__reply_resolution__provider_message_ids"),
+        exact_receipts=True,
         reply_message__client_id=F("client_id"), reply_message__role="manager",
         reply_message__source="human_reply", reply_message__status="done", reply_message__send_state="sent",
         reply_message__provider_namespace=F("provider_namespace"),

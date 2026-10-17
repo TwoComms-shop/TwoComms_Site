@@ -209,3 +209,13 @@ Final chart-integrated rerun: **1,473 tests, OK, 15 existing SQLite feature
 skips**, 252.471 seconds; 29 ancillary socket attempts were blocked. The final
 canonical selected-line chart test and all 30 health tests also passed in their
 dedicated runs. Staged diff checks are clean.
+
+MariaDB follow-up exposed a serialization-only mismatch in the new observer:
+the command MID array and the nested task MID array had different whitespace.
+The comparison now canonicalizes both arrays (`JSON_COMPACT` on MariaDB,
+`JSON` on SQLite) while preserving exact order and values. All 31 health tests
+pass, including raw formatting variation and an unconfirmed extra MID. The
+exact new read-only SQL against production recognizes revision 235 and returns
+customer revisions healthy, exact attention count zero, without changing data.
+The client is back in automatic mode at epoch 15, has no unresolved reply debt,
+and returning it did not create a duplicate request for answered source 3399.

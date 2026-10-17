@@ -1,4 +1,5 @@
 """A completed human answer is health ownership only with exact native proof."""
+import json
 from unittest.mock import patch
 
 from django.db import connection
@@ -66,6 +67,12 @@ class HumanSettlementHealthTests(TransactionTestCase):
         revision.refresh_from_db(); task.refresh_from_db()
         self.assertEqual(task.status, "completed")
         self.assert_health(revision, owned=True)
+        # MariaDB preserves whitespace in root vs nested JSON extraction. Real
+        # receipt identity must survive different serialization of the same list.
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE management_humanreplycommand SET provider_message_ids = %s WHERE id = %s",
+                [json.dumps(command.provider_message_ids, indent=3), command.pk])
+        self.assert_health(revision, owned=True)
         HumanReplyPart.objects.filter(command=command, ordinal=1).update(state="unknown")
         self.assert_health(revision, owned=False)
 
@@ -100,4 +107,10 @@ class HumanSettlementHealthTests(TransactionTestCase):
         context = task.manager_context
         context["reply_resolution"]["provider_message_ids"] = ["invented-mid"]
         IgFollowUpTask.objects.filter(pk=task.pk).update(manager_context=context)
+        self.assert_health(revision, owned=False)
+
+    def test_matching_first_mid_does_not_authorize_unconfirmed_receipt_tail(self):
+        revision, _task, command = self.settled()
+        type(command).objects.filter(pk=command.pk).update(
+            provider_message_ids=[*command.provider_message_ids, "unconfirmed-tail"])
         self.assert_health(revision, owned=False)
