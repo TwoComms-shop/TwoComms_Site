@@ -315,6 +315,49 @@ def _catalog_inquiry_coverage(plan, response, evidence):
     return set(context["interest_source_ids"]), covered_media & bare_ids
 
 
+def _native_chart_coverage(plan, evidence):
+    """Admit only the prepared native chart bound to this sealed request.
+
+    This proves attachment coverage; outbox ownership still proves delivery.
+    No configuration, stock or checkout authority is created here.
+    """
+    from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
+
+    try:
+        effect = evidence.get("native_size_chart") if isinstance(evidence, dict) else None
+        expected = plan.configuration.get("native_chart_scope")
+        if not isinstance(effect, dict) or not isinstance(expected, dict):
+            return set()
+        metadata = effect["projection_metadata"]
+        if not validate_catalog_chart_metadata(metadata, payload=effect["payload"], group=effect["group"], kind=effect["kind"]):
+            return set()
+        chart = metadata["catalog_chart"]
+        scope = chart["scope"]
+        if (chart["invitation_id"] != expected["revision_id"]
+            or any(scope.get(key) != expected[key] for key in
+                ("client_id", "client_epoch", "namespace", "revision_snapshot_digest", "source_message_ids"))
+            or type(chart.get("grid_id")) is not int or chart["grid_id"] <= 0):
+            return set()
+        product_id = chart.get("product_id")
+        presentation = chart.get("presentation_context") or {}
+        focus = plan.product_focus
+        canonical = plan.configuration.get("product_id") == product_id and bool(product_id)
+        discussed = (focus.get("status") == "focused" and focus.get("product_id") == product_id
+            and (presentation.get("product_focus") or {}) == focus
+            and presentation.get("schema") == "discussed-product-configuration.v1"
+            and presentation.get("proof_digest")
+            and presentation.get("fit_code") == chart["configuration_selector"].get("fit_code")
+            and (presentation.get("scope") or {}).get("revision_id") == expected["revision_id"]
+            and presentation["scope"].get("snapshot_digest") == expected["revision_snapshot_digest"])
+        if not (canonical or discussed):
+            return set()
+        return {row["id"] for row in plan.obligations if row["kind"] == "info:size_chart"
+            and row["source_message_id"] in expected["source_message_ids"]
+            and (not row.get("line_id") or row["line_id"] == scope.get("line_id"))}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return set()
+
+
 def _requested_topics(text, parsed_topics=()):
     """Retain information requests independently from a choice in that source."""
     from management.services.ig_reply_truth import _locally_negated
@@ -323,10 +366,15 @@ def _requested_topics(text, parsed_topics=()):
         from management.services.ig_fit_consultation import fit_consultation_request
 
         fit_request = fit_consultation_request([{"role": "user", "text": clause}])
+        chart = re.search(r"таблиц\w*\s+р[ао]зм[іе]р\w*|(?:розмірн\w*|размерн\w*)\s+(?:сіт\w*|сет\w*)|size\s+(?:chart|guide)", clause, re.I)
+        chart_request = bool(chart and not _locally_negated(clause, chart.start()) and re.search(
+            r"\?|покаж\w*|надішл\w*|пришл\w*|скин\w*|дайте|send|show|please|можна|можно|can|could|потріб\w*|нуж\w*", clause, re.I))
+        if chart_request:
+            topics.add("info:size_chart")
         presentation = bool(re.search(
             r"(?:покаж\w*|надішл\w*|пришл\w*|show|send)[^.!?\n]{0,30}(?:фото|photos?|pictures?|images?)"
             r"|^\s*(?:фото|photos?|pictures?|images?)\s*\?\s*$", clause, re.I))
-        if presentation and not fit_request:
+        if presentation and not fit_request and not chart_request:
             topics.add("info:presentation")
         if fit_request:
             if fit_request.get("fit_explanation_requested"):
@@ -345,7 +393,7 @@ def _requested_topics(text, parsed_topics=()):
             for marker in markers)
         if not asking:
             continue
-        matched = presentation or bool(fit_request)
+        matched = presentation or bool(fit_request) or chart_request
         for topic, pattern in (
             ("payment", _PAYMENT_WORDS.pattern),
             ("price", r"ціна|ціну|вартість|кошту|цена|цену|стоим|стоит|price|cost|how\s+much"),
@@ -374,6 +422,9 @@ def _topic_covered(kind, response, plan):
         _RECRUITMENT_STATUS_RE, _RECRUITMENT_UNCERTAINTY_RE,
     )
     authority = plan.authority
+    if kind == "info:size_chart":
+        # Only the separately authenticated native attachment covers a chart.
+        return False
     if kind in {"info:fit", "info:fit_presentation", "info:audience"}:
         from management.services.ig_fit_consultation import fit_topic_covered
 
@@ -770,7 +821,9 @@ class ResponsePlan:
                 "covered": [], "remaining": [row["id"] for row in self.obligations], "disposition": "recovery",
                 "next_selector": "", "local": bool(local), "gap": self.plan_gap}
         if self.line_plans:
-            return self._line_coverage(response, local=local, checkout_cart_binding=checkout_cart_binding)
+            return self._line_coverage(response, local=local, checkout_cart_binding=checkout_cart_binding,
+                catalog_media_evidence=catalog_media_evidence)
+        chart_ids = _native_chart_coverage(self, catalog_media_evidence)
         inquiry_ids, media_ids = _catalog_inquiry_coverage(self, response, catalog_media_evidence) if not local else (set(), set())
         text = response.reply_text
         covered, remaining = [], []
@@ -783,7 +836,7 @@ class ResponsePlan:
             product_acknowledged = kind == "product_id" and self.choices.get("product_id") and (
                 str(response.control.get("product") or "") == str(self.choices["product_id"])
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
-            done = bool(acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
+            done = bool(obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
                         or (kind == "garment_type" and obligation["source_message_id"] in inquiry_ids)
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
@@ -805,7 +858,7 @@ class ResponsePlan:
             result["payment_verification"] = "unresolved"
         return result
 
-    def _line_coverage(self, response, *, local=False, checkout_cart_binding=None):
+    def _line_coverage(self, response, *, local=False, checkout_cart_binding=None, catalog_media_evidence=None):
         from types import SimpleNamespace
         from management.services.ig_response_cart_plan import (
             admitted_checkout_line_ids, line_clauses, matching_line_ids,
@@ -816,6 +869,7 @@ class ResponsePlan:
 
             clauses[self.focused_candidate_line_id] = list(scoped_claim_clauses(_unquoted_text(response.reply_text)))
         admitted = admitted_checkout_line_ids(checkout_cart_binding, self.source_cart_capture, local=local)
+        chart_ids = _native_chart_coverage(self, catalog_media_evidence)
         covered, remaining = [], []
         rows = {line.line_id: line.as_dict() for line in self.line_plans}
         selector = self.next_selector_line
@@ -826,7 +880,9 @@ class ResponsePlan:
         for obligation in self.obligations:
             kind, line_id = obligation["kind"], obligation.get("line_id")
             done = False
-            if kind.startswith(("payment:", "info:payment")):
+            if obligation["id"] in chart_ids:
+                done = True
+            elif kind.startswith(("payment:", "info:payment")):
                 done = _payment_covered(kind, response, self, obligation["source_message_id"])
             elif line_id in rows:
                 row = rows[line_id]
@@ -960,7 +1016,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             kinds.extend(sorted(payment_kinds))
             if "payment:claim" in payment_kinds:
                 payment_claim_ids.add(source["message_id"])
-        if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience")):
+        if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience", "info:size_chart")):
             commerce_present = True
         if topics:
             kinds.extend(topics)
@@ -1138,6 +1194,12 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
         revision._focused_selection_candidate = candidate
         revision._focused_selection_snapshot = revision.snapshot_digest
         configuration = {**plan.configuration}
+        if any(row["kind"] == "info:size_chart" for row in plan.obligations):
+            sources = revision.bundle_snapshot.get("sources") or []
+            configuration["native_chart_scope"] = {"revision_id": revision.pk, "client_id": client.pk,
+                "client_epoch": revision.permission_epoch, "revision_snapshot_digest": revision.snapshot_digest,
+                "namespace": sources[0].get("source_namespace") if sources else "",
+                "source_message_ids": [row["message_id"] for row in sources]}
         if candidate:
             configuration["focus_selection_candidate"] = candidate
         # Discussion focus can replace a request to choose the already known

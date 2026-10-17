@@ -179,6 +179,38 @@ def _focused_selection_clarification(plan, language):
         "en": f"I will use your preference: {label}. Keeping the same print. What size do you usually wear?"}[language]
 
 
+def _pure_catalog_chart_request(revision):
+    """A full own-source chart request, without additional commerce questions."""
+    sources = (revision.bundle_snapshot or {}).get("sources") or []
+    command = r"(?:(?:скин\w*|надішл\w*|надсил\w*|покаж\w*|дайте|пришл\w*|отправ\w*|send|show)(?:\s+мені|\s+мне|\s+me)?\s+)?"
+    chart = r"(?:розмірн\w*\s+сіт\w*|розмірн\w*\s+таблиц\w*|таблиц\w*\s+(?:розмір\w*|размер\w*)|размерн\w*\s+(?:сет\w*|таблиц\w*)|(?:the\s+)?size\s+(?:chart|guide))"
+    return bool(sources and all(row.get("role") == "user" and not row.get("media_parts")
+        and not row.get("quick_reply_payload") and re.fullmatch(
+            r"\s*" + command + chart + r"(?:\s*,?\s*(?:будь ласка|пожалуйста|please))?[.!?]*\s*",
+            str(row.get("text") or ""), re.I) for row in sources))
+
+
+def _local_catalog_chart_candidate(revision, language):
+    """DB-only exact chart evidence; the normal asset producer prepares its file."""
+    if not _pure_catalog_chart_request(revision) or language not in {"uk", "ru", "en"}:
+        return "", {}
+    from management.services.ig_product_focus import capture_discussed_configuration
+    from management.services.ig_catalog_configured_choices import capture_configured_choices
+    certificate = capture_discussed_configuration(revision)
+    if not certificate:
+        return "", {}
+    capture = capture_configured_choices(certificate["product_id"], fit_code=certificate["fit_code"], metadata_only=True)
+    grid = capture.get("grid") or {}
+    if capture.get("error") or len(capture.get("configurations") or ()) != 1 or not grid.get("grid_id") or not grid.get("image_name"):
+        return "", {}
+    text = {"uk": "Розмірна сітка для цього принта й обговореної посадки.",
+        "ru": "Размерная сетка для этого принта и обсуждаемой посадки.",
+        "en": "Size chart for this print and the discussed fit."}[language]
+    return text, {"presentation_context_digest": certificate["proof_digest"],
+        "configuration_digest": capture["configuration_digest"], "grid_id": grid["grid_id"],
+        "image_name_digest": _digest(grid["image_name"])}
+
+
 def revision_execution_enabled() -> bool:
     from management.services.ig_revision_rollout import revision_execution_rollout
 
@@ -643,6 +675,19 @@ class RevisionGenerationBoundary:
         lineage. This method fences this revision and its current sealed source.
         """
         from management.services.ig_response_guard import build_source_preference_fallback
+        client = IgClient.objects.get(pk=self.revision.client_id)
+        from management.services.ig_reply_language import resolve_own_source_reply_language
+        language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+            profile_language=client.language).template_family
+        chart_text, chart_proof = _local_catalog_chart_candidate(self.revision, language)
+        if chart_text:
+            candidate = ValidatedResponse(reply_text=chart_text)
+            if self.validate(candidate, policy_manifest=policy_manifest).valid:
+                return candidate, {"kind": "native_chart_fallback", "version": 1, **chart_proof,
+                    "revision_id": self.revision.pk, "snapshot_digest": self.revision.snapshot_digest,
+                    "language": language, "source_cart_capture": self.response_plan.source_cart_capture,
+                    "coverage": _revision_response_coverage(self.response_plan, candidate, revision=self.revision, local=True),
+                    "authority_digest": self.authority.authority_digest}
         # The existing technical-holding owner creates durable manager debt
         # before this natural check reply. A source-preference-only receipt has
         # no manager-effect authority and must not swallow this inquiry.
@@ -1428,8 +1473,6 @@ def _catalog_plain_chart_requested(revision):
     from management.services.ig_response_plan import capture_response_plan, _unquoted_text
     from management.services.ig_reply_truth import _locally_negated
 
-    if not revision.client.current_product_id:
-        return False
     requested = False
     for source in _revision_media_reply_sources(revision, revision.client):
         if source.quick_reply_payload:
@@ -1451,6 +1494,10 @@ def _catalog_plain_chart_requested(revision):
                 requested = True
     if not requested:
         return False
+    if not revision.client.current_product_id:
+        from management.services.ig_product_focus import capture_discussed_configuration
+        if not capture_discussed_configuration(revision):
+            return False
     plan = capture_response_plan(revision.client, revision=revision,
         source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
     return not plan.plan_gap and len(plan.line_plans) <= 1 and len((plan.source_cart_capture or {}).get("lines") or ()) <= 1
@@ -1679,11 +1726,15 @@ def _revision_response_purpose_reason(revision):
         return "revision_sources_changed"
     fallback = (current.action_receipts or {}).get("source_preference_fallback") or {}
     proof = fallback.get("proof") or {}
-    if proof.get("kind") in {"focused_selection_clarification", "fit_consultation_fallback"}:
+    if proof.get("kind") in {"focused_selection_clarification", "fit_consultation_fallback", "native_chart_fallback"}:
         from management.services.ig_response_plan import capture_response_plan
         plan = capture_response_plan(current.client, revision=current,
             source_cart_capture=proof.get("source_cart_capture"))
-        if proof["kind"] == "focused_selection_clarification":
+        if proof["kind"] == "native_chart_fallback":
+            text, current_proof = _local_catalog_chart_candidate(current, proof.get("language"))
+            if text != fallback.get("reply_text") or any(proof.get(key) != value for key, value in current_proof.items()) or not current_proof:
+                return "deterministic_native_chart_changed"
+        elif proof["kind"] == "focused_selection_clarification":
             if (proof.get("candidate_digest") != (plan.configuration.get("focus_selection_candidate") or {}).get("digest")
                 or _focused_selection_clarification(plan, proof.get("language")) != fallback.get("reply_text")):
                 return "deterministic_focused_selection_changed"
@@ -1875,7 +1926,13 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     original_cart = (receipt.get("proof") or {}).get("source_cart_capture")
     plan = capture_response_plan(revision.client, revision=revision, source_cart_capture=original_cart)
     fit_proof = (receipt.get("proof") or {}).get("kind") == "fit_consultation_fallback"
+    chart_proof = (receipt.get("proof") or {}).get("kind") == "native_chart_fallback"
     local_response = ValidatedResponse(reply_text=reply)
+    if chart_proof:
+        proof = receipt["proof"]
+        text, current_proof = _local_catalog_chart_candidate(revision, proof.get("language"))
+        if text != reply or not current_proof or any(proof.get(key) != value for key, value in current_proof.items()):
+            return RevisionLiveResult(revision.pk, "blocked", ("deterministic_native_chart_changed",))
     if (receipt.get("proof") or {}).get("kind") == "focused_selection_clarification":
         proof = receipt["proof"]
         if (proof.get("candidate_digest") != (plan.configuration.get("focus_selection_candidate") or {}).get("digest")
@@ -1915,7 +1972,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         facts = tuple(row for row in authority.fact_bindings if row["claim"] != CLAIM_SOURCE_PREFERENCES) + scoped.fact_bindings
         combined = sorted((*facts, *authority.offer_bindings), key=lambda item: item["claim"])
         authority = replace(authority, fact_bindings=facts, authority_digest=_digest(combined))
-    if receipt.get("origin") == "source_preference_fallback" or (receipt.get("origin") == "static_reply" and plan.obligations):
+    if (receipt.get("origin") == "source_preference_fallback" and not chart_proof) or (receipt.get("origin") == "static_reply" and plan.obligations):
         from management.services.ig_response_debt import record_response_coverage
         coverage = (receipt.get("proof") or {}).get("coverage")
         if receipt.get("origin") == "static_reply":
@@ -1937,7 +1994,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     if prepared.error:
         return RevisionLiveResult(revision.pk, "blocked", (prepared.error,))
     effects = prepared.effects
-    if fit_proof and plan.fit_consultation.get("photos_requested"):
+    if chart_proof or (fit_proof and plan.fit_consultation.get("photos_requested")):
         effects, reasons = _prepare_effects(revision, local_response, settings_row, response_plan=plan)
         if reasons:
             return RevisionLiveResult(revision.pk, "blocked", reasons)
@@ -1954,6 +2011,13 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         facts = (*authority.fact_bindings, *assets.fact_bindings)
         authority = replace(authority, fact_bindings=facts,
             authority_digest=_digest(sorted((*facts, *authority.offer_bindings), key=lambda row: row["claim"])))
+        if chart_proof:
+            from management.services.ig_response_debt import record_response_coverage
+            chart = next((row for row in effects if (row.get("projection_metadata") or {}).get("catalog_chart")), None)
+            coverage = _revision_response_coverage(plan, local_response, revision=revision, local=True,
+                catalog_media_evidence={"native_size_chart": chart})
+            if not record_response_coverage(revision.pk, token, coverage):
+                return RevisionLiveResult(revision.pk, "blocked", ("response_coverage_cas_failed",))
     access_token = bot.get_page_token(settings_row)
     if not access_token:
         return RevisionLiveResult(revision.pk, "blocked", ("provider_not_configured",))
@@ -2169,8 +2233,9 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         if not GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").exists():
             from management.services.ig_revision_input import record_source_preference_fallback
 
+            chart_request = _pure_catalog_chart_request(revision)
             local = record_source_preference_fallback(revision.pk, token, settings_id=settings_row.pk,
-                approved_fit_facts=True)
+                approved_fit_facts=not chart_request, approved_chart=chart_request)
             if local.ready:
                 return _execute_deterministic_input(revision, token, settings_row, local.receipt)
         # A crashed request without its successful proposal is reconciliation

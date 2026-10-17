@@ -702,6 +702,11 @@ def _currency_code(value: str) -> str:
 
 def _claim_sentences(text: str, quoted_data: Iterable[str]):
     claims = str(text or "")
+    # URLs have their own exact allowlist check. Their path/query tokens are
+    # identifiers, not prose claims (for example size_grids is not a size).
+    # Mask before sentence splitting so dots inside a URL cannot expose a
+    # detached path fragment to the configuration/price/availability parsers.
+    claims = _URL_RE.sub(lambda match: " " * len(match.group(0)), claims)
     quoted_values = {_normalize(value) for value in quoted_data if value}
     if quoted_values:
         claims = _QUOTED_SPAN_RE.sub(

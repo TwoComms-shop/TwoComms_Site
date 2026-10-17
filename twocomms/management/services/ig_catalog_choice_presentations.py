@@ -433,10 +433,24 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
     try:
         if choice and (not choice.get("ready") or choice.get("action", {}).get("kind") != "chart"):
             raise ValueError("catalog_choice_chart_source_invalid")
-        product_id = int((choice or {}).get("action", {}).get("product_id") or revision.client.current_product_id or 0)
+        presentation_context = {}
+        if not choice:
+            from management.services.ig_product_focus import capture_discussed_configuration, capture_product_focus
+            presentation_context = capture_discussed_configuration(revision)
+            focus = capture_product_focus(revision)
+            if (not presentation_context and focus.get("status") == "focused"
+                and focus["product_id"] != revision.client.current_product_id):
+                # A new discussed print cannot inherit an older purchase's
+                # chart merely because the new cut is not yet proved.
+                return CatalogChoicePreparation()
+        product_id = int((choice or {}).get("action", {}).get("product_id")
+            or presentation_context.get("product_id") or revision.client.current_product_id or 0)
         selected = assets._selected_variant(revision.client, (product_id,))
+        configuration = ({"fit_code": presentation_context["fit_code"],
+            "option_values": {"fit": presentation_context["fit_code"]}} if presentation_context
+            else _source_configuration(revision.client, product_id))
         captured = deepcopy(capture) if isinstance(capture, dict) else capture_configured_choices(product_id,
-            variant_id=selected or None, **_source_configuration(revision.client, product_id))
+            variant_id=selected or None, **configuration)
         grid = captured.get("grid") or {}
         photo = grid.get("photo_ref") or {}
         if not grid.get("grid_id") or not photo.get("url") or len(captured.get("configurations") or []) != 1:
@@ -460,6 +474,8 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
             "grid_source": grid["source"], "image_name_digest": _digest(grid["image_name"]),
             "image_url": photo["url"], "url_digest": _digest(photo["url"]), "payload_digest": _digest(payload),
             "origin_manifest_digest": (choice or {}).get("manifest_digest", "")}
+        if presentation_context:
+            manifest["presentation_context"] = presentation_context
         manifest["chart_digest"] = _digest(manifest)
         manifest["hmac"] = salted_hmac("catalog-choice-chart.v1", manifest["chart_digest"], algorithm="sha256").hexdigest()
         return CatalogChoicePreparation(True, ({"group": "template", "kind": "image", "payload": payload,
@@ -499,6 +515,13 @@ def validate_catalog_chart_reference(reference, client, settings_row):
         reason = current_catalog_choice_scope(reference, client, settings_row)
         if reason:
             return reason
+        if reference.get("presentation_context"):
+            from management.models import IgCustomerTurnRevision
+            from management.services.ig_product_focus import capture_discussed_configuration
+            revision = IgCustomerTurnRevision.objects.select_related("client").filter(
+                pk=reference["invitation_id"], client_id=client.pk).first()
+            if (revision is None or capture_discussed_configuration(revision) != reference["presentation_context"]):
+                return "catalog_choice_chart_context_changed"
         captured = capture_configured_choices(reference["product_id"], **reference["configuration_selector"], metadata_only=True)
         grid = captured.get("grid") or {}
         row = SizeGrid.objects.filter(pk=reference["grid_id"]).first()

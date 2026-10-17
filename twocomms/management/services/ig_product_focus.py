@@ -222,6 +222,104 @@ def product_focus_guidance(focus):
         "it grants no selected SKU, stock, price, checkout or payment authority.")
 
 
+def _retained_fit_preference(revision, focus):
+    """Walk only a bounded, evidenced continuation of the same consultation."""
+    from management.models import InstagramBotMessage
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_fit_consultation import contextual_fit_choice, fit_consultation_request, _CHART
+    from management.services.ig_funnel_reset import current_message_floor
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_reply_truth import _locally_negated
+    from management.services.ig_revision_outbox import _digest
+
+    sources = (revision.bundle_snapshot or {}).get("sources") or []
+    client = revision.client
+    rows = InstagramBotMessage.objects.filter(client_id=client.pk, sender_id=client.igsid,
+        provider_namespace=sources[0].get("source_namespace"), role="user", source__in=("webhook", "poll"),
+        pk__gte=current_message_floor(client), pk__gt=max(focus.get("source_message_ids") or [0]),
+        pk__lt=min(row["message_id"] for row in sources)).exclude(status="failed").order_by("-pk")[:8]
+    skipped = []
+    for row in rows:
+        if row.attachment_media or row.attachments or row.quick_reply_payload:
+            return {}
+        proof = contextual_fit_choice(client, row)
+        if proof:
+            if skipped:
+                proof = {**proof, "intervening_information_sources": skipped}
+                proof["retention_digest"] = _digest(proof)
+            return proof
+        text = own_reply_text(row.text or "")
+        parsed = parse_turn(text)
+        if (parsed.reset_requested or parsed.new_purchase_requested or parsed.exchange_requested
+            or parsed.purchase_requested or parsed.rejected_product_ids or _switches_product(text)
+            or re.search(r"\b(?:худі|худи|hoodies?|світшот\w*|свитшот\w*|sweatshirts?)\b", text, re.I)
+            or re.search(r"сказа\w*|казав|казала|говори\w*|просив|просила|просил|asked|said|told", text, re.I)):
+            return {}
+        request = fit_consultation_request([{"message_id": row.pk, "role": "user", "text": text}])
+        chart = _CHART.search(text)
+        chart_request = bool(chart and not _locally_negated(text, chart.start()) and re.search(
+            r"\?|покаж\w*|надішл\w*|пришл\w*|скин\w*|дайте|send|show|please|можна|можно|can|could|потріб\w*|нуж\w*", text, re.I))
+        if (not ((request and not request.get("assortment_requested")) or chart_request)
+            or set(parsed.field_updates).intersection({"size", "color", "qty"})):
+            return {}
+        skipped.append({"source_message_id": row.pk,
+            "source_digest": hashlib.sha256(str(row.text or "").encode()).hexdigest()})
+    return {}
+
+
+def capture_discussed_configuration(revision, *, source_cart_capture=None):
+    """Prove which discussed cut a chart illustrates without choosing a SKU.
+
+    A processed contextual answer can remain valid customer evidence even when
+    its old reducer did not select the product. Only that answer's own delivered
+    question proves the cut; a later manager acknowledgement cannot supply it.
+    """
+    from management.services.ig_funnel_reset import current_message_floor
+    from management.services.ig_revision_outbox import _digest
+
+    if source_cart_capture is None:
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        source_cart_capture = capture_current_selection_lines(revision.client_id)
+    cart = source_cart_capture or {}
+    lines = cart.get("lines") or []
+    client = revision.client
+    sources = (revision.bundle_snapshot or {}).get("sources") or []
+    if (cart.get("schema") != "source-selections.v1" or cart.get("status") != "captured"
+        or (cart.get("scope") or {}).get("client_id") != revision.client_id
+        or (cart.get("scope") or {}).get("episode_id") != client.current_commercial_episode_id
+        or len(lines) != 1 or cart.get("active_line_id") != lines[0].get("line_id") or not sources):
+        return {}
+    watermark, floor = max(row["message_id"] for row in sources), current_message_floor(client)
+    if int((cart.get("source_watermark") or {}).get("message_id") or 0) > watermark:
+        return {}
+    focus = capture_product_focus(revision, source_cart_capture=cart)
+    if focus.get("status") != "focused":
+        return {}
+    fields = lines[0].get("fields") or {}
+    field, product = fields.get("fit_option_code") or {}, fields.get("product_id") or {}
+    fit, proof = None, {}
+    if (field.get("status") == "confirmed" and field.get("authority") == "customer_source"
+        and field.get("value") in {"classic", "oversize"}
+        and type((field.get("source") or {}).get("source_message_id")) is int
+        and floor <= field["source"]["source_message_id"] <= watermark
+        and product.get("status") == "confirmed" and product.get("value") == focus["product_id"]):
+        fit, proof = field["value"], {"schema": "captured-customer-fit.v1", **field}
+    else:
+        proof = _retained_fit_preference(revision, focus)
+        fit = proof.get("fit")
+    if fit not in {"classic", "oversize"}:
+        return {}
+    result = {"schema": "discussed-product-configuration.v1", "product_id": focus["product_id"],
+        "fit_code": fit, "product_focus": focus, "fit_source": proof,
+        "scope": {"client_id": client.pk, "episode_id": client.current_commercial_episode_id,
+            "revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
+            "permission_epoch": revision.permission_epoch, "source_namespace": sources[0].get("source_namespace"),
+            "reset_floor": current_message_floor(client)},
+        "selection_authority": False, "stock_authority": False, "checkout_authority": False}
+    result["proof_digest"] = _digest(result)
+    return result
+
+
 def focus_selection_candidate(revision, focus, *, source_cart_capture=None):
     """A fresh customer selector may nominate the discussed item for validation.
 
@@ -296,18 +394,8 @@ def focus_selection_candidate(revision, focus, *, source_cart_capture=None):
         # A previously processed short answer may predate the contextual-fit
         # reducer. Revalidate that customer's answer against its own delivered
         # selector; a later human acknowledgement does not create the choice.
-        from management.models import InstagramBotMessage
-        from management.services.ig_fit_consultation import contextual_fit_choice
-        from management.services.ig_funnel_reset import current_message_floor
-
-        client = revision.client
-        previous = InstagramBotMessage.objects.filter(client_id=revision.client_id,
-            sender_id=client.igsid, provider_namespace=source.get("source_namespace"),
-            role="user", source__in=("webhook", "poll"), pk__gte=current_message_floor(client),
-            pk__lt=source["message_id"]).exclude(status="failed").order_by("-pk").first()
-        if previous is not None and previous.pk > max(focus.get("source_message_ids") or [0]):
-            retained_fit = contextual_fit_choice(client, previous)
-            fit = retained_fit.get("fit")
+        retained_fit = _retained_fit_preference(revision, focus)
+        fit = retained_fit.get("fit")
     candidate = {"schema": "focused-selection-candidate.v1", "product_id": focus["product_id"],
         "source_message_id": source["message_id"], "source_digest": source["source_digest"],
         "permission_epoch": revision.permission_epoch, "snapshot_digest": revision.snapshot_digest,

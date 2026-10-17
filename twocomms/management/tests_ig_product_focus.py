@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from management import tests_ig_revision_live as live_fixture
 from management.models import IgCustomerTurn, IgTurnMessage, IgCustomerTurnRevision, InstagramBotMessage, GeminiRequest, IgFunnelResetAudit
-from management.services.ig_product_focus import capture_product_focus, product_focus_guidance, focus_selection_candidate
+from management.services.ig_product_focus import capture_product_focus, product_focus_guidance, focus_selection_candidate, capture_discussed_configuration
 from management.services.ig_revision_outbox import PublicationBinding
 from management.services.ig_turn_revisions import create_collecting_revision
 
@@ -150,6 +150,12 @@ class ProductFocusTests(TransactionTestCase):
         self.assertNotIn("client_configuration_update", self.original.action_receipts)
 
     def test_new_size_recovers_previously_processed_contextual_fit_through_fresh_action(self):
+        self.assert_new_size_recovers_contextual_fit()
+
+    def test_new_size_after_chart_and_human_url_keeps_customer_classic_choice(self):
+        self.assert_new_size_recovers_contextual_fit(with_chart=True)
+
+    def assert_new_size_recovers_contextual_fit(self, *, with_chart=False):
         from management.services.ig_revision_commerce import reduce_revision_commerce
         from management.services.ig_response_plan import capture_response_plan
 
@@ -165,6 +171,15 @@ class ProductFocusTests(TransactionTestCase):
         old_source_id = old_answer.sources.get().message_id
         self.deliver_human_fit_question(context_message_id=old_source_id,
             text="Домовились: «Правил немає», класичний крій (regular). Який розмір вам потрібен?")
+        if with_chart:
+            chart = self.followup("Скиньте розмірну сітку")
+            reduced = reduce_revision_commerce(chart.pk, self.token, settings_id=self.settings.pk,
+                settings_permission_epoch=self.settings.reply_permission_epoch,
+                publication=PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash))
+            self.assertTrue(reduced.ready, reduced.reason)
+            chart_source_id = chart.sources.get().message_id
+            self.deliver_human_fit_question(context_message_id=chart_source_id,
+                text="Розмірна сітка класичного крою: https://twocomms.shop/media/size-grids/classic.png")
         revision = self.followup("M")
         reduced = reduce_revision_commerce(revision.pk, self.token, settings_id=self.settings.pk,
             settings_permission_epoch=self.settings.reply_permission_epoch,
@@ -176,6 +191,9 @@ class ProductFocusTests(TransactionTestCase):
         candidate = plan.configuration["focus_selection_candidate"]
         self.assertEqual(candidate["candidate_controls"], {"product": self.product.pk, "fit": "classic", "size": "M"})
         self.assertEqual(candidate["retained_fit_source"]["source_message_id"], old_source_id)
+        if with_chart:
+            self.assertEqual(candidate["retained_fit_source"]["intervening_information_sources"][0]["source_message_id"],
+                chart_source_id)
         self.assertFalse(candidate["checkout_authority"])
         self.actual_inline_count = 0
         self.parsed = {"reply_text": "Для футболки «Правил немає» ви обрали розмір M. Ви обрали класичну посадку.",
@@ -424,3 +442,68 @@ class ProductFocusTests(TransactionTestCase):
         self.assertNotIn("focus_selection_candidate", after.configuration)
         self.assertNotIn("size", after.choices)
         self.assertEqual(revision.bundle_snapshot["sources"][0]["text"], "Оверсайз, M")
+
+    def test_chart_request_recovers_old_customer_fit_for_presentation_without_selecting_product(self):
+        from management.services.ig_revision_commerce import reduce_revision_commerce
+        from management.services.ig_response_plan import capture_response_plan
+
+        self.deliver_human_fit_question()
+        old_answer = self.followup("Звична")
+        with patch("management.services.ig_fit_consultation.contextual_fit_choice", return_value={}):
+            reduced = reduce_revision_commerce(old_answer.pk, self.token, settings_id=self.settings.pk,
+                settings_permission_epoch=self.settings.reply_permission_epoch,
+                publication=PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash))
+        self.assertTrue(reduced.ready, reduced.reason)
+        old_source_id = old_answer.sources.get().message_id
+        self.deliver_human_fit_question(context_message_id=old_source_id,
+            text="Домовились: «Правил немає», класичний крій (regular). Який розмір вам потрібен?")
+        revision = self.followup("Скиньте розмірну сітку")
+        reduced = reduce_revision_commerce(revision.pk, self.token, settings_id=self.settings.pk,
+            settings_permission_epoch=self.settings.reply_permission_epoch,
+            publication=PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash))
+        self.assertTrue(reduced.ready, reduced.reason)
+        self.customer.refresh_from_db()
+        revision.refresh_from_db()
+        plan = capture_response_plan(self.customer, revision=revision)
+        self.assertNotIn("focus_selection_candidate", plan.configuration)
+        with CaptureQueriesContext(connection) as queries:
+            config = capture_discussed_configuration(revision, source_cart_capture=plan.source_cart_capture)
+        self.assertEqual((config["product_id"], config["fit_code"]), (self.product.pk, "classic"))
+        self.assertEqual(config["fit_source"]["source_message_id"], old_source_id)
+        self.assertTrue(all(query["sql"].lstrip().upper().startswith("SELECT") for query in queries))
+        self.assertFalse(any(config[key] for key in ("selection_authority", "stock_authority", "checkout_authority")))
+        self.customer.refresh_from_db()
+        self.assertIsNone(self.customer.current_product_id)
+        self.assertFalse(old_answer.delivery_effects.exists())
+
+    def test_manager_acknowledgement_alone_cannot_supply_discussed_chart_fit(self):
+        from management.services.ig_revision_commerce import reduce_revision_commerce
+        from management.services.ig_response_plan import capture_response_plan
+
+        self.deliver_human_fit_question(text="Домовились: класичний крій. Який розмір вам потрібен?")
+        revision = self.followup("Скиньте розмірну сітку")
+        reduced = reduce_revision_commerce(revision.pk, self.token, settings_id=self.settings.pk,
+            settings_permission_epoch=self.settings.reply_permission_epoch,
+            publication=PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash))
+        self.assertTrue(reduced.ready, reduced.reason)
+        self.customer.refresh_from_db()
+        revision.refresh_from_db()
+        plan = capture_response_plan(self.customer, revision=revision)
+        self.assertEqual(capture_discussed_configuration(revision, source_cart_capture=plan.source_cart_capture), {})
+
+    def test_retained_fit_stops_at_conflicting_or_ambiguous_customer_choice(self):
+        from management.services.ig_revision_commerce import reduce_revision_commerce
+
+        self.deliver_human_fit_question()
+        old = self.followup("Звична")
+        with patch("management.services.ig_fit_consultation.contextual_fit_choice", return_value={}):
+            reduced = reduce_revision_commerce(old.pk, self.token, settings_id=self.settings.pk,
+                settings_permission_epoch=self.settings.reply_permission_epoch,
+                publication=PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash))
+        self.assertTrue(reduced.ready, reduced.reason)
+        for text in ("Оверсайз", "Хочу цю"):
+            with self.subTest(text=text):
+                self.followup(text)
+                revision = self.followup("Скиньте розмірну сітку")
+                self.customer.refresh_from_db()
+                self.assertEqual(capture_discussed_configuration(revision), {})

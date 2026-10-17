@@ -159,3 +159,53 @@ Final integrated result: **1,433 tests, OK, 15 existing SQLite feature skips**
 in 237.401 seconds. The blocker counted 29 prevented socket attempts; no real
 external connection was permitted. The additional real manager-clear candidate
 test also passed separately. Django system checks and staged diff checks pass.
+
+## Live next step: size chart
+
+After release `e720711e7`, the customer sent source 3399, “Скиньте розмірну
+сітку”. Manual resume 235 reached Gemini; both HTTP 200 answers were rejected
+with `unauthorized_url,configuration_mismatch`. The now-bounded recovery
+correctly created one manager obligation instead of repeating the same graph.
+
+Two independent gaps required correction. The chart producer only accepted a
+canonical selected product, although the discussed print and the customer's
+classic preference were already proved. Also, the prose truth parser read
+`size_grids` inside a chart URL as a size assertion. URLs retain their separate
+exact allowlist check and are masked before prose claim parsing; neighboring
+stock, price and configuration statements still need their own authority.
+
+The chart uses a presentation-only certificate proving product 112 and classic
+from source 3397 and its delivered question 3396. It neither selects a SKU nor
+authorizes stock or checkout. The existing signed native chart manifest and
+outbox deliver the exact chart image. Only that bound image covers the new
+size-chart obligation; prose, product cards and unrelated obligations do not.
+Pure chart requests can use this path without opening a Gemini graph, while a
+previous failed graph remains failed. UNKNOWN and changed-source/asset guards
+still prevent replay. A bounded preference reader preserves the classic choice
+through chart questions into a subsequent M reply, stopping at ambiguous or
+conflicting customer changes.
+
+The actual native source is grid 6, “Класична футболка — CRC FS-101”, assigned
+to product 112/classic/variant 83, file `size_grids/classic-tshirt.webp`.
+Controlled human command 4 sent its verified public image URL to source 3399;
+Meta confirmed SENT and task 123 completed via the exact source receipt. This
+was an operator text/link response, not a fabricated automatic image receipt.
+
+The health observer now recognizes this exact completed human-reply
+disposition: task 123 was completed, but revision 235 still appeared as one
+unowned attention item. No historical source or delivery receipt is deleted to
+remove that observation. Its SQL predicate requires the exact settlement audit,
+single source, physical SENT command and matching recipient/receipt. Unknown
+parts, unrelated context and forged closure remain attention. The same predicate
+runs before the sampling limit and in the per-revision reader.
+
+Follow-up validation: 198 affected presentation/live/outbox tests passed; the
+final native-chart suite passed 8/8. All 30 lane-health tests passed, including
+8 new native human-settlement regressions. The URL truth/guard suite passed
+37/37. Health queries captured in tests are SELECT-only. The native MariaDB
+comparison of command 4's physical first MID and its receipt array also passed.
+
+Final chart-integrated rerun: **1,473 tests, OK, 15 existing SQLite feature
+skips**, 252.471 seconds; 29 ancillary socket attempts were blocked. The final
+canonical selected-line chart test and all 30 health tests also passed in their
+dedicated runs. Staged diff checks are clean.

@@ -7,7 +7,7 @@ singleton bootstrap, alert or repair is called by this module.
 from datetime import timedelta
 
 from django.db import DatabaseError
-from django.db.models import CharField, Exists, Max, OuterRef, Q, Subquery, Value
+from django.db.models import CharField, Exists, F, Func, JSONField, Max, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Cast, Concat
 from django.utils import timezone
 
@@ -84,21 +84,79 @@ def _permission_blocked(client, *, settings_row, allowed, revision=None):
     )
 
 
+def _manual_owner_tasks():
+    """Accountable dispositions, including native, receipted human settlement.
+
+    The completed flag and a JSON claim are insufficient. Settlement's audit
+    binds the exact resolution, and its physical SENT command must still match
+    the revision's single source and recipient. Keep this proof in SQL so both
+    bounded observation and the exact risk count use it before LIMIT.
+    """
+    from management.models import AdminAuditLog
+    from management.ig_bot_models import HumanReplyCommand
+    from management.ig_human_reply_models import HumanReplyPart
+
+    sources = IgTurnRevisionSource.objects.filter(revision_id=OuterRef("manager_context__revision_id"))
+    audit = AdminAuditLog.objects.filter(
+        action="ig_reply_debt_manager_replied", entity_type="IgFollowUpTask",
+        entity_id=Cast(OuterRef("pk"), CharField()),
+        **{f"after__{key}": OuterRef(f"manager_context__reply_resolution__{key}")
+           for key in ("version", "outcome", "command_id", "source_message_ids",
+                       "provider_message_ids", "reply_confirmed", "at")},
+    )
+    bad_parts = HumanReplyPart.objects.filter(command_id=OuterRef("pk")).filter(
+        ~Q(state="sent") | Q(provider_started_at__isnull=True)
+        | Q(terminal_at__isnull=True) | Q(provider_message_id__isnull=True)
+        | Q(provider_message_id=""),
+    )
+    command = HumanReplyCommand.objects.annotate(
+        physical_mids=Func(F("provider_message_ids"), Value("$"), function="JSON_EXTRACT", output_field=JSONField()),
+    ).filter(
+        pk=OuterRef("manager_context__reply_resolution__command_id"),
+        client_id=OuterRef("client_id"), state="sent",
+        context_message_id=OuterRef("settled_source_id"),
+        context_message__client_id=F("client_id"), context_message__role="user",
+        context_message__sender_id=F("client__igsid"),
+        recipient_igsid=F("client__igsid"),
+        provider_started_at__isnull=False, terminal_at__isnull=False,
+        physical_mids=OuterRef("manager_context__reply_resolution__provider_message_ids"),
+        reply_message__client_id=F("client_id"), reply_message__role="manager",
+        reply_message__source="human_reply", reply_message__status="done", reply_message__send_state="sent",
+        reply_message__provider_namespace=F("provider_namespace"),
+        reply_message__provider_message_id=F("provider_message_ids__0"),
+    ).filter(
+        Q(context_message__provider_namespace="") | Q(context_message__provider_namespace=F("provider_namespace")),
+    ).exclude(
+        context_message__send_state__in=("unknown", "sending", "ambiguous"),
+    ).exclude(provider_message_ids=[]).annotate(bad_parts=Exists(bad_parts)).filter(bad_parts=False)
+    return IgFollowUpTask.objects.annotate(
+        settled_source_id=Subquery(sources.filter(ordinal=1).values("message_id")[:1]),
+        extra_settled_source=Exists(sources.exclude(ordinal=1)),
+        settlement_audit=Exists(audit), settled_command=Exists(command),
+    ).filter(
+        Q(status__in=_MANUAL_OWNER_ACTIVE_STATUSES)
+        | Q(status=IgFollowUpTask.Status.CANCELLED,
+            manager_context__operator_review__outcome="reviewed_no_reply")
+        | Q(status=IgFollowUpTask.Status.COMPLETED, skip_reason="manager_reply_confirmed",
+            manager_context__reply_resolution__version=1,
+            manager_context__reply_resolution__outcome="manager_replied",
+            manager_context__reply_resolution__reply_confirmed=True,
+            manager_context__reply_resolution__source_message_ids=F("event_payload__source_message_ids"),
+            settled_source_id=F("event_payload__source_message_ids__0"),
+            event_payload__source_message_ids__1__isnull=True,
+            extra_settled_source=False, settlement_audit=True, settled_command=True),
+    )
+
+
 def _manual_owned(revision):
     # Match the existing durable case identity and owner; a bare 'manual' state
     # without an accountable owner must remain attention. An operator's explicit
     # reviewed_no_reply closure is also a durable manual disposition: it closes
     # the alert without claiming that a customer reply was delivered.
-    return IgFollowUpTask.objects.filter(
+    return _manual_owner_tasks().filter(
         client_id=revision.client_id, event_key=f"ig-revision-debt:{revision.pk}",
         kind="manager_task", reason="revision_case:execution_debt",
         manager_context__revision_id=revision.pk, manager_context__owner="manager",
-    ).filter(
-        Q(status__in=_MANUAL_OWNER_ACTIVE_STATUSES)
-        | Q(
-            status=IgFollowUpTask.Status.CANCELLED,
-            manager_context__operator_review__outcome="reviewed_no_reply",
-        )
     ).exists()
 
 
@@ -117,17 +175,11 @@ def _revision_lane(*, now, settings_row, allowed, observation_limit=None, includ
         ordinal=1,
         message__status=InstagramBotMessage.Status.DONE,
     )
-    owner = IgFollowUpTask.objects.filter(
+    owner = _manual_owner_tasks().filter(
         client_id=OuterRef("client_id"),
         event_key=Concat(Value("ig-revision-debt:"), Cast(OuterRef("pk"), CharField())),
         kind="manager_task", reason="revision_case:execution_debt",
         manager_context__owner="manager", manager_context__revision_id=OuterRef("pk"),
-    ).filter(
-        Q(status__in=_MANUAL_OWNER_ACTIVE_STATUSES)
-        | Q(
-            status=IgFollowUpTask.Status.CANCELLED,
-            manager_context__operator_review__outcome="reviewed_no_reply",
-        )
     )
     query = IgCustomerTurnRevision.objects.filter(active_slot=1).exclude(
         state__in=("processed", "superseded"),

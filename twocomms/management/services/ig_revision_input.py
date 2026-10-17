@@ -246,7 +246,7 @@ def record_unavailable_media_reply(revision_id, token, *, settings_id, collectio
         return RevisionInputDecision(True, "media_unavailable", "owned_media_unavailable", receipt)
 
 
-def record_source_preference_fallback(revision_id, token, *, settings_id, approved_fit_facts=False):
+def record_source_preference_fallback(revision_id, token, *, settings_id, approved_fit_facts=False, approved_chart=False):
     """Admit a local reply after failure, or narrowly scoped approved fit facts.
 
     This is an input/action receipt, not a fabricated successful Gemini proposal.
@@ -275,7 +275,7 @@ def record_source_preference_fallback(revision_id, token, *, settings_id, approv
         if reason or IgRevisionDeliveryEffect.objects.filter(revision_id__in=[row.pk for row in rows]).exists():
             return RevisionInputDecision(reason="fallback_lineage_delivery_or_invalid")
         graph = GeminiRequest.objects.filter(logical_turn_id=f"ig-revision:{revision.pk}").first()
-        if graph is None and not approved_fit_facts:
+        if graph is None and not (approved_fit_facts or approved_chart):
             return RevisionInputDecision(reason="fallback_generation_not_failed")
         if graph is not None and (approved_fit_facts or graph.client_id != client.pk
             or graph.terminal_resolution != "failed" or graph.winner_attempt_id):
@@ -289,6 +289,10 @@ def record_source_preference_fallback(revision_id, token, *, settings_id, approv
             request = fit_consultation_request(sources)
             if not request or request.get("photos_requested") or request.get("assortment_requested"):
                 return RevisionInputDecision(reason="fallback_not_pure_approved_fit_facts")
+        if approved_chart:
+            from management.services.ig_revision_live import _pure_catalog_chart_request
+            if not _pure_catalog_chart_request(revision):
+                return RevisionInputDecision(reason="fallback_not_pure_native_chart")
         pub = settings_row.active_instruction_publication
         publication = PublicationBinding(pub.pk, pub.version, pub.snapshot_hash)
         policy = {"instruction_publication": {"id": pub.pk, "version": pub.version, "hash": pub.snapshot_hash}}
@@ -300,10 +304,12 @@ def record_source_preference_fallback(revision_id, token, *, settings_id, approv
         if approved_fit_facts and (proof.get("kind") != "fit_consultation_fallback"
             or proof.get("pure_approved_facts") is not True or response.controls):
             return RevisionInputDecision(reason="fallback_not_pure_approved_fit_facts")
+        if approved_chart and (proof.get("kind") != "native_chart_fallback" or response.controls):
+            return RevisionInputDecision(reason="fallback_not_pure_native_chart")
         authority = boundary.authority
         receipt = {
             "version": "revision-preference-fallback-v1", "origin": "source_preference_fallback",
-            "reason": "approved_fit_facts" if approved_fit_facts else "provider_failed_source_preference", "snapshot_digest": revision.snapshot_digest,
+            "reason": "approved_native_chart" if approved_chart else "approved_fit_facts" if approved_fit_facts else "provider_failed_source_preference", "snapshot_digest": revision.snapshot_digest,
             "source_message_ids": [source["message_id"] for source in sources],
             "failed_request_id": graph.request_id if graph is not None else "", "proof": proof,
             "settings_id": settings_id, "settings_permission_epoch": settings_row.reply_permission_epoch,

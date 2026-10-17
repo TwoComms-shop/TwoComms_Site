@@ -249,3 +249,73 @@ class FitConsultationIntentTests(TestCase):
         self.assertIn("retail_consultation", intent["allowed_response_acts"])
         self.assertNotIn("optional_retail_next_step", intent["allowed_response_acts"])
         self.assertIn("does not choose a different product", intent_generation_guidance(intent))
+
+
+class NativeChartResponsePlanTests(SimpleTestCase):
+    def plan_and_effect(self, text="Скиньте розмірну сітку"):
+        from django.utils.crypto import salted_hmac
+        from management.services.ig_revision_outbox import _digest
+
+        scope = {"client_id": 7, "client_epoch": 12, "namespace": "instagram:merchant",
+            "revision_snapshot_digest": "d" * 64, "source_message_ids": [20]}
+        plan = build_response_plan(preferences={}, readiness={}, context=ReplyTruthContext(), sources=[source(text)])
+        plan = replace(plan, product_focus=deepcopy(FOCUS), configuration={**plan.configuration,
+            "native_chart_scope": {**scope, "revision_id": 90}})
+        payload = {"recipient": {"id": "customer"}, "message": {"attachment": {"type": "image",
+            "payload": {"url": "https://twocomms.test/media/native-classic-grid.webp", "is_reusable": True}}}}
+        chart = {"schema": "catalog-choice-chart.v1", "invitation_id": 90, "scope": {**scope, "igsid": "customer"},
+            "product_id": 112, "configuration_selector": {"fit_code": "classic"}, "grid_id": 8,
+            "image_url": payload["message"]["attachment"]["payload"]["url"], "payload_digest": _digest(payload),
+            "presentation_context": {"schema": "discussed-product-configuration.v1", "product_focus": deepcopy(FOCUS),
+                "fit_code": "classic", "proof_digest": "e" * 64,
+                "scope": {"revision_id": 90, "snapshot_digest": scope["revision_snapshot_digest"]}}}
+        chart["url_digest"] = _digest(chart["image_url"])
+        chart["chart_digest"] = _digest(chart)
+        chart["hmac"] = salted_hmac("catalog-choice-chart.v1", chart["chart_digest"], algorithm="sha256").hexdigest()
+        effect = {"group": "template", "kind": "image", "payload": payload,
+            "projection_metadata": {"catalog_chart": chart, "prepared_payload_digest": _digest(payload)}}
+        return plan, effect
+
+    def test_explicit_chart_request_has_own_obligation_across_languages(self):
+        for text in ("Скиньте розмірну сітку", "Пришлите размерную сетку", "Send the size chart",
+            "Покажіть таблицю розмірів classic футболки"):
+            with self.subTest(text=text):
+                plan, _ = self.plan_and_effect(text)
+                self.assertIn("info:size_chart", [row["kind"] for row in plan.obligations])
+                self.assertNotIn("info:presentation", [row["kind"] for row in plan.obligations])
+                self.assertFalse(plan.coverage(response("Ось розмірна сітка."))["covered"])
+                self.assertFalse(plan.coverage(response("Ось сітка.", show_products=[112]))["covered"])
+
+    def test_only_authenticated_current_native_chart_covers_local_request(self):
+        plan, effect = self.plan_and_effect()
+        covered = plan.coverage(response("Ось розмірна сітка."), local=True,
+            catalog_media_evidence={"native_size_chart": effect})
+        self.assertEqual(covered["covered"], ["20:info:size_chart"])
+        self.assertEqual(covered["disposition"], "complete")
+        for key in ("snapshot", "source", "client_epoch", "focus", "payload", "signature"):
+            with self.subTest(key=key):
+                changed_plan, changed = plan, deepcopy(effect)
+                if key in {"snapshot", "source", "client_epoch"}:
+                    field, value = {"snapshot": ("revision_snapshot_digest", "f" * 64),
+                        "source": ("source_message_ids", [21]), "client_epoch": ("client_epoch", 13)}[key]
+                    changed_plan = replace(plan, configuration={**plan.configuration,
+                        "native_chart_scope": {**plan.configuration["native_chart_scope"], field: value}})
+                elif key == "focus":
+                    changed_plan = replace(plan, product_focus={**FOCUS, "proof_digest": "f" * 64})
+                elif key == "payload":
+                    changed["payload"]["recipient"]["id"] = "foreign"
+                else:
+                    changed["projection_metadata"]["catalog_chart"]["hmac"] = "forged"
+                self.assertEqual(changed_plan.coverage(response("Ось сітка."), local=True,
+                    catalog_media_evidence={"native_size_chart": changed})["covered"], [])
+
+    def test_native_chart_does_not_close_mixed_price_or_purchase_obligations(self):
+        for text, remaining in (("Скиньте розмірну сітку. Скільки коштує?", "info:price"),
+            ("Скиньте розмірну сітку. Хочу замовити", "purchase_requested")):
+            with self.subTest(text=text):
+                plan, effect = self.plan_and_effect(text)
+                covered = plan.coverage(response("Ось розмірна сітка."), local=True,
+                    catalog_media_evidence={"native_size_chart": effect})
+                self.assertIn("20:info:size_chart", covered["covered"])
+                self.assertIn("20:" + remaining, covered["remaining"])
+                self.assertEqual(covered["disposition"], "recovery")
