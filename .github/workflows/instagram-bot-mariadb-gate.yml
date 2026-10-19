@@ -60,9 +60,20 @@ permissions:
   contents: read
 
 jobs:
-  lifecycle:
+  suites:
+    name: MariaDB (${{ matrix.suite }})
     timeout-minutes: 30
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        suite:
+          - lifecycle
+          - checkout-concurrency
+          - follow-ugc-concurrency
+          - lease-concurrency
+          - conversion-context
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:67873d30a17f6a9c331f06363b2fa15f38abca415529966d67c84f87f82439fe
@@ -103,7 +114,7 @@ jobs:
           TEST_MARIADB_HOST: 127.0.0.1
           TEST_MARIADB_PORT: "3306"
         run: python -m unittest management.tests_test_settings_mariadb -v
-      - name: Run disposable MariaDB lifecycle gate
+      - name: Run disposable MariaDB suite
         env:
           MARIADB_HOST: 127.0.0.1
           MARIADB_PORT: "3306"
@@ -111,53 +122,24 @@ jobs:
           MARIADB_ADMIN_PASSWORD: gate-root-password
         run: |
           set -o pipefail
-          python scripts/run_mariadb_gate.py --server-mode external --suite lifecycle 2>&1 | tee mariadb-gate-evidence.txt
-      - name: Run disposable MariaDB checkout concurrency gate
-        env:
-          MARIADB_HOST: 127.0.0.1
-          MARIADB_PORT: "3306"
-          MARIADB_ADMIN_USER: root
-          MARIADB_ADMIN_PASSWORD: gate-root-password
-        run: |
-          set -o pipefail
-          python scripts/run_mariadb_gate.py --server-mode external --suite checkout-concurrency 2>&1 | tee mariadb-checkout-concurrency-evidence.txt
-      - name: Run disposable MariaDB follow and UGC concurrency gate
-        env:
-          MARIADB_HOST: 127.0.0.1
-          MARIADB_PORT: "3306"
-          MARIADB_ADMIN_USER: root
-          MARIADB_ADMIN_PASSWORD: gate-root-password
-        run: |
-          set -o pipefail
-          python scripts/run_mariadb_gate.py --server-mode external --suite follow-ugc-concurrency 2>&1 | tee mariadb-follow-ugc-evidence.txt
-      - name: Run disposable MariaDB lease concurrency gate
-        env:
-          MARIADB_HOST: 127.0.0.1
-          MARIADB_PORT: "3306"
-          MARIADB_ADMIN_USER: root
-          MARIADB_ADMIN_PASSWORD: gate-root-password
-        run: |
-          set -o pipefail
-          python scripts/run_mariadb_gate.py --server-mode external --suite lease-concurrency 2>&1 | tee mariadb-lease-concurrency-evidence.txt
-      - name: Run disposable MariaDB conversion context gate
-        env:
-          MARIADB_HOST: 127.0.0.1
-          MARIADB_PORT: "3306"
-          MARIADB_ADMIN_USER: root
-          MARIADB_ADMIN_PASSWORD: gate-root-password
-        run: |
-          set -o pipefail
-          python scripts/run_mariadb_gate.py --server-mode external --suite conversion-context 2>&1 | tee mariadb-conversion-context-evidence.txt
+          python scripts/run_mariadb_gate.py --server-mode external --suite "${{ matrix.suite }}" 2>&1 | tee "mariadb-${{ matrix.suite }}-evidence.txt"
       - name: Upload sanitized MariaDB gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mariadb-gate-evidence
-          path: |
-            mariadb-gate-evidence.txt
-            mariadb-checkout-concurrency-evidence.txt
-            mariadb-follow-ugc-evidence.txt
-            mariadb-lease-concurrency-evidence.txt
-            mariadb-conversion-context-evidence.txt
+          name: mariadb-${{ matrix.suite }}-evidence
+          path: mariadb-${{ matrix.suite }}-evidence.txt
           if-no-files-found: warn
           retention-days: 7
+
+  lifecycle:
+    name: lifecycle
+    needs: [suites]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every MariaDB suite to pass
+        env:
+          SUITES_RESULT: ${{ needs.suites.result }}
+        run: test "$SUITES_RESULT" = success
