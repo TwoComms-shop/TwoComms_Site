@@ -1,7 +1,9 @@
 import io
+import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -966,6 +968,71 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
                         admin.verify_release_schema(
                             "test_twocomms_ig_0123456789ab"
                         )
+
+    def test_follow_ugc_delivery_contract_matches_latest_migration_state(self):
+        environment = {
+            name: value for name, value in os.environ.items()
+            if not name.startswith("DB_") and name != "DATABASE_URL"
+        }
+        environment.update({
+            "DJANGO_SETTINGS_MODULE": "test_settings_migrations_non_dtf",
+            "PYTHONPATH": str(PROJECT_ROOT / "twocomms"),
+            "SECRET_KEY": "migration-state-contract-only",
+        })
+        statement = """
+import json, django
+django.setup()
+from django.db.migrations.loader import MigrationLoader
+loader = MigrationLoader(None)
+state = loader.project_state()
+model = state.apps.get_model('management', 'IgUgcRewardDelivery')
+print(json.dumps({
+    'reward_unique': model._meta.get_field('reward').unique,
+    'columns': [model._meta.get_field(name).column for constraint in model._meta.constraints
+                if constraint.name == 'ig_ugc_delivery_generation' for name in constraint.fields],
+    'has_0227': ('management', '0227_ugc_review_delivery_generations') in loader.graph.nodes,
+}))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", statement], cwd=PROJECT_ROOT / "twocomms",
+            env=environment, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertTrue(state["has_0227"])
+        self.assertFalse(state["reward_unique"])
+        self.assertEqual(state["columns"], ["reward_id", "generation"])
+        self.assertEqual(
+            self.runner._FOLLOW_UGC_UNIQUE_COLUMNS["management_igugcrewarddelivery"],
+            {tuple(state["columns"])},
+        )
+
+    def test_follow_ugc_delivery_rejects_missing_or_wrong_unique_contract(self):
+        table = "management_igugcrewarddelivery"
+        for label, delivery_rows in (
+            ("missing", []),
+            ("old_reward_only", [(table, "old_reward_unique", "reward_id")]),
+            ("generation_only", [(table, "wrong_unique", "generation")]),
+            ("reordered", [(table, "wrong_order", "generation,reward_id")]),
+            ("non_unique_only", []),
+        ):
+            with self.subTest(label=label):
+                admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+                unique_rows = [
+                    (other, "test_unique", ",".join(columns))
+                    for other, columns_sets in self.runner._FOLLOW_UGC_UNIQUE_COLUMNS.items()
+                    if other != table for columns in columns_sets
+                ] + delivery_rows
+                with (
+                    mock.patch.object(admin, "_query_one", side_effect=[(1,), (1,)]),
+                    mock.patch.object(admin, "_query_all", side_effect=[
+                        [(name, "InnoDB") for name in self.runner._FOLLOW_UGC_TABLES], unique_rows,
+                    ]) as query,
+                    self.assertRaisesRegex(self.runner.GateError,
+                        "table=management_igugcrewarddelivery expected_columns=reward_id,generation"),
+                ):
+                    admin.verify_follow_ugc_schema("test_twocomms_ig_0123456789ab")
+                self.assertIn("NON_UNIQUE = 0", query.call_args_list[1].args[0])
 
     def test_admin_follow_ugc_schema_proves_engines_indexes_and_lifecycle(self):
         admin = self.runner.AdminClient(

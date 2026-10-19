@@ -173,7 +173,7 @@ _FOLLOW_UGC_UNIQUE_COLUMNS = {
         ("identity_digest",),
         ("reward_id",),
     },
-    "management_igugcrewarddelivery": {("reward_id",)},
+    "management_igugcrewarddelivery": {("reward_id", "generation")},
     "management_igpaymentfollowpreparation": {("lifecycle_event_id",)},
     "storefront_promocodeguestusage": {
         ("promo_code_id",),
@@ -962,8 +962,15 @@ class AdminClient:
                 tuple(str(columns).split(","))
             )
         for table, expected in _FOLLOW_UGC_UNIQUE_COLUMNS.items():
-            if not expected.issubset(actual_unique.get(table, set())):
-                raise GateError("MariaDB follow/UGC unique index is missing")
+            missing = expected - actual_unique.get(table, set())
+            if missing:
+                # Identities come only from the bounded release contract, never
+                # database values or exception text.
+                columns = ",".join(sorted(missing)[0])
+                raise GateError(
+                    "MariaDB follow/UGC unique index is missing: "
+                    f"table={table} expected_columns={columns}"
+                )
 
         foreign_key_rows = self._query_all(
             "SELECT TABLE_NAME, CONSTRAINT_NAME "
