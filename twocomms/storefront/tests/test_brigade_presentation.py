@@ -1,4 +1,8 @@
+import json
+import re
+
 from django.db import connection
+from django.template.loader import render_to_string
 from django.test import RequestFactory, TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils.translation import override
@@ -8,6 +12,7 @@ from product_catalog.services import product_option_context
 from productcolors.models import Color, ProductColorVariant
 from storefront.models import Category, Product, ProductFitOption
 from storefront.services.brigade_presentation import brigade_copy
+from storefront.services.garment_bundle_presentation import bundle_copy
 from storefront.services.brigade_commerce import get_product_brigade_policy
 from storefront.templatetags.brigade_tags import brigade_product_offer
 
@@ -97,3 +102,31 @@ class FitPricePresentationTests(TestCase):
                 self.assertIn(marker, words['rules'])
                 self.assertTrue(words['full_payment'])
                 self.assertEqual(set(words), set(brigade_copy('uk')))
+
+    def test_bundle_shipping_badge_and_dialog_terms_require_full_payment_in_all_languages(self):
+        offer = {'total_saving': 300, 'same_print_saving': 300, 'other_print_saving': 250,
+                 'category_url': '/catalog/hoodie/', 'kind': 'tee'}
+        for language, full_payment, cod in (
+            ('uk', 'лише за повної оплати', 'післяплати'),
+            ('ru', 'только при полной оплате', 'наложенном платеже'),
+            ('en', 'only with full payment', 'cash on delivery'),
+        ):
+            with self.subTest(language=language), override(language):
+                rendered = render_to_string('partials/garment_bundle_offer.html',
+                    {'garment_offer': offer, 'bundle_copy': bundle_copy()})
+                badge = re.search(r'<div class="garment-offer__shipping".*?</div>', rendered, re.S).group()
+                self.assertIn('3000', badge)
+                self.assertIn(full_payment, badge)
+                terms = re.search(r'<details class="garment-offer__terms">.*?</details>', rendered, re.S).group()
+                self.assertIn(full_payment, terms)
+                self.assertIn(cod, terms)
+                # The actual dialog payload supplies the same explanation to
+                # garment-bundle.js when the chooser opens.
+                dialog = render_to_string('partials/garment_bundle_dialog.html')
+                payload = json.loads(re.search(
+                    r'<script id="garment-bundle-copy" type="application/json">(.*?)</script>', dialog, re.S,
+                ).group(1))
+                for key in ('shipping_all_items', 'shipping_threshold_note',
+                            'shipping_after_discount', 'shipping_separate'):
+                    self.assertIn(full_payment, payload[key])
+                self.assertIn(cod, payload['shipping_separate'])
