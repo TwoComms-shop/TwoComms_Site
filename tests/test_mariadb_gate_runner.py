@@ -208,25 +208,28 @@ class MariaDbGateRunnerTests(unittest.TestCase):
         connection = mock.MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
         cursor.description = [(name,) for name in ("id", "slug", "name", "parent_id")]
-        original = (7, "veteran-fund", "Captured original category", None)
-        cursor.fetchone.return_value = original
+        original = (7, "veteran-fund", "Captured original category", 3)
+        parent = (3, "news", "Captured original parent", None)
+        cursor.fetchone.side_effect = [original, parent]
         cursor.fetchall.return_value = []
         with mock.patch.object(admin, "_connect", return_value=connection):
             admin.capture_migration_prerequisites(database)
             self.assertEqual(admin.restore_migration_prerequisites(database), "restored_original")
-        insert = cursor.execute.call_args_list[-1]
-        self.assertIn(f"INSERT INTO `{database}`.`storefront_blogcategory`", insert.args[0])
-        self.assertEqual(insert.args[1], original)
-        self.assertNotIn(original[2], insert.args[0])
+        inserts = cursor.execute.call_args_list[-2:]
+        for insert, expected in zip(inserts, (parent, original), strict=True):
+            self.assertIn(f"INSERT INTO `{database}`.`storefront_blogcategory`", insert.args[0])
+            self.assertEqual(insert.args[1], expected)
+            self.assertNotIn(expected[2], insert.args[0])
+        connection.commit.assert_called_once()
         self.assertEqual(connection.close.call_count, 2)
 
     def test_prerequisite_restore_retains_present_identity_without_update(self):
         database = "test_twocomms_ig_0123456789ab"
         admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
-        admin._migration_prerequisite_snapshot = (database, ("id", "slug"), (7, "veteran-fund"))
+        admin._migration_prerequisite_snapshot = (database, ("id", "slug", "parent_id"), ((7, "veteran-fund", None),))
         connection = mock.MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [(7, "veteran-fund")]
+        cursor.fetchall.return_value = [(7, "veteran-fund", None)]
         with mock.patch.object(admin, "_connect", return_value=connection):
             self.assertEqual(admin.restore_migration_prerequisites(database), "retained")
         self.assertEqual(cursor.execute.call_count, 1)
@@ -235,19 +238,20 @@ class MariaDbGateRunnerTests(unittest.TestCase):
     def test_prerequisite_restore_rejects_conflicting_fixture_identity(self):
         database = "test_twocomms_ig_0123456789ab"
         admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
-        admin._migration_prerequisite_snapshot = (database, ("id", "slug"), (7, "veteran-fund"))
+        admin._migration_prerequisite_snapshot = (database, ("id", "slug", "parent_id"), ((7, "veteran-fund", None),))
         connection = mock.MagicMock()
         cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [(7, "another-fixture")]
+        cursor.fetchall.return_value = [(7, "another-fixture", None)]
         with mock.patch.object(admin, "_connect", return_value=connection):
             with self.assertRaisesRegex(self.runner.GateError, "identity conflicts"):
                 admin.restore_migration_prerequisites(database)
         self.assertEqual(cursor.execute.call_count, 1)
+        connection.rollback.assert_called_once()
 
     def test_prerequisite_snapshot_cannot_cross_owned_schemas_or_production(self):
         database = "test_twocomms_ig_0123456789ab"
         admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
-        admin._migration_prerequisite_snapshot = (database, ("id", "slug"), (7, "veteran-fund"))
+        admin._migration_prerequisite_snapshot = (database, ("id", "slug", "parent_id"), ((7, "veteran-fund", None),))
         with mock.patch.object(admin, "_connect") as connect:
             for target in ("production", "test_twocomms_ig_abcdef012345"):
                 with self.assertRaises(self.runner.GateError):
@@ -266,6 +270,100 @@ class MariaDbGateRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(self.runner.GateError, "original migration prerequisite"):
                 admin.capture_migration_prerequisites("test_twocomms_ig_0123456789ab")
         self.assertEqual(cursor.execute.call_count, 1)
+
+    def test_original_prerequisite_ancestry_rejects_missing_cycle_and_depth(self):
+        for ancestors, message, bound in (
+            ([(7, "veteran-fund", 3), None], "ancestor is missing", 16),
+            ([(7, "veteran-fund", 3), (3, "news", 7)], "contains a cycle", 16),
+            ([(7, "veteran-fund", 3), (3, "news", 1)], "depth bound", 2),
+        ):
+            admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+            connection = mock.MagicMock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.description = [("id",), ("slug",), ("parent_id",)]
+            cursor.fetchone.side_effect = ancestors
+            with mock.patch.object(admin, "_connect", return_value=connection), \
+                 mock.patch.object(self.runner, "MAX_PREREQUISITE_CATEGORY_DEPTH", bound):
+                with self.assertRaisesRegex(self.runner.GateError, message):
+                    admin.capture_migration_prerequisites("test_twocomms_ig_0123456789ab")
+            self.assertIsNone(admin._migration_prerequisite_snapshot)
+            self.assertTrue(all(call.args[0].startswith("SELECT") for call in cursor.execute.call_args_list))
+
+    def test_prerequisite_restore_preflights_every_identity_before_inserting_any_row(self):
+        database = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        admin._migration_prerequisite_snapshot = (
+            database, ("id", "slug", "parent_id"), ((3, "news", None), (7, "veteran-fund", 3)),
+        )
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.side_effect = [[], [(7, "conflicting-fixture", None)]]
+        with mock.patch.object(admin, "_connect", return_value=connection):
+            with self.assertRaisesRegex(self.runner.GateError, "identity conflicts"):
+                admin.restore_migration_prerequisites(database)
+        self.assertTrue(all(call.args[0].startswith("SELECT") for call in cursor.execute.call_args_list))
+        connection.rollback.assert_called_once()
+        connection.commit.assert_not_called()
+
+    def test_prerequisite_restore_does_not_overwrite_present_original_parent(self):
+        database = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        child = (7, "veteran-fund", 3)
+        admin._migration_prerequisite_snapshot = (
+            database, ("id", "slug", "parent_id"), ((3, "news", None), child),
+        )
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.side_effect = [[(3, "news", None)], []]
+        with mock.patch.object(admin, "_connect", return_value=connection):
+            self.assertEqual(admin.restore_migration_prerequisites(database), "restored_original")
+        inserts = [call for call in cursor.execute.call_args_list if call.args[0].startswith("INSERT")]
+        self.assertEqual(len(inserts), 1)
+        self.assertEqual(inserts[0].args[1], child)
+
+    def test_safe_error_identity_never_renders_messages_rows_or_dynamic_names(self):
+        error_type = type("IntegrityError", (Exception,), {})
+        secret = "password=provider-secret customer=Olena row=(7,private)"
+        error = error_type(1452, secret)
+        rendered = self.runner._safe_error_identity(stage="restore_migration_prerequisites", error=error)
+        self.assertEqual(rendered, "MariaDB gate exception: stage=restore_migration_prerequisites "
+                         "class=IntegrityError database_errno=1452\n")
+        dynamic = type("SensitiveCustomerError", (Exception,), {})(secret)
+        rendered += self.runner._safe_error_identity(stage=secret, error=dynamic)
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn("SensitiveCustomerError", rendered)
+        self.assertIn("stage=unknown class=unclassified_exception", rendered)
+        self.assertNotIn("database_errno", self.runner._safe_error_identity(stage="test_suite", error=RuntimeError(1452)))
+
+    def test_admin_error_diagnostic_keeps_primary_exception_and_cleanup_without_secrets(self):
+        error_type = type("IntegrityError", (Exception,), {})
+        primary = error_type(1452, "password=provider-secret customer=Olena private-row")
+        admin = FakeAdmin()
+        evidence = io.StringIO()
+        with mock.patch.object(admin, "restore_migration_prerequisites", side_effect=primary):
+            with self.assertRaises(self.runner.GateError) as caught:
+                self.runner.run_gate(server_mode="external", admin=admin, command_runner=FakeCommandRunner(),
+                    project_root=PROJECT_ROOT, environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=evidence)
+        self.assertIs(caught.exception.primary_error, primary)
+        self.assertIn("stage=restore_migration_prerequisites class=IntegrityError database_errno=1452", evidence.getvalue())
+        for private in ("provider-secret", "root-secret", "Olena", "private-row"):
+            self.assertNotIn(private, evidence.getvalue())
+        self.assertEqual([call[0] for call in admin.calls[-4:]],
+                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+
+    def test_command_runner_decode_error_is_safely_distinguished_from_test_failure(self):
+        command = FakeCommandRunner()
+        admin, evidence = FakeAdmin(), io.StringIO()
+        def decode_failure(args, **kwargs):
+            if "test" in args:
+                raise UnicodeDecodeError("utf-8", b"\xffprivate-row", 0, 1, "provider-secret")
+            return command(args, **kwargs)
+        with self.assertRaises(self.runner.GateError):
+            self.runner.run_gate(server_mode="external", admin=admin, command_runner=decode_failure,
+                project_root=PROJECT_ROOT, environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=evidence)
+        self.assertIn("stage=test_suite class=UnicodeDecodeError", evidence.getvalue())
+        self.assertNotIn("provider-secret", evidence.getvalue())
+        self.assertNotIn("private-row", evidence.getvalue())
 
     def test_gate_restoration_failure_still_cleans_generated_namespace(self):
         admin = FakeAdmin(fail_at="restore_migration_prerequisites")

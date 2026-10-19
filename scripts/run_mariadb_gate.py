@@ -78,6 +78,25 @@ PRODUCTION_ENV_NAMES = {
     "DB_PORT_DTF",
 }
 MAX_FAILURE_SUMMARY_CHARS = 2048
+MAX_PREREQUISITE_CATEGORY_DEPTH = 16
+_SAFE_GATE_STAGES = frozenset({
+    "setup", "review_write_freeze_marker", "server_identity", "namespace_ownership",
+    "create_database", "create_user", "grant_schema", "pre_migrate_storefront",
+    "pre_migrate_reviews", "stage_warning_contract", "capture_migration_prerequisites",
+    "test_suite", "restore_migration_prerequisites", "reverse_reviews", "reverse_storefront",
+    "verify_warning_reverse", "reapply_migrations", "database_check", "classify_warnings",
+    "verify_release_schema", "verify_warning_contract", "verify_follow_ugc_schema", "cleanup",
+})
+_SAFE_EXCEPTION_NAMES = frozenset({
+    "GateError", "RuntimeError", "ValueError", "TypeError", "KeyError", "AttributeError",
+    "UnicodeDecodeError", "UnicodeEncodeError", "ImportError", "ModuleNotFoundError",
+    "OSError", "FileNotFoundError", "PermissionError", "TimeoutError", "AssertionError",
+    "NotImplementedError", "KeyboardInterrupt", "MemoryError", "OverflowError", "SystemExit",
+    "ConnectionError", "BrokenPipeError", "InterruptedError", "IntegrityError", "OperationalError",
+    "ProgrammingError", "DatabaseError", "InterfaceError", "DataError", "InternalError",
+    "NotSupportedError", "Error", "Warning", "TimeoutExpired", "CalledProcessError",
+    "SubprocessError", "JSONDecodeError", "ImproperlyConfigured", "CommandError", "Exception",
+})
 REVIEW_WRITE_FREEZE_MARKER_BYTES = b"review-write-freeze-v1\n"
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _TEST_RESULT_RE = re.compile(
@@ -189,6 +208,23 @@ class GateError(RuntimeError):
             message = f"{message}: cleanup_error=exception"
         super().__init__(message)
         self.primary_error = primary_error
+
+
+def _safe_error_identity(*, stage: str, error: BaseException) -> str:
+    """Never render exception text, arguments, arbitrary class names or DB rows."""
+    for _ in range(4):
+        if not isinstance(error, GateError) or error.primary_error is None:
+            break
+        error = error.primary_error
+    name = type(error).__name__
+    name = name if name in _SAFE_EXCEPTION_NAMES else "unclassified_exception"
+    stage = stage if stage in _SAFE_GATE_STAGES else "unknown"
+    database_names = {"IntegrityError", "OperationalError", "ProgrammingError", "DatabaseError",
+                      "InterfaceError", "DataError", "InternalError", "NotSupportedError"}
+    errno = error.args[0] if name in database_names and error.args else None
+    numeric_errno = errno if type(errno) is int and 1 <= errno <= 65535 else None
+    return (f"MariaDB gate exception: stage={stage} class={name}"
+            + (f" database_errno={numeric_errno}" if numeric_errno is not None else "") + "\n")
 
 
 def classify_database_check_warnings(
@@ -516,9 +552,10 @@ class AdminClient:
         return {"warning_contract_engines": "3_myisam"}
 
     def capture_migration_prerequisites(self, database: str) -> None:
-        """Retain the original data-migration prerequisite across test flushes."""
+        """Capture the original prerequisite and its bounded original ancestry."""
         if not re.fullmatch(r"test_twocomms_ig_[a-f0-9]{12}", database):
             raise GateError("MariaDB prerequisite schema name is not gate-owned")
+        self._migration_prerequisite_snapshot = None
         connection = self._connect()
         try:
             with connection.cursor() as cursor:
@@ -528,44 +565,80 @@ class AdminClient:
                 )
                 row = cursor.fetchone()
                 columns = tuple(str(column[0]) for column in cursor.description)
+                if (not row or not {"id", "slug", "parent_id"}.issubset(columns)
+                        or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in columns)):
+                    raise GateError("MariaDB original migration prerequisite is missing or invalid")
+                chain = []
+                seen = set()
+                while row is not None:
+                    snapshot = dict(zip(columns, row, strict=True))
+                    identity, parent = snapshot["id"], snapshot["parent_id"]
+                    if (type(identity) is not int or identity <= 0
+                            or not isinstance(snapshot["slug"], str) or not snapshot["slug"]
+                            or (parent is not None and (type(parent) is not int or parent <= 0))):
+                        raise GateError("MariaDB original migration prerequisite identity is invalid")
+                    if not chain and snapshot["slug"] != "veteran-fund":
+                        raise GateError("MariaDB original migration prerequisite identity is invalid")
+                    if identity in seen:
+                        raise GateError("MariaDB prerequisite ancestry contains a cycle")
+                    seen.add(identity)
+                    chain.append(tuple(row))
+                    if parent is None:
+                        break
+                    if parent in seen:
+                        raise GateError("MariaDB prerequisite ancestry contains a cycle")
+                    if len(chain) >= MAX_PREREQUISITE_CATEGORY_DEPTH:
+                        raise GateError("MariaDB prerequisite ancestry exceeds the depth bound")
+                    cursor.execute(
+                        f"SELECT * FROM `{database}`.`storefront_blogcategory` WHERE id=%s", (parent,),
+                    )
+                    row = cursor.fetchone()
+                    if row is None or row[columns.index("id")] != parent:
+                        raise GateError("MariaDB original prerequisite ancestor is missing")
         finally:
             connection.close()
-        if not row or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in columns):
-            raise GateError("MariaDB original migration prerequisite is missing or invalid")
-        snapshot = dict(zip(columns, row, strict=True))
-        if snapshot.get("slug") != "veteran-fund" or not isinstance(snapshot.get("id"), int):
-            raise GateError("MariaDB original migration prerequisite identity is invalid")
-        self._migration_prerequisite_snapshot = (database, columns, tuple(row))
+        self._migration_prerequisite_snapshot = (database, columns, tuple(reversed(chain)))
 
     def restore_migration_prerequisites(self, database: str) -> str:
-        """Restore only a missing original row in this exact generated schema."""
+        """Restore missing original ancestors parent-first; never replace fixtures."""
         if not re.fullmatch(r"test_twocomms_ig_[a-f0-9]{12}", database):
             raise GateError("MariaDB prerequisite schema name is not gate-owned")
         captured = getattr(self, "_migration_prerequisite_snapshot", None)
         if not captured or captured[0] != database:
             raise GateError("MariaDB prerequisite snapshot does not belong to this schema")
-        _database, columns, row = captured
-        snapshot = dict(zip(columns, row, strict=True))
+        _database, columns, rows = captured
         connection = self._connect()
         try:
+            connection.begin()
             with connection.cursor() as cursor:
-                cursor.execute(
-                    f"SELECT id,slug FROM `{database}`.`storefront_blogcategory` "
-                    "WHERE id=%s OR slug=%s",
-                    (snapshot["id"], snapshot["slug"]),
-                )
-                existing = list(cursor.fetchall())
-                if existing:
-                    if existing != [(snapshot["id"], snapshot["slug"])]:
-                        raise GateError("MariaDB prerequisite identity conflicts with a test fixture")
-                    return "retained"
+                missing = []
+                for row in rows:
+                    snapshot = dict(zip(columns, row, strict=True))
+                    cursor.execute(
+                        f"SELECT id,slug,parent_id FROM `{database}`.`storefront_blogcategory` "
+                        "WHERE id=%s OR slug=%s FOR UPDATE", (snapshot["id"], snapshot["slug"]),
+                    )
+                    existing = list(cursor.fetchall())
+                    if existing:
+                        if existing != [(snapshot["id"], snapshot["slug"], snapshot["parent_id"])]:
+                            raise GateError("MariaDB prerequisite identity conflicts with a test fixture")
+                    else:
+                        missing.append(row)
                 names = ",".join(f"`{name}`" for name in columns)
                 placeholders = ",".join(["%s"] * len(columns))
-                cursor.execute(
-                    f"INSERT INTO `{database}`.`storefront_blogcategory` ({names}) VALUES ({placeholders})",
-                    row,
-                )
-                return "restored_original"
+                for row in missing:
+                    cursor.execute(
+                        f"INSERT INTO `{database}`.`storefront_blogcategory` ({names}) VALUES ({placeholders})", row,
+                    )
+            connection.commit()
+            return "restored_original" if missing else "retained"
+        except BaseException as exc:
+            try:
+                connection.rollback()
+            except BaseException as rollback_error:
+                raise GateError("MariaDB prerequisite restoration rollback failed", primary_error=exc,
+                                cleanup_errors=[rollback_error]) from exc
+            raise
         finally:
             connection.close()
 
@@ -1308,8 +1381,11 @@ def run_gate(
     version = version_comment = ""
     database_warning_count = 0
     marker_directory = None
+    stage = "setup"
     try:
+        stage = "review_write_freeze_marker"
         marker_directory, review_write_freeze_marker = _create_review_write_freeze_marker()
+        stage = "server_identity"
         try:
             version, version_comment = _validate_server_identity(admin.server_identity())
         except GateError:
@@ -1319,13 +1395,17 @@ def run_gate(
         ensure_namespace_absent = getattr(admin, "ensure_namespace_absent", None)
         if ensure_namespace_absent is None:
             raise GateError("MariaDB admin client cannot prove generated namespace ownership")
+        stage = "namespace_ownership"
         ensure_namespace_absent(database, username)
         # The absence proof establishes ownership before CREATE so an ambiguous
         # post-CREATE transport failure is still cleaned up safely.
         database_attempted = True
         user_attempted = True
+        stage = "create_database"
         admin.create_database(database)
+        stage = "create_user"
         admin.create_user(username, password)
+        stage = "grant_schema"
         admin.grant_schema(username, database)
         child_env = _child_environment(
             source, database=database, username=username, password=password,
@@ -1336,6 +1416,7 @@ def run_gate(
             ("storefront", "0096"),
             ("reviews", "0001"),
         ):
+            stage = f"pre_migrate_{app}"
             pre_migrate_command = [
                 sys.executable,
                 str(manage_path),
@@ -1373,6 +1454,7 @@ def run_gate(
         )
         if prepare_warning_contract is None:
             raise GateError("MariaDB admin client cannot stage warning contract")
+        stage = "stage_warning_contract"
         preparation_evidence = prepare_warning_contract(database)
         output.write(
             "MariaDB warning contract staging: "
@@ -1381,6 +1463,7 @@ def run_gate(
         capture_prerequisites = getattr(admin, "capture_migration_prerequisites", None)
         if capture_prerequisites is None:
             raise GateError("MariaDB admin client cannot capture migration prerequisites")
+        stage = "capture_migration_prerequisites"
         capture_prerequisites(database)
 
         command = [
@@ -1392,6 +1475,7 @@ def run_gate(
             "--noinput",
             "--keepdb",
         ]
+        stage = "test_suite"
         completed = command_runner(
             command,
             cwd=str(project_root / "twocomms"),
@@ -1408,6 +1492,7 @@ def run_gate(
         restore_prerequisites = getattr(admin, "restore_migration_prerequisites", None)
         if restore_prerequisites is None:
             raise GateError("MariaDB admin client cannot restore migration prerequisites")
+        stage = "restore_migration_prerequisites"
         prerequisite_status = restore_prerequisites(database)
         output.write(f"MariaDB migration prerequisites: category={prerequisite_status}\n")
 
@@ -1415,6 +1500,7 @@ def run_gate(
             ("reviews", "0001"),
             ("storefront", "0096"),
         ):
+            stage = f"reverse_{app}"
             reverse_command = [
                 sys.executable,
                 str(manage_path),
@@ -1451,6 +1537,7 @@ def run_gate(
         )
         if verify_warning_reverse is None:
             raise GateError("MariaDB admin client cannot verify warning reverse")
+        stage = "verify_warning_reverse"
         reverse_evidence = verify_warning_reverse(database)
         output.write(
             "MariaDB warning contract reverse: "
@@ -1464,6 +1551,7 @@ def run_gate(
             "--settings=test_settings_mariadb",
             "--noinput",
         ]
+        stage = "reapply_migrations"
         reapply_completed = command_runner(
             reapply_command,
             cwd=str(project_root / "twocomms"),
@@ -1493,6 +1581,7 @@ def run_gate(
             "--database=default",
             "--fail-level=WARNING",
         ]
+        stage = "database_check"
         check_completed = command_runner(
             check_command,
             cwd=str(project_root / "twocomms"),
@@ -1512,6 +1601,7 @@ def run_gate(
                 f"database check command failed ({check_completed.returncode})"
             )
             raise primary_error
+        stage = "classify_warnings"
         warning_policy = classify_database_check_warnings(
             f"{check_completed.stdout}\n{check_completed.stderr}"
         )
@@ -1533,6 +1623,7 @@ def run_gate(
         verify_release_schema = getattr(admin, "verify_release_schema", None)
         if verify_release_schema is None:
             raise GateError("MariaDB admin client cannot verify release schema")
+        stage = "verify_release_schema"
         schema_evidence = verify_release_schema(database)
         output.write(
             "MariaDB schema proof: "
@@ -1545,6 +1636,7 @@ def run_gate(
         )
         if verify_warning_contract is None:
             raise GateError("MariaDB admin client cannot verify warning contract")
+        stage = "verify_warning_contract"
         warning_evidence = verify_warning_contract(database)
         output.write(
             "MariaDB warning contract proof: "
@@ -1559,6 +1651,7 @@ def run_gate(
             verify_follow_ugc_schema = getattr(admin, "verify_follow_ugc_schema", None)
             if verify_follow_ugc_schema is None:
                 raise GateError("MariaDB admin client cannot verify follow/UGC schema")
+            stage = "verify_follow_ugc_schema"
             feature_evidence = verify_follow_ugc_schema(database)
             output.write(
                 "MariaDB follow/UGC schema proof: "
@@ -1587,6 +1680,7 @@ def run_gate(
         }
     except BaseException as exc:
         primary_error = primary_error or exc
+        output.write(_safe_error_identity(stage=stage, error=primary_error))
     finally:
         if user_attempted:
             try:
@@ -1622,6 +1716,8 @@ def run_gate(
             except BaseException as exc:
                 cleanup_errors.append(exc)
         if cleanup_errors:
+            for cleanup_error in cleanup_errors:
+                output.write(_safe_error_identity(stage="cleanup", error=cleanup_error))
             if primary_error:
                 raise GateError(
                     "MariaDB gate failed and cleanup failed",
