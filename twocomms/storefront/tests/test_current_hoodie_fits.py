@@ -51,6 +51,7 @@ class CurrentHoodieFitAlignmentTests(TestCase):
         self.assertEqual(plan["mode"], "dry-run")
         self.assertEqual(len(plan["snapshot_hash"]), 64)
         self.assertEqual({row["product_id"] for row in plan["changes"]}, {102, 115})
+        self.assertEqual(plan["skipped"], [])
         self.assertFalse(any(query["sql"].lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE")) for query in queries))
         self.assertEqual(self._state(), before)
         stdout = StringIO()
@@ -110,13 +111,73 @@ class CurrentHoodieFitAlignmentTests(TestCase):
         before = self._state()
         with self.assertRaises(HoodieFitAlignmentError) as invalid:
             align_current_hoodie_fits(apply=True, expected_snapshot_hash=plan["snapshot_hash"])
-        self.assertEqual(invalid.exception.code, "hoodie_product_scope_changed")
+        self.assertEqual(invalid.exception.code, "hoodie_fit_cas_changed")
         self.assertEqual(self._state(), before)
         Product.objects.filter(pk=115).update(status="published")
+        Category.objects.filter(pk=self.category.pk).update(slug="wrong-category")
+        with self.assertRaises(HoodieFitAlignmentError) as invalid:
+            align_current_hoodie_fits()
+        self.assertEqual(invalid.exception.code, "hoodie_product_scope_changed")
+        Category.objects.filter(pk=self.category.pk).update(slug="hoodie")
         ProductFitOption.objects.filter(pk=68).update(is_active=False)
         with self.assertRaises(HoodieFitAlignmentError) as invalid:
             align_current_hoodie_fits()
         self.assertEqual(invalid.exception.code, "hoodie_fit_profile_changed")
+
+    def test_actual_published_102_draft_115_changes_only_published_flags_and_is_idempotent(self):
+        Product.objects.filter(pk=115).update(status="draft", title="чсчс")
+        # Even an inactive draft option must be preserved, never activated.
+        ProductFitOption.objects.filter(pk=66).update(is_active=False)
+        before = self._state()
+        plan = align_current_hoodie_fits()
+        skipped = [{"product_id": 115, "reason": "not_published", "status": "draft"}]
+        self.assertEqual(plan["skipped"], skipped)
+        self.assertEqual([row["product_id"] for row in plan["changes"]], [102])
+        self.assertEqual({row["product_id"]: row["status"] for row in plan["snapshot"]},
+                         {102: "published", 115: "draft"})
+        with self.captureOnCommitCallbacks(execute=True):
+            result = align_current_hoodie_fits(apply=True, expected_snapshot_hash=plan["snapshot_hash"])
+        self.assertEqual(result["skipped"], skipped)
+        self.assertEqual([row["product_id"] for row in result["changes"]], [102])
+        after = self._state()
+        for key in ("products", "orders", "items"):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual([row for row in after["fits"] if row["product_id"] == 115],
+                         [row for row in before["fits"] if row["product_id"] == 115])
+        self.assertFalse(ProductFitOption.objects.get(pk=67).is_active)
+        self.assertTrue(ProductFitOption.objects.get(pk=68).is_default)
+        replay_plan = align_current_hoodie_fits()
+        self.assertEqual(replay_plan["changes"], [])
+        self.assertEqual(replay_plan["skipped"], skipped)
+        replay = align_current_hoodie_fits(apply=True, expected_snapshot_hash=replay_plan["snapshot_hash"])
+        self.assertFalse(replay["changed"])
+        self.assertEqual(replay["skipped"], skipped)
+
+    def test_draft_becoming_published_after_preview_rejects_cas_without_fit_writes(self):
+        Product.objects.filter(pk=115).update(status="draft")
+        plan = align_current_hoodie_fits()
+        Product.objects.filter(pk=115).update(status="published")
+        before = self._state()
+        with self.assertRaises(HoodieFitAlignmentError) as changed:
+            align_current_hoodie_fits(apply=True, expected_snapshot_hash=plan["snapshot_hash"])
+        self.assertEqual(changed.exception.code, "hoodie_fit_cas_changed")
+        self.assertEqual(self._state(), before)
+
+    def test_unpublished_product_still_requires_exact_reviewed_identity_and_fit_rows(self):
+        Product.objects.filter(pk=115).update(status="draft")
+        ProductFitOption.objects.filter(pk=65).update(code="regular")
+        with self.assertRaises(HoodieFitAlignmentError) as invalid:
+            align_current_hoodie_fits()
+        self.assertEqual(invalid.exception.code, "hoodie_fit_profile_changed")
+        ProductFitOption.objects.filter(pk=65).update(code="classic")
+        Product.objects.filter(pk=115).update(status="unknown")
+        with self.assertRaises(HoodieFitAlignmentError) as invalid:
+            align_current_hoodie_fits()
+        self.assertEqual(invalid.exception.code, "hoodie_product_scope_changed")
+        Product.objects.filter(pk=115).delete()
+        with self.assertRaises(HoodieFitAlignmentError) as invalid:
+            align_current_hoodie_fits()
+        self.assertEqual(invalid.exception.code, "hoodie_product_missing")
 
     def test_mid_write_failure_rolls_back_flags_and_does_not_schedule_cache(self):
         before = self._state()
