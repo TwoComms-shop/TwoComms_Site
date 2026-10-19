@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -125,37 +125,50 @@ class UserPoints(models.Model):
     def __str__(self):
         return f'{self.user.username} - {self.points} балів'
 
+    @transaction.atomic
     def add_points(self, amount, reason=''):
         """Добавляет баллы пользователю"""
-        self.points += amount
-        self.total_earned += amount
-        self.save()
+        if not isinstance(amount, int) or amount < 0:
+            raise ValueError('points amount must be a nonnegative integer')
+        locked = type(self).objects.select_for_update().get(pk=self.pk)
+        locked.points += amount
+        locked.total_earned += amount
+        locked.save(update_fields=['points', 'total_earned', 'updated_at'])
 
         # Создаем запись в истории баллов
         PointsHistory.objects.create(
             user=self.user,
             points_change=amount,
-            balance_after=self.points,
+            balance_after=locked.points,
             reason=reason,
             change_type='earned'
         )
+        self.points, self.total_earned, self.total_spent = locked.points, locked.total_earned, locked.total_spent
+        self.updated_at = locked.updated_at
 
+    @transaction.atomic
     def spend_points(self, amount, reason=''):
         """Тратит баллы пользователя"""
-        if self.points >= amount:
-            self.points -= amount
-            self.total_spent += amount
-            self.save()
+        if not isinstance(amount, int) or amount < 0:
+            raise ValueError('points amount must be a nonnegative integer')
+        locked = type(self).objects.select_for_update().get(pk=self.pk)
+        if locked.points >= amount:
+            locked.points -= amount
+            locked.total_spent += amount
+            locked.save(update_fields=['points', 'total_spent', 'updated_at'])
 
             # Создаем запись в истории баллов
             PointsHistory.objects.create(
                 user=self.user,
                 points_change=-amount,
-                balance_after=self.points,
+                balance_after=locked.points,
                 reason=reason,
                 change_type='spent'
             )
+            self.points, self.total_earned, self.total_spent = locked.points, locked.total_earned, locked.total_spent
+            self.updated_at = locked.updated_at
             return True
+        self.points, self.total_earned, self.total_spent = locked.points, locked.total_earned, locked.total_spent
         return False
 
     @classmethod

@@ -430,6 +430,13 @@ def classify_media_items(
         if not isinstance(raw, dict) or not raw.get("url"):
             continue
         item = dict(raw)
+        from management.services.ig_media_manifest import is_ad_context_part
+        if is_ad_context_part(item):
+            item.update(ad_context_only=True, intent="advertising_context", actionable=False,
+                payment_evidence=False, catalog_match_allowed=False, purchase_context=False)
+            item.pop("receipt_facts", None)
+            result.append(item)
+            continue
         from management.services.ig_receipt_inspection import bound_receipt_inspection
         inspection = bound_receipt_inspection(item)
         if inspection:

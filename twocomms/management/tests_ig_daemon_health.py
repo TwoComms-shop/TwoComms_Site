@@ -459,7 +459,7 @@ class DaemonStatusUiContractTests(SimpleTestCase):
             / "bot.html"
         ).read_text(encoding="utf-8")
         stalled = template.index("st.state==='worker_stalled'")
-        green = template.index("else if(st.is_enabled){ txt='Працює'")
+        green = template.index("else if(st.is_enabled){ txt='Процес онлайн'")
         self.assertLess(stalled, green)
         self.assertIn("Обробник потребує уваги", template[stalled:green])
         self.assertIn("аналіз діалогів", template[stalled:green])

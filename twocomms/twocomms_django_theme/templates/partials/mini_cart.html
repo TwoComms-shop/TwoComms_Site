@@ -10,8 +10,8 @@
           <svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9h8M1 14h5M3 19h5"/><path d="M12 7h19v17H12zM31 13h7l7 7v4H31z"/><path d="M38 13v7h7M18 28a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM38 28a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg>
         </div>
         <div class="mini-cart-shipping__copy">
-          {% if shipping_free %}<strong>{{ bundle_copy.shipping_free }}</strong>{% else %}<strong data-shipping-remaining="{{ shipping_remaining|floatformat:0 }}">{% trans 'До безкоштовної доставки залишилось' %} <span class="mini-cart-shipping__remaining-value">{{ shipping_remaining|floatformat:0 }}</span> {% trans 'грн' %}</strong>{% endif %}
-          <span>{{ bundle_copy.shipping_after_discount }} — <b>{{ shipping_threshold|floatformat:0 }} {% trans 'грн' %}</b></span>
+          {% if shipping_free %}<strong>{{ bundle_copy.shipping_free }}</strong>{% elif shipping_conditional %}<strong>{{ shipping_conditional_summary }}</strong>{% else %}<strong data-shipping-remaining="{{ shipping_remaining|floatformat:0 }}">{% trans 'До безкоштовної доставки залишилось' %} <span class="mini-cart-shipping__remaining-value">{{ shipping_remaining|floatformat:0 }}</span> {% trans 'грн' %}</strong>{% endif %}
+          <span>{{ shipping_summary }}</span>
         </div>
 
         <div class="mini-cart-shipping__track mini-cart-shipping__progress" aria-hidden="true"><span class="mini-cart-shipping__bar" style="width: {{ shipping_progress }}%;"></span></div>
@@ -55,7 +55,7 @@
       <div class="mini-cart-summary"><span class="mini-cart-summary__icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m20 13-7 7-9-9V4h7l9 9Z"/><circle cx="8" cy="8" r="1.5"/></svg></span><span class="mini-cart-summary__label">{{ bundle_copy.payable }}</span><div class="mini-cart-summary__amount"><span class="mini-cart-summary__value">{{ approved_total|floatformat:2 }}</span><span class="mini-cart-summary__currency">{% trans 'грн' %}</span></div></div>
       <div class="mini-cart-status">
         {% if discount %}<span class="mini-cart-status__promo">{{ bundle_copy.promo_included }} <b>−{{ discount|floatformat:'-2' }}&nbsp;{% trans 'грн' %}</b></span>{% endif %}
-        <span class="mini-cart-status__shipping{% if shipping_free %} mini-cart-status__shipping--free{% endif %}">{% if shipping_free %}{{ bundle_copy.shipping_free }}{% else %}{{ bundle_copy.mini_shipping_paid }}{% endif %}</span>
+        <span class="mini-cart-status__shipping{% if shipping_free %} mini-cart-status__shipping--free{% endif %}">{% if shipping_free %}{{ bundle_copy.shipping_free }}{% elif shipping_conditional %}{{ shipping_conditional_summary }}{% else %}{{ bundle_copy.mini_shipping_paid }}{% endif %}</span>
       </div>
       {% if pending_custom_total %}<div class="mini-cart-custom-note">{{ bundle_copy.pending_estimate }}: {{ pending_custom_total|floatformat:2 }} {% trans 'грн' %}</div>{% endif %}
       <a href="{% url 'cart' %}" class="mini-cart-primary-cta"><span class="mini-cart-primary-cta__body"><span class="mini-cart-primary-cta__label">{% load garment_bundle_tags %}{% bundle_words as bundle_copy %}{{ bundle_copy.checkout }}</span></span><span class="mini-cart-primary-cta__arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h16m-7-7 7 7-7 7"/></svg></span></a>

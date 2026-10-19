@@ -632,6 +632,13 @@ def _memory_background_tick():
     return process_due_memory(limit=1, admission=_memory_background_admission)
 
 
+def _ad_metadata_background_tick():
+    """A bounded explicit read capability; disabled configuration performs no I/O."""
+    from management.services.ig_ad_metadata import drain_ad_metadata_imports
+
+    return drain_ad_metadata_imports(limit=1)
+
+
 def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generation=None):
     """Drain source observations and CRM analysis independently of reply enablement."""
     from management.services.bot_conversation_analysis import (
@@ -784,6 +791,14 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
                             _raise_disconnected_database(exc, lane="analysis_worker")
                             try:
                                 bot.log("error", "memory_background_tick", type(exc).__name__)
+                            except Exception:
+                                pass
+                        try:
+                            _ad_metadata_background_tick()
+                        except Exception as exc:
+                            _raise_disconnected_database(exc, lane="analysis_worker")
+                            try:
+                                bot.log("error", "ad_metadata_background_tick", type(exc).__name__)
                             except Exception:
                                 pass
                     if lane_owner is not None and not renew_owner(

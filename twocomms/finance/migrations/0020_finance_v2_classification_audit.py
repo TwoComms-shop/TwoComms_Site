@@ -1,38 +1,19 @@
 from decimal import Decimal
+from importlib import import_module
 
 import django.core.validators
 import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
-from django.db.migrations.operations.base import Operation
+
+_ledger = import_module('finance.migrations.0019_finance_v2_ledger')
 
 
-class SetSessionStorageEngine(Operation):
-    """Keep this migration compatible with legacy MyISAM finance tables."""
+class SetSessionStorageEngine(_ledger.SetSessionStorageEngine):
+    """Use the same parent compatibility rule for the audit tables."""
 
-    reduces_to_sql = False
-    reversible = True
-
-    def __init__(self, engine):
-        self.engine = engine
-
-    def state_forwards(self, app_label, state):
-        pass
-
-    def state_backwards(self, app_label, state):
-        pass
-
-    def database_forwards(self, app_label, schema_editor, from_state, to_state):
-        if schema_editor.connection.vendor == 'mysql':
-            schema_editor.execute(f'SET SESSION default_storage_engine={self.engine}')
-
-    def database_backwards(self, app_label, schema_editor, from_state, to_state):
-        if schema_editor.connection.vendor == 'mysql':
-            previous = 'INNODB' if self.engine.upper() == 'MYISAM' else 'MYISAM'
-            schema_editor.execute(f'SET SESSION default_storage_engine={previous}')
-
-    def describe(self):
-        return f'Set session storage engine to {self.engine}'
+    def compatible_engine(self, state, schema_editor):
+        return _ledger.compatible_finance_engine(state, schema_editor, Migration.operations)
 
 
 class Migration(migrations.Migration):

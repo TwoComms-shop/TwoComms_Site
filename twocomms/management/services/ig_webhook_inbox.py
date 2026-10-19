@@ -87,7 +87,10 @@ def _receipt(expected_owner: str, entry_owner: str, event: dict, *, kind: str, c
         raise WebhookRejected("invalid_participant", 400)
     message = event.get("message") if isinstance(event.get("message"), dict) else {}
     postback = event.get("postback") if isinstance(event.get("postback"), dict) else {}
-    if not message and not postback:
+    referral_only = (not message and not postback and isinstance(event.get("referral"), dict) and bool(event["referral"]))
+    if event.get("referral") is not None and not isinstance(event.get("referral"), dict):
+        raise WebhookRejected("invalid_referral_shape", 400)
+    if not message and not postback and not referral_only:
         return {
             "owner_id": entry_owner[:64], "decision": "rejected", "reason": "ignored_nonmessage",
             "event_key": _event_key(entry_owner, event, kind=kind, decision="rejected"),
@@ -108,8 +111,8 @@ def _receipt(expected_owner: str, entry_owner: str, event: dict, *, kind: str, c
         fragment_entry["messaging"] = [event]
     return {
         "owner_id": entry_owner[:64], "customer_igsid": (recipient_id if is_echo else sender_id)[:64] if owned else "", "decision": decision,
-        "reason": "" if owned else "owner_mismatch",
-        "event_key": _event_key(entry_owner, event, kind=kind, decision=decision),
+        "reason": ("attribution_only" if referral_only else "") if owned else "owner_mismatch",
+        "event_key": _event_key(entry_owner, event, kind="referral" if referral_only else kind, decision=decision),
         "payload": {"object": "instagram", "entry": [fragment_entry]},
     }
 
@@ -171,12 +174,31 @@ def accept_webhook(raw_body: bytes, settings_obj) -> InboxAcceptance:
             digest = hashlib.sha256(_canonical(receipt["payload"])).hexdigest()
             _row, created = IgWebhookInboxEvent.objects.get_or_create(
                 namespace=namespace, event_key=receipt["event_key"],
-                    defaults={"owner_id": receipt["owner_id"], "customer_igsid": receipt.get("customer_igsid", ""), "decision": receipt["decision"], "reason": receipt["reason"], "payload": receipt["payload"], "payload_digest": digest},
+                    defaults={"owner_id": receipt["owner_id"], "customer_igsid": receipt.get("customer_igsid", ""), "decision": receipt["decision"], "reason": receipt["reason"], "payload": receipt["payload"], "payload_digest": digest,
+                        # A click is complete attribution evidence, never a USER turn.
+                        "processed_at": timezone.now() if receipt["decision"] == "accepted" and receipt["reason"] == "attribution_only" else None},
             )
             if not created:
                 duplicates += 1
             elif receipt["decision"] == "accepted":
                 accepted += 1
+                # Optional durable metadata admission is DB-only and isolated
+                # from the authoritative source receipt. No live reply waits
+                # for Marketing API; duplicates never create another job.
+                try:
+                    with transaction.atomic():
+                        from management.services.ig_ad_context import merge_referral_candidates
+                        from management.services.ig_ad_metadata import enqueue_ad_metadata
+                        event = _row_event(receipt["payload"])
+                        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+                        postback = event.get("postback") if isinstance(event.get("postback"), dict) else {}
+                        referral = merge_referral_candidates(message.get("referral"), event.get("referral"), postback.get("referral"))
+                        if referral.get("ad_id"):
+                            enqueue_ad_metadata(namespace, referral["ad_id"])
+                except Exception:
+                    # A later reader reports metadata_store_unavailable; the
+                    # immutable authenticated event must remain accepted.
+                    pass
             else:
                 rejected += 1
     return InboxAcceptance(accepted, rejected, duplicates)
@@ -284,6 +306,11 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
                     ).order_by("attempts", "id").first())
                     if row is None:
                         break
+                    if row.reason == "attribution_only":
+                        row.processed_at = timezone.now()
+                        row.save(update_fields=["processed_at"])
+                        processed += 1
+                        continue
                     if _mid_namespace_state(row, namespace) == "blocked":
                         row.decision = IgWebhookInboxEvent.Decision.BLOCKED
                         row.reason = "provider_mid_namespace_unproven"

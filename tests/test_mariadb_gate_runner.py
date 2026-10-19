@@ -94,6 +94,17 @@ class FakeAdmin:
             raise RuntimeError("warning contract staging failed")
         return {"warning_contract_engines": "3_myisam"}
 
+    def capture_migration_prerequisites(self, database):
+        self.calls.append(("capture_migration_prerequisites", database))
+        if self.fail_at == "capture_migration_prerequisites":
+            raise RuntimeError("prerequisite capture failed")
+
+    def restore_migration_prerequisites(self, database):
+        self.calls.append(("restore_migration_prerequisites", database))
+        if self.fail_at == "restore_migration_prerequisites":
+            raise RuntimeError("prerequisite restoration failed")
+        return "restored_original"
+
     def verify_database_warning_contract_reverse(self, database):
         self.calls.append(("verify_database_warning_contract_reverse", database))
         if self.fail_at == "verify_database_warning_contract_reverse":
@@ -121,7 +132,7 @@ class FakeAdmin:
         if self.fail_at == "verify_database_warning_contract":
             raise RuntimeError("database warning contract mismatch")
         return {
-            "engines": "3_myisam",
+            "engines": "reviewvote_fit_innodb+push_myisam",
             "generated_columns": "2_verified",
             "unique_indexes": "3_new+1_preserved",
             "endpoint_unique": "hash_preserved",
@@ -190,6 +201,80 @@ class MariaDbGateRunnerTests(unittest.TestCase):
         from scripts import run_mariadb_gate
 
         self.runner = run_mariadb_gate
+
+    def test_prerequisite_restoration_uses_only_original_captured_values(self):
+        database = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.description = [(name,) for name in ("id", "slug", "name", "parent_id")]
+        original = (7, "veteran-fund", "Captured original category", None)
+        cursor.fetchone.return_value = original
+        cursor.fetchall.return_value = []
+        with mock.patch.object(admin, "_connect", return_value=connection):
+            admin.capture_migration_prerequisites(database)
+            self.assertEqual(admin.restore_migration_prerequisites(database), "restored_original")
+        insert = cursor.execute.call_args_list[-1]
+        self.assertIn(f"INSERT INTO `{database}`.`storefront_blogcategory`", insert.args[0])
+        self.assertEqual(insert.args[1], original)
+        self.assertNotIn(original[2], insert.args[0])
+        self.assertEqual(connection.close.call_count, 2)
+
+    def test_prerequisite_restore_retains_present_identity_without_update(self):
+        database = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        admin._migration_prerequisite_snapshot = (database, ("id", "slug"), (7, "veteran-fund"))
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [(7, "veteran-fund")]
+        with mock.patch.object(admin, "_connect", return_value=connection):
+            self.assertEqual(admin.restore_migration_prerequisites(database), "retained")
+        self.assertEqual(cursor.execute.call_count, 1)
+        self.assertTrue(cursor.execute.call_args.args[0].startswith("SELECT"))
+
+    def test_prerequisite_restore_rejects_conflicting_fixture_identity(self):
+        database = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        admin._migration_prerequisite_snapshot = (database, ("id", "slug"), (7, "veteran-fund"))
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [(7, "another-fixture")]
+        with mock.patch.object(admin, "_connect", return_value=connection):
+            with self.assertRaisesRegex(self.runner.GateError, "identity conflicts"):
+                admin.restore_migration_prerequisites(database)
+        self.assertEqual(cursor.execute.call_count, 1)
+
+    def test_prerequisite_snapshot_cannot_cross_owned_schemas_or_production(self):
+        database = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        admin._migration_prerequisite_snapshot = (database, ("id", "slug"), (7, "veteran-fund"))
+        with mock.patch.object(admin, "_connect") as connect:
+            for target in ("production", "test_twocomms_ig_abcdef012345"):
+                with self.assertRaises(self.runner.GateError):
+                    admin.restore_migration_prerequisites(target)
+            with self.assertRaisesRegex(self.runner.GateError, "not gate-owned"):
+                admin.capture_migration_prerequisites("production")
+        connect.assert_not_called()
+
+    def test_missing_original_prerequisite_fails_instead_of_inventing_category(self):
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.description = [("id",), ("slug",)]
+        cursor.fetchone.return_value = None
+        with mock.patch.object(admin, "_connect", return_value=connection):
+            with self.assertRaisesRegex(self.runner.GateError, "original migration prerequisite"):
+                admin.capture_migration_prerequisites("test_twocomms_ig_0123456789ab")
+        self.assertEqual(cursor.execute.call_count, 1)
+
+    def test_gate_restoration_failure_still_cleans_generated_namespace(self):
+        admin = FakeAdmin(fail_at="restore_migration_prerequisites")
+        with self.assertRaises(self.runner.GateError):
+            self.runner.run_gate(server_mode="external", admin=admin,
+                command_runner=FakeCommandRunner(), project_root=PROJECT_ROOT,
+                environ={"MARIADB_ADMIN_PASSWORD": "root-secret"})
+        self.assertEqual([call[0] for call in admin.calls[-4:]],
+                         ["drop_user", "drop_database", "verify_cleanup", "close"])
 
     def test_manages_generated_schema_and_user_and_runs_from_project_root(self):
         admin = FakeAdmin()
@@ -423,7 +508,7 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
         )
         self.assertIn(
             "MariaDB warning contract proof: "
-            "engines=3_myisam generated_columns=2_verified "
+            "engines=reviewvote_fit_innodb+push_myisam generated_columns=2_verified "
             "unique_indexes=3_new+1_preserved endpoint_unique=hash_preserved "
             "show_create_tables=verified\n",
             evidence.getvalue(),
@@ -501,7 +586,8 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
                 admin,
                 "_query_all",
                 side_effect=[
-                    [(table, "MyISAM") for table in tables],
+                    [(table, "InnoDB" if table == "storefront_productfitoption" else "MyISAM")
+                     for table in tables],
                     [],
                     endpoint_index,
                 ],
@@ -535,8 +621,8 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
             ("storefront_webpushdevicesubscription", "endpoint", "HASH", "endpoint"),
         ]
         engine_rows = [
-            ("reviews_reviewvote", "MyISAM"),
-            ("storefront_productfitoption", "MyISAM"),
+            ("reviews_reviewvote", "InnoDB"),
+            ("storefront_productfitoption", "InnoDB"),
             ("storefront_webpushdevicesubscription", "MyISAM"),
         ]
         generated_rows = [
@@ -560,14 +646,14 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
                 "UNIQUE KEY `rev_vote_unique_user` (`review_id`,`user_id`),"
                 "UNIQUE KEY `rev_vote_unique_anon` (`review_id`,`anon_identity`),"
                 "CONSTRAINT `rev_vote_user_or_anon_required` CHECK ((`user_id` is not null) or (`anon_key` <> ''))"
-                ") ENGINE=MyISAM"
+                ") ENGINE=InnoDB"
             ),
             "storefront_productfitoption": (
                 "CREATE TABLE `storefront_productfitoption` ("
                 "`default_product_identity` bigint GENERATED ALWAYS AS (case when `is_default` = 1 then `product_id` else NULL end) STORED,"
                 "UNIQUE KEY `fit_product_code_uniq` (`product_id`,`code`),"
                 "UNIQUE KEY `uniq_default_fit_product` (`default_product_identity`)"
-                ") ENGINE=MyISAM"
+                ") ENGINE=InnoDB"
             ),
             "storefront_webpushdevicesubscription": (
                 "CREATE TABLE `storefront_webpushdevicesubscription` ("
@@ -599,7 +685,7 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
         self.assertEqual(
             proof,
             {
-                "engines": "3_myisam",
+                "engines": "reviewvote_fit_innodb+push_myisam",
                 "generated_columns": "2_verified",
                 "unique_indexes": "3_new+1_preserved",
                 "endpoint_unique": "hash_preserved",
@@ -630,6 +716,21 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
                     "test_twocomms_ig_0123456789ab"
                 )
 
+    def test_warning_contract_requires_review_and_fit_innodb_but_preserves_push_myisam(self):
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        for rows in (
+            [("reviews_reviewvote", "MyISAM"), ("storefront_productfitoption", "InnoDB"),
+             ("storefront_webpushdevicesubscription", "MyISAM")],
+            [("reviews_reviewvote", "InnoDB"), ("storefront_productfitoption", "MyISAM"),
+             ("storefront_webpushdevicesubscription", "MyISAM")],
+            [("reviews_reviewvote", "InnoDB"), ("storefront_productfitoption", "InnoDB"),
+             ("storefront_webpushdevicesubscription", "InnoDB")],
+        ):
+            with mock.patch.object(admin, "_query_one", return_value=(0,)), \
+                 mock.patch.object(admin, "_query_all", return_value=rows):
+                with self.assertRaisesRegex(self.runner.GateError, "released transactional table policy"):
+                    admin.verify_database_warning_contract("test_twocomms_ig_0123456789ab")
+
     def test_admin_warning_contract_fails_when_generated_constraints_are_missing(self):
         admin = self.runner.AdminClient(
             host="127.0.0.1",
@@ -643,8 +744,8 @@ storefront.WebPushDeviceSubscription.endpoint: (mysql.W003) long unique char
             ("storefront_webpushdevicesubscription", "endpoint", "HASH", "endpoint"),
         ]
         engine_rows = [
-            ("reviews_reviewvote", "MyISAM"),
-            ("storefront_productfitoption", "MyISAM"),
+            ("reviews_reviewvote", "InnoDB"),
+            ("storefront_productfitoption", "InnoDB"),
             ("storefront_webpushdevicesubscription", "MyISAM"),
         ]
         with (

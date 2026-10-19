@@ -445,7 +445,13 @@ class TimelineActualLiveConsumerTests(TransactionTestCase):
         # cannot leak its head quote through mandatory client-state rendering.
         modules = compiler.call_args.kwargs
         mandatory = [*modules["immutable_authority"], *modules["published_core"], *modules["verified_dynamic_facts"]]
-        mandatory_chars = sum(len(module.body) for module in mandatory) + 2 * (len(mandatory) - 1)
+        # Reviewed topic knowledge can be required too. Reserve its real cost
+        # before testing whether optional historical memory fits.
+        mandatory.extend(module for group in ("playbooks", "knowledge", "customer_data")
+            for module in modules.get(group, ())
+            if (module.get("required", False) if isinstance(module, dict) else module.required))
+        mandatory_chars = sum(len(module["body"] if isinstance(module, dict) else module.body)
+            for module in mandatory) + 2 * (len(mandatory) - 1)
         state_before = fixture.prepared.state.as_dict()
         fixture_owner.requests = []
         with self.settings(IG_BOT_POLICY_BUDGET_CHARS=mandatory_chars), patch(

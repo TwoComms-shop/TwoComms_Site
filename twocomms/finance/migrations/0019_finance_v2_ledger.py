@@ -5,13 +5,62 @@ import django.db.models.deletion
 import django.core.validators
 
 
-class SetSessionStorageEngine(Operation):
-    """Keep new finance tables compatible with the legacy MyISAM schema.
+def compatible_finance_engine(state, schema_editor, operations=None):
+    """Choose from every existing FK/M2M parent, without changing any table.
 
-    Older production finance tables are MyISAM, so MariaDB cannot create an
-    InnoDB foreign key pointing at them.  This affects only the migration
-    connection and is a no-op on non-MySQL databases.
+    Legacy finance parents are uniformly MyISAM. Fresh schemas are InnoDB;
+    forcing their new FundingSource to MyISAM breaks 0020's Transaction FK.
+    Mixed parents need deliberate repair, rather than silently dropping FKs.
     """
+    operations = Migration.operations if operations is None else operations
+    new_models = {
+        operation.name.lower() for operation in operations
+        if isinstance(operation, migrations.CreateModel)
+    }
+    parents = set()
+    for operation in operations:
+        if isinstance(operation, migrations.CreateModel):
+            fields = operation.fields
+        elif isinstance(operation, migrations.AddField):
+            fields = [(operation.name, operation.field)]
+        else:
+            continue
+        for _name, field in fields:
+            relation = getattr(field, 'remote_field', None)
+            if relation is None or not isinstance(relation.model, str):
+                continue
+            app, name = relation.model.split('.', 1)
+            if app == 'finance' and name.lower() in new_models:
+                continue
+            parents.add((app, name))
+    tables = {
+        state.apps.get_model(app, name)._meta.db_table: app
+        for app, name in parents
+    }
+    placeholders = ', '.join(['%s'] * len(tables))
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT TABLE_NAME, ENGINE, TABLE_TYPE FROM information_schema.TABLES '
+            f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+            sorted(tables),
+        )
+        rows = {name: (str(engine).upper(), kind) for name, engine, kind in cursor.fetchall()}
+    if set(rows) != set(tables) or any(
+        engine not in {'INNODB', 'MYISAM'} or kind != 'BASE TABLE'
+        for engine, kind in rows.values()
+    ):
+        raise RuntimeError('Finance migration requires existing InnoDB/MyISAM FK parent tables')
+    finance_engines = {rows[name][0] for name, app in tables.items() if app == 'finance'}
+    if len(finance_engines) != 1:
+        raise RuntimeError('Finance migration requires uniform finance FK parent engines')
+    engine = finance_engines.pop()
+    if engine == 'INNODB' and any(value[0] != 'INNODB' for value in rows.values()):
+        raise RuntimeError('InnoDB finance migration requires InnoDB external FK parents')
+    return engine
+
+
+class SetSessionStorageEngine(Operation):
+    """Set only the migration session default, preserving legacy parent engines."""
 
     reduces_to_sql = False
     reversible = True
@@ -25,13 +74,20 @@ class SetSessionStorageEngine(Operation):
     def state_backwards(self, app_label, state):
         pass
 
+    def compatible_engine(self, state, schema_editor):
+        return compatible_finance_engine(state, schema_editor)
+
     def database_forwards(self, app_label, schema_editor, from_state, to_state):
         if schema_editor.connection.vendor == 'mysql':
-            schema_editor.execute(f'SET SESSION default_storage_engine={self.engine}')
+            engine = (self.compatible_engine(from_state, schema_editor)
+                      if self.engine.upper() == 'MYISAM' else self.engine)
+            schema_editor.execute(f'SET SESSION default_storage_engine={engine}')
 
     def database_backwards(self, app_label, schema_editor, from_state, to_state):
         if schema_editor.connection.vendor == 'mysql':
             previous = 'INNODB' if self.engine.upper() == 'MYISAM' else 'MYISAM'
+            if previous == 'MYISAM':
+                previous = self.compatible_engine(from_state, schema_editor)
             schema_editor.execute(f'SET SESSION default_storage_engine={previous}')
 
     def describe(self):

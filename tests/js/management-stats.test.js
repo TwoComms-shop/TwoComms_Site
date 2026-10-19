@@ -61,6 +61,9 @@ async function runManagementStats({
       }
       return null;
     },
+    // This CSRF fixture has no source bars, counters, tabs or drawer nodes.
+    // Let the real renderer initialize against the same empty DOM collections.
+    querySelectorAll: () => [],
     getElementById: (id) => {
       if (id === 'mgmt-stats-data') return dataEl;
       if (id === 'stats-page') return pageEl;

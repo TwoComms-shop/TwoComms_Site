@@ -139,6 +139,24 @@ class CheckoutGenerationRuntimeTests(TestCase):
 
     def _create_invoice(self, proposal, *, invoice_id, payment_choice="online_full"):
         self._open(proposal)
+        url = reverse("ig_checkout_proposal", kwargs={"proposal_id": proposal.public_id})
+        consent = {}
+        if payment_choice != "online_full":
+            # The hosted GET selects full payment. A different customer choice
+            # must first display its actual terms, then accept any fresh loss.
+            preview = self.client.post(url, {**self._hosted_revision_payload,
+                "action": "promo_preview", "payment_choice": payment_choice},
+                HTTP_ACCEPT="application/json")
+            self.assertEqual(preview.status_code, 200, preview.content)
+            displayed = preview.json()["cart_state"]
+            shipping = displayed.get("free_delivery") or {}
+            self._hosted_revision_payload = {
+                "expected_revision": str(displayed["revision"]),
+                "expected_digest": displayed["digest"],
+                "delivery_policy_digest": shipping.get("ack_digest", ""),
+            }
+            if shipping.get("ack_required"):
+                consent["delivery_policy_ack"] = "1"
         with patch(
             "storefront.views.monobank._monobank_api_request",
             return_value={
@@ -151,7 +169,7 @@ class CheckoutGenerationRuntimeTests(TestCase):
                     "ig_checkout_proposal",
                     kwargs={"proposal_id": proposal.public_id},
                 ),
-                self._delivery_payload(payment_choice=payment_choice),
+                self._delivery_payload(payment_choice=payment_choice, **consent),
                 HTTP_ACCEPT="application/json",
             )
         self.assertEqual(response.status_code, 200, response.content)

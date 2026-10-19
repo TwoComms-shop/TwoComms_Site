@@ -9,6 +9,7 @@ import hashlib
 import re
 
 from django.utils import timezone
+from django.db.models import Max
 
 
 VERSION = "discussed-product-focus.v1"
@@ -28,6 +29,95 @@ def _switches_product(text):
             continue
         return True
     return False
+
+
+_GARMENT_SUBJECTS = (
+    ("zip_hoodie", "zip_hoodies", r"\b(?:(?:zip|зіп|зип)[ -]?(?:худі|худи|hoodies?)?|худ[іи]\s+(?:на\s+)?(?:блискавц\w*|молни\w*))\b"),
+    ("longsleeve", "longsleeves", r"\b(?:лонгслів\w*|лонгслив\w*|long[ -]?sleeves?)\b"),
+    ("hoodie", "hoodies", r"\b(?:худі|худи|hoodies?)\b"),
+    ("tshirt", "tshirts", r"\b(?:футболк\w*|t[ -]?shirts?|tees?)\b"),
+)
+
+
+def information_category(value):
+    """Normalize catalog category aliases without inferring stock or a SKU."""
+    value = str(value or "").casefold().replace("-", "_")
+    return {"hoodie": "hoodies", "tshirt": "tshirts", "t_shirt": "tshirts", "t_shirts": "tshirts",
+        "longsleeve": "longsleeves", "zip_hoodie": "zip_hoodies", "ziphoodie": "zip_hoodies"}.get(value, value)
+
+
+def information_subject(sources):
+    """Current explicit category topic; it never changes retained selections.
+
+    Quoted/negated categories and messages about a garment not wanted are not
+    a new subject. Several positive categories remain ambiguous.
+    """
+    from management.services.ig_reply_language import own_reply_text, _QUOTES
+    from management.services.ig_reply_truth import _locally_negated
+    latest, subject_texts = {}, []
+    for row in list(sources or ())[-64:]:
+        if row.get("role", "user") != "user":
+            continue
+        raw = str(row.get("text") or "")
+        text = re.sub(r'"[^"\n]*"|«[^»\n]*»|“[^”\n]*”', " ", own_reply_text(raw))
+        flag_text = _QUOTES.sub(" ", re.sub(r"(?m)^\s*>[^\n]*(?:\n|$)", " ", raw)) if len(raw) <= 64000 else ""
+        matches, spans = [], []
+        for garment, category, pattern in _GARMENT_SUBJECTS:
+            for match in re.finditer(pattern, text, re.I):
+                if any(start <= match.start() < end for start, end in spans):
+                    continue
+                spans.append(match.span())
+                suffix = text[match.end():match.end() + 35]
+                if (_locally_negated(text, match.start()) or re.search(
+                    r"\b(?:не|not|don't|do\s+not)\s+(?:хочу|потріб\w*|нуж\w*|want|need)\s*$", text[:match.start()], re.I) or re.match(
+                    r"\s*(?:мені\s+|мне\s+)?не\s+(?:треба|потріб\w*|надо|нуж\w*|хочу)", suffix, re.I)):
+                    continue
+                matches.append((garment, category))
+        kinds = list(dict.fromkeys(matches))
+        if kinds:
+            subject_texts = [flag_text]
+            latest = {"schema": "information-subject.v1", "status": "identified" if len(kinds) == 1 else "ambiguous",
+                "garment_type": kinds[0][0] if len(kinds) == 1 else "",
+                "category_slug": kinds[0][1] if len(kinds) == 1 else "",
+                "source_message_ids": [row["message_id"]] if type(row.get("message_id")) is int else [],
+                "selection_authority": False, "stock_authority": False, "checkout_authority": False}
+        elif latest:
+            subject_texts.append(flag_text)
+            # A nounless information question in this same owned burst uses
+            # the latest explicit category, not an older retained cart item.
+            question = re.search(r"\?|\b(?:яки\w*|яка|яке|які|како\w*|какая|какие|чи|скільки|what|which|how)\b", text, re.I)
+            historical = re.search(r"\b(?:раніше|раньше|ранее|учора|вчора|вчера|previously|earlier|yesterday|historically)\b|(?:минул\w*|прошл\w*|previous|old)\s+(?:замовлен\w*|заказ\w*|order)", text, re.I)
+            topics = re.finditer(r"склад\w*|состав\w*|щільн\w*|плотн\w*|матер[іи]ал\w*|тканин\w*|ткан[ьи]\w*|догляд\w*|прати|стират\w*|посадк\w*|фасон\w*|крій|кро[юїй]|унісекс|унисекс|люверс\w*|манжет\w*|\b(?:composition|density|gsm|fabric|material|care|wash|fit|cut|unisex|eyelets?|cuffs?)\b", text, re.I)
+            relevant = any(not _locally_negated(text, match.start()) and not re.search(
+                r"\b(?:не|not|no)\s+(?:цікав\w*|интерес\w*|потріб\w*|нуж\w*|want|need)\s*$", text[:match.start()], re.I) and not re.match(
+                r"\s*не\s+(?:цікав\w*|интерес\w*|потріб\w*|нуж\w*|треба|надо)", text[match.end():], re.I) for match in topics)
+            if question and relevant and not historical and len(text) <= 600 and type(row.get("message_id")) is int:
+                latest["source_message_ids"].append(row["message_id"])
+    if latest:
+        text = "\n".join(subject_texts)
+        latest["future_base_requested"] = bool(re.search(
+            r"майбутн\w*|будущ\w*|\bfuture\b|(?:наступн\w*|нов\w*|следующ\w*|new|next)\s+(?:парті\w*|парти\w*|основ\w*|колекці\w*|коллекци\w*|batch|bases?|collections?)", text, re.I))
+        latest["unsupported_detail_requested"] = bool(re.search(
+            r"люверс\w*|манжет\w*|фурнітур\w*|фурнитур\w*|блискав\w*|молни\w*|ґудзик\w*|пуговиц\w*|заклеп\w*|шнур\w*|резинк\w*|гумк\w*|"
+            r"віскоз\w*|вискоз\w*|шерст\w*|\bвовн\w*|шовк\w*|шелк\w*|льон\w*|льня\w*|"
+            r"\b(?:eyelets?|grommets?|cuffs?|hardware|zippers?|buttons?|drawstrings?|ribbing|viscose|wool|silk|linen|zip)\b|\b100\s*%|(?:без|no|without)\s*(?:фліс\w*|флис\w*|fleece)", text, re.I))
+        # Category-level facts cannot establish which photographed, linked or
+        # specifically referenced garment/base the customer means.
+        photo_text = re.sub(r"(?:фото|photos?|pictures?|images?)\s+(?:кро\w*|фасон\w*|посадк\w*|приклад\w*|пример\w*|fits?|cuts?|examples?)", "", text, flags=re.I)
+        latest["specific_product_requested"] = bool(re.search(
+            r"\b(?:цей|ця|це|ці|цього|цієї|эту|этот|эта|это|эти|этого|этой|this|that|these|those|same)\b|"
+            r"той\s+сам\w*|та\s+сама|те\s+саме|те\s+же|тот\s+же|та\s+же|"
+            r"фото\w*|світлин\w*|скрін\w*|скрин\w*|\b(?:photos?|pictures?|images?|screenshots?|sku)\b|"
+            r"артикул\w*|https?://\S+/(?:product|products|p)/|\b(?:product|товар)\s*(?:id|№|#|:)?\s*\d+", photo_text, re.I))
+    return latest
+
+
+def _subject_scoped_focus(product, *, sources, basis, source_ids, proof):
+    subject = information_subject(sources)
+    if subject and (subject["status"] != "identified" or subject.get("future_base_requested") or subject["category_slug"] != information_category(product.category.slug)):
+        return {**_empty("different_information_subject"), "information_subject": subject,
+            "retained_discussed_product_id": product.pk}
+    return _result(product, basis=basis, source_ids=source_ids, proof=proof)
 
 
 def _empty(reason="focus_not_proven"):
@@ -163,14 +253,12 @@ def capture_product_focus(revision, *, source_cart_capture=None):
             product = None if newer_media else Product.objects.select_related("category").filter(
                 pk=field.get("value"), status="published").first()
             if product is not None:
-                return _result(product, basis="source_selected_product",
+                return _subject_scoped_focus(product, sources=sources, basis="source_selected_product",
                     source_ids=[selection_source], proof=field)
         owners = list(IgCustomerTurnRevision.objects.filter(client_id=client.pk,
             generation_proposal__turn_intelligence__catalog_resolution="auto_select",
-            sources__message_id__gte=floor, sources__message_id__lte=watermark,
-        ).distinct().order_by("-pk")[:MAX_CANDIDATES + 1])
-        if len(owners) > MAX_CANDIDATES:
-            return _empty("focus_candidate_scan_capped")
+            sources__message_id__gte=floor, sources__message_id__lte=watermark, sources__source_namespace=namespace,
+        ).annotate(latest_focus_source=Max("sources__message_id")).order_by("-latest_focus_source", "-pk")[:MAX_CANDIDATES])
         identities = []
         for owner in owners:
             identity = _media_identity(owner, namespace=namespace, recipient=client.igsid, floor=floor,
@@ -204,7 +292,7 @@ def capture_product_focus(revision, *, source_cart_capture=None):
         product = Product.objects.select_related("category").filter(pk=identity["product_id"], status="published").first()
         if product is None:
             return _empty("focus_catalog_product_unavailable")
-        return _result(product, basis="won_source_media_identification",
+        return _subject_scoped_focus(product, sources=sources, basis="won_source_media_identification",
             source_ids=identity["source_ids"], proof=identity["proof"])
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError, RecursionError):
         return _empty("focus_proof_invalid")
@@ -315,6 +403,36 @@ def capture_discussed_configuration(revision, *, source_cart_capture=None):
             "revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
             "permission_epoch": revision.permission_epoch, "source_namespace": sources[0].get("source_namespace"),
             "reset_floor": current_message_floor(client)},
+        "selection_authority": False, "stock_authority": False, "checkout_authority": False}
+    result["proof_digest"] = _digest(result)
+    return result
+
+
+def capture_fit_chart_comparison(revision, fit_code):
+    """Prove a requested chart alternative without customer selection rights."""
+    from management.services.ig_fit_consultation import requested_chart_fits
+    from management.services.ig_funnel_reset import current_message_floor
+    from management.services.ig_revision_outbox import _digest
+
+    cart = (revision.generation_proposal or {}).get("source_cart_capture")
+    if cart is None:
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        cart = capture_current_selection_lines(revision.client_id)
+    focus = capture_product_focus(revision, source_cart_capture=cart)
+    if focus.get("status") != "focused":
+        return {}
+    from management.services.ig_revision_catalog_assets import capture_fit_photo_capability
+    supported = capture_fit_photo_capability(focus["product_id"], metadata_only=True).get("supported_fits", [])
+    sources = (revision.bundle_snapshot or {}).get("sources") or []
+    requested = requested_chart_fits(sources, supported_fits=supported)
+    if not requested or fit_code not in requested or fit_code not in supported:
+        return {}
+    result = {"schema": "discussed-fit-comparison.v1", "product_id": focus["product_id"], "fit_code": fit_code,
+        "product_focus": focus, "fit_source": {"schema": "fit-chart-comparison-source.v1", "requested_fits": requested,
+            "source_message_ids": [row["message_id"] for row in sources]},
+        "scope": {"client_id": revision.client_id, "episode_id": revision.client.current_commercial_episode_id,
+            "revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest, "permission_epoch": revision.permission_epoch,
+            "source_namespace": sources[0].get("source_namespace"), "reset_floor": current_message_floor(revision.client)},
         "selection_authority": False, "stock_authority": False, "checkout_authority": False}
     result["proof_digest"] = _digest(result)
     return result

@@ -815,9 +815,15 @@ def buy_with_points(request):
         }
     ]
 
+    import secrets
+
+    purchase_operation_id = secrets.token_urlsafe(32)
+    pending_operations = list(request.session.get('points_reward_operations') or [])
+    request.session['points_reward_operations'] = (pending_operations + [purchase_operation_id])[-20:]
     return render(request, 'pages/buy_with_points.html', {
         'current_points': current_points,
-        'available_items': available_items
+        'available_items': available_items,
+        'purchase_operation_id': purchase_operation_id,
     })
 
 
@@ -840,27 +846,32 @@ def purchase_with_points(request):
         return redirect('buy_with_points')
 
     if item_id == 'promo_10':
-        # Покупка промокода на 10% скидки
-        if user_points_obj.points >= 100:
-            # Здесь будет логика создания промокода
-            # Пока что просто списываем баллы
-            try:
-                user_points_obj.spend_points(100, 'Покупка промокода на знижку 10%')
-                messages.success(
-                    request,
-                    _('Промокод на знижку 10% успішно придбано! Код: POINTS10')
-                )
-            except Exception as e:
-                messages.error(request, _('Помилка при списанні балів: %(error)s') % {'error': e})
-        else:
+        from storefront.services.loyalty_rewards import redeem_points_reward, LoyaltyRewardError
+
+        operation_id = str(request.POST.get('purchase_operation_id') or '')
+        if operation_id not in (request.session.get('points_reward_operations') or []):
+            messages.error(request, _('Оновіть сторінку та повторіть обмін балів'))
+            return redirect('buy_with_points')
+        try:
+            grant = redeem_points_reward(user=request.user, operation_id=operation_id)
+            messages.success(request, _('Промокод на знижку 10% успішно придбано! Код: %(code)s') % {
+                'code': grant.promo_code.code,
+            })
+        except LoyaltyRewardError:
             messages.error(request, _('Недостатньо балів для покупки промокода'))
+        except Exception:
+            messages.error(request, _('Не вдалося обміняти бали. Спробуйте ще раз.'))
 
     elif item_id == 'donate_zsu':
         # Донат на ЗСУ
         if user_points_obj.points > 0:
-            points_to_donate = user_points_obj.points
             try:
-                user_points_obj.spend_points(points_to_donate, 'Донат на ЗСУ')
+                from django.db import transaction
+                with transaction.atomic():
+                    balance = UserPoints.objects.select_for_update().get(user=request.user)
+                    points_to_donate = balance.points
+                    if points_to_donate <= 0 or not balance.spend_points(points_to_donate, 'Донат на ЗСУ'):
+                        raise ValueError(_('У вас немає балів для пожертвування'))
                 messages.success(
                     request,
                     _('Дякуємо за підтримку ЗСУ! Пожертвовано %(points)s балів') % {'points': points_to_donate}

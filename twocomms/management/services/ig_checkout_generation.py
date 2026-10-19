@@ -221,6 +221,19 @@ def _server_owned_recipient_payload(attempt, deal):
         build_city_choice_token,
         build_warehouse_choice_token,
     )
+    from storefront.models import PromoCode
+
+    reservations = (attempt.event_state or {}).get('promo_reservations')
+    if reservations:
+        ids = [row.get('promo_id') for row in reservations if isinstance(row, dict)]
+        if len(ids) != len(reservations) or any(type(value) is not int or value <= 0 for value in ids):
+            raise CheckoutPaymentError('promo_unavailable', 'Потрібна повторна перевірка промокодів.')
+        codes = dict(PromoCode.objects.filter(pk__in=ids).values_list('pk', 'code'))
+        if len(codes) != len(ids):
+            raise CheckoutPaymentError('promo_unavailable', 'Потрібна повторна перевірка промокодів.')
+        promo_codes = ' '.join(codes[value] for value in ids)
+    else:
+        promo_codes = attempt.promo_code.code if attempt.promo_code_id else ''
 
     return {
         "full_name": attempt.full_name or "",
@@ -246,9 +259,7 @@ def _server_owned_recipient_payload(attempt, deal):
             ),
             "city_ref": attempt.np_city_ref or "",
         }),
-        "promo_code": (
-            attempt.promo_code.code if attempt.promo_code_id else ""
-        ),
+        "promo_code": promo_codes,
     }
 
 
@@ -1029,11 +1040,12 @@ def _prepare_generation(proposal, *, request, payload, grant_id=""):
             _server_owned_recipient_payload(recipient_source_attempt, deal),
             user=recipient_source_user,
             shipping_source_attempt=recipient_source_attempt,
+            payment_mode=payment_choice,
         )
     else:
         from management.services.ig_checkout_payment import _displayed_checkout_shipping
         values = _validate_payload(locked, payload, user=request.user,
-            displayed_shipping=_displayed_checkout_shipping(locked, request))
+            displayed_shipping=_displayed_checkout_shipping(locked, request), payment_mode=payment_choice)
     if (
         payment_choice
         == IgCheckoutInvoiceGeneration.PaymentChoice.PREPAY_200_COD

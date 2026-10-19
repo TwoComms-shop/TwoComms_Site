@@ -1153,7 +1153,7 @@ class RevisionLiveTests(TransactionTestCase):
         IG_REVISION_EXECUTION_ENABLED=True,
         IG_REVISION_EXECUTION_CUTOVER_AT="2000-01-01T00:00:00+00:00",
     )
-    def test_provider_outage_waits_without_operator_case_then_generates_fresh_child(self):
+    def test_expired_outage_uses_immediately_eligible_route_without_operator_case(self):
         from management.models import IgFollowUpTask
 
         self._prepare()
@@ -1164,15 +1164,9 @@ class RevisionLiveTests(TransactionTestCase):
         self.revision.refresh_from_db()
         self.assertIn("generation_admission", self.revision.action_receipts)
         old_deadline = self.revision.overall_deadline
-        with patch("management.services.ig_revision_live.timezone.now", return_value=old_deadline + timedelta(seconds=1)):
-            self.assertEqual(process_pending_revisions(self.settings, max_items=1), 0)
-        self.revision.refresh_from_db()
-        self.assertEqual(self.revision.recovery_state, "waiting")
-        self.assertFalse(IgFollowUpTask.objects.filter(reason="revision_case:execution_debt").exists())
-        due = self.revision.recovery_due_at
         self.provider_failure = False
         with (
-            patch("management.services.ig_revision_live.timezone.now", return_value=due),
+            patch("management.services.ig_revision_live.timezone.now", return_value=old_deadline + timedelta(seconds=1)),
             patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate) as generate,
             patch("management.services.instagram_bot.get_page_token", return_value="memory-token"),
             patch("management.services.instagram_bot._provider_http", return_value=(200, json.dumps({"message_id": "recovered-reply"}))) as send,
@@ -1182,6 +1176,9 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(handled, 1)
         self.assertEqual(generate.call_count, 1)
         self.assertEqual(send.call_count, 1)
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.recovery_state, "spawned")
+        self.assertFalse(IgFollowUpTask.objects.filter(reason="revision_case:execution_debt").exists())
         child = IgCustomerTurnRevision.objects.get(parent=self.revision, origin="outage_recovery")
         self.assertEqual(child.state, "processed")
         self.assertEqual(child.bundle_snapshot, self.revision.bundle_snapshot)
@@ -1236,10 +1233,22 @@ class RevisionLiveTests(TransactionTestCase):
         self.revision.refresh_from_db()
         expired = self.revision.overall_deadline + timedelta(seconds=1)
         self.assertIn(self.revision.pk, expired_revision_debt_ids(now=expired))
-        with patch("management.services.ig_revision_live.timezone.now", return_value=expired):
-            process_pending_revisions(self.settings, max_items=1)
+        self.provider_failure = False
+        with (
+            patch("management.services.ig_revision_live.timezone.now", return_value=expired),
+            patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate) as generate,
+            patch("management.services.instagram_bot.get_page_token", return_value="memory-token"),
+            patch("management.services.instagram_bot._provider_http", return_value=(200, json.dumps({"message_id": "manual-recovered-reply"}))) as send,
+            patch("management.services.instagram_bot._register_outgoing_message"),
+        ):
+            self.assertEqual(process_pending_revisions(self.settings, max_items=1), 1)
         self.revision.refresh_from_db()
-        self.assertEqual(self.revision.recovery_state, "waiting")
+        self.assertEqual(self.revision.recovery_state, "spawned")
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(send.call_count, 1)
+        child = IgCustomerTurnRevision.objects.get(parent=self.revision, origin="outage_recovery")
+        self.assertEqual(child.state, "processed")
+        self.assertIn("manual_resume_authorization", child.action_receipts)
         self.turn.refresh_from_db()
         self.assertEqual(self.turn.terminal_reason, self.turn.TerminalReason.NO_REPLY_NEEDED)
 

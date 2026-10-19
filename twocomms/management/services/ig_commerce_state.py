@@ -79,7 +79,15 @@ def _line_source_request(source, client, request, *, original=None):
         return request if validate_native_choice_request(client, source, request) else None
     raw = original if original is not None else parse_turn(source.text)
     original = raw
-    if raw.line_operations or raw.pending_line_clarification:
+    if request.source_binding.get("ad_choice"):
+        from management.services.ig_ad_choices import ad_choice_source_request
+        original = ad_choice_source_request(client, source, raw)
+        if original is None or original.source_binding.get("ad_choice") != request.source_binding.get("ad_choice"):
+            return None
+        if request.source_binding.get("producer") == "revision-inbound-commerce-v1":
+            original = dataclasses.replace(original, source_binding={**dict(original.source_binding),
+                "producer": "revision-inbound-commerce-v1"})
+    elif raw.line_operations or raw.pending_line_clarification:
         from management.services.ig_commerce_source_identity import resolve_source_product_request
         original = resolve_source_product_request(client, source, original)
         if original.pending_line_clarification == "line_source_unverified":

@@ -16,6 +16,8 @@ TOPIC_LABELS = {
     "gift": "Подарунок", "self_purchase": "Для себе", "recipient": "Одержувач",
     "availability_inquiry": "Питання про товар", "correction": "Уточнення",
     "purchase_inquiry": "Запит про покупку", "other": "Інша тема",
+    "fit_preference": "Побажання щодо посадки", "measurements": "Історичні мерки",
+    "size_history": "Історичний розмір",
 }
 OMISSION_LABELS = {
     "quote_context_loss": "Уривок без повного контексту",
@@ -60,6 +62,8 @@ def _reason(reason):
         return "Попередній текстовий огляд не має підтверджених джерел."
     if reason == "timeline_disabled":
         return "Датовані спостереження ще не увімкнено."
+    if reason == "timeline_source_catchup_pending":
+        return "Триває послідовне оновлення пам’яті за довгим повідомленням."
     if reason and any(part in reason for part in ("changed", "stale", "after", "scope")):
         return "Збережену пам’ять не підтверджено для поточного стану розмови."
     if reason and any(part in reason for part in ("budget", "limit")):

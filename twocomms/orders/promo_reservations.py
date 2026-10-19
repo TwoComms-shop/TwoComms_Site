@@ -8,8 +8,10 @@ promo itself for an ungrouped one-time code). Production therefore requires
 from dataclasses import dataclass
 from decimal import Decimal
 import secrets
+from types import SimpleNamespace
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 
@@ -27,6 +29,17 @@ class PromoReservation:
     promo: object
     discount: Decimal
     event_state: dict
+
+
+@dataclass(frozen=True)
+class PromoReservations:
+    promos: tuple
+    discount: Decimal
+    event_state: dict
+
+    @property
+    def promo(self):
+        return self.promos[0] if self.promos else None
 
 
 def _authenticated_user_id(user):
@@ -50,17 +63,20 @@ def has_active_account_reservation(*, promo, group, user_id):
     """Check durable PaymentAttempt reservations across every checkout surface."""
     from orders.models import PaymentAttempt
 
-    attempts = PaymentAttempt.objects.filter(user_id=user_id)
-    if group is not None and group.one_per_account:
-        attempts = attempts.filter(promo_code__group_id=group.pk)
-    elif promo.one_time_per_user:
-        attempts = attempts.filter(promo_code_id=promo.pk)
-    else:
+    if not (group is not None and group.one_per_account) and not promo.one_time_per_user:
         return False
+    # Secondary codes live in the durable reservation list; the legacy FK
+    # identifies only the first promo and cannot scope this lookup.
+    attempts = PaymentAttempt.objects.filter(user_id=user_id)
     for event_state in attempts.values_list("event_state", flat=True):
-        reservation = dict((event_state or {}).get("promo_reservation") or {})
-        if reservation.get("state") in ACTIVE_RESERVATION_STATES:
-            return True
+        state = event_state or {}
+        reservations = state.get("promo_reservations") or [state.get("promo_reservation") or {}]
+        for reservation in reservations:
+            matches = (reservation.get("group_id") == group.pk
+                       if group is not None and group.one_per_account
+                       else reservation.get("promo_id") == promo.pk)
+            if matches and reservation.get("state") in ACTIVE_RESERVATION_STATES:
+                return True
     return False
 
 
@@ -154,6 +170,13 @@ def reserve_promo_for_checkout(*, promo_id=None, code=None, user=None, total_amo
     )
     if account_scoped and user_id is None:
         raise PromoReservationError("account_required")
+    from storefront.models import UserPromoCode
+
+    grants = UserPromoCode.objects.filter(promo_code=promo)
+    if grants.exists() and not grants.filter(user_id=user_id).filter(
+        Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+    ).exists():
+        raise PromoReservationError("owner_required")
     if account_scoped and (
         _has_committed_usage(promo=promo, group=group, user_id=user_id)
         or has_active_account_reservation(
@@ -230,6 +253,83 @@ def reserve_promo_for_checkout(*, promo_id=None, code=None, user=None, total_amo
 
 
 @transaction.atomic
+def reserve_promos_for_checkout(*, codes=None, promo_ids=None, user=None, total_amount):
+    """Validate every submitted right, then reserve only contributing codes.
+
+    The entire batch rolls back on any invalid/expired/foreign code. The
+    caller persists event_state on its PaymentAttempt in the same transaction.
+    A shared generation binds every component to the immutable invoice owner.
+    """
+    from storefront.models import PromoCode
+    from storefront.services.promo_composition import compose_promos
+
+    if codes is not None and promo_ids is not None:
+        raise PromoReservationError("invalid")
+    locators = list(promo_ids if promo_ids is not None else codes or [])
+    if not locators:
+        return PromoReservations((), Decimal("0.00"), {})
+    normalized = [str(value).strip().upper() for value in locators]
+    if len(normalized) != len(set(normalized)):
+        raise PromoReservationError("duplicate_promo")
+    promos = []
+    for locator in locators:
+        query = (dict(pk=locator) if promo_ids is not None
+                 else dict(code__iexact=str(locator).strip()))
+        promo = PromoCode.objects.filter(**query).first()
+        if promo is None:
+            raise PromoReservationError("invalid")
+        promos.append(promo)
+    # Lock and validate even zero-contribution rights, then return their
+    # capacity before commit. Invalid extra codes cannot be silently accepted.
+    reserved = []
+    scopes = set()
+    shared_generation = secrets.token_urlsafe(32)
+    for promo in sorted(promos, key=lambda p: (p.group_id or 0, p.pk)):
+        reservation = reserve_promo_for_checkout(
+            promo_id=promo.pk, user=user, total_amount=total_amount,
+        )
+        if reservation.promo.group_id and reservation.promo.group.one_per_account:
+            if reservation.promo.group_id in scopes:
+                raise PromoReservationError("already_reserved_or_used")
+            scopes.add(reservation.promo.group_id)
+        reserved.append(reservation)
+    try:
+        composition = compose_promos(
+            total_amount=total_amount, promos=[row.promo for row in reserved],
+        )
+    except ValueError as exc:
+        raise PromoReservationError(str(exc)) from exc
+    contributions = {promo.pk: amount for promo, amount in composition.contributions}
+    reservations = []
+    for reservation in reserved:
+        promo = reservation.promo
+        state = reservation.event_state['promo_reservation']
+        if promo.pk not in contributions:
+            locked_promo = reservation.promo
+            locked_promo.current_uses -= 1
+            locked_promo.save(update_fields=['current_uses', 'updated_at'])
+            if state.get('guest_usage_id'):
+                from storefront.models import PromoCodeGuestUsage
+                PromoCodeGuestUsage.objects.filter(pk=state['guest_usage_id']).update(
+                    state=PromoCodeGuestUsage.State.RELEASED, released_at=timezone.now(),
+                )
+            continue
+        state['reservation_generation'] = shared_generation
+        state['discount_amount'] = str(contributions[promo.pk])
+        reservations.append((reservation.promo, state))
+    # Calculation uses canonical fixed/percentage order independently from the
+    # lock acquisition order and from the order in which codes were typed.
+    positions = {promo.pk: pos for pos, (promo, _) in enumerate(composition.contributions)}
+    reservations.sort(key=lambda row: positions[row[0].pk])
+    states = [state for _, state in reservations]
+    return PromoReservations(
+        promos=tuple(promo for promo, _ in reservations), discount=composition.discount,
+        event_state=({'promo_reservation': dict(states[0]), 'promo_reservations': states}
+                     if states else {}),
+    )
+
+
+@transaction.atomic
 def record_immediate_promo_usage(*, promo_id, user, order):
     """Atomically reserve and consume a promo for an immediately placed order."""
     total = getattr(order, "total_sum", None) or getattr(order, "final_total", None) or 0
@@ -250,6 +350,57 @@ def record_immediate_promo_usage(*, promo_id, user, order):
 
 
 def consume_payment_attempt_promo(attempt, *, order):
+    """Consume every reserved component, retaining failed components for retry."""
+    state = dict(attempt.event_state or {})
+    reservations = state.get('promo_reservations')
+    if not reservations:
+        return _consume_single_payment_attempt_promo(attempt, order=order)
+    from storefront.models import PromoCode
+
+    all_consumed = True
+    updated = []
+    for reservation in reservations:
+        if reservation.get('state') not in {'reserved', 'consumed'}:
+            updated.append(dict(reservation, usage_error='stale_reservation_generation',
+                                reservation_generation_mismatch=True))
+            all_consumed = False
+            continue
+        promo = PromoCode.objects.filter(pk=reservation.get('promo_id')).first()
+        if promo is None:
+            failed = dict(reservation, usage_error='promo_missing', reservation_generation_mismatch=True)
+            updated.append(failed)
+            all_consumed = False
+            continue
+        proxy = _component_attempt(attempt, promo, reservation)
+        success = _consume_single_payment_attempt_promo(proxy, order=order)
+        updated.append(proxy.event_state['promo_reservation'])
+        all_consumed = success and all_consumed
+    state['promo_reservations'] = updated
+    state['promo_reservation'] = dict(updated[0])
+    if all_consumed:
+        state.pop('promo_consumption_pending', None)
+    else:
+        state['promo_consumption_pending'] = True
+    attempt.event_state = state
+    return all_consumed
+
+
+def _component_attempt(attempt, promo, reservation):
+    proxy = SimpleNamespace(
+        promo_code=promo, user_id=attempt.user_id, user=attempt.user,
+        checkout_series_key=attempt.checkout_series_key,
+        checkout_generation=attempt.checkout_generation,
+        event_state={'promo_reservation': dict(reservation)},
+    )
+    if attempt.checkout_series_key and attempt.checkout_generation:
+        try:
+            proxy.instagram_checkout_generation = attempt.instagram_checkout_generation
+        except Exception:
+            pass
+    return proxy
+
+
+def _consume_single_payment_attempt_promo(attempt, *, order):
     """Consume a reserved slot only after its usage row exists.
 
     Payment truth must still materialize if usage persistence has an operational
@@ -262,6 +413,10 @@ def consume_payment_attempt_promo(attempt, *, order):
 
     event_state = dict(attempt.event_state or {})
     reservation = dict(event_state.get("promo_reservation") or {})
+    if (reservation.get('state') == 'consumed'
+            and reservation.get('promo_id') == promo.pk
+            and reservation.get('order_id') == order.pk):
+        return True
     was_reserved = (
         reservation.get("state") == "reserved"
         and int(reservation.get("promo_id") or 0) == promo.pk
@@ -317,7 +472,7 @@ def consume_payment_attempt_promo(attempt, *, order):
             if attempt.user_id:
                 from storefront.models import PromoCodeUsage
 
-                usage = PromoCodeUsage.objects.filter(order=order).first()
+                usage = PromoCodeUsage.objects.filter(order=order, promo_code=promo).first()
                 if usage is None:
                     PromoCodeUsage.objects.create(
                         user=attempt.user,
@@ -392,13 +547,28 @@ def consume_payment_attempt_promo(attempt, *, order):
 
 @transaction.atomic
 def release_payment_attempt_promo(attempt, *, reason="payment_terminal"):
-    """Release one invoice reservation exactly once."""
+    """Release each invoice reservation exactly once, including secondary codes."""
     from orders.models import PaymentAttempt
-    from storefront.models import PromoCode, PromoCodeGuestUsage
 
     locked = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
     event_state = dict(locked.event_state or {})
-    reservation = dict(event_state.get("promo_reservation") or {})
+    states = event_state.get('promo_reservations')
+    reservations = [dict(row) for row in states] if states else [dict(event_state.get('promo_reservation') or {})]
+    released = False
+    for reservation in reservations:
+        released = _release_reservation(locked, reservation, reason=reason) or released
+    event_state['promo_reservation'] = dict(reservations[0])
+    if states:
+        event_state['promo_reservations'] = reservations
+    locked.event_state = event_state
+    locked.save(update_fields=['event_state', 'updated'])
+    attempt.event_state = event_state
+    return released
+
+
+def _release_reservation(locked, reservation, *, reason):
+    from storefront.models import PromoCode, PromoCodeGuestUsage
+
     if reservation.get("state") != "reserved":
         return False
     if locked.checkout_series_key and locked.checkout_generation:
@@ -423,9 +593,6 @@ def release_payment_attempt_promo(attempt, *, reason="payment_terminal"):
                 "release_reason": "stale_reservation_generation",
                 "reservation_generation_mismatch": True,
             })
-            event_state["promo_reservation"] = reservation
-            locked.event_state = event_state
-            locked.save(update_fields=["event_state", "updated"])
             return False
     promo_id = reservation.get("promo_id") or locked.promo_code_id
     promo = PromoCode.objects.select_for_update().filter(pk=promo_id).first()
@@ -463,9 +630,6 @@ def release_payment_attempt_promo(attempt, *, reason="payment_terminal"):
                     else "guest_reservation_unresolved"
                 ),
             })
-            event_state["promo_reservation"] = reservation
-            locked.event_state = event_state
-            locked.save(update_fields=["event_state", "updated"])
             return False
     if (
         promo is not None
@@ -479,9 +643,6 @@ def release_payment_attempt_promo(attempt, *, reason="payment_terminal"):
         "released_at": timezone.now().isoformat(),
         "release_reason": str(reason or "payment_terminal")[:128],
     })
-    event_state["promo_reservation"] = reservation
-    locked.event_state = event_state
-    locked.save(update_fields=["event_state", "updated"])
     if guest_usage is not None:
         guest_usage.state = PromoCodeGuestUsage.State.RELEASED
         guest_usage.released_at = timezone.now()

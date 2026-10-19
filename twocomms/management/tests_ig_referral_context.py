@@ -5,7 +5,7 @@ from management.services import instagram_bot as bot
 
 
 class ReferralContextExtractionTests(SimpleTestCase):
-    def test_message_referral_is_authoritative_and_merges_event_and_postback_context(self):
+    def test_message_identity_keeps_conflicting_event_and_postback_creative_separate(self):
         payload = {
             "entry": [{
                 "messaging": [{
@@ -39,10 +39,13 @@ class ReferralContextExtractionTests(SimpleTestCase):
         self.assertEqual(sender, "ref-user")
         self.assertEqual(referral["ref"], "message-campaign")
         self.assertEqual(referral["ad_id"], "message-ad")
-        self.assertEqual(referral["source"], "ADS")
+        self.assertNotIn("source", referral)
         self.assertEqual(referral["ads_context_data"]["post_id"], "post-123")
-        self.assertEqual(referral["ads_context_data"]["ad_title"], "Hoodie")
-        self.assertEqual(referral["ads_context_data"]["video_url"], "https://cdn/video")
+        self.assertNotIn("ad_title", referral["ads_context_data"])
+        self.assertNotIn("video_url", referral["ads_context_data"])
+        self.assertEqual([row["reason"] for row in referral["_conflicting_referrals"]],
+            ["identity_conflict", "identity_conflict"])
+        self.assertEqual(referral["_conflicting_referrals"][1]["evidence"]["ad_id"], "postback-ad")
 
     def test_changes_message_referral_is_extracted(self):
         payload = {
@@ -107,7 +110,7 @@ class ReferralContextPersistenceTests(TestCase):
                         "referral": {
                             "ref": "nested-campaign",
                             "ad_id": "nested-ad",
-                            "ads_context_data": {"post_id": "post-999"},
+                            "ads_context_data": {"post_id": "post-999", "photo_url": "https://cdn.example/ad.jpg"},
                         },
                     },
                 }]
@@ -121,6 +124,11 @@ class ReferralContextPersistenceTests(TestCase):
             client.referral_payload["ads_context_data"]["post_id"],
             "post-999",
         )
+        from management.models import InstagramBotMessage
+        source = InstagramBotMessage.objects.get(mid="ref-webhook-mid")
+        self.assertEqual(source.attachment_media[0]["role"], "ad_photo")
+        self.assertTrue(source.attachment_media[0]["ad_context_only"])
+        self.assertEqual(source.attachment_media[0]["provider_object_id"], "post-999")
 
     def test_later_referral_keeps_bounded_previous_touch_history(self):
         bot._apply_referral("multi-touch-user", {

@@ -1,0 +1,11 @@
+"""Public explanation of owner Q11–12; checkout remains the authority owner."""
+VERSION = "2026-10-18.owner-payment-explanation.1"
+SOURCE = "owner:2026-10-18:Q11,Q12"
+REVIEW = "reviewed:owner-brief:2026-10-18"
+FACTS = (
+    ("payment_boundary", "current_checkout_and_manager_approval_only", "payment", (), {
+        "uk": "Основний спосіб — повна оплата. Після консультації щодо розміру, подарунка або якості й довіри можна обговорити передоплату 200 грн із післяплатою, якщо це дозволяє поточне оформлення. При викупі 200 грн зараховуються у вартість речі. При звичайній відмові після огляду всі 200 грн не повертаються; це не лише фактична вартість доставки. За післяплату перевізник стягує окрему комісію. Підтверджений брак або помилка магазину — окремий сервісний розгляд.",
+        "ru": "Основной способ — полная оплата. После консультации по размеру, подарку или качеству и доверию можно обсудить предоплату 200 грн с наложенным платежом, если это допускает текущее оформление. При выкупе 200 грн засчитываются в стоимость вещи. При обычном отказе после осмотра все 200 грн не возвращаются; это не только фактическая стоимость доставки. За наложенный платёж перевозчик взимает отдельную комиссию. Подтверждённый брак или ошибка магазина — отдельное сервисное рассмотрение.",
+        "en": "Full payment is the main option. After advice about sizing, a gift, quality or trust concerns, a 200 UAH deposit with cash on delivery may be discussed when the current checkout permits it. On collection, the 200 UAH counts towards the item price. For an ordinary refusal after inspection, the entire 200 UAH is retained, not just the actual shipping cost. The carrier charges a separate cash-on-delivery fee. A confirmed defect or store error requires a separate service review.",
+    }, "This public explanation grants no payment mode, discount, refund or reward entitlement. Current checkout capabilities and manager-reviewed agreements remain authoritative. Do not call a deposit full payment; do not say the customer loses nothing, invent fee percentages, or invent multi-parcel deposit settlement. Shipping eligibility comes from the canonical shipping policy and current payment mode."),
+)

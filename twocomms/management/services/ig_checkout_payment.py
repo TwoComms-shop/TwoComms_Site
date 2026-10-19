@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import secrets
 from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal
@@ -27,7 +28,7 @@ from orders.nova_poshta_documents import normalize_checkout_phone
 from orders.promo_reservations import (
     PromoReservationError,
     release_payment_attempt_promo,
-    reserve_promo_for_checkout,
+    reserve_promos_for_checkout,
 )
 
 from management.services.ig_inventory import (
@@ -290,7 +291,101 @@ def _displayed_checkout_shipping(proposal, request):
         raise CheckoutPaymentError("delivery_policy_changed", "Оновіть умови доставки перед оплатою.") from exc
 
 
-def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=None, displayed_shipping=None):
+def _checkout_promo_codes(payload):
+    raw_codes = payload.get("promo_codes", payload.get("promo_code", ""))
+    if isinstance(raw_codes, str):
+        promo_codes = [code.upper() for code in re.split(r"[\s,;]+", raw_codes.strip()) if code]
+    elif isinstance(raw_codes, (list, tuple)) and all(isinstance(code, str) for code in raw_codes):
+        promo_codes = [code.strip().upper() for code in raw_codes]
+    else:
+        raise CheckoutPaymentError("promo_invalid", "Перевірте промокоди.", field="promo_code")
+    if len(promo_codes) > 10 or any(not code or len(code) > 32 for code in promo_codes):
+        raise CheckoutPaymentError("promo_invalid", "Перевірте промокоди.", field="promo_code")
+    return promo_codes
+
+
+def _checkout_promo_details(promos, contributions, user):
+    from storefront.models import UserPromoCode
+    amounts = {promo.pk: amount for promo, amount in contributions}
+    from django.db.models import Q
+    grants = {}
+    if getattr(user, "is_authenticated", False):
+        for grant in UserPromoCode.objects.filter(user=user, promo_code_id__in=[promo.pk for promo in promos]).filter(
+                Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())):
+            prior = grants.get(grant.promo_code_id)
+            if prior is None or grant.expires_at is None or (prior.expires_at is not None and grant.expires_at > prior.expires_at):
+                grants[grant.promo_code_id] = grant
+    rows = []
+    for promo in promos:
+        grant = grants.get(promo.pk)
+        dates = [value for value in (promo.valid_until, grant.expires_at if grant else None) if value]
+        rows.append({"code": promo.code, "discount": str(amounts.get(promo.pk, Decimal("0.00"))),
+            "expires_at": min(dates).isoformat() if dates else None})
+    return rows
+
+
+@transaction.atomic
+def preview_checkout_promos(proposal, payload, *, user=None, token=None, displayed_shipping=None):
+    """Price the displayed native basket without reserving rights or creating invoices."""
+    from storefront.models import PromoCode
+    from storefront.services.promo_composition import compose_promos
+    from management.models import IgCheckoutProposal
+    from management.services.ig_checkout_cart_amendments import checkout_cart_state
+    from management.services.ig_checkout_policy import payment_choice_for_post
+    from orders.services.shipping_policy import build_shipping_snapshot, loses_automatic_free_shipping, shipping_payment_mode
+    locked = IgCheckoutProposal.objects.select_for_update().get(pk=proposal.pk)
+    require_checkout_revision(locked, payload)
+    state = checkout_cart_state(locked, token)
+    if not state["can_pay"] or locked.payment_attempt_id or locked.invoice_generations.exists():
+        raise CheckoutPaymentError("unavailable", "Оновіть пропозицію перед зміною промокодів.")
+    codes = _checkout_promo_codes(payload)
+    if codes and not locked.allow_promo:
+        raise CheckoutPaymentError("promo_unavailable", "Промокоди недоступні.", field="promo_code")
+    promos = []
+    for code in codes:
+        matches = list(PromoCode.objects.select_related("group").filter(code__iexact=code)[:2])
+        if len(matches) != 1 or not matches[0].can_be_used_by_user(user)[0]:
+            raise CheckoutPaymentError("promo_invalid", "Промокод недійсний або вже використаний.", field="promo_code")
+        promos.append(matches[0])
+    full_only, eligible = _proposal_brigade_policy(locked)
+    scopes = [promo.group_id for promo in promos if promo.group_id and promo.group.one_per_account]
+    try:
+        if len(scopes) != len(set(scopes)):
+            raise ValueError("duplicate_group")
+        if locked.negotiated_discount and any(promo.is_guest_ugc_capability() for promo in promos):
+            raise ValueError("ugc_negotiated_discount")
+        composition = compose_promos(total_amount=eligible, promos=promos)
+        raw_mode = payment_choice_for_post(locked, payload.get("payment_choice")) if locked.assisted_checkout_v2 else locked.pay_type
+        mode = shipping_payment_mode(raw_mode)
+        if full_only and mode != "online_full":
+            raise ValueError("full_only")
+    except ValueError as exc:
+        raise CheckoutPaymentError("promo_invalid", "Перевірте промокоди та спосіб оплати.", field="promo_code") from exc
+    total = max(Decimal(locked.quoted_total) - composition.discount, Decimal("0.00"))
+    if total <= 0:
+        raise CheckoutPaymentError("invalid_amount", "Сума має бути більшою за нуль.")
+    if mode == "prepay_200_cod" and total <= Decimal("200.00"):
+        mode = "online_full"
+    charge = min(total, Decimal("200.00")) if mode == "prepay_200_cod" else total
+    canonical = [promo for promo, _ in composition.contributions]
+    state.update(total=str(total), discount=str(Decimal(locked.negotiated_discount or 0) + composition.discount),
+        charge_now=str(charge), is_prepayment=charge < total, payment_preview=True,
+        promo_codes=[promo.code for promo in canonical],
+        promo_details=_checkout_promo_details(canonical, composition.contributions, user))
+    if not hasattr(locked, "assisted_commerce_execution"):
+        shipping = build_shipping_snapshot(merchandise_total=total, gross_total=locked.catalog_total,
+            discount_amount=Decimal(locked.negotiated_discount or 0) + composition.discount,
+            currency=locked.currency, cart_digest=locked.items_digest,
+            owner={"proposal_id": str(locked.public_id), "revision": locked.revision, "items_digest": locked.items_digest},
+            payment_mode=mode)
+        displayed = displayed_shipping or state.get("free_delivery")
+        shipping["ack_required"] = bool(not shipping["eligible"] and ((displayed or {}).get("ack_required") or loses_automatic_free_shipping(displayed, shipping)))
+        shipping["ack_digest"] = checkout_shipping_ack_digest(locked, shipping, promo_code=", ".join(promo.code.upper() for promo in canonical))
+        state["free_delivery"] = shipping
+    return state
+
+
+def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=None, displayed_shipping=None, payment_mode=None):
     from storefront.services.brigade_commerce import brigade_payment_error
     brigade_full_only, promo_eligible_total = _proposal_brigade_policy(proposal)
     if brigade_full_only and proposal.pay_type != proposal.PayType.ONLINE_FULL:
@@ -318,10 +413,12 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
     except NovaPoshtaSelectionError as exc:
         raise CheckoutPaymentError(exc.field, exc.message, field=exc.field) from exc
 
-    promo_code = _clean(payload.get("promo_code"), 32).upper()
+    promo_codes = _checkout_promo_codes(payload)
+    promo_code = ", ".join(promo_codes)
     promo = None
     promo_discount = Decimal("0.00")
     promo_event_state = {}
+    promo_details = []
     if promo_code:
         if not proposal.allow_promo:
             raise CheckoutPaymentError("promo_unavailable", "Промокод для этого предложения недоступен.", field="promo_code")
@@ -332,8 +429,8 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
             # a direct/replayed invocation from burning a guest capability
             # before the stacking policy rejects it.
             with transaction.atomic():
-                reservation = reserve_promo_for_checkout(
-                    code=promo_code,
+                reservation = reserve_promos_for_checkout(
+                    codes=promo_codes,
                     user=user,
                     # A prepayment is only the amount collected now. Promo value
                     # belongs to the full eligible merchandise total and therefore
@@ -342,7 +439,7 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
                 )
                 if (
                     Decimal(str(proposal.negotiated_discount or 0)) > 0
-                    and reservation.promo.is_guest_ugc_capability()
+                    and any(item.is_guest_ugc_capability() for item in reservation.promos)
                 ):
                     raise CheckoutPaymentError(
                         "promo_unavailable",
@@ -358,8 +455,11 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
             )
             raise CheckoutPaymentError(error, message, field="promo_code") from exc
         promo = reservation.promo
+        promo_code = ", ".join(item.code.upper() for item in reservation.promos)
         promo_discount = reservation.discount
         promo_event_state = reservation.event_state
+        promo_details = _checkout_promo_details(reservation.promos,
+            [(item, Decimal(row["discount_amount"])) for item, row in zip(reservation.promos, reservation.event_state.get("promo_reservations", []))], user)
 
     order_payable = max(
         Decimal(proposal.quoted_total) - promo_discount,
@@ -367,9 +467,14 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
     )
     if order_payable <= 0:
         raise CheckoutPaymentError("invalid_amount", "Сумма заказа должна быть больше нуля.")
+    from orders.services.shipping_policy import shipping_payment_mode
+    effective_payment_mode = shipping_payment_mode(payment_mode or proposal.pay_type)
+    if effective_payment_mode == "prepay_200_cod" and order_payable <= Decimal("200.00"):
+        effective_payment_mode = "online_full"
     payment_amount = (
         min(Decimal(proposal.requested_payment_amount), order_payable)
-        if proposal.pay_type == proposal.PayType.PREPAYMENT
+        if payment_mode is None and effective_payment_mode == "prepay_200_cod"
+        else min(Decimal("200.00"), order_payable) if effective_payment_mode == "prepay_200_cod"
         else order_payable
     )
     if payment_amount <= 0:
@@ -404,9 +509,11 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
             owner={"proposal_id": str(proposal.public_id), "revision": proposal.revision,
                 "items_digest": proposal.items_digest},
             threshold=frozen_shipping["threshold"] if frozen_shipping else None,
-            evaluated_at=frozen_shipping["evaluated_at"] if frozen_shipping else None)
+            evaluated_at=frozen_shipping["evaluated_at"] if frozen_shipping else None,
+            payment_mode=effective_payment_mode,
+            **({"policy_version": frozen_shipping["policy_version"]} if frozen_shipping else {}))
         shipping["ack_required"] = (bool(frozen_ack) if frozen_shipping is not None else
-            bool((displayed or {}).get("ack_required") or loses_automatic_free_shipping(displayed, shipping)))
+            bool(not shipping["eligible"] and ((displayed or {}).get("ack_required") or loses_automatic_free_shipping(displayed, shipping))))
         shipping["ack_digest"] = checkout_shipping_ack_digest(proposal, shipping, promo_code=promo_code)
         display_changed = bool(frozen_shipping is None and displayed_shipping is not None and (
             not isinstance(payload.get("delivery_policy_digest"), str)
@@ -418,7 +525,7 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
                 field="delivery_policy_ack")
             error.free_delivery = shipping
             error.payment_preview = {"total": str(order_payable), "catalog_total": str(proposal.catalog_total),
-                "discount": str(Decimal(proposal.negotiated_discount or 0) + promo_discount), "charge_now": str(payment_amount)}
+                "discount": str(Decimal(proposal.negotiated_discount or 0) + promo_discount), "charge_now": str(payment_amount), "promo_details": promo_details, "promo_codes": [row["code"] for row in promo_details]}
             raise error
         if shipping["ack_required"]:
             frozen_ack_valid = bool(frozen_ack and frozen_ack.get("digest") == shipping["ack_digest"]
@@ -436,13 +543,14 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
                 error.free_delivery = shipping
                 error.payment_preview = {"total": str(order_payable), "catalog_total": str(proposal.catalog_total),
                     "discount": str(Decimal(proposal.negotiated_discount or 0) + promo_discount),
-                    "charge_now": str(payment_amount)}
+                    "charge_now": str(payment_amount), "promo_details": promo_details, "promo_codes": [row["code"] for row in promo_details]}
                 raise error
             shipping_ack = {"schema": "ig-checkout-delivery-policy-ack.v1",
                 "digest": shipping["ack_digest"], "proposal_id": str(proposal.public_id),
                 "revision": proposal.revision, "items_digest": proposal.items_digest,
                 "basis_total": str(order_payable), "promo_code": promo_code,
-                "mode": shipping["mode"], "payer_type": shipping["payer_type"]}
+                "mode": shipping["mode"], "payer_type": shipping["payer_type"],
+                "payment_mode": shipping.get("payment_mode"), "policy_version": shipping["policy_version"]}
     return {
         "full_name": full_name,
         "phone": phone,
@@ -454,6 +562,7 @@ def _validate_payload(proposal, payload, *, user=None, shipping_source_attempt=N
         "promo_event_state": promo_event_state,
         "order_payable": order_payable,
         "payment_amount": payment_amount,
+        "payment_mode": effective_payment_mode,
         "shipping_ack": shipping_ack,
         "shipping_policy": shipping,
     }
@@ -593,6 +702,8 @@ def checkout_shipping_ack_digest(proposal, shipping, *, promo_code=""):
         "items_digest": proposal.items_digest, "promo_code": promo_code,
         "policy": {key: shipping[key] for key in ("schema", "policy_version", "basis", "threshold",
             "basis_total", "gross_total", "discount_amount", "currency", "authority", "mode", "payer_type")}}
+    if "payment_mode" in shipping:
+        body["policy"]["payment_mode"] = shipping["payment_mode"]
     return salted_hmac("management.ig_checkout.shipping_ack.v1",
         json.dumps(body, sort_keys=True, separators=(",", ":")), algorithm="sha256").hexdigest()
 
@@ -609,7 +720,9 @@ def freeze_checkout_shipping(attempt, proposal, *, generation=None, shipping_ack
             gross_total=attempt.gross_amount, discount_amount=attempt.discount_amount,
             currency=proposal.currency, cart_digest=threshold_shipping_cart_digest(snapshot["cart"]),
             threshold=shipping_policy["threshold"] if shipping_policy is not None else None,
-            evaluated_at=shipping_policy["evaluated_at"] if shipping_policy is not None else None)
+            evaluated_at=shipping_policy["evaluated_at"] if shipping_policy is not None else None,
+            payment_mode=attempt.pay_type,
+            **({"policy_version": shipping_policy["policy_version"]} if shipping_policy is not None else {}))
         attempt.cart_snapshot = snapshot
         snapshot["threshold_delivery_contract"] = build_threshold_delivery_contract(
             attempt, proposal=proposal, generation=generation)
@@ -968,7 +1081,7 @@ def lock_proposal_details(proposal, *, payload, request, grant_id=""):
         np_warehouse_ref=values["delivery"].warehouse_ref,
         pay_type=(
             PaymentAttempt.PayType.PREPAYMENT
-            if locked.pay_type == locked.PayType.PREPAYMENT
+            if values["payment_mode"] == "prepay_200_cod"
             else PaymentAttempt.PayType.ONLINE_FULL
         ),
         cart_snapshot=_snapshot(locked),

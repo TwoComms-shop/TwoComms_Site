@@ -171,7 +171,7 @@ class ReplyTruthValidatorTests(SimpleTestCase):
             "Оплату ще не підтверджено. Замовлення не створене. "
             "Оплата не була підтверджена. Payment has not been received. "
             "Посилку ще не відправлено. Знижки 10% не буде. "
-            "Прати при 30°C, склад 100% cotton, довжина 72 см. "
+            "Довжина 72 см. "
             "Чек отримала, дякую. Клієнт написав: «" + quote + "»"
         )
         self.assertValid(
@@ -184,7 +184,11 @@ class ReplyTruthValidatorTests(SimpleTestCase):
             "Підкажи, будь ласка, який колір подобається більше: чорний чи білий?"
         )
         self.assertValid("Ваш номер звернення 12345. Можемо продовжити вибір принта.")
-        self.assertValid("Щільність тканини 190 gsm. Фото отримано. Повідомлення отримано.")
+        self.assertValid("Фото отримано. Повідомлення отримано.")
+        self.assertIn("unverified_product_material", validate_reply_truth(
+            "Щільність тканини 190 gsm.", context=ReplyTruthContext()).reasons)
+        self.assertIn("unverified_product_material", validate_reply_truth(
+            "Склад 100% cotton.", context=ReplyTruthContext()).reasons)
         self.assertValid("Колір залежить від освітлення. Size depends on fit.")
         self.assertValid("Колір футболки залежить від освітлення.")
         self.assertValid("The size chart is on the product page.")

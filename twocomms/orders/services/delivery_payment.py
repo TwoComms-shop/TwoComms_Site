@@ -34,7 +34,9 @@ def build_threshold_delivery_contract(attempt, *, proposal, generation=None):
     threshold_delivery_contract and Order.payment_payload under delivery_payment.
     Neither a copied Order JSON flag nor a live threshold grants this authority.
     """
-    from orders.services.shipping_policy import ShippingPolicyError, verify_shipping_snapshot
+    from orders.services.shipping_policy import (
+        POLICY_VERSION, ShippingPolicyError, shipping_payment_mode, verify_shipping_snapshot,
+    )
     snapshot = getattr(attempt, 'cart_snapshot', None)
     if (not isinstance(snapshot, dict) or snapshot.get('checkout_surface') != 'instagram_proposal'
             or snapshot.get('proposal_id') != str(proposal.public_id)
@@ -50,6 +52,15 @@ def build_threshold_delivery_contract(attempt, *, proposal, generation=None):
         shipping = verify_shipping_snapshot(snapshot.get('shipping'))
     except ShippingPolicyError as exc:
         raise DeliveryPaymentError(exc.reason) from exc
+    if shipping['policy_version'] == POLICY_VERSION:
+        try:
+            actual_mode = shipping_payment_mode(getattr(attempt, 'pay_type', None))
+            generation_mode = shipping_payment_mode(generation.payment_choice) if generation is not None else actual_mode
+        except ShippingPolicyError as exc:
+            raise DeliveryPaymentError(exc.reason) from exc
+        if (actual_mode == 'unknown' or shipping['payment_mode'] != actual_mode
+                or generation_mode != actual_mode):
+            raise DeliveryPaymentError('threshold_shipping_payment_mode_changed')
     items = _items(snapshot.get('cart'))
     digest = threshold_shipping_cart_digest(snapshot.get('cart'))
     gross, discount = _money(attempt.gross_amount), _money(attempt.discount_amount)
@@ -163,6 +174,14 @@ def _threshold_shipping_snapshot(order, contract, merchandise, *, item_rows):
                 or _money(order.discount_amount or '0') != _money(attempt.discount_amount)
                 or merchandise != _money(contract.get('merchandise_total'))):
             raise DeliveryPaymentError('threshold_shipping_order_changed')
+        from orders.services.shipping_policy import POLICY_VERSION, shipping_payment_mode
+        if (contract['shipping']['policy_version'] == POLICY_VERSION
+                and shipping_payment_mode(getattr(order, 'pay_type', None)) != contract['shipping']['payment_mode']):
+            raise DeliveryPaymentError('threshold_shipping_order_payment_mode_changed')
+        if (contract['shipping']['policy_version'] == POLICY_VERSION and contract['mode'] == 'merchant_free'
+                and (getattr(order, 'payment_status', '') != 'paid'
+                    or _money(getattr(attempt, 'paid_amount', ZERO) or ZERO) < merchandise)):
+            raise DeliveryPaymentError('threshold_shipping_full_payment_unverified')
         result = _snapshot(merchandise, contract=contract, valid=True, source='automatic_threshold')
         return {**result, 'source_locked': True, 'shipping': dict(contract['shipping'])}
     except (DeliveryPaymentError, TypeError, ValueError, KeyError, AttributeError) as exc:

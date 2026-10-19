@@ -6158,6 +6158,39 @@ def _client_memory_view(client, message_rows, *, current_floor):
                 <= (target.provider_created_at or target.created_at, target.pk)], **arguments)
 
 
+def _apply_canonical_journey_purchase_labels(journey, episodes):
+    """Consultation sequences never supply a purchase number in the UI."""
+    if not journey:
+        return
+    canonical = {item["id"]: item for item in episodes["items"]}
+    selectors = list((journey.get("episodes") or {}).get("items") or [])
+    if journey.get("viewed_episode"):
+        selectors.append(journey["viewed_episode"])
+    labels = {}
+    for selector in selectors:
+        item = canonical.get(selector["id"], {})
+        ordinal = item.get("purchase_ordinal") if item.get("confirmed_purchase") is True else None
+        sequence = selector.get("sequence")
+        label = f"Покупка {ordinal}" if ordinal else f"Консультація {sequence}" if sequence else "Консультація"
+        selector.update(confirmed_purchase=item.get("confirmed_purchase"), purchase_ordinal=ordinal,
+                        purchase_number=ordinal, consultation_sequence=sequence, label=label)
+        labels[selector["id"]] = label
+    for node in (journey.get("graph") or {}).get("nodes", []):
+        if str(node.get("id", "")).startswith("episode:"):
+            try:
+                episode_id = int(node["id"].split(":", 1)[1])
+            except (TypeError, ValueError):
+                continue
+            if episode_id in labels:
+                node["label"] = labels[episode_id]
+                node["summary"] = "Підтверджена покупка" if labels[episode_id].startswith("Покупка ") else "Комерційна консультація"
+    journey.setdefault("episodes", {}).update(
+        confirmed_purchase_count=episodes["confirmed_purchase_count"],
+        purchase_lineage_unknown_count=episodes["purchase_lineage_unknown_count"],
+        purchase_ordinal_basis="canonical_verified_payment_chronology",
+    )
+
+
 @login_required(login_url="management_login")
 @require_GET
 @never_cache
@@ -6204,6 +6237,8 @@ def bot_client_detail_api(request, client_id):
             return JsonResponse(
                 {"success": False, "error": "Покупку не знайдено."}, status=404,
             )
+    episodes = client_episode_payload(c)
+    _apply_canonical_journey_purchase_labels(journey, episodes)
     if request.GET.get("journey_only") == "1":
         return JsonResponse({"success": True, "journey": journey})
 
@@ -6672,7 +6707,6 @@ def bot_client_detail_api(request, client_id):
         ),
         "current_episode_source": payment_workspace["scope"],
     }
-    episodes = client_episode_payload(c)
     physical_order_count = episodes["physical_order_count"]
     from management.services.ig_analysis_materiality import (
         current_analysis_snapshot,
@@ -6769,6 +6803,8 @@ def bot_client_detail_api(request, client_id):
         "orders": {
             "count": physical_order_count,
             "physical_count": physical_order_count,
+            "confirmed_purchase_count": episodes["confirmed_purchase_count"],
+            "purchase_lineage_unknown_count": episodes["purchase_lineage_unknown_count"],
             "review_count": review_counts["total"],
             "attribution_count": attribution_total,
             "items": order_cards,
@@ -8412,6 +8448,14 @@ def bot_stats_api(request):
         "funnel_paid": funnel_clients.filter(paid_in_range=True).count(),
     }
     funnel_analytics = build_funnel_analytics(since=since, until=until)
+    from management.services.ig_conversion_cohorts import build_conversion_cohort_report
+
+    conversion_cohorts = build_conversion_cohort_report(since=since, until=until)
+    conversion_cohorts["scope"] = {
+        "includes_hidden_clients": True,
+        "requires_successful_bot_reply": False,
+        "qualification": "own_observed_commercial_inquiry",
+    }
     revenue_deals = payment_deals.filter(verified_payment_q())
     revenue_rows = list(
         revenue_deals.values(
@@ -8598,6 +8642,7 @@ def bot_stats_api(request):
         "products": product_interest,
         "ads": ad_rows,
         "funnel": funnel_analytics["steps"],
+        "conversion_cohorts": conversion_cohorts,
         "funnel_meta": {
             "source": "event_cohort",
             "backfilled": funnel_analytics["backfilled"],
@@ -8722,8 +8767,11 @@ def bot_kb_api(request):
          "is_active": q.is_active, "order": q.order}
         for q in BotQuickLink.objects.all().order_by("order", "id")[:300]
     ]
+    from storefront.models import Product, ProductStatus
+    ad_products = list(Product.objects.filter(status=ProductStatus.PUBLISHED).order_by("title", "pk").values("id", "title")[:500])
     ad_campaigns = [
         {"id": a.id, "ad_id": a.ad_id, "ref": a.ref, "title": a.title, "theme": a.theme,
+         "product_id": a.product_id, "context": a.context,
          "landing_note": a.landing_note, "is_active": a.is_active}
         for a in BotAdCampaign.objects.all().order_by("-id")[:300]
     ]
@@ -8732,6 +8780,7 @@ def bot_kb_api(request):
         "instructions": instructions,
         "quick_links": quick_links,
         "ad_campaigns": ad_campaigns,
+        "ad_products": ad_products,
         "policy": {
             "draft_revision": draft.revision,
             "draft_hash": draft.snapshot_hash,
@@ -8909,6 +8958,8 @@ def bot_kb_save_api(request):
 
     obj = model.objects.filter(id=obj_id).first() if obj_id else model()
     p = request.POST
+    if obj is None:
+        return JsonResponse({"success": False, "error": "Запис не знайдено."}, status=404)
     warnings: list[str] = []
     if kind == "quicklink":
         obj.kind = (p.get("kind") or "other")[:20]
@@ -8926,8 +8977,44 @@ def bot_kb_save_api(request):
         obj.ref = (p.get("ref") or "")[:255]
         obj.title = (p.get("title") or "")[:255]
         obj.theme = (p.get("theme") or "")[:120]
-        obj.landing_note = p.get("landing_note") or ""
+        obj.landing_note = (p.get("landing_note") or "")[:2048]
         obj.is_active = _truthy(p.get("is_active", "1"))
+        from .services.ig_ad_context import campaign_editor_context
+        from storefront.models import Product, ProductStatus
+        try:
+            raw_context = json.loads(p["context"]) if "context" in p else (obj.context or {})
+            raw_product = p.get("product_id")
+            product_id = int(raw_product) if raw_product else obj.product_id if "context" not in p else None
+            context = campaign_editor_context(raw_context, product_id=product_id, theme=obj.theme)
+            ids = [candidate["product_id"] for candidate in context["candidates"]]
+            if len(ids) != Product.objects.filter(pk__in=ids, status=ProductStatus.PUBLISHED).count():
+                raise ValueError("ad_candidates_must_be_published")
+            # Review is an authenticated action at save time, never a client-
+            # supplied reviewer name/date inside the quoted context JSON.
+            context["review"] = {}
+            if p.get("reviewed") == "1":
+                if not context["creative"]:
+                    raise ValueError("ad_review_requires_creative_reference")
+                context["review"] = {"reviewed_by": str(request.user.pk), "reviewed_at": timezone.now().isoformat()}
+            obj.context = context
+            obj.product_id = ids[0] if context["kind"] == "single_product" else None
+            if not obj.ad_id.strip() and not obj.ref.strip():
+                raise ValueError("ad_identity_required")
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            errors = {
+                "ad_candidates_must_be_published": "Виберіть опубліковані товари каталогу.",
+                "ad_review_requires_creative_reference": "Для перевіреного зв’язку вкажіть ID допису або креативу.",
+                "ad_identity_required": "Вкажіть Ad ID або ref посилання.",
+                "single_product_requires_one_candidate": "Для одного товару потрібен рівно один кандидат.",
+                "product_set_requires_candidates": "Додайте товари набору.",
+                "invalid_or_duplicate_ad_candidate": "Перевірте ID товарів і позиції: повтори не допускаються.",
+                "duplicate_ad_position": "Кожен товар має мати окрему позицію.",
+                "ad_theme_required": "Вкажіть тему реклами.",
+                "ad_kind_candidate_conflict": "Для списку товарів оберіть тип «Один товар» або «Кілька товарів».",
+            }
+            code = str(exc) if str(exc) in errors else "invalid_ad_context"
+            return JsonResponse({"success": False, "code": code,
+                "error": errors.get(code, "Перевірте тип реклами, товари та позиції (не більше 12).")}, status=400)
     obj.save()
     payload = {"success": True, "id": obj.id}
     if warnings:

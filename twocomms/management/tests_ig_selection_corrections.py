@@ -256,8 +256,18 @@ class SizeCorrectionTests(TestCase):
             prompt = render_client_state_prompt(after.state, budget=6000)
             payload = after.as_dict()
         self.assertEqual(len(queries), 0)
-        self.assertIn('"authority":"audited_correction"', prompt.text)
-        self.assertIn('"value":"L"', prompt.text)
+        block = next(json.loads(line) for line in prompt.text.splitlines()
+            if line.startswith("{") and json.loads(line).get("slot") == "current.source_cart")
+        facts = block["value"]
+        line = next(row for row in facts["lines"] if row["line_id"] == facts["active_line_id"])
+        size_index = facts["field_columns"].index("size")
+        self.assertEqual(line["values"][size_index], "L")
+        evidence = next(group for group in line["field_evidence"] if size_index in group["fields"])
+        self.assertEqual(evidence["authority"], "audited_correction")
+        self.assertEqual(facts["source_refs"][evidence["source_ref"]]["source_message_id"], self.source.pk)
+        audit = line["audited_corrections"]["size"]
+        self.assertEqual((audit["operation"], audit["before"], audit["after"], audit["actor_id"]),
+                         ("set", "M", "L", self.actor.pk))
         self.assertEqual(payload["state"]["slots"]["choice.size"]["source_refs"][0]["id"], self.source.pk)
         self.assertEqual(before.state.as_dict()["slots"]["choice.size"]["value"], "M")
         friend = self.message("Для друга размер XL")

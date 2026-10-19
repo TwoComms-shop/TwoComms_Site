@@ -38,6 +38,9 @@ from twocomms.settings import *  # noqa: F401,F403
 # Test runs never activate a background provider from production defaults.
 # V2 publication/admission suites explicitly enable the exact gates they test;
 # legacy compatibility fixtures deliberately retain their v1 contract.
+IG_AD_METADATA_ENABLED = False
+IG_AD_METADATA_READ_TOKEN = ''
+IG_AD_METADATA_API_VERSION = ''
 IG_MEMORY_TIMELINE_ENABLED = False
 IG_MEMORY_GENERATION_ENABLED = False
 IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = False

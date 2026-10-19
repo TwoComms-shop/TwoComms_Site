@@ -29,6 +29,8 @@ REASON_CODES = (
     "unauthorized_action",
     "unverified_shipping",
     "unverified_paid_basket",
+    "unverified_product_material",
+    "unverified_product_quality",
 )
 
 CORRECTED_REQUIREMENT_RE = re.compile(
@@ -182,6 +184,7 @@ class ReplyTruthContext:
     checkout_authority: CheckoutOrderAuthority | None = None
     full_payment_confirmed: bool | None = None
     shipping_authorities: tuple[ShippingAuthority, ...] = ()
+    approved_product_assertions: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1074,6 +1077,180 @@ def _manager_availability_matches(sentence: str, context: ReplyTruthContext) -> 
     return named
 
 
+_PRODUCT_FIBERS = {
+    "cotton": re.compile(r"бавовн\w*|хлоп(?:ок|к\w*)|cotton", re.I),
+    "elastane": re.compile(r"еластан\w*|эластан\w*|elastane|spandex", re.I),
+    "polyester": re.compile(r"поліестер\w*|полиэстер\w*|polyester", re.I),
+    "wool": re.compile(r"\bвовн\w*|\bшерст\w*|\bwool\b", re.I),
+    "viscose": re.compile(r"в[іи]скоз\w*|\bviscose\b|\brayon\b", re.I),
+    "linen": re.compile(r"\bльон\w*|\bл[еь]н\b|\blinen\b", re.I),
+    "acrylic": re.compile(r"акрил\w*|\bacrylic\b", re.I),
+    "nylon": re.compile(r"нейлон\w*|\bnylon\b", re.I),
+    "silk": re.compile(r"шовк\w*|ш[её]лк\w*|\bsilk\b", re.I),
+    "synthetic": re.compile(r"\bсинтет\w*|\bsynthetic\w*", re.I),
+}
+_PRODUCT_FABRIC = re.compile(r"кул[іи]р\w*|пень[єе]\w*|тр[иіёе]х?нит\w*|фл[іи]с\w*|fleece|kulir|combed|three[- ]thread", re.I)
+_PRODUCT_DENSITY = re.compile(r"(?P<gsm>\d{2,4})\s*(?:г\s*/\s*м[²2]?|g\s*/\s*m[²2]?|gsm)(?!\w)", re.I)
+_PRODUCT_TEMPERATURE = re.compile(
+    r"(?<!\w)(?P<degrees>\d{2,3})\s*(?:°\s*[cс]|градус\w*|degrees?(?:\s+celsius)?)(?!\w)", re.I)
+_PRODUCT_WASHES = re.compile(r"(?P<count>\d+)\s*\+?\s*(?:пран\w*|стир\w*|wash\w*)", re.I)
+_PRODUCT_OWNER = re.compile(r"засновник\w*|власник\w*|основател\w*|владел\w*|founder|owner", re.I)
+_PRODUCT_CARE = re.compile(r"догляд\w*|уход\w*|рекоменд\w*|recommended\s+care|care\s+guidance", re.I)
+_PRODUCT_UNSUPPORTED_QUALITY = re.compile(r"лаборатор\w*|laboratory|lab[- ]tested|найкращ\w*\s+в\s+україн\w*|лучш\w*\s+в\s+украин\w*|best\s+in\s+ukraine|вічн\w*|вечн\w*|eternal|ніколи\s+не\s+тріск\w*|никогда\s+не\s+треск\w*|never\s+cracks?|не\s+сіда\w*\s+(?:взагалі|зовсім)|вообще\s+не\s+сад\w*|never\s+shrinks?", re.I)
+_PRODUCT_UNCERTAIN = re.compile(r"уточн\w*|перевір\w*|провер\w*|не\s+(?:зна\w*|підтвердж\w*|подтвержд\w*)|cannot\s+confirm|don't\s+know|do\s+not\s+know|will\s+check|i['’]ll\s+check|let\s+me\s+check", re.I)
+
+
+def _product_claim_negated(clause, start):
+    before = clause[max(0, start - 70):start]
+    return (_locally_negated(clause, start) or bool(re.search(
+        r"\b(?:не|not|no|without)\s+(?:(?:з|із|из|from|made|sewn|пошит\w*|сшит\w*|виготовлен\w*)\s+)?(?:\d{1,3}\s*%\s*)?$",
+        before, re.I)))
+
+
+def _product_statement_assertions(sentence, assertions, *, inherit_category=False):
+    from management.services.approved_public_facts import _GARMENT_WORDS, _UNSCOPED
+
+    if _UNSCOPED.search(sentence):
+        return ()
+    garments = {key for key, pattern in _GARMENT_WORDS.items() if pattern.search(sentence)}
+    result = []
+    for row in assertions:
+        if garments and garments != {row.get("garment")}:
+            continue
+        if row.get("scope_kind") == "current_category":
+            qualified = bool(re.search(r"(?:наш[іи]\s+)?(?:поточн\w*|актуальн\w*|текущ\w*)|(?:our\s+)?current", sentence, re.I))
+            specific = bool(re.search(r"\b(?:цей|ця|цю|цього|цієї|этот|эта|эту|этого|этой|this|that)\b", sentence, re.I))
+            if specific or (not inherit_category and (not qualified or not garments)):
+                continue
+        result.append(row)
+    return tuple(result)
+
+
+def validate_approved_product_claims(reply_text, assertions=(), *, quoted_data=()):
+    """Validate finite protected material/quality claims against one capture.
+
+    This is deliberately a bounded claim inventory, not proof of arbitrary
+    marketing prose. The same assertion/version also drives reply coverage.
+    """
+    from management.services.approved_public_facts import approved_assertion_valid
+
+    safe = tuple(row for row in assertions if approved_assertion_valid(row))
+    for sentence in _claim_sentences(str(reply_text or ""), quoted_data):
+        if "?" in sentence:
+            continue
+        # A check commitment is not a material assertion. An independent
+        # confident clause after it still needs proof.
+        sentence_allowed = _product_statement_assertions(sentence, safe)
+        for clause in re.split(r"[;:]|\b(?:але|но|but)\b", sentence, flags=re.I):
+            if (_PRODUCT_UNCERTAIN.search(clause)
+                and not re.search(r"(?:\b\d+\s*%|\b(?:зроблен\w*|сделан\w*|made|is|are|з|из)\b)", clause, re.I)
+                and not any(pattern.search(clause) for pattern in _PRODUCT_FIBERS.values())):
+                continue
+            allowed = _product_statement_assertions(clause, sentence_allowed, inherit_category=True)
+            if any(row.get("scope_kind") == "current_category" and row.get("garment") == "hoodie"
+                   and "current_hoodie_audience" in row.get("fact_keys", ()) for row in allowed):
+                for match in re.finditer(r"\b(?:regular|classic|класич\w*|классичес\w*)\b", clause, re.I):
+                    if not _product_claim_negated(clause, match.start()):
+                        return "configuration_mismatch"
+            for fiber, pattern in _PRODUCT_FIBERS.items():
+                for match in pattern.finditer(clause):
+                    if _product_claim_negated(clause, match.start()):
+                        continue
+                    amount = re.search(r"(\d{1,3})\s*%\s*(?:\w+\s+){0,1}$", clause[:match.start()])
+                    if amount is None:
+                        amount = re.match(r"\W*(\d{1,3})\s*%", clause[match.end():])
+                    if not any(any(pair[1] == fiber and (amount is None or pair[0] == int(amount.group(1)))
+                                   for pair in row.get("composition", ())) for row in allowed):
+                        return "unverified_product_material"
+            for match in _PRODUCT_DENSITY.finditer(clause):
+                gsm = int(match.group("gsm"))
+                permitted = []
+                for row in allowed:
+                    if row.get("scope_kind") == "current_category" and row.get("garment") == "tshirt":
+                        fits = list(re.finditer(r"regular|classic|oversize|класич\w*|классичес\w*|оверсайз\w*", clause[:match.start()], re.I))
+                        expected = 220 if fits and re.search(r"oversize|оверсайз", fits[-1].group(), re.I) else 190 if fits else None
+                        permitted.append(gsm == expected)
+                    else:
+                        permitted.append(row.get("gsm") == gsm)
+                if not _product_claim_negated(clause, match.start()) and (not any(permitted)
+                    or re.search(r"точн\w*|ровно|exact(?:ly)?|precisely", clause, re.I)):
+                    return "unverified_product_material"
+            for match in _PRODUCT_FABRIC.finditer(clause):
+                if _product_claim_negated(clause, match.start()):
+                    continue
+                token = match.group().casefold()
+                hoodie_only = bool(re.search(r"фл[іи]с|fleece|тр[иіёе]х?нит|three", token))
+                tee_only = bool(re.search(r"кул[іи]р|kulir", token))
+                if not allowed or (hoodie_only and not any(row["garment"] == "hoodie" for row in allowed)) or (tee_only and not any(row["garment"] == "tshirt" for row in allowed)):
+                    return "unverified_product_material"
+            origin = re.search(r"турецьк\w*|турецк\w*|туреч\w*|турци\w*|turkish|turkey", clause, re.I)
+            manufacturing = re.search(r"(?:пошит\w*|зшит\w*|сшит\w*|виготовлен\w*|изготовлен\w*)\s+(?:в|у|во)\s+(?:україн\w*|украин\w*|кита\w*|туреч\w*|турци\w*)|(?:made|sewn)\s+in\s+(?:ukraine|china|turkey)", clause, re.I)
+            manufacturing_negated = bool(manufacturing and _product_claim_negated(clause, manufacturing.start()))
+            if origin and not _product_claim_negated(clause, origin.start()) and not manufacturing_negated:
+                if (not any(row["garment"] == "tshirt" for row in allowed)
+                    or re.search(r"пошит\w*|пошив\w*|зшит\w*|сшит\w*|sewn|made\s+in", clause, re.I)):
+                    return "unverified_product_material"
+            if manufacturing and not manufacturing_negated:
+                return "unverified_product_material"
+            for match in _PRODUCT_TEMPERATURE.finditer(clause):
+                if not _locally_negated(clause, match.start()) and (int(match.group("degrees")) != 30
+                    or not any(row.get("available_fact_versions", {}).get("current_care") for row in allowed)):
+                    return "unverified_product_quality"
+            for match in _PRODUCT_WASHES.finditer(clause):
+                if _locally_negated(clause, match.start()):
+                    continue
+                if (int(match.group("count")) != 100
+                    or not any(row.get("available_fact_versions", {}).get("current_print_quality") for row in allowed)
+                    or not _PRODUCT_OWNER.search(clause)
+                    or not _PRODUCT_CARE.search(clause) or not re.search(r"понад|більш\w*|более|over|more\s+than", clause, re.I)):
+                    return "unverified_product_quality"
+            for match in _PRODUCT_UNSUPPORTED_QUALITY.finditer(clause):
+                if (not _locally_negated(clause, match.start())
+                    and not re.search(r"не\s+(?:є|явля\w*|обіця\w*|обещ\w*|гаранту\w*|гарантир\w*)|not\s+(?:a\s+)?|(?:don't|do\s+not)\s+(?:promise|guarantee)", clause[:match.start()], re.I)):
+                    return "unverified_product_quality"
+    return ""
+
+
+def approved_product_assertion_covered(reply_text, assertion, *, topic=None):
+    """A correct answer must contain the requested facts, not just its topic."""
+    from management.services.approved_public_facts import approved_assertion_valid
+
+    if not approved_assertion_valid(assertion) or validate_approved_product_claims(reply_text, (assertion,)):
+        return False
+    clauses = [clause for clause in _claim_sentences(str(reply_text or ""), ())
+               if "?" not in clause and not _PRODUCT_UNCERTAIN.search(clause)
+               and _product_statement_assertions(clause, (assertion,))]
+    text = " ".join(clauses)
+    topic = topic or assertion["topic"]
+    if topic in {"audience", "fit"}:
+        if assertion.get("scope_kind") != "current_category":
+            return False
+        key = "current_hoodie_audience" if assertion.get("garment") == "hoodie" else "current_tshirt_audience"
+        if key not in assertion.get("fact_keys", ()):
+            return False
+        if topic == "audience":
+            return bool(re.search(r"ун[іи]секс|\bunisex\b", text, re.I))
+        if assertion.get("garment") == "hoodie":
+            return bool(re.search(r"(?:злегка|слегка|slightly)\s+(?:oversiz\w*|оверсайз\w*)", text, re.I)
+                        and not re.search(r"regular|classic|класич\w*|классичес\w*", text, re.I))
+        return bool(re.search(r"regular|classic|класич\w*|классичес\w*", text, re.I)
+                    and re.search(r"oversize|оверсайз\w*", text, re.I))
+    if topic == "composition":
+        return all(any(re.search(rf"\b{amount}\s*%\s*(?:\w+\s+)?(?:{pattern.pattern})", clause, re.I)
+                       or re.search(rf"(?:{pattern.pattern})\W*{amount}\s*%", clause, re.I)
+                       for clause in clauses)
+                   for amount, fiber in assertion["composition"] for pattern in (_PRODUCT_FIBERS[fiber],))
+    if topic == "density":
+        return any(int(match.group("gsm")) in assertion.get("allowed_gsm", [assertion["gsm"]]) for match in _PRODUCT_DENSITY.finditer(text))
+    if topic == "material":
+        return bool(_PRODUCT_FABRIC.search(text))
+    if topic == "care":
+        return bool(_PRODUCT_TEMPERATURE.search(text) and _PRODUCT_CARE.search(text))
+    if topic == "quality":
+        return bool(_PRODUCT_WASHES.search(text) and _PRODUCT_OWNER.search(text) and _PRODUCT_CARE.search(text))
+    return False
+
+
 def validate_reply_truth(
     reply_text: str,
     *,
@@ -1082,6 +1259,10 @@ def validate_reply_truth(
 ) -> ReplyTruthResult:
     """Validate protected positive assertions against an explicit snapshot."""
     reasons: list[str] = []
+    product_reason = validate_approved_product_claims(reply_text, context.approved_product_assertions,
+                                                     quoted_data=context.quoted_data)
+    if product_reason:
+        _add(reasons, product_reason)
     allowed_urls = set(context.authorized_urls)
     for match in _URL_RE.finditer(str(reply_text or "")):
         url = match.group(0).rstrip(".,;:!?)]}")

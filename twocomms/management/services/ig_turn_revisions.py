@@ -134,15 +134,9 @@ def _discovered_media(message) -> list[dict]:
 
 
 def _safe_referral(value) -> dict:
-    if not isinstance(value, Mapping):
-        return {}
-    output = {
-        key: str(value.get(key) or "")[:255]
-        for key in _ALLOWED_REFERRAL_FIELDS
-        if str(value.get(key) or "").strip()
-    }
-    output["source_digest"] = _digest(dict(value))
-    return output
+    from management.services.ig_ad_context import sanitize_referral
+
+    return sanitize_referral(value)
 
 
 def _source_payload(message, *, metadata=None, previous=None, ordinal: int) -> dict:
@@ -452,6 +446,11 @@ def claim_revision_preparation(revision_id: int, *, now=None) -> RevisionClaim:
             return RevisionClaim(revision, reason="not_collecting")
         if revision.state == revision.State.COLLECTING and revision.quiet_deadline > now:
             return RevisionClaim(revision, reason="quiet_window")
+        if revision.overall_deadline <= now:
+            # Queue wait is not a preparation attempt. Preserve the untouched
+            # owner for bounded pre-generation recovery instead of creating a
+            # PREPARING claim with an already expired lease.
+            return RevisionClaim(revision, reason="preparation_deadline_exhausted")
         reserve_boundary = revision.overall_deadline - timedelta(
             seconds=SEND_RESERVE_SECONDS
         )

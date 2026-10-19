@@ -274,32 +274,10 @@ def _commerce(sources, plan, scope, *, purchases_count=0):
     return result
 
 
-def _referral(sources, scope):
-    from management.models import BotAdCampaign
+def _referral(sources, scope, *, client=None, boundary=None):
+    from management.services.ig_ad_context import capture_ad_context
 
-    refs = [(source, source.get("referral")) for source in sources
-        if isinstance(source.get("referral"), dict)
-        and any(str(source["referral"].get(key) or "").strip() for key in ("ref", "ad_id", "source", "type"))]
-    result = dict(scope=scope, status="unknown", present=False)
-    if not refs:
-        return result
-    source, ref = refs[-1]
-    result.update(present=True, source_message_id=source["message_id"], status="unresolved")
-    if not isinstance(ref, dict):
-        return result
-    query = Q()
-    if ref.get("ad_id"):
-        query |= Q(ad_id=ref["ad_id"])
-    if ref.get("ref"):
-        query |= Q(ref=ref["ref"])
-    if not query:
-        return result
-    matches = list(BotAdCampaign.objects.filter(query, is_active=True).values("pk", "product_id", "theme")[:2])
-    result.update(mapping_active=bool(matches), mapping_unique=len(matches) == 1)
-    if len(matches) == 1:
-        row = matches[0]
-        result.update(status="resolved", mapping_id=row["pk"], product_id=row["product_id"], theme=row["theme"])
-    return result
+    return capture_ad_context(sources, scope, client=client, boundary=boundary)
 
 
 def _signals(client, boundary, captured_at):
@@ -586,7 +564,7 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
             omissions.append(dict(block_id="state:" + identity, reason=reason))
             return dict(scope=scope, omission_reason=reason)
     commerce = _commerce(sources, plan, scope, purchases_count=client.purchases_count)
-    referral = optional("referral", lambda: _referral(sources, scope))
+    referral = optional("referral", lambda: _referral(sources, scope, client=client, boundary=boundary))
     def timing_capture():
         from management.services.ig_revision_conversation_context import conversation_timing_guidance
         return dict(scope=scope, guidance=conversation_timing_guidance(revision))
@@ -595,6 +573,7 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         if canonical_cart else _selection(plan, scope)),
         signals=optional("signals", lambda: _signals(client, boundary, captured_at)))
     components["source_cart"] = dict(scope=scope, capture=source_cart)
+    components["ad_context"] = deepcopy(referral)
     readiness = getattr(plan, "readiness_snapshot", None)
     if isinstance(readiness, dict) and readiness:
         components["readiness"] = dict(scope=scope, capture=deepcopy(readiness))

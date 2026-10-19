@@ -196,17 +196,31 @@ class MemoryTimelineProducerTests(AnalysisPrivacyCleanupMixin, TransactionTestCa
 
     def test_source_clamping_cannot_advance_head_past_omitted_correction(self):
         old, _ = self.head()
-        before = deepcopy(self.client.memory_provenance)
-        source = self.source("А" * (producer.TIMELINE_SOURCE_CHARS + 1) + " Не подарунок, для себе.")
+        source = self.source("А" * (producer.TIMELINE_SOURCE_CHARS + 1) + ". Не подарунок, для себе.")
         producer.enqueue_memory_source(source.pk, now=self.clock + timedelta(seconds=10))
         claim = producer.claim_memory_job(client_id=self.client.pk, now=self.clock + timedelta(seconds=14))
-        self.assertIsNone(claim)
+        self.assertIsNotNone(claim)
+        self.assertTrue(claim.capture["coverage"]["catchup_pending"])
+        self.assertLessEqual(len(claim.capture["timeline_inputs"][-1]["text"]), producer.TIMELINE_DELTA_CHARS)
+        outcome = producer.publish_memory_result(claim, self.selection(), now=self.clock + timedelta(seconds=15))
+        self.assertTrue(outcome.published, outcome.reason)
         self.client.refresh_from_db()
-        self.assertEqual(self.client.memory_producer_state["last_reason"], "timeline_delta_char_budget")
-        self.assertEqual(self.client.memory_provenance, before)
+        self.assertEqual(self.client.memory_producer_state["last_reason"], "catchup_checkpoint")
+        read = producer.read_memory_timeline(self.client, boundary=self.boundary(source))
+        self.assertEqual(read.reason, "timeline_source_catchup_pending")
+        self.assertFalse(read.text)
+        next_claim = producer.claim_memory_job(client_id=self.client.pk, now=self.clock + timedelta(seconds=16))
+        self.assertIsNotNone(next_claim)
+        correction = "Не подарунок, для себе."
+        self.assertIn(correction, next_claim.capture["timeline_inputs"][-1]["text"])
+        outcome = producer.publish_memory_result(next_claim, self.selection((source, correction, "correction")),
+            now=self.clock + timedelta(seconds=17))
+        self.assertTrue(outcome.published, outcome.reason)
+        self.client.refresh_from_db()
+        self.assertIsNone(self.client.memory_due_at)
         read = producer.read_memory_timeline(self.client, boundary=self.boundary(source))
         self.assertEqual(read.reason, "historical_as_of")
-        self.assertEqual(read.provenance["read_delta"][0]["text"], source.text)
+        self.assertIn(correction, read.text)
 
     def test_legacy_plaintext_is_not_promoted_and_v1_reader_stays_strict(self):
         with self.settings(IG_MEMORY_TIMELINE_ENABLED=False):

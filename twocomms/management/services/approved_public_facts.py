@@ -9,11 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import re
 
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
 
 
-APPROVED_PUBLIC_FACTS_VERSION = "2026-10-17.tshirt-fit-audience.1"
+APPROVED_PUBLIC_FACTS_VERSION = "2026-10-18.owner-scoped.1"
 SUPPORTED_PUBLIC_FACT_LANGUAGES = ("uk", "ru", "en")
 
 
@@ -25,6 +26,11 @@ class ApprovedPublicFact:
     public_text: str
     scope: str
     provider_directive: str = ""
+    topic: str = "general"
+    base_keys: tuple[str, ...] = ()
+    source_ref: str = "reviewed:canonical-public-facts"
+    review_status: str = "reviewed"
+    version: str = APPROVED_PUBLIC_FACTS_VERSION
 
     @property
     def body(self) -> str:
@@ -45,6 +51,8 @@ def _render_fact(fact: ApprovedPublicFact) -> ApprovedPublicFact:
         public_text=fact.public_text.replace("{dispatch_days}", _dispatch_days()),
         scope=fact.scope,
         provider_directive=fact.provider_directive.replace("{dispatch_days}", _dispatch_days()),
+        topic=fact.topic, base_keys=fact.base_keys, source_ref=fact.source_ref,
+        review_status=fact.review_status, version=fact.version,
     )
 
 
@@ -67,14 +75,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "public_assistant_identity",
         ),
         ApprovedPublicFact(
-            "current_tshirt_bases",
-            "Для поточних основ футболок: regular — 190 г/м², 95% бавовни, "
-            "5% еластану, кулірка пенье; oversize — 210–220 г/м² залежно від "
-            "основи, з вільнішими проймою, рукавом і горловиною.",
-            "current_regular_and_oversize_tshirt_bases",
-            "Називай ці дані лише для відповідної підтвердженої основи з каталогу.",
-        ),
-        ApprovedPublicFact(
             "current_tshirt_audience",
             "Поточні футболки TwoComms у класичному крої (regular) та oversize — "
             "унісекс: їх носять і жінки, і чоловіки. Класика має звичну посадку, "
@@ -84,15 +84,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "Прив'язуй його до підтвердженої футболки; не поширюй на весь каталог чи майбутні основи. "
             "Питання про жіночу або чоловічу посадку не змінює вибраний принт. "
             "Крій не підтверджує наявність, розмір або фото кожного варіанта.",
-        ),
-        ApprovedPublicFact(
-            "unconfirmed_bases",
-            "Поточні худі мають фліс, але їхній склад і щільність публічно "
-            "не підтверджені. Склад і щільність лонгсліва потребують "
-            "специфікації вибраної основи. Догляд береться з ярлика або "
-            "підтвердженої картки конкретного товару.",
-            "hoodie_and_longsleeve_fact_boundary",
-            "Не називай склад або щільність без специфікації вибраної основи.",
         ),
         ApprovedPublicFact(
             "dispatch",
@@ -124,13 +115,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "зверненні про дефект, невідповідність або обов’язкові права покупця.",
             "catalogue_service_policy_with_defect_boundary",
         ),
-        ApprovedPublicFact(
-            "payment_boundary",
-            "Умови оплати, знижок, балів і кастома підтверджуються для "
-            "конкретного checkout або погодженого менеджером сценарію.",
-            "current_checkout_and_manager_approval_only",
-            "Не вигадуй фіксовану передоплату, знижку чи право на винагороду.",
-        ),
     ),
     "ru": (
         ApprovedPublicFact(
@@ -148,14 +132,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "public_assistant_identity",
         ),
         ApprovedPublicFact(
-            "current_tshirt_bases",
-            "Для текущих основ футболок: regular — 190 г/м², 95% хлопка, "
-            "5% эластана, кулирка пенье; oversize — 210–220 г/м² в зависимости "
-            "от основы, с более свободными проймой, рукавом и горловиной.",
-            "current_regular_and_oversize_tshirt_bases",
-            "Называй эти данные только для соответствующей подтверждённой основы из каталога.",
-        ),
-        ApprovedPublicFact(
             "current_tshirt_audience",
             "Текущие футболки TwoComms классического кроя (regular) и oversize — "
             "унисекс: их носят и женщины, и мужчины. Классика имеет привычную посадку, "
@@ -165,15 +141,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "Привязывай его к подтверждённой футболке; не распространяй на весь каталог или будущие основы. "
             "Вопрос о женской или мужской посадке не меняет выбранный принт. "
             "Крой не подтверждает наличие, размер или фото каждого варианта.",
-        ),
-        ApprovedPublicFact(
-            "unconfirmed_bases",
-            "Текущие худи на флисе, но их состав и плотность публично не "
-            "подтверждены. Состав и плотность лонгслива требуют спецификации "
-            "выбранной основы. Уход берётся с ярлыка или подтверждённой карточки "
-            "конкретного товара.",
-            "hoodie_and_longsleeve_fact_boundary",
-            "Не называй состав или плотность без спецификации выбранной основы.",
         ),
         ApprovedPublicFact(
             "dispatch",
@@ -205,13 +172,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "в обращении о дефекте, несоответствии или обязательных правах покупателя.",
             "catalogue_service_policy_with_defect_boundary",
         ),
-        ApprovedPublicFact(
-            "payment_boundary",
-            "Условия оплаты, скидок, баллов и кастома подтверждаются для "
-            "конкретного checkout или согласованного менеджером сценария.",
-            "current_checkout_and_manager_approval_only",
-            "Не придумывай фиксированную предоплату, скидку или право на вознаграждение.",
-        ),
     ),
     "en": (
         ApprovedPublicFact(
@@ -230,14 +190,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "public_assistant_identity",
         ),
         ApprovedPublicFact(
-            "current_tshirt_bases",
-            "For current T-shirt bases: regular is 190 g/m², 95% cotton and "
-            "5% elastane, combed jersey; oversize is 210–220 g/m² depending on "
-            "the base, with a roomier armhole, sleeve and neckline.",
-            "current_regular_and_oversize_tshirt_bases",
-            "State these facts only for the matching confirmed catalogue base.",
-        ),
-        ApprovedPublicFact(
             "current_tshirt_audience",
             "Current TwoComms classic (regular) and oversize T-shirts are unisex: "
             "women and men wear the same styles. Classic has a regular fit; "
@@ -247,15 +199,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "Bind it to a confirmed T-shirt, not the entire catalogue or future bases. "
             "A women's or men's fit question does not change the chosen print. "
             "Cut does not prove stock, size or a photo of every variant.",
-        ),
-        ApprovedPublicFact(
-            "unconfirmed_bases",
-            "Current hoodies have fleece, but their composition and weight are "
-            "not publicly confirmed. A long-sleeve composition and weight require "
-            "the chosen base specification. Care comes from the label or a "
-            "confirmed product card.",
-            "hoodie_and_longsleeve_fact_boundary",
-            "Do not state a composition or weight without the chosen base specification.",
         ),
         ApprovedPublicFact(
             "dispatch",
@@ -286,13 +229,6 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "never automatically reject a defect, mismatch, or mandatory consumer-rights request.",
             "catalogue_service_policy_with_defect_boundary",
         ),
-        ApprovedPublicFact(
-            "payment_boundary",
-            "Payment, discount, points and custom terms are confirmed for the "
-            "specific checkout or a manager-approved scenario.",
-            "current_checkout_and_manager_approval_only",
-            "Do not invent a fixed deposit, discount, or reward entitlement.",
-        ),
     ),
 }
 
@@ -300,7 +236,19 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
 def approved_public_facts(language: str) -> tuple[ApprovedPublicFact, ...]:
     """Return facts for a supported public language, without fallback mixing."""
     try:
-        return tuple(_render_fact(fact) for fact in _FACTS[language])
+        from management.knowledge import bases, care_quality, payment
+
+        from dataclasses import replace
+
+        topics = {"brand": "brand", "assistant": "identity", "current_tshirt_audience": "fit",
+                  "dispatch": "dispatch", "service_request": "service", "delivery_delay": "service",
+                  "service_boundary": "service"}
+        canonical = {fact.key: replace(fact, topic=topics.get(fact.key, fact.topic)) for fact in _FACTS[language]}
+        for module in (bases, care_quality, payment):
+            for key, scope, topic, base_keys, translations, boundary in module.FACTS:
+                canonical[key] = ApprovedPublicFact(key, translations[language], scope, boundary,
+                    topic, base_keys, module.SOURCE, module.REVIEW, module.VERSION)
+        return tuple(_render_fact(fact) for fact in canonical.values())
     except KeyError as exc:
         raise ValueError(f"unsupported public-fact language: {language}") from exc
 
@@ -317,6 +265,9 @@ def approved_public_fact_manifest(language: str) -> dict:
                 "public_text": fact.public_text,
                 "provider_directive": fact.provider_directive,
                 "scope": fact.scope,
+                "topic": fact.topic, "base_keys": list(fact.base_keys),
+                "source_ref": fact.source_ref, "review_status": fact.review_status,
+                "version": fact.version,
             }
             for fact in facts
         ],
@@ -367,3 +318,252 @@ def approved_provider_fact_text(key: str, language: str = "uk") -> str:
         if fact.key == key:
             return fact.body
     raise KeyError(f"unknown approved public fact key: {key}")
+
+
+_TOPICS = {
+    "composition": re.compile(r"состав\w*|склад(?:\s+тканин\w*)?\b|composition|fabric\s+content", re.I),
+    "material": re.compile(r"матер[іи]ал\w*|тканин\w*|fabric|material", re.I),
+    "density": re.compile(r"щільн\w*|плотност\w*|density|gsm|г/м", re.I),
+    "care": re.compile(r"догляд\w*|ухаж\w*|уход|прати|стират\w*|wash|care|температур\w*", re.I),
+    "quality": re.compile(r"якіст\w*|качеств\w*|quality|скільки\s+пран\w*|сколько\s+стир\w*|тріск\w*|треск\w*", re.I),
+    "brand": re.compile(r"бренд\w*|brand|twocomms|засновник\w*|основател\w*|founder", re.I),
+    "identity": re.compile(r"ти\s+бот|ви\s+бот|ты\s+бот|вы\s+бот|are\s+you\s+(?:a\s+)?bot|хто\s+ти|кто\s+ты|who\s+are\s+you", re.I),
+    "fit": re.compile(r"посадк\w*|крій|крою|крой|фасон\w*|ун[іи]секс|unisex|\bfit\b|oversize|regular|жіноч\w*|женск\w*|чоловіч\w*|мужск\w*", re.I),
+    "payment": re.compile(r"оплат\w*|передоплат\w*|предоплат\w*|післяплат\w*|налож\w*|payment|deposit|cash\s+on\s+delivery", re.I),
+    "dispatch": re.compile(r"відправ\w*|отправ\w*|достав\w*|dispatch|shipping|delivery", re.I),
+    "service": re.compile(r"обмін\w*|обмен\w*|повернен\w*|возврат\w*|брак\w*|дефект\w*|exchange|return|defect", re.I),
+}
+_UNSCOPED = re.compile(r"майбут\w*|будущ\w*|наступн\w*\s+парт\w*|нов\w*\s+парт\w*|future|next\s+batch|coming\s+collection", re.I)
+_HARDWARE = re.compile(r"манжет\w*|люверс\w*|фурн[іи]тур\w*|резинк\w*|ґудзик\w*|пуговиц\w*|блискавк\w*|молни\w*|cuffs?|eyelets?|grommets?|ribbing|buttons?|zipper", re.I)
+_GARMENT_WORDS = {
+    "tshirt": re.compile(r"футбол\w*|t[- ]?shirts?", re.I),
+    "hoodie": re.compile(r"\b(?:худі|худи|hoodies?)\b", re.I),
+    "longsleeve": re.compile(r"лонгсл\w*|longsleeve\w*|long[- ]sleeve", re.I),
+    "zip_hoodie": re.compile(r"зіп\w*|зип\w*|zip[- ]?hoodie", re.I),
+}
+
+
+def knowledge_topics(sources):
+    """Finite lexical selectors over own source text; never factual authority."""
+    from management.services.ig_reply_language import own_reply_text
+
+    text = "\n".join(own_reply_text(str(row.get("text") or "")) for row in sources or ()
+                     if row.get("role", "user") == "user")
+    return tuple(key for key, pattern in _TOPICS.items() if pattern.search(text))
+
+
+def _captured_base(readiness, question):
+    """A current catalogue category is proof; a customer/model noun is not."""
+    from management.knowledge.bases import BASES
+
+    product = (readiness or {}).get("product") or {}
+    if (type(product.get("id")) is not int or product["id"] <= 0
+        or _UNSCOPED.search(question) or _HARDWARE.search(question)
+        or product.get("is_future") or product.get("is_archived")
+        or product.get("base_version") not in (None, "", "current", "2026-10-18")):
+        return "", ""
+    kind = str(product.get("category_slug") or product.get("kind") or "").strip().casefold()
+    garment = {"tshirts": "tshirt", "tshirt": "tshirt", "футболки": "tshirt", "футболка": "tshirt",
+               "hoodies": "hoodie", "hoodie": "hoodie", "худі": "hoodie", "худи": "hoodie"}.get(kind, "")
+    # The inquiry may explicitly concern a different garment from the cart.
+    mentioned = {key for key, pattern in _GARMENT_WORDS.items() if pattern.search(question)}
+    if not garment or mentioned - {garment}:
+        return "", ""
+    if garment == "hoodie":
+        return "current_hoodie", garment
+    fit = str(((readiness or {}).get("fit") or {}).get("selected") or "").casefold()
+    if not fit:
+        options = ((readiness or {}).get("fit") or {}).get("options") or []
+        if len(options) == 1 and isinstance(options[0], dict):
+            fit = str(options[0].get("code") or "").casefold()
+    fit = {"classic": "regular", "regular": "regular", "oversize": "oversize"}.get(fit, "")
+    key = "current_tshirt_" + fit if fit else "current_tshirt"
+    return (key, garment) if key in BASES or key == "current_tshirt" else ("", "")
+
+
+def requested_product_topics(question):
+    """Separate requested facts; a fabric noun in composition is not a second ask."""
+    topics = set(knowledge_topics([{"text": str(question or "")}]))
+    if "composition" in topics and "material" in topics:
+        if not re.search(r"матер[іи]ал\w*|\band\s+(?:the\s+)?fabric\b|(?:і|и|та)\s+тканин\w*", str(question), re.I):
+            topics.discard("material")
+    return tuple(key for key in ("composition", "material", "density", "care", "quality") if key in topics)
+
+
+def approved_base_assertions(readiness, *, question, language="uk"):
+    return tuple(assertion for topic in requested_product_topics(question)
+        if (assertion := approved_base_assertion(readiness, question=question, language=language, topic=topic)) is not None)
+
+
+def approved_base_assertion(readiness, *, question, language="uk", topic=None):
+    """Resolve one topic against a captured base, without DB/provider effects.
+
+    The returned assertion is shared by inquiry, prompt, fallback, coverage and
+    truth validation. It conveys no price, stock, selection or checkout right.
+    """
+    from management.knowledge.bases import BASES
+
+    if language not in SUPPORTED_PUBLIC_FACT_LANGUAGES:
+        return None
+    base_key, garment = _captured_base(readiness, str(question or ""))
+    topics = requested_product_topics(question)
+    topic = next(iter(topics), "") if topic is None else topic if topic in topics else ""
+    if not base_key or not topic or (base_key == "current_tshirt" and topic == "density"):
+        return None
+    fact_key = ("current_print_quality" if topic == "quality" else "current_care" if topic == "care"
+                else "current_hoodie_bases" if garment == "hoodie" else "current_tshirt_bases")
+    published_facts = approved_public_facts(language)
+    fact = next((item for item in published_facts if item.key == fact_key), None)
+    if fact is None or not fact.review_status.startswith("reviewed"):
+        return None
+    base = BASES.get(base_key, BASES["current_tshirt_regular"])
+    text = fact.public_text
+    if topic == "composition":
+        text = {
+            "uk": "Склад цієї основи: " + ("90% бавовни / 10% поліестеру." if garment == "hoodie" else "95% бавовни / 5% еластану."),
+            "ru": "Состав этой основы: " + ("90% хлопка / 10% полиэстера." if garment == "hoodie" else "95% хлопка / 5% эластана."),
+            "en": "This base is " + ("90% cotton / 10% polyester." if garment == "hoodie" else "95% cotton / 5% elastane."),
+        }[language]
+    elif topic == "density":
+        text = {"uk": f"Щільність цієї основи — близько {base['gsm']} г/м².",
+                "ru": f"Плотность этой основы — около {base['gsm']} г/м².",
+                "en": f"This base is approximately {base['gsm']} g/m²."}[language]
+    elif topic == "material":
+        text = {"uk": "Тринитка пенье з флісом." if garment == "hoodie" else "Турецька кулірка пенье, 95% бавовни / 5% еластану.",
+                "ru": "Трёхнитка пенье с флисом." if garment == "hoodie" else "Турецкая кулирка пенье, 95% хлопка / 5% эластана.",
+                "en": "Combed three-thread fleece." if garment == "hoodie" else "Turkish combed kulir jersey, 95% cotton / 5% elastane."}[language]
+    elif topic == "care":
+        text = {"uk": "Радимо прати при 30°C, дотримуючись рекомендацій догляду, без агресивної хімії.",
+                "ru": "Рекомендуем стирать при 30°C, соблюдая рекомендации ухода, без агрессивной химии.",
+                "en": "Wash at 30°C, follow the care guidance and avoid harsh chemicals."}[language]
+    assertion = {"schema": "approved-base-assertion.v1", "fact_key": fact_key, "fact_version": fact.version,
+        "publication_version": APPROVED_PUBLIC_FACTS_VERSION, "source_ref": fact.source_ref,
+        "review_status": fact.review_status, "base_key": base_key, "garment": garment,
+        "product_id": readiness["product"]["id"], "topic": topic, "language": language,
+        "text": text, "question": str(question)[:500], "composition": [list(row) for row in base["composition"]],
+        "available_fact_versions": {item.key: item.version for item in published_facts
+            if item.key in {"current_care", "current_print_quality"} and item.review_status.startswith("reviewed")
+            and (base_key in item.base_keys or base_key == "current_tshirt" and "current_tshirt_regular" in item.base_keys)},
+        "gsm": base.get("gsm") if base_key != "current_tshirt" else None,
+        "catalog_authority": False, "checkout_authority": False}
+    assertion["digest"] = sha256(json.dumps(assertion, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    return assertion
+
+
+def approved_assertion_valid(assertion):
+    """Reject stale versions/changed payloads before reusing a sealed assertion."""
+    if not isinstance(assertion, dict) or assertion.get("publication_version") != APPROVED_PUBLIC_FACTS_VERSION:
+        return False
+    if assertion.get("schema") == "approved-category-assertion.v1":
+        try:
+            expected = approved_category_context(assertion.get("subject"),
+                current_catalogue_categories=assertion.get("current_catalogue_categories", ()),
+                language=assertion.get("language"))
+            return bool(expected and expected[0] == assertion)
+        except (KeyError, TypeError, ValueError):
+            return False
+    bases = {"current_tshirt_regular": ("tshirts", "regular"), "current_tshirt_oversize": ("tshirts", "oversize"),
+             "current_tshirt": ("tshirts", ""), "current_hoodie": ("hoodies", "oversize")}
+    scope = bases.get(assertion.get("base_key"))
+    if scope is None:
+        return False
+    try:
+        expected = approved_base_assertion({"product": {"id": assertion.get("product_id"), "kind": scope[0]},
+            "fit": {"selected": scope[1]}}, question=assertion.get("question", ""), language=assertion.get("language"),
+            topic=assertion.get("topic"))
+        return expected is not None and expected == assertion
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def approved_base_context(readiness, *, sources=(), language="uk"):
+    """Base proof for a captured truth context, independent of asked topic.
+
+    Selection scope alone never makes a different/future information subject
+    true. This helper performs no selection, read, publication or I/O.
+    """
+    from management.services.ig_reply_language import own_reply_text
+
+    own = "\n".join(own_reply_text(str(row.get("text") or "")) for row in sources or ()
+                    if row.get("role", "user") == "user")
+    if not _captured_base(readiness, own)[0]:
+        return ()
+    assertion = approved_base_assertion(readiness, question="composition", language=language)
+    return (assertion,) if assertion else ()
+
+
+def approved_category_context(subject, *, current_catalogue_categories=(), language="uk"):
+    """Reviewed current category facts plus captured published-category proof.
+
+    A category question and catalogue presence permit a category explanation,
+    never an assertion about an unknown individual product, SKU or its stock.
+    The caller supplies the already captured catalogue categories; no read is
+    performed here and raw garment nouns alone do not constitute capability.
+    """
+    from copy import deepcopy
+    from management.knowledge.bases import BASES
+    from management.services.ig_product_focus import information_category
+
+    if (not isinstance(subject, dict) or subject.get("schema") != "information-subject.v1"
+        or subject.get("status") != "identified" or language not in SUPPORTED_PUBLIC_FACT_LANGUAGES
+        or any(subject.get(key) is not False for key in ("future_base_requested", "unsupported_detail_requested", "specific_product_requested"))
+        or any(subject.get(key) is not False for key in ("selection_authority", "stock_authority", "checkout_authority"))
+        or not isinstance(subject.get("source_message_ids"), (list, tuple)) or not 1 <= len(subject["source_message_ids"]) <= 32
+        or any(type(value) is not int or value <= 0 for value in subject["source_message_ids"])
+        or not isinstance(current_catalogue_categories, (list, tuple, set, frozenset))
+        or len(current_catalogue_categories) > 64 or any(not isinstance(value, str) for value in current_catalogue_categories)):
+        return ()
+    categories = sorted({information_category(value) for value in current_catalogue_categories})
+    category = information_category(subject.get("category_slug"))
+    garment = subject.get("garment_type")
+    if category not in categories or (category, garment) not in {("hoodies", "hoodie"), ("tshirts", "tshirt")}:
+        return ()
+    base_key = "current_hoodie" if garment == "hoodie" else "current_tshirt"
+    base = BASES["current_hoodie" if garment == "hoodie" else "current_tshirt_regular"]
+    keys = ("current_hoodie_bases", "current_hoodie_audience") if garment == "hoodie" else ("current_tshirt_bases", "current_tshirt_audience")
+    facts = {fact.key: fact for fact in approved_public_facts(language)}
+    if any(key not in facts for key in keys):
+        return ()
+    prefix = {"uk": "Наші поточні худі" if garment == "hoodie" else "Наші поточні футболки",
+              "ru": "Наши текущие худи" if garment == "hoodie" else "Наши текущие футболки",
+              "en": "Our current hoodies" if garment == "hoodie" else "Our current T-shirts"}[language]
+    text = {
+        "uk": (prefix + " — унісекс, одна злегка oversize основа: 90% бавовни / 10% поліестеру, тринитка пенье з флісом, близько 320 г/м²."
+               if garment == "hoodie" else prefix + " — унісекс, 95% бавовни / 5% еластану, турецька кулірка пенье; regular — близько 190 г/м², oversize — близько 220 г/м²."),
+        "ru": (prefix + " — унисекс, одна слегка oversize основа: 90% хлопка / 10% полиэстера, трёхнитка пенье с флисом, около 320 г/м²."
+               if garment == "hoodie" else prefix + " — унисекс, 95% хлопка / 5% эластана, турецкая кулирка пенье; regular — около 190 г/м², oversize — около 220 г/м²."),
+        "en": (prefix + " are unisex, with one slightly oversize base: 90% cotton / 10% polyester, combed three-thread fleece, approximately 320 g/m²."
+               if garment == "hoodie" else prefix + " are unisex, 95% cotton / 5% elastane, Turkish combed kulir jersey; regular is approximately 190 g/m² and oversize approximately 220 g/m²."),
+    }[language]
+    composition = {"uk": "90% бавовни / 10% поліестеру" if garment == "hoodie" else "95% бавовни / 5% еластану",
+                   "ru": "90% хлопка / 10% полиэстера" if garment == "hoodie" else "95% хлопка / 5% эластана",
+                   "en": "90% cotton / 10% polyester" if garment == "hoodie" else "95% cotton / 5% elastane"}[language]
+    density = {"uk": "близько 320 г/м²" if garment == "hoodie" else "regular — близько 190 г/м², oversize — близько 220 г/м²",
+               "ru": "около 320 г/м²" if garment == "hoodie" else "regular — около 190 г/м², oversize — около 220 г/м²",
+               "en": "approximately 320 g/m²" if garment == "hoodie" else "regular approximately 190 g/m², oversize approximately 220 g/m²"}[language]
+    answers = {"material": text, "composition": prefix + ": " + composition + ".",
+               "density": prefix + ": " + density + "."}
+    for topic, key in (("care", "current_care"), ("quality", "current_print_quality")):
+        if key in facts:
+            # Reuse the reviewed public wording, retaining category attribution
+            # in the same sentence as each protected claim.
+            body = facts[key].public_text
+            if topic == "care":
+                body = {"uk": "Радимо прати при 30°C, дотримуючись рекомендацій догляду, без агресивної хімії.",
+                        "ru": "Рекомендуем стирать при 30°C, соблюдая рекомендации ухода, без агрессивной химии.",
+                        "en": "Wash at 30°C, follow the care guidance and avoid harsh chemicals."}[language]
+            answers[topic] = prefix + ": " + body
+    assertion = {"schema": "approved-category-assertion.v1", "scope_kind": "current_category",
+        "publication_version": APPROVED_PUBLIC_FACTS_VERSION, "fact_key": keys[0], "fact_version": facts[keys[0]].version,
+        "fact_keys": list(keys), "source_ref": facts[keys[0]].source_ref, "review_status": facts[keys[0]].review_status,
+        "base_key": base_key, "garment": garment, "category_slug": category, "topic": "category", "language": language,
+        "subject": deepcopy(subject), "current_catalogue_categories": categories, "text": text, "answer_texts": answers,
+        "available_fact_versions": {item.key: item.version for item in facts.values()
+            if item.key in {"current_care", "current_print_quality"} and item.review_status.startswith("reviewed")
+            and (base_key in item.base_keys or base_key == "current_tshirt" and "current_tshirt_regular" in item.base_keys)},
+        "composition": [list(row) for row in base["composition"]], "gsm": base["gsm"] if garment == "hoodie" else None,
+        "allowed_gsm": [320] if garment == "hoodie" else [190, 220], "product_id": None,
+        "selection_authority": False, "stock_authority": False, "catalog_authority": False,
+        "checkout_authority": False, "payment_authority": False}
+    assertion["digest"] = sha256(json.dumps(assertion, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    return (assertion,)

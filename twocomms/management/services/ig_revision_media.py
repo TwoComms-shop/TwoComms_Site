@@ -12,6 +12,7 @@ from management.models import IgClient, IgCustomerTurnRevision, InstagramBotMess
 from management.services.ig_media_manifest import (
     normalize_attachment_media,
     public_media_manifest,
+    is_ad_context_part,
 )
 
 
@@ -29,6 +30,7 @@ class CollectedRevisionMediaPart:
     byte_length: int
     inline_index: int
     data: bytes = field(repr=False)
+    ad_context_only: bool = False
 
     def inline_tuple(self) -> tuple[str, bytes]:
         return self.mime, self.data
@@ -228,6 +230,9 @@ def collect_revision_media(
                     raw_part.get("capture_outcome") or "unavailable"
                 )[:32],
             }
+            ad_context_only = is_ad_context_part(raw_part)
+            if ad_context_only:
+                header.update(ad_context_only=True, role=str(raw_part["role"]))
             sealed_outcome = header["sealed_capture_outcome"]
             if sealed_outcome != "owned":
                 unavailable += 1
@@ -266,6 +271,8 @@ def collect_revision_media(
                 and current_bytes == sealed_bytes
                 and _normalized_inline_mime(current.get("mime")) == sealed_mime
                 and current.get("private_storage") is True
+                and is_ad_context_part(current) == ad_context_only
+                and (not ad_context_only or current.get("role") == raw_part.get("role"))
             )
             if not current_matches:
                 unavailable += 1
@@ -335,6 +342,7 @@ def collect_revision_media(
                 byte_length=len(data),
                 inline_index=inline_index,
                 data=data,
+                ad_context_only=ad_context_only,
             )
             admitted.append(part)
             total_raw += len(data)

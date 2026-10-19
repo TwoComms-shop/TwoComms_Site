@@ -436,7 +436,10 @@ def _revision_response_coverage(plan, response, *, revision, local=False, checko
         coverage = assisted.coverage(plan, response, revision, coverage)
     from management.services.ig_product_inquiries import product_inquiries_for_revision
     disposition = product_inquiries_for_revision(revision, response_plan=plan)
-    if disposition.get("status") == "manager_required":
+    # Persist the backend capture even when approved facts resolve the inquiry.
+    # A refreshed transport revision must not classify that same known question
+    # again from source text alone and manufacture a manager requirement.
+    if not disposition.get("gap"):
         coverage["product_inquiry_capture"] = revision._product_inquiry_capture
     return coverage
 
@@ -675,6 +678,16 @@ class RevisionGenerationBoundary:
         lineage. This method fences this revision and its current sealed source.
         """
         from management.services.ig_response_guard import build_source_preference_fallback
+
+        def fallback_coverage(response):
+            # This proof is persisted as JSON. The backend-only inquiry
+            # capability is recomputed for the separate guarded coverage write
+            # when the admitted local reply executes; it is never proof data.
+            coverage = _revision_response_coverage(self.response_plan, response,
+                revision=self.revision, local=True)
+            coverage.pop("product_inquiry_capture", None)
+            return coverage
+
         client = IgClient.objects.get(pk=self.revision.client_id)
         from management.services.ig_reply_language import resolve_own_source_reply_language
         language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
@@ -686,7 +699,7 @@ class RevisionGenerationBoundary:
                 return candidate, {"kind": "native_chart_fallback", "version": 1, **chart_proof,
                     "revision_id": self.revision.pk, "snapshot_digest": self.revision.snapshot_digest,
                     "language": language, "source_cart_capture": self.response_plan.source_cart_capture,
-                    "coverage": _revision_response_coverage(self.response_plan, candidate, revision=self.revision, local=True),
+                    "coverage": fallback_coverage(candidate),
                     "authority_digest": self.authority.authority_digest}
         # The existing technical-holding owner creates durable manager debt
         # before this natural check reply. A source-preference-only receipt has
@@ -708,7 +721,7 @@ class RevisionGenerationBoundary:
                     "revision_id": self.revision.pk, "snapshot_digest": self.revision.snapshot_digest,
                     "candidate_digest": self.response_plan.configuration["focus_selection_candidate"]["digest"],
                     "language": language, "source_cart_capture": self.response_plan.source_cart_capture,
-                    "coverage": _revision_response_coverage(self.response_plan, candidate, revision=self.revision, local=True),
+                    "coverage": fallback_coverage(candidate),
                     "authority_digest": self.authority.authority_digest}
         fit_context = self.response_plan.fit_consultation
         if fit_context and fit_context.get("focus"):
@@ -719,11 +732,11 @@ class RevisionGenerationBoundary:
                 profile_language=client.language).template_family
             text = deterministic_fit_reply(fit_context, language=language)
             presentation_id = (fit_context["focus"]["product_id"] if fit_context.get("photos_requested")
-                and (fit_context.get("fit_photo_capability") or {}).get("photos") else None)
+                and any((fit_context.get("fit_photo_capability") or {}).get(key) for key in ("photos", "illustrations")) else None)
             candidate = ValidatedResponse(reply_text=text, controls=(ResponseControl("show_products", str(presentation_id)),)
                 if presentation_id else ())
             if text and self.validate(candidate, policy_manifest=policy_manifest).valid:
-                coverage = _revision_response_coverage(self.response_plan, candidate, revision=self.revision, local=True)
+                coverage = fallback_coverage(candidate)
                 kinds = {row["kind"] for row in self.response_plan.obligations}
                 proof = {"kind": "fit_consultation_fallback", "version": 1,
                     "revision_id": self.revision.pk, "snapshot_digest": self.revision.snapshot_digest,
@@ -768,9 +781,9 @@ class RevisionGenerationBoundary:
         if not decision.valid:
             return None, {}
         from management.services.ig_service_complaints import revision_service_complaint
-        coverage = (_revision_response_coverage(self.response_plan, response, revision=self.revision, local=True)
+        coverage = (fallback_coverage(response)
             if revision_service_complaint(self.revision) else proof.get("coverage") or
-                _revision_response_coverage(self.response_plan, response, revision=self.revision, local=True))
+                fallback_coverage(response))
         proof = {**proof, "coverage": coverage,
                  "revision_id": self.revision.pk,
                  "snapshot_digest": self.revision.snapshot_digest,
@@ -1014,7 +1027,7 @@ def _reclaim_execution(revision_id, *, settings_id=1):
             return None, ""
         lease_deadline = now + timedelta(seconds=EXECUTION_LEASE_SECONDS)
         if revision.overall_deadline <= now and revision.recovery_code != "provider_dispatch_budget":
-            from management.services.ig_revision_recovery import EXECUTION_RESUME_KEY, execution_resume_is_current
+            from management.services.ig_revision_recovery import effective_execution_receipt, execution_resume_is_current
 
             if (not settings_row or not settings_row.is_enabled or not settings_row.ai_enabled
                 or not client or client.reply_permission_epoch != revision.permission_epoch
@@ -1022,10 +1035,11 @@ def _reclaim_execution(revision_id, *, settings_id=1):
                 or client.privacy_erasure_started_at is not None or revision.active_slot != 1
                 or not execution_resume_is_current(revision, now=now)):
                 return None, ""
-            receipt = revision.action_receipts[EXECUTION_RESUME_KEY]
+            receipt = effective_execution_receipt(revision)
             if receipt["settings_id"] != settings_id or receipt["settings_permission_epoch"] != settings_row.reply_permission_epoch:
                 return None, ""
-            lease_deadline = min(lease_deadline, timezone.datetime.fromisoformat(receipt["expires_at"]))
+            fixed_expiry = timezone.datetime.fromisoformat(receipt["expires_at"])
+            lease_deadline = fixed_expiry if receipt.get("transport_tail") else min(lease_deadline, fixed_expiry)
         token = secrets.token_hex(16)
         revision.claim_token = token
         revision.claimed_at = now
@@ -1298,6 +1312,7 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
             request_context_metadata=request_context_metadata,
             captured_policy_tags=prepared_context.policy_inputs.tags if prepared_context is not None else None,
             captured_knowledge_language=prepared_context.policy_inputs.knowledge_language if prepared_context is not None else None,
+            captured_knowledge_selectors=prepared_context.policy_inputs.knowledge_selectors if prepared_context is not None else None,
             captured_reply_language=reply_language,
         )
     if not isinstance(response, ValidatedResponse) or not response.valid:
@@ -1371,9 +1386,23 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     if not truth.valid:
         return None, boundary, truth.reasons
     from management.services.ig_response_debt import record_response_coverage
+    catalog_evidence = {"artifact": artifact, "binding": media_manifest}
+    coverage_response = response
+    if any(row["kind"] == "info:size_chart" for row in boundary.response_plan.obligations):
+        prepared_effects, preparation_reasons = _prepare_effects(revision, response, settings_row,
+            response_plan=boundary.response_plan)
+        if preparation_reasons:
+            return None, boundary, preparation_reasons
+        charts = [row for row in prepared_effects if (row.get("projection_metadata") or {}).get("catalog_chart")]
+        fit_effect = next((row for row in prepared_effects if (row.get("projection_metadata") or {}).get("delivery") == "native"
+            and "fit_illustration" in (row.get("projection_metadata") or {})), None)
+        if charts or fit_effect:
+            catalog_evidence["native_size_charts"] = charts
+            catalog_evidence["native_fit_illustration"] = fit_effect
+            coverage_response = _response_with_prepared_text(response, prepared_effects)
     if not record_response_coverage(revision.pk, token, _revision_response_coverage(
-        boundary.response_plan, response, revision=revision, checkout_cart_binding=boundary.checkout_cart_binding,
-        catalog_media_evidence={"artifact": artifact, "binding": media_manifest},
+        boundary.response_plan, coverage_response, revision=revision, checkout_cart_binding=boundary.checkout_cart_binding,
+        catalog_media_evidence=catalog_evidence,
     )):
         return None, boundary, ("response_coverage_cas_failed",)
     from management.services.ig_fulfillment_context import retained_fulfillment_frame
@@ -1479,7 +1508,7 @@ def _catalog_plain_chart_requested(revision):
             continue
         text = _unquoted_text(source.text or "")
         for clause in re.findall(r"[^.!?;\n]+[?]?", text):
-            if not re.search(r"таблиц\w*|сіт\w*\s+розмір|розмір\w*\s+сіт\w*|сетк\w*|size\s+chart", clause, re.I):
+            if not re.search(r"таблиц\w*|сіт\w*\s+розмір|розмір\w*\s+сіт\w*|сетк\w*|size\s+chart|(?:обидв\w*|обе|both)\s+(?:сіт\w*|charts?|guides?)", clause, re.I):
                 continue
             if re.search(r"сказа\w*|казав|казала|говори\w*|просив|просила|просил|попрос\w*|asked|said|told", clause, re.I):
                 continue
@@ -1495,9 +1524,17 @@ def _catalog_plain_chart_requested(revision):
     if not requested:
         return False
     if not revision.client.current_product_id:
-        from management.services.ig_product_focus import capture_discussed_configuration
+        from management.services.ig_product_focus import capture_discussed_configuration, capture_product_focus, capture_fit_chart_comparison
         if not capture_discussed_configuration(revision):
-            return False
+            from management.services.ig_fit_consultation import requested_chart_fits
+            from management.services.ig_revision_catalog_assets import capture_fit_photo_capability
+            from management.services.ig_commerce_projection import capture_current_selection_lines
+            cart = (revision.generation_proposal or {}).get("source_cart_capture")
+            focus = capture_product_focus(revision, source_cart_capture=cart if cart is not None else capture_current_selection_lines(revision.client_id))
+            supported = capture_fit_photo_capability(focus["product_id"], metadata_only=True).get("supported_fits", []) if focus.get("status") == "focused" else []
+            fits = requested_chart_fits((revision.bundle_snapshot or {}).get("sources") or [], supported_fits=supported)
+            if not any(capture_fit_chart_comparison(revision, fit) for fit in fits):
+                return False
     plan = capture_response_plan(revision.client, revision=revision,
         source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
     return not plan.plan_gap and len(plan.line_plans) <= 1 and len((plan.source_cart_capture or {}).get("lines") or ()) <= 1
@@ -1587,9 +1624,43 @@ def _catalog_unavailable_chart_reason(reply):
 def _catalog_prepared_reply(reply, prepared):
     """Keep every generated answer and append only the ready producer's notice."""
     hint = str(getattr(prepared, "copy_hint", "") or "").strip()
-    if not prepared.ready or not hint or hint in reply:
+    if not hint or not prepared.ready or hint in reply:
         return reply
     return reply.rstrip() + "\n\n" + hint
+
+
+def _response_with_prepared_text(response, effects):
+    text = "\n".join(str((row.get("payload", {}).get("message") or {}).get("text") or "")
+        for row in effects if row.get("group") == "substantive_text")
+    return replace(response, reply_text=text) if text else response
+
+
+def _combined_chart_and_fit_content(revision, response, settings_row, chart, *, response_plan=None):
+    """Each requested native attachment keeps its own signed source proof."""
+    from management.services.ig_product_inquiry_presentation import prepare_fit_illustration
+
+    reply = _catalog_prepared_reply(response.reply_text, chart)
+    if not chart.effects and not chart.reasons:
+        reason = _catalog_unavailable_chart_reason(response.reply_text)
+        if reason:
+            return (), reply, (reason,)
+        hint = str(getattr(chart, "copy_hint", "") or "").strip()
+        if hint and hint not in reply:
+            reply = reply.rstrip() + "\n\n" + hint
+    from management.services.ig_fit_consultation import fit_consultation_request
+    context = response_plan.fit_consultation if response_plan is not None else None
+    wants_photos = (context or fit_consultation_request((revision.bundle_snapshot or {}).get("sources") or [])).get("photos_requested")
+    if not wants_photos:
+        return chart.effects, reply, chart.reasons
+    illustrated = prepare_fit_illustration(revision, response, settings_row,
+        context=response_plan.fit_consultation if response_plan is not None else None,
+        native_part_index=sum(row.get("group") == "template" for row in chart.effects),
+        unavailable_chart_fits=(getattr(chart, "manifest", None) or {}).get("unavailable_chart_fits", ()))
+    if not illustrated.handled:
+        return chart.effects, reply, chart.reasons
+    effects = (*chart.effects, *illustrated.effects)
+    reasons = tuple(dict.fromkeys((*chart.reasons, *illustrated.reasons)))
+    return effects, _catalog_prepared_reply(reply, illustrated), reasons
 
 
 def _prepare_visible_content(revision, response, settings_row, *, response_plan=None):
@@ -1616,6 +1687,9 @@ def _prepare_visible_content(revision, response, settings_row, *, response_plan=
             factory = prepare_catalog_chart_effect if choice["action"]["kind"] == "chart" else prepare_catalog_choice_page
             prepared = factory(revision, response, settings_row, choice=choice)
             if prepared.handled:
+                if choice["action"]["kind"] == "chart":
+                    return _combined_chart_and_fit_content(revision, response, settings_row, prepared,
+                        response_plan=response_plan)
                 return prepared.effects, _catalog_prepared_reply(reply, prepared), prepared.reasons
             # A missing/ambiguous chart was explicitly disclosed to Gemini.
             # It must not fall through to an unrelated product photograph.
@@ -1624,7 +1698,8 @@ def _prepare_visible_content(revision, response, settings_row, *, response_plan=
         if _catalog_plain_chart_requested(revision):
             prepared = prepare_catalog_chart_effect(revision, response, settings_row)
             if prepared.handled:
-                return prepared.effects, reply, prepared.reasons
+                return _combined_chart_and_fit_content(revision, response, settings_row, prepared,
+                    response_plan=response_plan)
             reason = _catalog_unavailable_chart_reason(reply)
             return (), reply, (reason,) if reason else ()
         from management.services.ig_product_inquiry_presentation import prepare_fit_illustration
@@ -1927,6 +2002,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     plan = capture_response_plan(revision.client, revision=revision, source_cart_capture=original_cart)
     fit_proof = (receipt.get("proof") or {}).get("kind") == "fit_consultation_fallback"
     chart_proof = (receipt.get("proof") or {}).get("kind") == "native_chart_fallback"
+    media_chart_proof = chart_proof or (fit_proof and any(row["kind"] == "info:size_chart" for row in plan.obligations))
     local_response = ValidatedResponse(reply_text=reply)
     if chart_proof:
         proof = receipt["proof"]
@@ -1972,7 +2048,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         facts = tuple(row for row in authority.fact_bindings if row["claim"] != CLAIM_SOURCE_PREFERENCES) + scoped.fact_bindings
         combined = sorted((*facts, *authority.offer_bindings), key=lambda item: item["claim"])
         authority = replace(authority, fact_bindings=facts, authority_digest=_digest(combined))
-    if (receipt.get("origin") == "source_preference_fallback" and not chart_proof) or (receipt.get("origin") == "static_reply" and plan.obligations):
+    if (receipt.get("origin") == "source_preference_fallback" and not media_chart_proof) or (receipt.get("origin") == "static_reply" and plan.obligations):
         from management.services.ig_response_debt import record_response_coverage
         coverage = (receipt.get("proof") or {}).get("coverage")
         if receipt.get("origin") == "static_reply":
@@ -1994,7 +2070,7 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
     if prepared.error:
         return RevisionLiveResult(revision.pk, "blocked", (prepared.error,))
     effects = prepared.effects
-    if chart_proof or (fit_proof and plan.fit_consultation.get("photos_requested")):
+    if media_chart_proof or (fit_proof and plan.fit_consultation.get("photos_requested")):
         effects, reasons = _prepare_effects(revision, local_response, settings_row, response_plan=plan)
         if reasons:
             return RevisionLiveResult(revision.pk, "blocked", reasons)
@@ -2011,11 +2087,13 @@ def _execute_deterministic_input(revision, token, settings_row, receipt, *, quic
         facts = (*authority.fact_bindings, *assets.fact_bindings)
         authority = replace(authority, fact_bindings=facts,
             authority_digest=_digest(sorted((*facts, *authority.offer_bindings), key=lambda row: row["claim"])))
-        if chart_proof:
+        if media_chart_proof:
             from management.services.ig_response_debt import record_response_coverage
-            chart = next((row for row in effects if (row.get("projection_metadata") or {}).get("catalog_chart")), None)
-            coverage = _revision_response_coverage(plan, local_response, revision=revision, local=True,
-                catalog_media_evidence={"native_size_chart": chart})
+            charts = [row for row in effects if (row.get("projection_metadata") or {}).get("catalog_chart")]
+            fit_effect = next((row for row in effects if (row.get("projection_metadata") or {}).get("delivery") == "native"
+                and "fit_illustration" in (row.get("projection_metadata") or {})), None)
+            coverage = _revision_response_coverage(plan, _response_with_prepared_text(local_response, effects), revision=revision, local=True,
+                catalog_media_evidence={"native_size_charts": charts, "native_fit_illustration": fit_effect})
             if not record_response_coverage(revision.pk, token, coverage):
                 return RevisionLiveResult(revision.pk, "blocked", ("response_coverage_cas_failed",))
     access_token = bot.get_page_token(settings_row)
@@ -2384,6 +2462,18 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
         effects, reasons = _prepare_effects(revision, response, settings_row, response_plan=boundary.response_plan)
     if reasons:
         return RevisionLiveResult(revision_id, "blocked", reasons)
+    if not checkout_requested:
+        charts = [row for row in effects if (row.get("projection_metadata") or {}).get("catalog_chart")]
+        fit_effect = next((row for row in effects if (row.get("projection_metadata") or {}).get("delivery") == "native"
+            and "fit_illustration" in (row.get("projection_metadata") or {})), None)
+        if charts or (fit_effect and fit_effect["projection_metadata"]["fit_illustration"].get("unavailable_chart_fits")):
+            from management.services.ig_response_debt import record_response_coverage
+            coverage = _revision_response_coverage(boundary.response_plan, _response_with_prepared_text(response, effects), revision=revision,
+                checkout_cart_binding=boundary.checkout_cart_binding, catalog_media_evidence={"native_size_charts": charts, "native_fit_illustration": fit_effect,
+                    "artifact": revision.generation_proposal.get("turn_intelligence") or {},
+                    "binding": revision.generation_proposal.get("request_media_manifest") or {}})
+            if not record_response_coverage(revision.pk, token, coverage):
+                return RevisionLiveResult(revision_id, "blocked", ("response_coverage_cas_failed",))
     # Credentials may perform provider I/O; obtain them before the short atomic
     # plan commit. No raw token is persisted in the revision or its effects.
     access_token = bot.get_page_token(settings_row)
@@ -2442,6 +2532,12 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
             return RevisionLiveResult(revision_id, "blocked", assets.reasons)
         facts = (*authority.fact_bindings, *assets.fact_bindings)
         authority = replace(authority, fact_bindings=facts, authority_digest=_digest(sorted((*facts, *authority.offer_bindings), key=lambda item: item["claim"])))
+    from management.services.ig_revision_recovery import reserve_proposal_transport_tail
+    tail = reserve_proposal_transport_tail(revision.pk, token, effects=effects,
+        settings_id=settings_row.pk, authority=authority)
+    if tail.state != "execution":
+        return RevisionLiveResult(revision_id, "blocked", (tail.reason,))
+    revision.refresh_from_db()
     planned = plan_revision_effects(
         revision.pk, token,
         source_message_id=int(revision.bundle_snapshot["sources"][-1]["message_id"]),
@@ -2573,6 +2669,8 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
             Q(active_slot=1) & source_producer_owned_q())))
         .order_by("lease_until", "id").values_list("id", flat=True).distinct()[:limit])
     if create_new:
+        from management.services.ig_revision_recovery import due_preparation_recovery_ids
+        candidates.extend(due_preparation_recovery_ids(limit=limit))
         candidates.extend(due_revision_ids(limit=limit, cutover_at=rollout.cutover_at))
     else:
         # Intake already admitted these sources to the revision reducer. Finish
@@ -2589,6 +2687,22 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
             continue
         presence_scope = {"lease": lease, "handle": None}
         try:
+            # An unstarted job receives its one fresh preparation window only
+            # when this worker owns its client lease and can actually run it.
+            if create_new and identity["state"] in {IgCustomerTurnRevision.State.COLLECTING, IgCustomerTurnRevision.State.PREPARING}:
+                from management.services.ig_revision_recovery import (
+                    schedule_revision_recovery, prepare_unstarted_preparation_recovery,
+                )
+                queued = IgCustomerTurnRevision.objects.only("overall_deadline", "recovery_code").get(pk=revision_id)
+                if queued.overall_deadline <= timezone.now():
+                    scheduled = schedule_revision_recovery(revision_id)
+                    if scheduled.state not in {"waiting", "spawned"}:
+                        continue
+                    fresh = prepare_unstarted_preparation_recovery(revision_id, automation_lease_token=lease)
+                    if fresh.state != "spawned" or not fresh.child_id:
+                        continue
+                    revision_id = fresh.child_id
+                    identity = {**identity, "state": IgCustomerTurnRevision.State.COLLECTING}
             if identity["state"] == IgCustomerTurnRevision.State.CLAIMED:
                 revision, token = _reclaim_execution(revision_id, settings_id=settings_row.pk)
                 if revision is None:

@@ -487,7 +487,7 @@ PREVIEW_COLOR_ALIASES = {
 
 
 def resolve_preview_render(product_type: str, fit: str, selected_color: str) -> dict:
-    """Return the real render base without changing the ordered garment color."""
+    """Resolve a constructor preview, not a photograph of the ordered garment."""
     profile = f"{product_type}:{fit or 'regular'}"
     if product_type == "longsleeve":
         profile = "longsleeve:regular"
@@ -545,13 +545,13 @@ PRODUCT_MATRIX = {
     "hoodie": {
         "label": _("Худі"),
         "eyebrow": _("Головний сценарій"),
-        "summary": _("Максимум налаштувань: тканина, посадка, колір, зони й деталі."),
-        "hero_note": _("Найзручніший старт, якщо хочете точно зібрати худі під свій принт."),
+        "summary": _("Поточне худі — злегка oversize, унісекс. Оберіть колір і зони друку."),
+        "hero_note": _("Перед і спина — прев’ю конструктора для погодження розташування, а не фото конкретного виробу. Для фото деталі чи заміру зверніться до менеджера."),
         "detail_title": _("Деталі худі"),
         "detail_note": _("Фліс і люверси зі шнурками входять у кожне худі без доплати; решта характеристик врахована у вибраній тканині."),
         "fits": [
             {"value": "regular", "label": _("Класичний"), "description": _("Базова посадка для щоденного мерчу.")},
-            {"value": "oversize", "label": _("Оверсайз"), "description": _("Більш масивний силует з відчуттям преміум-речі.")},
+            {"value": "oversize", "label": _("Злегка oversize · унісекс"), "description": _("Єдиний поточний крій худі; свободу й довжину підбирайте за мірками.")},
         ],
         "fabrics": {
             "regular": [
@@ -601,8 +601,8 @@ PRODUCT_MATRIX = {
                 },
             ],
         },
-        "default_fit": "regular",
-        "default_fabric": "standard",
+        "default_fit": "oversize",
+        "default_fabric": "premium",
         "colors": [
             {"value": "black", "label": _("Чорний"), "hex": "#151515"},
             {"value": "graphite", "label": _("Графіт"), "hex": "#3b3b3f"},
@@ -653,7 +653,7 @@ PRODUCT_MATRIX = {
         "label": _("Футболка"),
         "eyebrow": _("Швидкий старт"),
         "summary": _("Швидкий старт для принта, дропа або подарунка."),
-        "hero_note": _("Швидкий варіант, якщо потрібна футболка з фронтом, спиною або принтом на рукаві."),
+        "hero_note": _("Перед і спина — прев’ю конструктора для погодження розташування, а не фото конкретного виробу. Для фото деталі чи заміру зверніться до менеджера."),
         "detail_title": _("Деталі футболки"),
         "detail_note": _("У regular доступні звичайна або преміум тканина. Термохромна тканина доступна лише для оверсайзу."),
         "fits": [
@@ -1539,6 +1539,15 @@ def build_custom_print_config(
     add_to_cart_url: str = "",
     track_event_url: str = "",
 ) -> dict:
+    # Q02/Q04, owner brief 2026-10-18: one physical hoodie cut. Keep
+    # legacy regular definitions for saved snapshots, display labels and
+    # pricing, but never offer it as a second current cut to new customers.
+    products = deepcopy(PRODUCT_MATRIX)
+    products["hoodie"]["fits"] = [
+        item for item in products["hoodie"]["fits"] if item["value"] == "oversize"
+    ]
+    stage_profiles = deepcopy(STAGE_PROFILES)
+    stage_profiles["hoodie"]["default_fit"] = "oversize"
     return {
         "version": 2,
         "storage_key": CUSTOM_PRINT_DRAFT_STORAGE_KEY,
@@ -1556,7 +1565,7 @@ def build_custom_print_config(
         "contact_channels": deepcopy(CONTACT_CHANNELS),
         "zone_labels": deepcopy(ZONE_LABELS),
         "product_labels": deepcopy(PRODUCT_LABELS),
-        "products": deepcopy(PRODUCT_MATRIX),
+        "products": products,
         "gift_service": deepcopy(GIFT_SERVICE),
         "b2b_tier": deepcopy(B2B_TIER),
         "size_grid": list(SIZE_GRID),
@@ -1575,7 +1584,7 @@ def build_custom_print_config(
         "sleeve_mode_options": deepcopy(SLEEVE_MODE_OPTIONS),
         "sleeve_mode_default": SLEEVE_MODE_DEFAULT,
         "stage_meta": deepcopy(STAGE_META),
-        "stage_profiles": deepcopy(STAGE_PROFILES),
+        "stage_profiles": stage_profiles,
         "defaults": normalize_custom_print_snapshot({}),
     }
 
@@ -1793,7 +1802,10 @@ def normalize_custom_print_snapshot(raw_snapshot: dict | None) -> dict:
         for item in (product_config.get("fabrics") or {}).get(fit or product_config.get("default_fit") or "", [])
         if item.get("available", True) is not False
     }
-    fabric = (product_payload.get("fabric") or product_config.get("default_fabric") or "").strip()
+    # Missing fabric in a historical regular draft still means its original
+    # standard base. The new oversize default must not upgrade that old choice.
+    default_fabric = "standard" if product_type == "hoodie" and fit == "regular" else product_config.get("default_fabric")
+    fabric = (product_payload.get("fabric") or default_fabric or "").strip()
     if fabric_choices and fabric not in fabric_choices:
         available_fabrics = [
             item for item in (product_config.get("fabrics") or {}).get(fit or product_config.get("default_fit") or "", [])

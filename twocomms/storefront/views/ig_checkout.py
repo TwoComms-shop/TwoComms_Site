@@ -1178,6 +1178,18 @@ def ig_checkout_proposal(request, proposal_id):
                     raise ValueError
             except (ValueError, UnicodeDecodeError):
                 return _private_headers(JsonResponse({"error": "invalid_payload"}, status=400))
+        if payload.get("action") == "promo_preview":
+            from management.services.ig_checkout_payment import preview_checkout_promos, _displayed_checkout_shipping
+            if _rate_limited(request, "promo_preview", identity=str(proposal.public_id), limit=30, window=300):
+                return _private_headers(JsonResponse({"error": "rate_limited"}, status=429))
+            try:
+                state = preview_checkout_promos(proposal, payload, user=request.user, token=_token,
+                    displayed_shipping=_displayed_checkout_shipping(proposal, request))
+            except CheckoutPaymentError as exc:
+                return _private_headers(JsonResponse({"error": exc.code, "field": exc.field,
+                    "message": _localized_error(_checkout_language(request, proposal), exc.code, exc.message)}, status=400))
+            _record_displayed_shipping(request, proposal, state)
+            return _private_headers(JsonResponse({"cart_state": state}))
         if payload.get("action") == "cart_amendment":
             from management.services.ig_checkout import CheckoutConfigurationError
             from management.services.ig_inventory import InventoryReservationError

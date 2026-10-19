@@ -20,6 +20,7 @@ MAX_RENDER_CHARS = 4000
 TOPIC_HINTS = frozenset({
     "gift", "self_purchase", "recipient", "availability_inquiry",
     "correction", "purchase_inquiry", "other",
+    "fit_preference", "measurements", "size_history",
 })
 TIME_BASES = frozenset({"provider", "local_ingest"})
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -191,7 +192,7 @@ def _validate_event(event):
         raise TimelineError("retained_event_invalid") from None
 
 
-def build_timeline(selection, *, sources, retained_events=()):
+def build_timeline(selection, *, sources, retained_events=(), superseding_source_ids=()):
     """Build bounded history from admitted sources and exact extractive picks.
 
     Source digests/ownership are caller-owned proofs, not recomputed text hashes.
@@ -246,9 +247,9 @@ def build_timeline(selection, *, sources, retained_events=()):
         record = _record(source, pick["quote"], pick["topic"])
         existing = retained.get(identity)
         if existing is not None:
-            if existing["event_id"] != record["event_id"]:
+            if existing["event_id"] != record["event_id"] and identity not in superseding_source_ids:
                 raise TimelineError("retained_selection_conflict")
-            accepted[identity] = deepcopy(existing)
+            accepted[identity] = record if identity in superseding_source_ids else deepcopy(existing)
             continue
         accepted[identity] = record
     ordered = sorted(accepted.values(), key=lambda event: (event["event_at"], event["source_message_id"]))

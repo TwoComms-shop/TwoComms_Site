@@ -16,7 +16,7 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.cache import never_cache
 from django.contrib import messages
-from django.utils.translation import gettext as _
+from django.utils.translation import gettext as _, get_language
 from django_ratelimit.decorators import ratelimit
 from decimal import Decimal, ROUND_HALF_UP
 import logging
@@ -117,9 +117,18 @@ def _cart_shipping_metadata(approved_total, *, json_safe=False):
     total, threshold = Decimal(snapshot['basis_total']), Decimal(snapshot['threshold'])
     remaining = Decimal(snapshot['remaining'])
     convert = float if json_safe else lambda value: value
+    language = (get_language() or 'uk').split('-')[0]
+    summary = {'uk': 'Безкоштовна доставка за повної оплати від %(threshold)s грн після знижок',
+        'ru': 'Бесплатная доставка при полной оплате от %(threshold)s грн после скидок',
+        'en': 'Free delivery with full payment from UAH %(threshold)s after discounts'}
+    conditional = {'uk': 'Доставка безкоштовна за повної оплати',
+        'ru': 'Доставка бесплатная при полной оплате', 'en': 'Free delivery with full payment'}
     return {'shipping_total': convert(total), 'shipping_threshold': convert(threshold),
             'shipping_remaining': convert(remaining), 'shipping_free': snapshot['eligible'],
-            'shipping_progress': snapshot['progress']}
+            'shipping_progress': snapshot['progress'], 'shipping_conditional': snapshot.get('conditional', False),
+            'shipping_payment_mode': snapshot.get('payment_mode', 'unknown'),
+            'shipping_summary': summary.get(language, summary['uk']) % {'threshold': f'{threshold:g}'},
+            'shipping_conditional_summary': conditional.get(language, conditional['uk'])}
 
 
 def _load_cart_variants(variant_ids, *, include_images=False):
@@ -138,6 +147,59 @@ def _load_promo_code(promo_code_id):
     return retry_mysql_read(
         lambda: PromoCode.objects.select_related('group').get(id=promo_code_id)
     )
+
+
+def _cart_promo_details(promos, composition, user):
+    """Expose the actual per-right amount and expiry without a shared deadline."""
+    from storefront.models import UserPromoCode
+    amounts = {promo.pk: amount for promo, amount in composition.contributions}
+    grants = {}
+    if getattr(user, 'is_authenticated', False):
+        from django.db.models import Q
+        from django.utils import timezone
+        for grant in UserPromoCode.objects.filter(user=user, promo_code_id__in=[promo.pk for promo in promos]).filter(
+                Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())):
+            prior = grants.get(grant.promo_code_id)
+            if prior is None or grant.expires_at is None or (prior.expires_at is not None and grant.expires_at > prior.expires_at):
+                grants[grant.promo_code_id] = grant
+    details = []
+    for promo in promos:
+        grant = grants.get(promo.pk)
+        deadlines = [value for value in (promo.valid_until, grant.expires_at if grant else None) if value]
+        expiry = min(deadlines) if deadlines else None
+        details.append({'code': promo.code, 'discount': str(amounts.get(promo.pk, Decimal('0.00'))),
+            'expires_at': expiry.isoformat() if expiry else None,
+            'discount_type': promo.discount_type, 'discount_value': str(promo.discount_value),
+            'min_order_amount': str(promo.min_order_amount or 0)})
+    return details
+
+
+def _session_cart_promos(request, total_amount):
+    """Revalidate the same owned rights used by invoice creation on every reprice."""
+    from storefront.services.promo_composition import compose_promos
+    ids = request.session.get('promo_code_ids')
+    if ids is None:
+        ids = [request.session['promo_code_id']] if request.session.get('promo_code_id') else []
+    try:
+        if not isinstance(ids, list) or len(ids) > 10 or len(set(ids)) != len(ids):
+            raise ValueError('invalid_promos')
+        promos = [_load_promo_code(pk) for pk in ids]
+        user = request.user if getattr(request.user, 'is_authenticated', False) else None
+        if any(not promo.can_be_used_by_user(user)[0] for promo in promos):
+            raise ValueError('invalid_promos')
+        scopes = [promo.group_id for promo in promos if promo.group_id and promo.group.one_per_account]
+        if len(scopes) != len(set(scopes)):
+            raise ValueError('duplicate_group')
+        composition = compose_promos(total_amount=total_amount, promos=promos)
+        details = _cart_promo_details(promos, composition, request.user)
+        if promos:
+            request.session['promo_code_data'] = {**request.session.get('promo_code_data', {}), 'promos': details}
+        promos = tuple(promo for promo, _ in composition.contributions)
+        return (promos[0] if promos else None), composition.discount, promos
+    except (PromoCode.DoesNotExist, ValueError, TypeError):
+        for key in ('promo_code_id', 'promo_code_ids', 'promo_code_data'):
+            request.session.pop(key, None)
+        return None, Decimal('0.00'), ()
 
 
 # ==================== CART VIEWS ====================
@@ -1027,22 +1089,7 @@ def view_cart(request):
             # Товар удален из БД - пропускаем
             continue
 
-    # Проверяем промокод
-    promo_code = None
-    discount = Decimal('0')
-    promo_code_id = request.session.get('promo_code_id')
-
-    if promo_code_id:
-        try:
-            promo_code = _load_promo_code(promo_code_id)
-            if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
-            else:
-                # Промокод больше не валиден
-                del request.session['promo_code_id']
-                promo_code = None
-        except PromoCode.DoesNotExist:
-            del request.session['promo_code_id']
+    promo_code, discount, applied_promos = _session_cart_promos(request, brigade_pricing.promo_eligible_subtotal)
 
     total = subtotal - discount
     site_discount_total = (original_subtotal - subtotal).quantize(Decimal('0.01')) if original_subtotal >= subtotal else Decimal('0.00')
@@ -1165,7 +1212,10 @@ def view_cart(request):
             'pay_now_amount': pay_now_amount,  # НОВОЕ: начальное значение для "До сплати" (200 грн если prepay_200)
             'total_points': total_points,  # ДОБАВЛЕНО: баллы за заказ
             'promo_code': promo_code,
-            'applied_promo': promo_code,  # ДОБАВЛЕНО: алиас для шаблона
+            'applied_promo': promo_code,
+            'applied_promos': applied_promos,
+            'promo_codes_display': ', '.join(promo.code for promo in applied_promos),
+            'promo_details': request.session.get('promo_code_data', {}).get('promos', []),
             'cart_count': len(cart_items) + len(custom_items),
             'items_total_qty': total_quantity + custom_items_qty,
             'checkout_payload': checkout_payload,
@@ -1435,16 +1485,7 @@ def update_cart(request):
         line_total = line_price.line_total
         subtotal = brigade_pricing.subtotal
 
-        # Учитываем промокод
-        discount = Decimal('0')
-        promo_code_id = request.session.get('promo_code_id')
-        if promo_code_id:
-            try:
-                promo_code = _load_promo_code(promo_code_id)
-                if promo_code.can_be_used():
-                    discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
-            except PromoCode.DoesNotExist:
-                pass
+        promo_code, discount, applied_promos = _session_cart_promos(request, brigade_pricing.promo_eligible_subtotal)
 
         total = subtotal - discount
 
@@ -1526,15 +1567,7 @@ def remove_from_cart(request):
     total_qty = sum(i['qty'] for i in cart.values())
     brigade_pricing = _cart_brigade_pricing(cart)
     subtotal = brigade_pricing.subtotal
-    discount = Decimal('0')
-    promo_code_id = request.session.get('promo_code_id')
-    if promo_code_id:
-        try:
-            promo_code = _load_promo_code(promo_code_id)
-            if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
-        except PromoCode.DoesNotExist:
-            pass
+    promo_code, discount, applied_promos = _session_cart_promos(request, brigade_pricing.promo_eligible_subtotal)
 
     total = (subtotal - discount).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
@@ -1585,6 +1618,7 @@ def clear_cart(request):
     """
     request.session['cart'] = {}
     request.session.pop('promo_code_id', None)
+    request.session.pop('promo_code_ids', None)
     request.session.pop('promo_code_data', None)
     request.session.modified = True
     _reset_monobank_session(request, drop_pending=True)
@@ -1646,85 +1680,47 @@ def apply_promo_code(request):
             'error': _('Забагато спроб. Спробуйте через хвилину.'),
         }, status=429)
     try:
+        import re
+        from storefront.services.promo_composition import compose_promos
         code = request.POST.get('promo_code', '').strip()
-
-        if not code:
-            return JsonResponse({
-                'success': False,
-                'error': _('Введіть промокод')
-            }, status=400)
-
-        # Match without changing the stored or user-entered casing. Fetch at most
-        # two rows so legacy databases with case-insensitive duplicates fail
-        # closed instead of selecting an arbitrary discount/usage record.
-        promo_matches = retry_mysql_read(
-            lambda: list(
-                PromoCode.objects.select_related('group')
-                .filter(code__iexact=code)
-                .order_by('pk')[:2]
-            )
-        )
-        if not promo_matches:
-            return JsonResponse({
-                'success': False,
-                'error': _('Промокод не знайдено')
-            }, status=404)
-        if len(promo_matches) > 1:
-            cart_logger.error('ambiguous_promocode_casefold: submitted_length=%s', len(code))
-            return JsonResponse({
-                'success': False,
-                'error': _('Не вдалося однозначно визначити промокод. Зверніться до підтримки.')
-            }, status=409)
-        promo_code = promo_matches[0]
-
-        # Anonymous checkout is deliberately narrow: only an explicit private
-        # UGC bearer capability may pass this gate. Ordinary promos remain
-        # account-only even when one_time_per_user=False.
-        can_use, error_message = promo_code.can_be_used_by_user(
-            request.user if request.user.is_authenticated else None
-        )
-
-        if not can_use:
-            if not request.user.is_authenticated and not promo_code.guest_redeemable:
-                return JsonResponse({
-                    'success': False,
-                    'auth_required': True,
-                    'error': _('Промокоди доступні тільки для зареєстрованих користувачів'),
-                    'message': _('Будь ласка, увійдіть в акаунт або зареєструйтесь, щоб використати промокод'),
-                }, status=403)
-            return JsonResponse({
-                'auth_required': not request.user.is_authenticated,
-                'success': False,
-                'error': error_message
-            }, status=400)
-
-        # Рассчитываем скидку
+        codes = [value for value in re.split(r'[\s,;]+', code) if value]
+        if not codes:
+            return JsonResponse({'success': False, 'error': _('Введіть промокод')}, status=400)
+        if len(codes) > 10 or any(len(value) > 32 for value in codes) or len({value.upper() for value in codes}) != len(codes):
+            return JsonResponse({'success': False, 'error': _('Перевірте промокоди: без повторів, до 10 кодів.')}, status=400)
+        promos = []
+        for value in codes:
+            matches = retry_mysql_read(lambda value=value: list(PromoCode.objects.select_related('group').filter(
+                code__iexact=value).order_by('pk')[:2]))
+            if len(matches) != 1:
+                return JsonResponse({'success': False, 'error': _('Промокод не знайдено або не визначено однозначно')}, status=409 if len(matches) > 1 else 404)
+            promo = matches[0]
+            usable, error_message = promo.can_be_used_by_user(request.user if request.user.is_authenticated else None)
+            if not usable:
+                return JsonResponse({'success': False, 'auth_required': not request.user.is_authenticated,
+                    'error': error_message}, status=403 if not request.user.is_authenticated else 400)
+            promos.append(promo)
         cart = get_validated_cart_from_session(request)
         brigade_pricing = _cart_brigade_pricing(cart)
-        subtotal = brigade_pricing.subtotal
-        original_subtotal = brigade_pricing.original_subtotal
-        discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
-
-        if discount <= 0:
-            # Проверяем причину
-            if promo_code.min_order_amount and subtotal < promo_code.min_order_amount:
-                return JsonResponse({
-                    'success': False,
-                    'error': _('Мінімальна сума замовлення для цього промокоду: %(amount)s грн') % {'amount': promo_code.min_order_amount}
-                }, status=400)
-            return JsonResponse({
-                'success': False,
-                'error': _('Промокод не застосовується до цього замовлення')
-            }, status=400)
-
-        # Сохраняем промокод в сессию (временно, до создания заказа)
-        request.session['promo_code_id'] = promo_code.id
-        request.session['promo_code_data'] = {
-            'code': promo_code.code,
-            'discount': float(discount),
-            'discount_type': promo_code.discount_type,
-            'promo_type': promo_code.promo_type
-        }
+        subtotal, original_subtotal = brigade_pricing.subtotal, brigade_pricing.original_subtotal
+        try:
+            scopes = [promo.group_id for promo in promos if promo.group_id and promo.group.one_per_account]
+            if len(scopes) != len(set(scopes)):
+                raise ValueError('duplicate_group')
+            composition = compose_promos(total_amount=brigade_pricing.promo_eligible_subtotal, promos=promos)
+        except ValueError:
+            return JsonResponse({'success': False, 'error': _('Промокоди не застосовуються до цього замовлення')}, status=400)
+        if composition.discount <= 0:
+            return JsonResponse({'success': False, 'error': _('Промокод не застосовується до цього замовлення')}, status=400)
+        promos = tuple(promo for promo, _ in composition.contributions)
+        promo_code, discount = promos[0], composition.discount
+        joined_codes = ', '.join(promo.code for promo in promos)
+        request.session['promo_code_ids'] = [promo.pk for promo in promos]
+        request.session['promo_code_id'] = promo_code.pk
+        request.session['promo_code_data'] = {'code': joined_codes, 'discount': float(discount),
+            'discount_type': promo_code.discount_type, 'promo_type': promo_code.promo_type,
+            'promos': _cart_promo_details(promos, composition, request.user)}
+        _reset_monobank_session(request, drop_pending=True)
         request.session.modified = True
 
         # W1-4д (TECH-023): аналитическое событие применения промокода
@@ -1734,7 +1730,9 @@ def apply_promo_code(request):
                 'coupon_apply',
                 cart_value=float(subtotal),
                 metadata={
-                    'promo_code': promo_code.code,
+                    'promo_code': joined_codes,
+            'promo_codes': [promo.code for promo in promos],
+            'promo_details': request.session['promo_code_data']['promos'],
                     'promo_type': promo_code.promo_type,
                     'discount': float(discount),
                 },
@@ -1767,7 +1765,9 @@ def apply_promo_code(request):
             'discount': float(discount),
             'total': float(total),
             'message': message,
-            'promo_code': promo_code.code,
+            'promo_code': joined_codes,
+            'promo_codes': [promo.code for promo in promos],
+            'promo_details': request.session['promo_code_data']['promos'],
             'subtotal': float(subtotal),
             **brigade_pricing.public_metadata(),
             'original_subtotal': float(original_subtotal),
@@ -1803,6 +1803,8 @@ def remove_promo_code(request):
             removed_code = request.session['promo_code_data'].get('code')
             del request.session['promo_code_data']
 
+        request.session.pop('promo_code_ids', None)
+        _reset_monobank_session(request, drop_pending=True)
         if 'promo_code_id' in request.session:
             del request.session['promo_code_id']
 
@@ -2001,19 +2003,7 @@ def cart_mini(request):
     custom_items_total = custom_cart_state['custom_items_total']
     custom_items_qty = custom_cart_state['custom_items_qty']
     subtotal = Decimal(total)
-    discount = Decimal('0.00')
-    promo_code = None
-    promo_code_id = request.session.get('promo_code_id')
-    if promo_code_id:
-        try:
-            promo_code = _load_promo_code(promo_code_id)
-            if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
-            else:
-                request.session.pop('promo_code_id', None)
-                promo_code = None
-        except PromoCode.DoesNotExist:
-            request.session.pop('promo_code_id', None)
+    promo_code, discount, applied_promos = _session_cart_promos(request, brigade_pricing.promo_eligible_subtotal)
     total = max(subtotal - discount, Decimal('0.00')).quantize(Decimal('0.01'))
     combined_total = (Decimal(total) + custom_items_total).quantize(Decimal('0.01'))
     # Pending/draft custom-print prices are provisional and cannot be paid
@@ -2027,7 +2017,9 @@ def cart_mini(request):
         'total': total,
         'subtotal': subtotal,
         'discount': discount,
-        'applied_promo': promo_code.code if promo_code else None,
+        'applied_promo': ', '.join(promo.code for promo in applied_promos) or None,
+        'promo_codes': [promo.code for promo in applied_promos],
+        'promo_details': request.session.get('promo_code_data', {}).get('promos', []),
         'total_points': total_points,
         'custom_items': custom_items,
         'custom_items_total': custom_items_total,
@@ -2281,20 +2273,7 @@ def cart_items_api(request):
         except Product.DoesNotExist:
             continue
 
-    promo_code = None
-    discount = Decimal('0')
-    promo_code_id = request.session.get('promo_code_id')
-
-    if promo_code_id:
-        try:
-            promo_code = _load_promo_code(promo_code_id)
-            if promo_code.can_be_used():
-                discount = promo_code.calculate_discount(brigade_pricing.promo_eligible_subtotal)
-            else:
-                del request.session['promo_code_id']
-                promo_code = None
-        except PromoCode.DoesNotExist:
-            del request.session['promo_code_id']
+    promo_code, discount, applied_promos = _session_cart_promos(request, brigade_pricing.promo_eligible_subtotal)
 
     total = subtotal - discount
     site_discount_total = (original_subtotal - subtotal).quantize(Decimal('0.01')) if original_subtotal >= subtotal else Decimal('0.00')
@@ -2350,7 +2329,9 @@ def cart_items_api(request):
         'cart_count': total_quantity + custom_items_qty,
         'items_count': total_quantity + custom_items_qty,
         'positions_count': len(cart_items) + len(custom_items_payload),
-        'applied_promo': promo_code.code if promo_code else None,
+        'applied_promo': ', '.join(promo.code for promo in applied_promos) or None,
+        'promo_codes': [promo.code for promo in applied_promos],
+        'promo_details': request.session.get('promo_code_data', {}).get('promos', []),
         'total_savings': float(total_savings),
     })
 

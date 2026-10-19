@@ -149,24 +149,31 @@ def capture_fit_photo_capability(product_id, *, metadata_only=False):
 
     result = {"schema": FIT_PHOTO_SCHEMA, "product_id": product_id, "title": "",
         "supported_fits": [], "photos": [], "missing_fit_photos": [],
-        "examples": [], "example_product_ids": [], "capability_digest": "", "error": ""}
+        "examples": [], "illustrations": [], "example_product_ids": [], "capability_digest": "", "error": ""}
     try:
         product_id = _id(product_id)
-        product = Product.objects.filter(pk=product_id, status=ProductStatus.PUBLISHED).first()
+        product = Product.objects.select_related("category").filter(pk=product_id, status=ProductStatus.PUBLISHED).first()
         if product is None:
             raise _Unavailable("fit_photo_product_unavailable")
         configured = capture_configured_choices(product_id, metadata_only=True)
         fits = sorted({row["fit_code"] for row in configured.get("configurations", ())
                        if row.get("fit_code") in {"classic", "oversize"}})
         photos = _fit_product_photos(product)
+        if product.category.slug in {"hoodie", "hoodies"}:
+            # Owner Q02: every current actual hoodie photo depicts the same
+            # slightly oversize base. Constructor key aliases prove no second cut.
+            fits = ["oversize"] if configured.get("configurations") else []
+            photos = [{**row, "fit_code": "oversize", "fit_basis": "owner-brief-2026-10-18-current-hoodie-base"} for row in photos]
         missing = [fit for fit in fits if not any(row["fit_code"] == fit for row in photos)]
         garment = _photo_garment(product.title) or _photo_garment(product.category.name)
         if not garment:
             kinds = {row["garment_type"] for row in photos if row["garment_type"]}
             garment = next(iter(kinds)) if len(kinds) == 1 else ""
         examples = _fit_example_photos(product, missing, garment)
+        from management.services.ig_fit_illustration_assets import blank_fit_illustrations
+        illustrations = blank_fit_illustrations(product, fits)
         result.update(title=str(product.title or "TwoComms")[:200], supported_fits=fits, photos=photos,
-            missing_fit_photos=missing, examples=examples,
+            missing_fit_photos=missing, examples=examples, illustrations=illustrations,
             example_product_ids=list(dict.fromkeys(row["product_id"] for row in examples)),
             configuration_digest=configured.get("configuration_digest", ""))
         result["capability_digest"] = _digest({key: value for key, value in result.items()
@@ -395,17 +402,25 @@ def prepare_catalog_asset_control(client, effects, *, control=None):
             or any(row.get("group") == "catalog_media" or "catalog_choice" in (row.get("projection_metadata") or {})
                    for row in effects or ())):
             return {}, ("fit_illustration_effect_invalid",)
-        return {"fit_illustration_reference": fit_illustration_reference(manifest)}, ()
+        # The chart is an independent signed asset, even when both owners
+        # share one ordered native template delivery group.
+        remainder = [row for row in effects or () if row not in illustrations]
+        other, reasons = prepare_catalog_asset_control(client, remainder, control=control)
+        if reasons:
+            return {}, reasons
+        if other and set(other) not in ({"catalog_chart_reference"}, {"catalog_chart_references"}):
+            return {}, ("fit_illustration_effect_invalid",)
+        return {"fit_illustration_reference": fit_illustration_reference(manifest), **other}, ()
     charts = [row for row in effects or () if isinstance(row, Mapping)
         and "catalog_chart" in (row.get("projection_metadata") or {})]
     if charts:
         from management.services.ig_catalog_choice_presentations import catalog_chart_reference, validate_catalog_chart_metadata
-        if len(charts) != 1 or any("catalog_choice" in (row.get("projection_metadata") or {}) for row in effects or ()):
+        if not 1 <= len(charts) <= 2 or any("catalog_choice" in (row.get("projection_metadata") or {}) for row in effects or ()):
             return {}, ("catalog_choice_chart_effect_invalid",)
-        row = charts[0]
-        if not validate_catalog_chart_metadata(row["projection_metadata"], payload=row.get("payload"), group=row.get("group"), kind=row.get("kind")):
+        if any(not validate_catalog_chart_metadata(row["projection_metadata"], payload=row.get("payload"), group=row.get("group"), kind=row.get("kind")) for row in charts):
             return {}, ("catalog_choice_chart_effect_invalid",)
-        return {"catalog_chart_reference": catalog_chart_reference(row["projection_metadata"]["catalog_chart"])}, ()
+        references = [catalog_chart_reference(row["projection_metadata"]["catalog_chart"]) for row in charts]
+        return ({"catalog_chart_reference": references[0]} if len(references) == 1 else {"catalog_chart_references": references}), ()
     choices = [row for row in effects or () if isinstance(row, Mapping)
         and "catalog_choice" in (row.get("projection_metadata") or {})]
     if choices:
@@ -461,9 +476,147 @@ def prepare_catalog_asset_control(client, effects, *, control=None):
         return {}, ("catalog_asset_unavailable",)
 
 
+def _chart_selector(reference):
+    if reference.get("origin_manifest_digest"):
+        raise ValueError("catalog_combined_asset_origin_unsupported")
+    return {"digest": reference["chart_digest"], "hmac": reference["hmac"],
+        "fit_code": (reference.get("configuration_selector") or {}).get("fit_code"),
+        "comparison": (reference.get("presentation_context") or {}).get("schema") == "discussed-fit-comparison.v1",
+        "native_part_index": reference.get("native_part_index", 0),
+        "unavailable_requested_fits": reference.get("unavailable_requested_fits", [])}
+
+
+def _restore_charts(*, revision_id, client_id, settings_id, selectors):
+    from types import SimpleNamespace
+    from management.models import IgCustomerTurnRevision, InstagramBotSettings
+    from management.services.ig_catalog_choice_presentations import prepare_catalog_chart_effect, catalog_chart_reference
+    from management.services.ig_product_focus import capture_fit_chart_comparison
+    if not isinstance(selectors, list) or not 1 <= len(selectors) <= 2:
+        raise ValueError("catalog_combined_asset_reference_invalid")
+    revision = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision_id, client_id=client_id).first()
+    settings_row = InstagramBotSettings.objects.select_related("active_instruction_publication").filter(pk=settings_id).first()
+    if revision is None or settings_row is None:
+        raise ValueError("catalog_choice_chart_context_changed")
+    references = []
+    for selector in selectors:
+        context = capture_fit_chart_comparison(revision, selector["fit_code"]) if selector["comparison"] else None
+        prepared = prepare_catalog_chart_effect(revision, SimpleNamespace(control={}, reply_text=""), settings_row,
+            presentation_context=context, native_part_index=selector["native_part_index"], metadata_only=True, _single=True,
+            unavailable_requested_fits=selector["unavailable_requested_fits"])
+        if not prepared.ready or len(prepared.effects) != 1:
+            raise ValueError("catalog_choice_chart_changed")
+        reference = catalog_chart_reference(prepared.effects[0]["projection_metadata"]["catalog_chart"])
+        if _chart_selector(reference) != selector:
+            raise ValueError("catalog_choice_chart_signature_invalid")
+        references.append(reference)
+    return references
+
+
+def _compact_combined_reference(control):
+    from copy import deepcopy
+    fit = deepcopy(control["fit_illustration_reference"])
+    charts = control.get("catalog_chart_references") or [control["catalog_chart_reference"]]
+    scope = fit.pop("scope")
+    fit["item_selectors"] = [{key: row[key] for key in ("asset_kind", "asset_id", "product_id", "role")} for row in fit.pop("items")]
+    focus = fit.pop("focus")
+    fit["focus_selector"] = {"product_id": focus["product_id"], "digest": _digest(focus)}
+    return {"schema": "combined-catalog-assets.v1", "scope": scope, "fit": fit,
+        "charts": [_chart_selector(reference) for reference in charts]}
+
+
+def _restore_combined_reference(reference):
+    from copy import deepcopy
+    from management.models import IgCustomerTurnRevision
+    from management.services.ig_product_focus import capture_product_focus
+    if set(reference) != {"schema", "scope", "fit", "charts"} or reference["schema"] != "combined-catalog-assets.v1":
+        raise ValueError("catalog_combined_asset_reference_invalid")
+    fit = deepcopy(reference["fit"])
+    fit["scope"] = deepcopy(reference["scope"])
+    revision = IgCustomerTurnRevision.objects.select_related("client").filter(pk=fit["revision_id"], client_id=fit["scope"]["client_id"]).first()
+    if revision is None:
+        raise ValueError("fit_illustration_source_changed")
+    focus = capture_product_focus(revision, source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
+    selector = fit.pop("focus_selector")
+    if selector != {"product_id": focus.get("product_id"), "digest": _digest(focus)} or focus.get("status") != "focused":
+        raise ValueError("fit_illustration_focus_changed")
+    fit["focus"] = focus
+    capability = capture_fit_photo_capability(focus["product_id"], metadata_only=True)
+    if capability.get("error") or capability.get("capability_digest") != fit["capability_digest"]:
+        raise ValueError("fit_illustration_capability_changed")
+    selectors = fit.pop("item_selectors")
+    if not isinstance(selectors, list) or not 1 <= len(selectors) <= 3:
+        raise ValueError("catalog_combined_asset_reference_invalid")
+    items = []
+    for selector in selectors:
+        if set(selector) != {"asset_kind", "asset_id", "product_id", "role"}:
+            raise ValueError("catalog_combined_asset_reference_invalid")
+        role = selector["role"]
+        candidates = capability["photos"] if role == "focus" else capability["examples"] if role == "example" else capability.get("illustrations", []) if role == "blank" else []
+        matches = [row for row in candidates if all(row.get(key) == selector[key] for key in ("asset_kind", "asset_id", "product_id"))]
+        if len(matches) != 1:
+            raise ValueError("fit_illustration_asset_changed")
+        items.append({**{key: value for key, value in matches[0].items() if key != "url"}, "role": role})
+    fit["items"] = items
+    charts = _restore_charts(revision_id=fit["revision_id"], client_id=fit["scope"]["client_id"], settings_id=fit["scope"]["settings_id"], selectors=reference["charts"])
+    control = {"fit_illustration_reference": fit, **({"catalog_chart_reference": charts[0]} if len(charts) == 1 else {"catalog_chart_references": charts})}
+    if _compact_combined_reference(control) != reference:
+        raise ValueError("catalog_combined_asset_reference_invalid")
+    return control
+
+
 def build_catalog_asset_reference_binding(client, control):
     """Rebuild one claim from exact DB rows without reading asset bytes."""
     from management.services.ig_revision_authority import _base_binding
+
+    if "combined_asset_reference" in control:
+        try:
+            return build_catalog_asset_reference_binding(client, _restore_combined_reference(control["combined_asset_reference"]))
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            return None, str(exc) if isinstance(exc, ValueError) else "catalog_combined_asset_reference_invalid"
+
+    if "catalog_chart_reference_set" in control:
+        try:
+            reference = control["catalog_chart_reference_set"]
+            charts = _restore_charts(revision_id=reference["revision_id"], client_id=reference["client_id"],
+                settings_id=reference["settings_id"], selectors=reference["charts"])
+            return build_catalog_asset_reference_binding(client, {"catalog_chart_references": charts})
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            return None, str(exc) if isinstance(exc, ValueError) else "catalog_combined_asset_reference_invalid"
+
+    if "catalog_chart_references" in control or ("fit_illustration_reference" in control and "catalog_chart_reference" in control):
+        try:
+            charts = control.get("catalog_chart_references") or [control["catalog_chart_reference"]]
+            if not isinstance(charts, list) or not 1 <= len(charts) <= 2:
+                return None, "catalog_choice_chart_effect_invalid"
+            fit = control.get("fit_illustration_reference")
+            common = fit["scope"] if fit else charts[0]["scope"]
+            revision_id = fit["revision_id"] if fit else charts[0]["invitation_id"]
+            if any(reference["invitation_id"] != revision_id or (fit and reference["product_id"] != fit["focus"]["product_id"])
+                or any(common.get(key) != reference["scope"].get(key) for key in ("client_id", "igsid", "namespace", "revision_snapshot_digest", "settings_id", "settings_epoch", "client_epoch", "publication_id", "publication_version", "publication_hash")) for reference in charts):
+                return None, "catalog_combined_asset_scope_changed"
+            if len({(row.get("configuration_selector") or {}).get("fit_code") for row in charts}) != len(charts):
+                return None, "catalog_choice_chart_effect_invalid"
+            bindings = []
+            if fit:
+                binding, reason = build_catalog_asset_reference_binding(client, {"fit_illustration_reference": fit})
+                if reason:
+                    return None, reason
+                bindings.append(binding)
+            for reference in charts:
+                binding, reason = build_catalog_asset_reference_binding(client, {"catalog_chart_reference": reference})
+                if reason:
+                    return None, reason
+                bindings.append(binding)
+            selector = ({"combined_asset_reference": _compact_combined_reference(control)} if fit else {"catalog_chart_reference_set": {
+                "schema": "chart-reference-set.v1", "revision_id": revision_id, "client_id": common["client_id"],
+                "settings_id": common["settings_id"], "charts": [_chart_selector(row) for row in charts]}})
+            subjects = [binding["subjects"] for binding in bindings]
+            return _base_binding(CLAIM, client, None, selector, bindings,
+                product_ids=sorted({pk for subject in subjects for pk in subject["product_ids"]}),
+                part_count=sum(subject["part_count"] for subject in subjects),
+                asset_reference_digest=_digest([subject["asset_reference_digest"] for subject in subjects])), ""
+        except (KeyError, TypeError, ValueError):
+            return None, "catalog_combined_asset_reference_invalid"
 
     if "fit_illustration_reference" in control:
         from management.models import InstagramBotSettings

@@ -275,7 +275,10 @@ def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False
             waits.append(due)
         candidates.append(candidate)
     eligible = any(not item["skip_reason"] for item in candidates)
-    due = min(waits) if waits else None
+    # Waiting scopes remain visible in candidate_plan, but cannot delay an
+    # independently eligible project/model. This is local classification;
+    # final quota/deadline admission still belongs to before_provider.
+    due = min(waits) if waits and not eligible else None
     reason = "" if eligible else "provider_wait" if due and due < horizon else "provider_candidates_exhausted"
     return ProviderContinuation(ready=eligible, reason=reason, candidate_plan=tuple(candidates), next_due_at=due, **base)
 

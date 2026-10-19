@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import uuid
 from contextlib import contextmanager
@@ -1820,7 +1821,48 @@ def _complete_policy_after_send(task: IgFollowUpTask, client: IgClient) -> bool:
     return True
 
 
+def discount_recommendation_reason(client: IgClient) -> tuple[str, int | None]:
+    """Require the customer's own current budget barrier or personal request.
+
+    Silence, derived objection labels and a caller's negotiation boolean are
+    insufficient evidence. The resulting recommendation still needs D021
+    manager approval; it never creates an entitlement or sets a percentage.
+    """
+    message = InstagramBotMessage.objects.filter(
+        client=client, role=InstagramBotMessage.Role.USER,
+    ).order_by('-created_at', '-pk').first()
+    if message is None:
+        return '', None
+    text = str(message.text or '').casefold()
+    text = re.sub(r'"[^"]*"|“[^”]*”|«[^»]*»|‘[^’]*’|(?<!\w)\x27[^\x27\n]+\x27(?!\w)', ' ', text)
+    text = re.sub(r'(?m)^\s*>.*$', ' ', text)
+    # Quoted/history/negation is not a present request for a concession.
+    if re.search(r'\b(?:не\s+дорого|не\s+потрібн\w*\s+зниж|не\s+нужн\w*\s+скид|not\s+expensive|no\s+discount)', text):
+        return '', None
+    if re.search(r'\b(?:ви\s+(?:сказали|написали)|вы\s+(?:сказали|написали)|'
+                 r'раніше\s+(?:я|ви)|раньше\s+(?:я|вы)|you\s+(?:said|wrote))\b', text):
+        return '', None
+    if re.search(r'\b(?:не\s+(?:можу|могу)\s+(?:собі\s+|себе\s+)?(?:дозволити|позволить)|'
+                 r'(?:бракує|не\s+вистачає|не\s+хватает)\s+(?:коштів|грошей|денег)|'
+                 r'(?:поза|вище|выш[еє])\s+(?:мого\s+|моего\s+)?бюджет|'
+                 r'(?:для\s+мене|для\s+меня)\s+(?:це\s+|это\s+)?(?:надто\s+|занадто\s+|слишком\s+)?дорого|'
+                 r'(?:не\s+вклада\w*|не\s+впис\w*)\s+(?:в|у)\s+бюджет|'
+                 r'(?:can[’\x27]?t|cannot)\s+afford|(?:over|outside)\s+my\s+budget)\b', text):
+        return 'customer_budget_barrier', message.pk
+    if (re.search(r'\b(?:військов\w*|военн\w*|убд|military)\b', text)
+            and not re.search(r'\b(?:бригад\w*|підрозділ\w*|подраздел\w*|кастом\w*|custom|brigade)\b', text)):
+        # Q21: ordinary retail uses the existing programmes, rather than an
+        # individual military percentage. Brigade/custom requests go to admin.
+        return '', None
+    if re.search(r'\b(?:мож(?:на|ете|еш)|зроб(?:ите|иш)|да(?:сте|шь)|сдела(?:ете|ешь))\b.{0,30}'
+                 r'\b(?:знижк\w*|скидк\w*)|\bcan\s+you\b.{0,30}\bdiscount\b', text):
+        return 'customer_personal_discount_request', message.pk
+    return '', None
+
+
 def next_discount_percent(client: IgClient, *, explicit_negotiation: bool = False) -> int:
+    if not discount_recommendation_reason(client)[0]:
+        return 0
     current = int(client.discount_offered_percent or 0)
     if current >= 10:
         return 0
@@ -2875,6 +2917,9 @@ def discount_approval_eligibility(
         return False, "task_not_pending"
     if int(task.discount_percent or 0) <= 0:
         return False, "discount_missing"
+    if (task.manager_approval_status != IgFollowUpTask.ManagerApprovalStatus.APPROVED
+            and not discount_recommendation_reason(task.client)[0]):
+        return False, "discount_reason_unverified"
     if task.kind == IgFollowUpTask.Kind.MANAGER_TASK:
         return False, "manager_task"
     if task.meta_window_deadline and now > task.meta_window_deadline:

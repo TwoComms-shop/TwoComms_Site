@@ -4985,3 +4985,4 @@ from .ig_assisted_commerce_models import (IgAssistedCommerceRequest,
     IgAssistedCommerceImage, IgAssistedCommerceStockSync)  # noqa: E402,F401
 from .ig_checkout_cart_amendment_models import IgCheckoutCartAmendment  # noqa: E402,F401
 from .ig_checkout_cart_amendment_resolution_models import IgCheckoutCartAmendmentResolution  # noqa: E402,F401
+from .ig_ad_context_models import IgAdMetadataRecord  # noqa: E402,F401

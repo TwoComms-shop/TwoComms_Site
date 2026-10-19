@@ -468,6 +468,9 @@ def _normalize_specs(specs, recipient: str) -> list[dict]:
                 from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
                 if not validate_catalog_chart_metadata(projection, payload=payload, group=group, kind=kind):
                     raise ValueError("effect_projection_invalid")
+                native_index = projection["catalog_chart"].get("native_part_index", 0)
+                if type(native_index) is not int or native_index != part_index:
+                    raise ValueError("effect_projection_invalid")
             elif "catalog_choice" in projection:
                 from management.services.ig_catalog_choice_presentations import validate_catalog_choice_metadata
                 if not validate_catalog_choice_metadata(projection, payload=payload, group=group, kind=kind):

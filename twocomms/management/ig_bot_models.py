@@ -2743,7 +2743,7 @@ class IgCheckoutProposal(models.Model):
                 if (
                     not self.payment_policy_evidence_message_id
                     or self.payment_policy_evidence_kind
-                    not in {"direct_question", "quick_reply"}
+                    not in {"direct_question", "quick_reply", "offer_acceptance"}
                     or not re.fullmatch(
                         r"[0-9a-f]{64}",
                         str(self.payment_policy_evidence_digest or ""),
@@ -4801,6 +4801,7 @@ class BotAdCampaign(models.Model):
     )
     theme = models.CharField(_("Тема"), max_length=120, blank=True, default="")
     landing_note = models.TextField(_("Що в рекламі / CTA"), blank=True, default="")
+    context = models.JSONField(default=dict, blank=True)
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -8758,7 +8759,7 @@ class IgCustomerTurnRevision(models.Model):
                     "manual_resume_authorization", "generation_admission", "recovery_lineage",
                     "policy_readiness_failure",
                     "media_unavailable_reply", "provider_execution_manifest",
-                    "provider_execution_reference", "proposal_execution_resume",
+                    "provider_execution_reference", "proposal_execution_resume", "proposal_transport_tail",
                     "response_debt", "source_preference_fallback",
                     "source_transfer_in", "source_transfer_out", "sent_reply_projection",
                     "burst_budget_in", "burst_budget_out",

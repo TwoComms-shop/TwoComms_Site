@@ -34,6 +34,16 @@ def response(text, **controls):
 
 
 class FitConsultationContractTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        # These pure contracts provide focus/selector inputs explicitly. The
+        # independent catalogue, inquiry and numeric-guide readers belong to
+        # the native capture integration suites, not these namespace fixtures.
+        catalogue = self.enterContext(patch("storefront.models.Product.objects.filter"))
+        catalogue.return_value.order_by.return_value.values_list.return_value = []
+        self.enterContext(patch("management.services.ig_product_inquiries.product_inquiries_for_revision", return_value={}))
+        self.enterContext(patch("management.services.ig_fit_consultation.capture_consultation_measurements", return_value={}))
+
     def context(self, text="Покажіть приклади звичайного та oversize крою, жіночі є?", *, focus=FOCUS, photo=PHOTO):
         return build_fit_consultation([source(text)], focus=focus, photo_capability=photo,
             approved_fact_keys=("current_tshirt_bases", "current_tshirt_audience"))

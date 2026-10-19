@@ -2411,7 +2411,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   scheduleIdle(() => {
     if (document.querySelector('.cart-page-container') || document.getElementById('promo-code-input')) {
-      import('./modules/cart.js?v=20260930-bundles-v2')
+      import('./modules/cart.js?v=20261019-conversion-v1')
         .then(({ initCartInteractions }) => initCartInteractions())
         .catch(() => { });
     }

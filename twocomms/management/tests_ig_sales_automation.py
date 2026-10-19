@@ -522,6 +522,8 @@ class FollowUpPolicyTests(TestCase):
         client.followup_level = 1
         client.discount_offered_percent = 0
         client.save()
+        InstagramBotMessage.objects.create(client=client, sender_id="fu_discount", role="user",
+                                           text="Не можу собі дозволити за таку суму", status="done")
 
         self.assertEqual(bot_followups.next_discount_percent(client), 5)
         client.discount_offered_percent = 5
@@ -643,12 +645,22 @@ class ManagerEchoAnalysisTests(TestCase):
 @MGMT
 class SalesCockpitApiTests(TestCase):
     def setUp(self):
+        from django.contrib.auth.models import Permission
+        from management.bot_access import (
+            OPERATE_IG_BOT_PERMISSION,
+            VIEW_IG_CONVERSATION_PII_PERMISSION,
+        )
         from management.models import InstagramBotSettings
 
         settings = InstagramBotSettings.load()
         settings.is_enabled = True
         settings.save(update_fields=["is_enabled"])
         self.admin = User.objects.create_user("sales_adm", password="x", is_staff=True)
+        for capability in (VIEW_IG_CONVERSATION_PII_PERMISSION, OPERATE_IG_BOT_PERMISSION):
+            app_label, codename = capability.split(".", 1)
+            self.admin.user_permissions.add(Permission.objects.get(
+                content_type__app_label=app_label, codename=codename,
+            ))
         self.client.force_login(self.admin)
         self.active = IgClient.get_or_create_for_sender("api_active")
         self.active.display_name = "Активний"
@@ -1100,7 +1112,7 @@ class SalesCockpitApiTests(TestCase):
         )
         hide_responses = []
 
-        def vision_then_hide(*_args, **_kwargs):
+        def capture_media_then_hide(*_args, **_kwargs):
             IgClient.objects.filter(pk=self.active.pk).update(
                 automation_lease_until=timezone.now() - timedelta(seconds=1)
             )
@@ -1108,17 +1120,15 @@ class SalesCockpitApiTests(TestCase):
                 reverse("management_bot_client_hide_api", args=[self.active.id]),
                 {"reason": "manual"},
             ))
-            return {"product_id": None, "confidence": 0.0, "reason": "none"}
+            return []
 
         with patch(
             "management.services.instagram_bot.send_sender_action"
         ), patch(
-            "management.services.instagram_bot._collect_images",
-            return_value=[("image/jpeg", b"x")],
-        ), patch(
-            "management.services.instagram_bot._match_allowed", return_value=True
-        ), patch(
-            "management.services.bot_vision.match", side_effect=vision_then_hide
+            # Live image inspection now shares the current media preparation
+            # and reply provider path; the old separate vision match is gone.
+            "management.services.instagram_bot._capture_message_media",
+            side_effect=capture_media_then_hide,
         ), patch(
             "management.services.instagram_bot._maybe_pin_from_match"
         ) as pin_match, patch(
@@ -1305,8 +1315,8 @@ class SalesCockpitApiTests(TestCase):
         for label in (
             "Активні",
             "Приховані",
-            "Зупинити бота",
-            "Відновити бота",
+            "Відповідати самому",
+            "Вернути боту",
             "Приховати",
             "Повернути до активних",
             "Позначити як втрачено",
@@ -1322,12 +1332,12 @@ class SalesCockpitApiTests(TestCase):
             "Кваліфіковані",
             "Товар визначено",
             "Заплановані контакти",
-            "Повернення після нагадування",
-            "Когортна воронка",
-            "Поточний стан діалогів",
-            "Частка від першої події",
+            "Контакти в діалогах з оплатою",
+            "Шлях до оплати",
+            "Поточні етапи",
+            "Конверсія завершених",
             "Кампанії",
-            "Причини відвалу",
+            "Причини втрат",
             "Сьогодні",
             "7 днів",
             "30 днів",

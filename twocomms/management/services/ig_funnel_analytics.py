@@ -88,13 +88,18 @@ def _aware(value: datetime | None) -> datetime:
 
 
 def _event_defaults(*, episode, event_type, occurred_at, stage, actor, evidence, is_backfilled):
+    evidence = dict(evidence) if isinstance(evidence, dict) else {}
+    if str(event_type) == "payment_confirmed" and not is_backfilled:
+        from management.services.ig_conversion_cohorts import ATTRIBUTION_KEY, payment_attribution_snapshot
+
+        evidence[ATTRIBUTION_KEY] = payment_attribution_snapshot(episode, _aware(occurred_at))
     return {
         "episode": episode,
         "event_type": str(event_type),
         "occurred_at": _aware(occurred_at),
         "stage": str(stage or "")[:32],
         "actor": str(actor or "")[:40],
-        "evidence": evidence if isinstance(evidence, dict) else {},
+        "evidence": evidence,
         "is_backfilled": bool(is_backfilled),
     }
 
@@ -581,6 +586,44 @@ def record_verified_payment_in_transaction(
             "provider_status": provider_event.provider_status,
             "gross_amount": str(provider_event.gross_amount or "0.00"),
             "final_amount": str(provider_event.final_amount or "0.00"),
+            "payment_kind": deal.pay_type,
+            "order_total_at_confirmation": str(deal.amount),
+        },
+    )
+
+
+def record_verified_manager_payment_in_transaction(episode, *, snapshot):
+    """Observe an existing manager payment decision; grant no money authority."""
+    from management.models import IgPaymentReviewDecision
+    from management.services.bot_payment_truth import current_manager_confirmation_review_q
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("manager payment observation requires transaction.atomic")
+    if snapshot.get("needs_reconciliation") or not snapshot.get("decision_id"):
+        return None
+    decision = IgPaymentReviewDecision.objects.filter(
+        pk=snapshot["decision_id"], client_id=episode.client_id,
+        decision="manager_verified", verification_source="manager",
+        actor_source__in=("management_user", "telegram_user"),
+        verification_scope__in=("prepayment", "full_payment"),
+    ).exclude(actor_external_id="").select_related("review").first()
+    if decision is None or not episode.client.payment_confirmation_reviews.filter(
+        current_manager_confirmation_review_q(), pk=decision.review_id,
+    ).exists():
+        return None
+    amount = decision.confirmed_amount
+    if amount is None or amount <= 0 or (amount < 200 and decision.verification_scope != "full_payment"):
+        return None
+    return _record_step_event_locked(
+        episode, event_type="payment_confirmed",
+        event_key=f"ig-manager-payment-confirmed:{decision.pk}",
+        occurred_at=decision.created_at, actor="manager", stage="payment_pending",
+        evidence={
+            "decision_id": decision.pk, "review_id": decision.review_id,
+            "order_id": decision.review.order_id,
+            "confirmed_amount": str(amount),
+            "verification_scope": decision.verification_scope,
+            "payment_authority": "existing_source_qualified_manager_decision",
         },
     )
 
@@ -1062,17 +1105,17 @@ def build_funnel_analytics(since=None, until=None, *, client_ids=None) -> dict:
             "kind": row["kind"],
             "level": row["level"],
             "sent": row["sent_count"],
-            "recovered": 0,
-            "bought": 0,
+            "recovered": None,
+            "bought": None,
+            "measurement_status": "not_measured",
+            "reason": "sent_response_payment_linkage_not_measured",
+            "causal_uplift": None,
         })
     offer_episodes = episode_sets.get(
         IgFunnelStepEvent.Type.DISCOUNT_OFFERED,
         set(),
     )
-    bought_episodes = (
-        episode_sets.get(IgFunnelStepEvent.Type.PAYMENT_CONFIRMED, set())
-        | episode_sets.get(IgFunnelStepEvent.Type.ORDER_CREATED, set())
-    )
+    bought_episodes = episode_sets.get(IgFunnelStepEvent.Type.PAYMENT_CONFIRMED, set())
     discount_offers = sum(
         event["event_type"] == IgFunnelStepEvent.Type.DISCOUNT_OFFERED
         for event in raw_events
@@ -1087,10 +1130,20 @@ def build_funnel_analytics(since=None, until=None, *, client_ids=None) -> dict:
         payment_times = observed_times.get(
             (episode_id, IgFunnelStepEvent.Type.PAYMENT_CONFIRMED),
             [],
-        ) + observed_times.get((episode_id, IgFunnelStepEvent.Type.ORDER_CREATED), [])
+        )
         if any(payment_at >= offer_at for payment_at in payment_times):
             bought_after_offer.add(episode_id)
-    discount_bought = len(bought_after_offer)
+    # Episode consultation IDs are not purchase IDs. Multiple episodes may
+    # still cite one real order through legacy deals/reviews; count it once.
+    paid_units = {}
+    for episode in IgCommercialEpisode.objects.filter(pk__in=bought_episodes).values(
+        "id", "intended_order_id", "deal__order_id", "primary_payment_review__order_id",
+    ):
+        order_id = episode["intended_order_id"] or episode["deal__order_id"] or episode["primary_payment_review__order_id"]
+        paid_units[episode["id"]] = ("order", order_id) if order_id else ("episode_lineage_unknown", episode["id"])
+    discount_bought = len({paid_units[episode_id] for episode_id in bought_after_offer})
+    offered_purchase_keys = {paid_units[episode_id] for episode_id in offer_episodes & bought_episodes}
+    without_offer_count = len(set(paid_units.values()) - offered_purchase_keys)
     still_open = offer_episodes - bought_after_offer
     manager_episodes = episode_sets.get(
         IgFunnelStepEvent.Type.MANAGER_ENGAGED,
@@ -1107,12 +1160,17 @@ def build_funnel_analytics(since=None, until=None, *, client_ids=None) -> dict:
         "drop_off_reasons": sorted(reason_counts.values(), key=lambda row: (row["stage"], row["kind"], row["reason_code"])),
         "followup_effectiveness": followup_effectiveness,
         "discounts": {
+            "outcome_basis": "payment_confirmed_event",
+            "discount_basis": "offer_observed_not_proven_applied",
+            "causal_uplift": None,
+            "purchase_lineage_unknown_count": sum(key[0] == "episode_lineage_unknown" for key in set(paid_units.values())),
+            "orders_created": len(episode_sets.get(IgFunnelStepEvent.Type.ORDER_CREATED, set())),
             "offered": discount_offers,
             "bought": discount_bought,
             "bought_after_offer": discount_bought,
             "still_open": len(still_open),
-            "bought_without_known_offer": len(bought_episodes - offer_episodes),
-            "without_discount_bought": max(0, len(bought_episodes - offer_episodes)),
+            "bought_without_known_offer": without_offer_count,
+            "without_discount_bought": without_offer_count,
             "observation_cutoff": observation_cutoff.isoformat(),
         },
         "manager_vs_bot": {

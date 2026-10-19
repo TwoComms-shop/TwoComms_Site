@@ -675,9 +675,19 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
         pending = pending or "print_placement"
 
     info_topics: list[str] = []
-    if re.search(r"(?:размерн\w*\s+сетк|сітк\w*\s+розмір|size\s+guide|size\s+chart)", lowered):
+    if re.search(r"(?:размерн\w*\s+сетк|розмірн\w*\s+сітк|сітк\w*\s+розмір|таблиц\w*\s+розмір|size\s+guide|size\s+chart)", lowered):
         guide_fit = fit or ("oversize" if "оверсайз" in lowered or "oversize" in lowered else "")
         info_topics.append(f"size_guide:{guide_fit}" if guide_fit else "size_guide")
+    # Asking to see/compare a cut is consultation, not choosing it. Keep an
+    # explicit choice in a mixed message ("беру classic, покажіть сітку").
+    from management.services.ig_fit_consultation import fit_consultation_request
+    consultation = fit_consultation_request([{"role": "user", "text": current}])
+    selection_action = re.search(
+        r"(?:\b(?:беру|обираю|вибираю|замовляю|заказываю|выбираю|take|choose|order)\b|"
+        r"\b(?:хочу|want)\s+(?:(?:саме|собі|себе|the|a|an)\s+)?)"
+        r"\s*(?:саме\s+)?(?:classic|regular|oversiz(?:e|ed)|класич\w*|классич\w*|оверсайз\w*)\b",
+        current, re.I)
+    if consultation and not selection_action:
         field_updates.pop("fit", None)
 
     checkout_requested = bool(

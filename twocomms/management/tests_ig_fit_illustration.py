@@ -102,8 +102,19 @@ class FitIllustrationTests(TransactionTestCase):
         prepared, _context = self._prepared()
         self.assertIn("підтвердженого фото", prepared.copy_hint)
         native = prepared.effects[0]["payload"]["message"]["attachment"]["payload"]
-        self.assertEqual(len(native["elements"]), 1)
-        self.assertEqual(native["elements"][0]["title"], "Оверсайз")
+        self.assertEqual(len(native["elements"]), 2)
+        self.assertEqual(native["elements"][0]["title"], "Класичний крій · Спереду")
+        self.assertIn("Чиста основа", native["elements"][0]["subtitle"])
+        self.assertIn("без обговорюваного принта", native["elements"][0]["subtitle"])
+        self.assertEqual(native["elements"][1]["title"], "Оверсайз")
+        manifest = prepared.effects[0]["projection_metadata"]["fit_illustration"]
+        blank = manifest["items"][0]
+        self.assertEqual(blank["asset_kind"], "blank_constructor_preview")
+        self.assertEqual(blank["base_key"], "tshirt:regular")
+        self.assertEqual(blank["fit_code"], "classic")
+        self.assertFalse(blank["exact_design_photo"])
+        self.assertTrue(blank["asset_version"])
+        self.assertEqual(manifest["focus"]["product_id"], self.product.pk)
         self.assertFalse(any("buttons" in row or "default_action" in row for row in native["elements"]))
         self.assertTrue(_normalize_specs(prepared.effects, self.customer.igsid))
         self.customer.refresh_from_db()

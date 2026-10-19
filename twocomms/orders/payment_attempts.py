@@ -334,6 +334,18 @@ def materialize_payment_attempt(attempt_id, *, status, payload=None, source='web
 
             promo_consumed = consume_payment_attempt_promo(attempt, order=order)
             reservation = dict((attempt.event_state or {}).get("promo_reservation") or {})
+            batch_reservations = (attempt.event_state or {}).get('promo_reservations')
+            if batch_reservations and not promo_consumed:
+                failed_components = [row for row in batch_reservations if row.get('state') != 'consumed']
+                # A successful primary component cannot hide a retryable
+                # secondary ledger failure or a stale secondary capability.
+                reservation = next((row for row in failed_components if (
+                    row.get('guest_reservation_mismatch')
+                    or row.get('reservation_generation_mismatch')
+                    or row.get('state') != 'reserved'
+                    or not row.get('reservation_generation')
+                    or (attempt.user_id is None and not row.get('guest_usage_id'))
+                )), failed_components[0] if failed_components else {})
             authenticated_reservation = bool(
                 reservation.get("state") == "reserved"
                 and reservation.get("reservation_generation")

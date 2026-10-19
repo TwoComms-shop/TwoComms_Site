@@ -719,8 +719,8 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
     # Only optional context with a dedicated whole-snapshot module may move
     # out of this rendering. Choices/payment/permission remain mandatory here.
     if (not isinstance(excluded_slots, (tuple, list, set, frozenset))
-            or len(excluded_slots) > 1 or any(key != "context.narrative" for key in excluded_slots)):
-        raise ValueError("excluded_slots must contain only context.narrative")
+            or len(excluded_slots) > 3 or any(key not in {"context.narrative", "communication.preferences", "context.useful_memory"} for key in excluded_slots)):
+        raise ValueError("excluded_slots must name only context with a dedicated whole-snapshot module")
     excluded = frozenset(excluded_slots)
     payload = state.as_dict()
     included, omitted, mandatory, optional = [], [], [], []

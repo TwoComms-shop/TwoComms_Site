@@ -1957,6 +1957,14 @@ class PromoCode(models.Model):
                 return False, _('Промокод вичерпано')
             return False, _('Промокод неактивний або вичерпаний')
 
+        # Personal grants are capabilities owned by their issued account.
+        # A leaked points/survey code must not become a public promotion.
+        grants = self.user_grants.all()
+        if grants.exists() and not grants.filter(user=user).filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
+        ).exists():
+            return False, _('Цей промокод видано іншому користувачу або строк права минув')
+
         # Проверка one_time_per_user
         if self.one_time_per_user:
             if PromoCodeUsage.objects.filter(user=user, promo_code=self).exists():

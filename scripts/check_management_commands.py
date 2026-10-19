@@ -13,11 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ROOT = ROOT / "twocomms"
-# Stage 0 recorded 138 commands. Three non-DTF commands were added afterwards:
-# `measure_stage4_baseline`, `check_ig_gemini_metadata_health`, and
-# `run_durable_tasks`. Keep the exact-count guard current so additions remain
-# intentional and reviewable.
-EXPECTED_COMMAND_COUNT = 141
+# The reviewed pre-release inventory contains 174 non-DTF commands. This
+# release adds `publish_ig_conversion_knowledge` and `align_current_hoodie_fits`.
+# Keep the exact-count guard current so additions remain intentional and
+# reviewable.
+EXPECTED_COMMAND_COUNT = 176
 
 
 def validate_command_count(command_count: int) -> list[dict[str, object]]:

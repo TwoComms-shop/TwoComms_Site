@@ -314,6 +314,10 @@ def resolve_source_product_request(client, source, request, *, catalog_graph=Non
             return request
         from management.services.ig_commerce_types import CommerceTurnRequest
         return CommerceTurnRequest(pending_line_clarification="line_source_unverified")
+    from management.services.ig_ad_choices import ad_choice_source_request
+    ad_choice = ad_choice_source_request(client, source, request)
+    if ad_choice is not None:
+        return ad_choice
     binding = {"source_message_id": source.pk, "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest()}
     if not request.field_updates.get("fit"):
         from management.services.ig_fit_consultation import contextual_fit_choice

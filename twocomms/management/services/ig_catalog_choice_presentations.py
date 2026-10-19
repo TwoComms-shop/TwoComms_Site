@@ -422,7 +422,8 @@ def prepare_catalog_choice_page(revision, response, settings_row, *, choice, con
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
 
-def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=None, choice=None):
+def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=None, choice=None,
+    presentation_context=None, native_part_index=0, metadata_only=False, _single=False, unavailable_requested_fits=()):
     """A genuine exact-configuration chart image, with no product-photo projection."""
     from management.services.ig_catalog_configured_choices import capture_configured_choices
     from management.services import ig_revision_catalog_assets as assets
@@ -431,10 +432,49 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
     if response.control.get("paylink") or response.control.get("order"):
         return CatalogChoicePreparation()
     try:
+        if type(native_part_index) is not int or not 0 <= native_part_index < 16:
+            raise ValueError("catalog_choice_chart_native_slot_invalid")
+        if not _single and not choice and presentation_context is None:
+            from management.services.ig_product_focus import capture_product_focus, capture_fit_chart_comparison
+            from management.services.ig_fit_consultation import requested_chart_fits
+            cart = (revision.generation_proposal or {}).get("source_cart_capture")
+            if cart is None:
+                from management.services.ig_commerce_projection import capture_current_selection_lines
+                cart = capture_current_selection_lines(revision.client_id)
+            focus = capture_product_focus(revision, source_cart_capture=cart)
+            if focus.get("reason") == "different_information_subject":
+                return CatalogChoicePreparation()
+            if focus.get("status") == "focused":
+                supported = assets.capture_fit_photo_capability(focus["product_id"], metadata_only=True).get("supported_fits", [])
+                fits = requested_chart_fits((revision.bundle_snapshot or {}).get("sources") or [], supported_fits=supported)
+                if fits:
+                    ready, missing = [], []
+                    for fit in fits[:2]:
+                        context = capture_fit_chart_comparison(revision, fit)
+                        chart = prepare_catalog_chart_effect(revision, response, settings_row, presentation_context=context,
+                            native_part_index=native_part_index + len(ready), metadata_only=metadata_only, _single=True) if context else CatalogChoicePreparation()
+                        if chart.ready:
+                            ready.append((fit, context))
+                        else:
+                            missing.append(fit)
+                    effects, reasons = [], []
+                    for fit, context in ready:
+                        chart = prepare_catalog_chart_effect(revision, response, settings_row, presentation_context=context,
+                            native_part_index=native_part_index + len(effects), metadata_only=metadata_only,
+                            _single=True, unavailable_requested_fits=missing)
+                        effects.extend(chart.effects)
+                        reasons.extend(chart.reasons)
+                    locale = _presentation_locale(revision, response)
+                    missing_copy = {"uk": "Немає підтвердженого зображення точної розмірної сітки для крою: ",
+                        "ru": "Нет подтверждённого изображения точной размерной сетки для кроя: ",
+                        "en": "No confirmed exact size chart image is provided for the cut: "}[locale] + ", ".join(missing) + "." if missing else ""
+                    labels = "; ".join(f"{index + 1}. {fit}" for index, (fit, _) in enumerate(ready))
+                    absence = {"schema": "catalog-chart-absence.v1", "product_id": focus["product_id"], "unavailable_chart_fits": missing} if missing and not effects else None
+                    return CatalogChoicePreparation(True, tuple(effects), " ".join(value for value in (labels, missing_copy) if value), tuple(dict.fromkeys(reasons)), absence)
         if choice and (not choice.get("ready") or choice.get("action", {}).get("kind") != "chart"):
             raise ValueError("catalog_choice_chart_source_invalid")
-        presentation_context = {}
-        if not choice:
+        presentation_context = deepcopy(presentation_context) if presentation_context else {}
+        if not choice and not presentation_context:
             from management.services.ig_product_focus import capture_discussed_configuration, capture_product_focus
             presentation_context = capture_discussed_configuration(revision)
             focus = capture_product_focus(revision)
@@ -450,12 +490,16 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
             "option_values": {"fit": presentation_context["fit_code"]}} if presentation_context
             else _source_configuration(revision.client, product_id))
         captured = deepcopy(capture) if isinstance(capture, dict) else capture_configured_choices(product_id,
-            variant_id=selected or None, **configuration)
+            variant_id=selected or None, metadata_only=metadata_only, **configuration)
         grid = captured.get("grid") or {}
         photo = grid.get("photo_ref") or {}
-        if not grid.get("grid_id") or not photo.get("url") or len(captured.get("configurations") or []) != 1:
+        if not grid.get("grid_id") or len(captured.get("configurations") or []) != 1:
             return CatalogChoicePreparation()
         row = SizeGrid.objects.filter(pk=grid["grid_id"]).first()
+        if metadata_only and row is not None and row.image:
+            photo = {"url": assets._url(row.image)}
+        if not photo.get("url"):
+            return CatalogChoicePreparation()
         if row is None or str(row.image.name or "") != grid.get("image_name") or assets._url(row.image) != photo["url"]:
             raise ValueError("catalog_choice_chart_changed")
         locale = _presentation_locale(revision, response, choice=choice)
@@ -476,6 +520,10 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
             "origin_manifest_digest": (choice or {}).get("manifest_digest", "")}
         if presentation_context:
             manifest["presentation_context"] = presentation_context
+        if native_part_index:
+            manifest["native_part_index"] = native_part_index
+        if unavailable_requested_fits:
+            manifest["unavailable_requested_fits"] = list(unavailable_requested_fits)
         manifest["chart_digest"] = _digest(manifest)
         manifest["hmac"] = salted_hmac("catalog-choice-chart.v1", manifest["chart_digest"], algorithm="sha256").hexdigest()
         return CatalogChoicePreparation(True, ({"group": "template", "kind": "image", "payload": payload,
@@ -517,11 +565,20 @@ def validate_catalog_chart_reference(reference, client, settings_row):
             return reason
         if reference.get("presentation_context"):
             from management.models import IgCustomerTurnRevision
-            from management.services.ig_product_focus import capture_discussed_configuration
+            from management.services.ig_product_focus import capture_discussed_configuration, capture_fit_chart_comparison
             revision = IgCustomerTurnRevision.objects.select_related("client").filter(
                 pk=reference["invitation_id"], client_id=client.pk).first()
-            if (revision is None or capture_discussed_configuration(revision) != reference["presentation_context"]):
+            context = reference["presentation_context"]
+            current = (capture_fit_chart_comparison(revision, context.get("fit_code"))
+                if revision is not None and context.get("schema") == "discussed-fit-comparison.v1"
+                else capture_discussed_configuration(revision) if revision is not None else {})
+            if revision is None or current != context:
                 return "catalog_choice_chart_context_changed"
+            for missing in reference.get("unavailable_requested_fits", ()):
+                candidate = capture_configured_choices(reference["product_id"], fit_code=missing, metadata_only=True)
+                missing_grid = candidate.get("grid") or {}
+                if missing_grid.get("grid_id") and missing_grid.get("image_name") and len(candidate.get("configurations") or []) == 1:
+                    return "catalog_choice_chart_absence_changed"
         captured = capture_configured_choices(reference["product_id"], **reference["configuration_selector"], metadata_only=True)
         grid = captured.get("grid") or {}
         row = SizeGrid.objects.filter(pk=reference["grid_id"]).first()

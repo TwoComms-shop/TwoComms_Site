@@ -24,6 +24,11 @@ Usage in views/static_pages.py — after deepcopy of the page dict:
 from __future__ import annotations
 
 from typing import Any, Dict
+from copy import deepcopy
+
+from django.utils.translation import override
+
+from storefront.support_content import HELP_FAQ_ITEMS, SUPPORT_PAGE_DEFINITIONS
 
 
 # ---------------------------------------------------------------------------
@@ -1069,4 +1074,42 @@ def apply_language_overrides(page: dict, page_key: str, lang_code: str) -> dict:
         return page
     for field, value in page_overrides.items():
         page[field] = value
+
+    # The historical RU/EN pages have their own shorter FAQ. Preserve the
+    # policy adapter's localized slots, but source owner-reviewed topics from
+    # the same gettext content as Ukrainian HTML and FAQ structured data.
+    if page_key == "faq":
+        reviewed_questions = {
+            "Де виробляється одяг TwoComms?",
+            "Чому ціна в Instagram відрізняється від сайту?",
+            "Який склад поточних футболок і худі?",
+            "Чи різняться розміри між футболками, худі та лонгслівами?",
+            "Де подивитися фото деталі або заміри?",
+            "Як доглядати за одягом TwoComms?",
+            "Чи злазить DTF-принт після прання?",
+            "Що робити при виявленні браку?",
+            "Які умови опту і дропшипінгу?",
+            "Чи працюєте з волонтерськими і ветеранськими проєктами?",
+        }
+        with override("uk"):
+            reviewed = [item for item in HELP_FAQ_ITEMS if str(item["question"]) in reviewed_questions]
+        with override(lang_code):
+            reviewed = [
+                {"question": str(item["question"]), "answer": str(item["answer"])}
+                for item in reviewed
+            ]
+        old_care_question = {
+            "ru": "Как ухаживать за одеждой TwoComms?",
+            "en": "How do I care for TwoComms clothing?",
+        }[lang_code]
+        page["faq_items"] = [
+            deepcopy(item) for item in page.get("faq_items", [])
+            if str(item.get("question")) != old_care_question
+        ] + reviewed
+    elif page_key == "care_guide":
+        # The first localized bullet previously said only "moderate" while
+        # the HowTo and FAQ publish the confirmed 30 °C recommendation.
+        page["sections"] = deepcopy(page["sections"])
+        with override(lang_code):
+            page["sections"][0]["bullets"][0] = str(SUPPORT_PAGE_DEFINITIONS["care_guide"]["sections"][0]["bullets"][0])
     return page

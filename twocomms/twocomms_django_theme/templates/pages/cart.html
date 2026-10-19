@@ -770,7 +770,7 @@
         <div class="promo-vault-heading">
           <p class="promo-vault-eyebrow">{% trans 'Секретний доступ' %}</p>
           <h3 class="promo-vault-title" id="promo-vault-title">{% trans 'Відкрий сейф зі знижкою' %}</h3>
-          <p class="promo-vault-subtitle">{% trans 'Введіть промокод — ми перевіримо його на сервері та перерахуємо кошик.' %}</p>
+          <p class="promo-vault-subtitle">{% trans 'Введіть один або кілька кодів через кому. Перевіримо права, строки та підсумкову знижку.' %}</p>
         </div>
 
         <div class="promo-vault-stage">
@@ -799,13 +799,13 @@
                          id="promo-vault-code"
                          name="promo_code"
                          type="text"
-                         maxlength="20"
+                         maxlength="340"
                          autocomplete="off"
                          autocapitalize="none"
                          spellcheck="false"
                          aria-describedby="promo-vault-status"
                          placeholder="••••••"
-                         {% if applied_promo %}value="{{ applied_promo.code }}"{% endif %}>
+                         {% if applied_promo %}value="{{ promo_codes_display }}"{% endif %}>
                   <span class="promo-vault-input-line" aria-hidden="true"></span>
                   <span class="promo-vault-gears" aria-hidden="true"><i></i><i></i><i></i></span>
                   <button class="promo-vault-submit" type="submit">
@@ -825,11 +825,12 @@
             </div>
           </div>
         </div>
+        <ul data-promo-rights>{% for right in promo_details %}<li>{{ right.code }}: −{{ right.discount }} {% trans 'грн' %}{% if right.expires_at %} · {% trans 'діє до' %} {{ right.expires_at }}{% endif %}</li>{% endfor %}</ul>
         <div class="promo-vault-status" id="promo-vault-status" data-promo-vault-status role="status" aria-live="polite" aria-atomic="true">{% if applied_promo %}{% trans 'Промокод застосовано.' %}{% endif %}</div>
         <div class="promo-vault-applied{% if not applied_promo %} d-none{% endif %}" data-promo-vault-applied>
           <div class="promo-vault-applied-copy">
             <span class="promo-vault-applied-label">{% trans 'Застосований промокод' %}</span>
-            <strong class="promo-vault-result-code" data-promo-vault-code>{% if applied_promo %}{{ applied_promo.code }}{% endif %}</strong>
+            <strong class="promo-vault-result-code" data-promo-vault-code>{% if applied_promo %}{{ promo_codes_display }}{% endif %}</strong>
             <span class="promo-vault-applied-discount" data-promo-vault-discount>{% if applied_promo %}{% trans 'Знижка:' %} {{ discount|floatformat:2 }} {% trans 'грн' %}{% endif %}</span>
           </div>
           <button type="button" class="promo-vault-remove" data-promo-vault-remove aria-label="{% trans 'Видалити промокод' %}">
@@ -912,7 +913,7 @@
           </div>
           <div class="cart-savings-line {% if discount <= 0 %}d-none{% endif %}" id="cart-savings-promo">
             <span class="cart-savings-label">
-              {% trans 'Промокод' %} <span class="cart-savings-highlight" id="cart-savings-promo-code">{% if promo_code %}{{ promo_code.code }}{% endif %}</span>
+              {% trans 'Промокод' %} <span class="cart-savings-highlight" id="cart-savings-promo-code">{% if promo_code %}{{ promo_codes_display }}{% endif %}</span>
             </span>
             <span class="cart-savings-amount" id="cart-savings-promo-amount">{{ discount|floatformat:2 }} {% trans 'грн' %}</span>
           </div>
@@ -949,7 +950,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
           </svg>
-          {% load garment_bundle_tags %}{% bundle_words as delivery_copy %}<span data-cart-delivery-status>{% if shipping_free %}{{ delivery_copy.shipping_free }}{% else %}{{ delivery_copy.shipping_paid }}{% endif %}</span>
+          {% load garment_bundle_tags %}{% bundle_words as delivery_copy %}<span data-cart-delivery-status>{{ shipping_summary }}</span>
         </div>
 
 <div class="cart-checkout-actions"

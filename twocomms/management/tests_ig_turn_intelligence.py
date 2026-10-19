@@ -1,5 +1,6 @@
 """Pure captured-turn regressions; no database or provider fixtures required."""
 from copy import deepcopy
+import json
 from datetime import datetime, timedelta, timezone
 from unittest import TestCase
 from unittest.mock import patch
@@ -174,7 +175,10 @@ class TurnIntelligenceTests(TestCase):
         args["referral"] = scoped(args, present=True, source_message_id=100, status="ambiguous", product_id=999)
         result = build_turn_context(**args)
         self.assertTrue(result.facts.ambiguous_ad_referral)
-        self.assertIsNone(result.context_note)
+        quoted = json.loads(result.context_note.split("\n", 1)[1])["source_referral"]
+        self.assertEqual(quoted["status"], "ambiguous")
+        self.assertNotIn("product_id", quoted)
+        self.assertEqual(quoted["source_message_id"], 100)
         self.assertIn("ambiguous_referral", result.metadata["readiness_codes"])
 
     def test_absent_referral_is_unknown_and_wrong_episode_mapping_is_omitted(self):

@@ -43,6 +43,10 @@ SUITES = {
     "lease-concurrency": (
         "management.tests_ig_daemon_progress.MariaDbLeaseContractTests",
     ),
+    "conversion-context": (
+        "management.tests_ig_conversion_mariadb",
+        "finance.tests_migration_storage",
+    ),
 }
 SAFE_ENV_NAMES = {
     "PATH",
@@ -511,6 +515,60 @@ class AdminClient:
             raise GateError("MariaDB warning-contract MyISAM staging failed")
         return {"warning_contract_engines": "3_myisam"}
 
+    def capture_migration_prerequisites(self, database: str) -> None:
+        """Retain the original data-migration prerequisite across test flushes."""
+        if not re.fullmatch(r"test_twocomms_ig_[a-f0-9]{12}", database):
+            raise GateError("MariaDB prerequisite schema name is not gate-owned")
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT * FROM `{database}`.`storefront_blogcategory` WHERE slug=%s",
+                    ("veteran-fund",),
+                )
+                row = cursor.fetchone()
+                columns = tuple(str(column[0]) for column in cursor.description)
+        finally:
+            connection.close()
+        if not row or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in columns):
+            raise GateError("MariaDB original migration prerequisite is missing or invalid")
+        snapshot = dict(zip(columns, row, strict=True))
+        if snapshot.get("slug") != "veteran-fund" or not isinstance(snapshot.get("id"), int):
+            raise GateError("MariaDB original migration prerequisite identity is invalid")
+        self._migration_prerequisite_snapshot = (database, columns, tuple(row))
+
+    def restore_migration_prerequisites(self, database: str) -> str:
+        """Restore only a missing original row in this exact generated schema."""
+        if not re.fullmatch(r"test_twocomms_ig_[a-f0-9]{12}", database):
+            raise GateError("MariaDB prerequisite schema name is not gate-owned")
+        captured = getattr(self, "_migration_prerequisite_snapshot", None)
+        if not captured or captured[0] != database:
+            raise GateError("MariaDB prerequisite snapshot does not belong to this schema")
+        _database, columns, row = captured
+        snapshot = dict(zip(columns, row, strict=True))
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT id,slug FROM `{database}`.`storefront_blogcategory` "
+                    "WHERE id=%s OR slug=%s",
+                    (snapshot["id"], snapshot["slug"]),
+                )
+                existing = list(cursor.fetchall())
+                if existing:
+                    if existing != [(snapshot["id"], snapshot["slug"])]:
+                        raise GateError("MariaDB prerequisite identity conflicts with a test fixture")
+                    return "retained"
+                names = ",".join(f"`{name}`" for name in columns)
+                placeholders = ",".join(["%s"] * len(columns))
+                cursor.execute(
+                    f"INSERT INTO `{database}`.`storefront_blogcategory` ({names}) VALUES ({placeholders})",
+                    row,
+                )
+                return "restored_original"
+        finally:
+            connection.close()
+
     def verify_database_warning_contract_reverse(self, database: str) -> dict[str, str]:
         """Prove reverse DDL removed only new objects and preserved endpoint."""
         if not re.fullmatch(r"test_twocomms_ig_[a-f0-9]{12}", database):
@@ -539,7 +597,10 @@ class AdminClient:
             f"AND TABLE_NAME IN ({table_literals})"
         )
         engines = {str(table): str(engine).casefold() for table, engine in engine_rows}
-        if engines != {table: "myisam" for table in tables}:
+        expected_engines = {table: "myisam" for table in tables}
+        # 0240 deliberately retains transactional fit flags on rollback.
+        expected_engines["storefront_productfitoption"] = "innodb"
+        if engines != expected_engines:
             raise GateError("MariaDB warning-contract reverse changed table engine")
 
         generated_rows = self._query_all(
@@ -628,8 +689,11 @@ class AdminClient:
             f"AND TABLE_NAME IN ({table_literals})"
         )
         engines = {str(table): str(engine).casefold() for table, engine in engine_rows}
-        if engines != {table: "myisam" for table in tables}:
-            raise GateError("MariaDB warning-contract table is not MyISAM")
+        expected_engines = {table: "myisam" for table in tables}
+        expected_engines["reviews_reviewvote"] = "innodb"
+        expected_engines["storefront_productfitoption"] = "innodb"
+        if engines != expected_engines:
+            raise GateError("MariaDB warning-contract engines do not match the released transactional table policy")
 
         unique_rows = self._query_all(
             "SELECT TABLE_NAME, INDEX_NAME, INDEX_TYPE, "
@@ -759,7 +823,7 @@ class AdminClient:
             raise GateError("MariaDB review-vote check constraint is missing")
         if not all(normalized_create.values()):
             raise GateError("MariaDB SHOW CREATE TABLE proof is missing")
-        if not all("engine=myisam" in sql for sql in normalized_create.values()):
+        if not all(f"engine={expected_engines[table]}" in sql for table, sql in normalized_create.items()):
             raise GateError("MariaDB SHOW CREATE TABLE engine proof is missing")
         for forbidden_name in forbidden_names:
             if any(forbidden_name in sql for sql in normalized_create.values()):
@@ -776,7 +840,7 @@ class AdminClient:
                 raise GateError("MariaDB required unique constraint is missing")
 
         return {
-            "engines": "3_myisam",
+            "engines": "reviewvote_fit_innodb+push_myisam",
             "generated_columns": "2_verified",
             "unique_indexes": "3_new+1_preserved",
             "endpoint_unique": "hash_preserved",
@@ -1314,6 +1378,10 @@ def run_gate(
             "MariaDB warning contract staging: "
             f"engines={preparation_evidence['warning_contract_engines']}\n"
         )
+        capture_prerequisites = getattr(admin, "capture_migration_prerequisites", None)
+        if capture_prerequisites is None:
+            raise GateError("MariaDB admin client cannot capture migration prerequisites")
+        capture_prerequisites(database)
 
         command = [
             sys.executable,
@@ -1336,6 +1404,12 @@ def run_gate(
             output.write(_failure_summary(suite=suite, completed=completed))
             primary_error = RuntimeError(f"{suite} command failed ({completed.returncode})")
             raise primary_error
+
+        restore_prerequisites = getattr(admin, "restore_migration_prerequisites", None)
+        if restore_prerequisites is None:
+            raise GateError("MariaDB admin client cannot restore migration prerequisites")
+        prerequisite_status = restore_prerequisites(database)
+        output.write(f"MariaDB migration prerequisites: category={prerequisite_status}\n")
 
         for app, migration in (
             ("reviews", "0001"),

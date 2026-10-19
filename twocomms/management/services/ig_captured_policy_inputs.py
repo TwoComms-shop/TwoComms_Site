@@ -60,6 +60,14 @@ class CapturedPolicyInputs:
     def metadata(self):
         return json.loads(self._snapshot)["metadata"]
 
+    @property
+    def knowledge_selectors(self):
+        return json.loads(self._snapshot).get("knowledge_selectors", {"topics": [], "base_keys": []})
+
+    @property
+    def communication_preferences(self):
+        return json.loads(self._snapshot).get("communication_preferences", {})
+
 
 def _validated_inputs(client_id, boundary, sources, history, captured_at):
     try:
@@ -117,6 +125,9 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
     from management.services.ig_post_sale import open_service_case
     from management.services.ig_turn_snapshot import prompt_snapshot
     from management.services.instagram_bot import automation_guardrails
+    from management.services.ig_communication_preferences import (
+        capture_communication_preferences, render_communication_preferences,
+    )
 
     boundary, sources, history = _plain(boundary), _plain(sources), _plain(history)
     try:
@@ -125,7 +136,7 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
         raise TurnContextError("policy_capture_scope_invalid") from None
     _validated_inputs(client_id, boundary, sources, history, captured_at)
     client = IgClient.objects.only("pk", "igsid", "language", "current_commercial_episode_id",
-        "privacy_erasure_started_at").filter(pk=client_id).first()
+        "privacy_erasure_started_at", "hidden_at", "memory_producer_state").filter(pk=client_id).first()
     if (client is None or client.privacy_erasure_started_at is not None
         or client.current_commercial_episode_id != boundary["episode_id"]):
         raise TurnContextError("policy_capture_owner_changed")
@@ -150,7 +161,7 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
         "observed_at": (evidence.get("provider_created_at") or evidence.get("observed_created_at") or evidence.get("event_at")) if evidence else None,
         "validity": "valid" if language and evidence else "unknown", "mandatory": bool(language and evidence),
         "omission_reason": "" if language and evidence else "language_source_unknown"}
-    tags = {"global", "core", "sales", knowledge_language}
+    tags = {"global", "core", knowledge_language}
     objections = current_objections(sources)
     for item in objections:
         kind = item["kind"]
@@ -159,8 +170,25 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
             "size_risk": {"size", "fit"}, "prepayment_trust": {"prepayment", "trust"},
             "delivery_time": {"delivery"}}.get(kind, set()))
     requests = [parse_turn(str(row.get("text") or "")) for row in sources]
-    if any(row.custom_print_requested for row in requests):
-        tags.add("custom_print")
+    from management.services.bot_instruction_routing import turn_triggers
+    from management.services.approved_public_facts import approved_base_context, approved_assertion_valid, knowledge_topics
+
+    triggers = set().union(*(turn_triggers(str(row.get("text") or "")) for row in sources))
+    topics = knowledge_topics(sources)
+    base_keys = set()
+    captured_assertions = [*approved_base_context(getattr(response_plan, "readiness_snapshot", {}) or {},
+                                                 sources=sources, language=knowledge_language),
+        *((getattr(response_plan, "product_information", {}) or {}).get("base_context_assertions") or ())]
+    for assertion in captured_assertions:
+        if not approved_assertion_valid(assertion):
+            continue
+        if assertion["base_key"] == "current_tshirt":
+            base_keys.update({"current_tshirt_regular", "current_tshirt_oversize"})
+        else:
+            base_keys.add(assertion["base_key"])
+    if objections or triggers & {"price_question", "size_question", "payment_question", "custom_print"} or any(row.purchase_requested for row in requests):
+        tags.add("sales")
+    tags.update(triggers & {"custom_print", "collaboration", "ugc"})
     if any(row.personalized_fit_requested for row in requests):
         tags.update({"size", "fit"})
     if any(row.support_requested for row in requests):
@@ -181,7 +209,26 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
     # to one case query. No cache or ORM selector escapes into assembly.
     with prompt_snapshot():
         case = open_service_case(client)
-        automation_note = automation_guardrails(client)
+        if case is not None:
+            # An already captured service case selects the same restrictive
+            # no-promotion template as a complaint hold. Re-querying complaint
+            # ownership cannot grant anything further here. The no-case path
+            # still checks complaint priority before allowing sales guidance.
+            from management.services.instagram_bot import (
+                POST_SALE_SERVICE_GUARDRAILS_TEMPLATE, _POST_SALE_CASE_LABELS,
+            )
+
+            label = _POST_SALE_CASE_LABELS.get(str(case.case_type), "сервісне звернення")
+            status = str(case.get_status_display() or "").strip()
+            described = f"{label} ({status})" if status else label
+            automation_note = POST_SALE_SERVICE_GUARDRAILS_TEMPLATE.format(case=described)
+        else:
+            automation_note = automation_guardrails(client)
+    communication = capture_communication_preferences(client, boundary=boundary, sealed_sources=sources,
+                                                     validated_owner=client)
+    preference_note = render_communication_preferences(communication)
+    if preference_note:
+        automation_note = "\n\n".join(part for part in (automation_note, preference_note) if part)
     service = {"status": "absent", "scope": scope}
     omissions = []
     if case is not None:
@@ -208,6 +255,8 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
             service["status"] = "unknown"
             omissions.append("service_scope_unproven")
     payload = {"tags": sorted(tags), "automation_note": automation_note,
+        "knowledge_selectors": {"topics": list(topics), "base_keys": sorted(base_keys)},
+        "communication_preferences": communication,
         "knowledge_language": knowledge_language, "state_slots": {"language": language_slot},
         "metadata": {"version": VERSION, "language_basis": language_basis,
             "knowledge_language_basis": language_basis if language else "stored_profile_hint" if hint and hint not in decision.excluded_languages else "compatibility_default",

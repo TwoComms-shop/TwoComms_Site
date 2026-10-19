@@ -26,6 +26,7 @@ from management.services.gemini_accounting_contract import (
 from management.services.ig_media_manifest import (
     MediaManifestError,
     map_image_observations,
+    is_ad_context_part,
 )
 from management.services.ig_response_control import (
     PROVIDER_CONTROL_KINDS,
@@ -122,7 +123,7 @@ def _route_source_parts(revision):
     return tuple((pk, part_id, str(part.get("mime") or ""),
         str(part.get("content_hash") or "").casefold(), part.get("capture_outcome"),
         part.get("original_index"), part.get("bytes"))
-        for (pk, part_id), part in parts.items() if pk in user_ids)
+        for (pk, part_id), part in parts.items() if pk in user_ids and not is_ad_context_part(part))
 
 
 def validated_route_media_evidence(revision, evidence_ids, media, intelligence, request_id, model):
@@ -465,6 +466,11 @@ def _request_media_projection(revision, value) -> tuple[dict | None, str]:
         request_origin = str(raw.get("identity_origin") or "")[:32]
         if sealed_origin != request_origin:
             return None, "request_media_identity_origin_mismatch"
+        ad_only = is_ad_context_part(sealed)
+        if (("ad_context_only" in raw and type(raw["ad_context_only"]) is not bool)
+            or (raw.get("ad_context_only") is True) != ad_only
+            or (ad_only and raw.get("role") != sealed.get("role"))):
+            return None, "request_media_purpose_mismatch"
         seen.add(key)
         normalized.append({
             "source_message_id": message_id,
@@ -476,6 +482,7 @@ def _request_media_projection(revision, value) -> tuple[dict | None, str]:
             "content_hash": content_hash,
             "capture_state": "owned",
             "source_image_index": inline_index,
+            **({"ad_context_only": True, "role": str(sealed["role"])} if ad_only else {}),
         })
     expected_hashes = [item["content_hash"] for item in normalized[:actual_count]]
     if [str(value or "").casefold() for value in actual_hashes] != expected_hashes:
@@ -616,6 +623,13 @@ def _intelligence_projection(artifact, media, request_id, model, revision, prize
         or artifact.get("request_permission_epoch") != revision.permission_epoch
     ):
         return None, "turn_intelligence_invalid"
+    # A pictured advertisement proves candidates, never customer selection.
+    # Until candidate evidence names its specific image, mixed bundles also
+    # abstain from automatic selection instead of borrowing an ad's match.
+    if any(is_ad_context_part(item) for item in media["items"][:media["actual_inline_count"]]):
+        auto_product_id = None
+        if resolution == "auto_select":
+            resolution = "clarify"
     analysis = artifact.get("media_analysis")
     if analysis is not None:
         try:
@@ -1234,6 +1248,7 @@ def current_media_complaint_parts(revision, claims, *, request_permission_epoch)
         sealed = [row for row in snapshot.get("media_parts", ()) if row.get("source_part_id") == claim["source_part_id"]]
         owned = [row for row in current if row.get("source_part_id") == claim["source_part_id"]]
         if (len(sealed) != 1 or len(owned) != 1 or sealed[0].get("capture_outcome") != "owned"
+            or is_ad_context_part(sealed[0]) or is_ad_context_part(owned[0])
             or sealed[0].get("content_hash") != claim["content_hash"]
             or owned[0].get("content_hash") != claim["content_hash"]
             or owned[0].get("mime") != sealed[0].get("mime")

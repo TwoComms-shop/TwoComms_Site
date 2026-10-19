@@ -104,6 +104,55 @@ def _configuration_grid(product, variant, option_key):
     return grid, "catalog_exact_or_neutral" if grid is not None else "missing"
 
 
+def size_measurements(grid, *, product_id, variant_id=None, option_key="", allowed_sizes=None):
+    """Bound exact guide cells and their own semantics, never fabricate a grid."""
+    from copy import deepcopy
+    import re
+    from django.core.exceptions import ValidationError
+    from product_catalog.size_grid_services import normalize_size_grid_payload
+
+    if grid is None:
+        return {}
+    raw = getattr(grid, "guide_data", {}) or {}
+    if (not isinstance(raw, dict) or not isinstance(raw.get("rows"), list)
+        or not isinstance(raw.get("columns"), list) or len(raw["rows"]) > MAX_SIZES
+        or len(raw["columns"]) > 12):
+        return {}
+    try:
+        guide = normalize_size_grid_payload(deepcopy(raw))
+    except (ValidationError, TypeError, ValueError):
+        return {}
+    columns = [{"key": row["key"], "label": row["label"][:160]} for row in guide["columns"] if row["key"] != "size"]
+    rows = []
+    for row in guide["rows"]:
+        if allowed_sizes is not None and row["size"] not in allowed_sizes:
+            continue
+        cells = {column["key"]: row.get(column["key"], "")[:80] for column in columns}
+        # Empty or prose-only guides are not numeric measurement evidence.
+        if any(re.search(r"\d", value) for value in cells.values()):
+            rows.append({"size": row["size"], **cells})
+    if not rows:
+        return {}
+    notes = {key: [str(value)[:300] for value in guide.get(key, ())[:8]] for key in ("notes", "fit_notes")}
+    intro = guide.get("intro", "")[:600]
+    semantics_text = " ".join([intro, *notes["notes"], *notes["fit_notes"]])
+    unit = str(raw.get("unit") or raw.get("units") or "")[:30]
+    if not unit and re.search(r"(?<!\w)(?:см|cm)(?!\w)", semantics_text, re.I):
+        unit = "cm"
+    flat = bool(re.search(r"розкладен\w*|разложен\w*|laid\s+flat|flat[- ]garment", semantics_text, re.I))
+    body = bool(re.search(r"замір\w*\s+тіла|мерк\w*\s+тел\w*|body\s+measurements?", semantics_text, re.I))
+    result = {"schema": "size-measurements.v1", "product_id": product_id, "variant_id": variant_id,
+        "option_key": option_key, "grid_id": getattr(grid, "pk", None), "columns": columns, "rows": rows,
+        "unit": unit or "unspecified", "measurement_semantics": "flat_garment" if flat and not body else "body" if body and not flat else "unspecified",
+        "intro": intro, **notes, "tolerance_source_text": [text for text in [intro, *notes["notes"], *notes["fit_notes"]]
+            if re.search(r"±|похиб\w*|погреш\w*|допуск\w*|tolerance", text, re.I)][:8], "legend": [{"label": str(item.get("label", ""))[:160],
+            "description": str(item.get("description", ""))[:300]} for item in guide.get("legend", [])[:12]],
+        "comparison_guidance": "Compare the same named measurement and units on a comfortable garment. Do not equate width or half-chest with body circumference. If semantics/units are unspecified, clarify before recommending a size. Explain adjacent sizes; do not guarantee fit.",
+        "selection_authority": False, "stock_authority": False}
+    result["guide_version"] = _digest(raw)
+    return result
+
+
 def _configuration(product, variant, values, *, metadata_only=False):
     from product_catalog.content_resolution import build_combination_key
     from product_catalog.size_grid_services import normalize_size_value
@@ -136,6 +185,8 @@ def _configuration(product, variant, values, *, metadata_only=False):
                         "grid_id": getattr(grid, "pk", None)})
     grid_ref = {"grid_id": getattr(grid, "pk", None), "source": source,
                 "image_name": str(getattr(getattr(grid, "image", None), "name", "") or ""),
+                "measurements": size_measurements(grid, product_id=product.pk, variant_id=getattr(variant, "pk", None),
+                    option_key=key, allowed_sizes={row["value"] for row in choices}),
                 "photo_ref": None if metadata_only else _photo_ref(getattr(grid, "image", None), product_id=product.pk,
                                         variant_id=getattr(variant, "pk", None), source="size_grid")}
     result = {"variant_id": getattr(variant, "pk", None), "option_values": values,

@@ -11,6 +11,8 @@ on:
       - "twocomms/management/**"
       - "twocomms/orders/models.py"
       - "twocomms/orders/promo_reservations.py"
+      - "twocomms/storefront/services/loyalty_rewards.py"
+      - "twocomms/finance/tests_migration_storage.py"
       - "twocomms/storefront/models.py"
       - "twocomms/storefront/migrations/0095_promocode_guest_ugc.py"
       - "scripts/run_mariadb_gate.py"
@@ -35,6 +37,8 @@ on:
       - "twocomms/management/**"
       - "twocomms/orders/models.py"
       - "twocomms/orders/promo_reservations.py"
+      - "twocomms/storefront/services/loyalty_rewards.py"
+      - "twocomms/finance/tests_migration_storage.py"
       - "twocomms/storefront/models.py"
       - "twocomms/storefront/migrations/0095_promocode_guest_ugc.py"
       - "scripts/run_mariadb_gate.py"
@@ -135,6 +139,15 @@ jobs:
         run: |
           set -o pipefail
           python scripts/run_mariadb_gate.py --server-mode external --suite lease-concurrency 2>&1 | tee mariadb-lease-concurrency-evidence.txt
+      - name: Run disposable MariaDB conversion context gate
+        env:
+          MARIADB_HOST: 127.0.0.1
+          MARIADB_PORT: "3306"
+          MARIADB_ADMIN_USER: root
+          MARIADB_ADMIN_PASSWORD: gate-root-password
+        run: |
+          set -o pipefail
+          python scripts/run_mariadb_gate.py --server-mode external --suite conversion-context 2>&1 | tee mariadb-conversion-context-evidence.txt
       - name: Upload sanitized MariaDB gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -145,5 +158,6 @@ jobs:
             mariadb-checkout-concurrency-evidence.txt
             mariadb-follow-ugc-evidence.txt
             mariadb-lease-concurrency-evidence.txt
+            mariadb-conversion-context-evidence.txt
           if-no-files-found: warn
           retention-days: 7

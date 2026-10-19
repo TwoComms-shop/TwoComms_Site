@@ -185,7 +185,17 @@ class RevisionServiceComplaintFlowTests(TransactionTestCase):
     def test_mixed_shopping_request_cannot_override_service_first(self):
         self._replace_bundle([ACTUAL_DELIVERY_COMPLAINT, "І ще хочу замовити худі, скільки коштує?"])
         from management.services.ig_response_plan import capture_response_plan
+        from management.services.ig_revision_commerce import reduce_revision_commerce
 
+        # Runtime admits the sealed original sources before capturing a plan.
+        # Its empty cart still has a source-owned identity; comparing a plan
+        # captured before admission would compare two different boundaries.
+        admitted = reduce_revision_commerce(self.revision.pk, self.token,
+            settings_id=self.settings.pk, settings_permission_epoch=self.settings.reply_permission_epoch,
+            publication=None)
+        self.assertTrue(admitted.ready, admitted.reason)
+        self.revision.refresh_from_db()
+        self.customer.refresh_from_db()
         original_plan = capture_response_plan(self.customer, revision=self.revision)
         price_obligations = [row["id"] for row in original_plan.obligations if row["kind"] == "info:price"]
         self.assertTrue(price_obligations, original_plan.as_dict())

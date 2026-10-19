@@ -134,26 +134,31 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertEqual(duplicate.child_id, child.pk)
         self.assertEqual(IgCustomerTurnRevision.objects.count(), 2)
 
-    def test_open_quota_incident_defers_without_spending_generation(self):
+    def test_grouped_quota_incident_does_not_veto_eligible_frozen_route(self):
+        from management.services import instagram_bot
+        from management.services.ig_revision_provider_execution import inspect_revision_provider_execution
         self._admit()
         self._graph()
         now = self._queue()
-        incident = IgProviderIncident.objects.create(
+        IgProviderIncident.objects.create(
             role="chat", failure_class="quota", fingerprint="chat:quota",
             active_fingerprint="chat:quota", state="open",
             opened_at=now - timedelta(hours=2), last_failure_at=now - timedelta(hours=2),
         )
-        for _ in range(3):
-            result = prepare_outage_recovery(self.revision.pk, now=now)
-            self.assertEqual(result.reason, "recovery_provider_incident_open")
-            self.revision.refresh_from_db()
-            self.assertEqual(self.revision.recovery_due_at, now + timedelta(seconds=45))
-            now = self.revision.recovery_due_at
-        self.assertEqual(IgCustomerTurnRevision.objects.count(), 1)
+        before = inspect_revision_provider_execution(self.revision, now=now)
+        self.assertTrue(before.ready)
+        result = prepare_outage_recovery(self.revision.pk, now=now)
+        self.assertEqual(result.state, "spawned", result.reason)
+        child = IgCustomerTurnRevision.objects.get(pk=result.child_id)
+        after = inspect_revision_provider_execution(child, now=now)
+        self.assertTrue(after.ready)
+        self.assertEqual(after.http_remaining, before.http_remaining)
+        self.assertEqual(after.scarce_remaining, before.scarce_remaining)
+        self.assertEqual(after.repair_remaining, before.repair_remaining)
+        self.assertEqual(IgCustomerTurnRevision.objects.count(), 2)
         self.assertEqual(GeminiRequest.objects.count(), 1)
-        incident.state = "closed"
-        incident.save(update_fields=["state"])
-        self.assertEqual(prepare_outage_recovery(self.revision.pk, now=now).state, "spawned")
+        self.assertEqual(prepare_outage_recovery(self.revision.pk, now=now).child_id, child.pk)
+        instagram_bot._provider_http.assert_not_called()
 
     @patch("management.services.ig_revision_recovery.RETRY_DELAYS", (45,))
     def test_secondary_generation_bound_does_not_replace_global_http_budget(self):

@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from management.models import (
     GeminiRequest, GeminiRequestAttempt, IgClient, IgCustomerTurn, IgCustomerTurnRevision,
-    IgProviderIncident, IgRevisionDeliveryEffect, IgWebhookInboxEvent,
+    IgRevisionDeliveryEffect, IgWebhookInboxEvent,
     InstagramBotMessage, InstagramBotSettings,
 )
 from management.services.ig_revision_authority import (
@@ -35,10 +35,10 @@ from management.services.ig_turn_revisions import (
 RECOVERY_ORIGIN = "outage_recovery"
 MAX_RECOVERY_GENERATIONS = 8
 RECOVERY_LIFETIME = timedelta(seconds=45)
-INCIDENT_DELAY = timedelta(seconds=45)
 RETRY_DELAYS = (45, 120, 300)
 MAX_LINEAGE = 10
 EXECUTION_RESUME_KEY = "proposal_execution_resume"
+TRANSPORT_TAIL_KEY = "proposal_transport_tail"
 POLICY_READINESS_FAILURE_KEY = "policy_readiness_failure"
 LOCAL_POLICY_READINESS_CODES = frozenset({
     "mandatory_policy_exceeds_budget", "required_policy_exceeds_budget",
@@ -507,6 +507,12 @@ def _generation_proof(rows, client, settings_row):
     return ""
 
 
+def effective_execution_receipt(revision):
+    """The one appended transport admission supersedes only its ordinary timer."""
+    receipts = revision.action_receipts or {}
+    return receipts.get(TRANSPORT_TAIL_KEY) or receipts.get(EXECUTION_RESUME_KEY) or {}
+
+
 def execution_resume_is_current(revision, *, now=None):
     """Execution-only deadline exception; never grants provider admission.
 
@@ -518,7 +524,7 @@ def execution_resume_is_current(revision, *, now=None):
     from management.services.ig_revision_proposal import _generation_graph_matches
 
     now = now or timezone.now()
-    receipt = (revision.action_receipts or {}).get(EXECUTION_RESUME_KEY) or {}
+    receipt = effective_execution_receipt(revision)
     proposal = revision.generation_proposal or {}
     generation = proposal.get("generation") or {}
     root = economic_root(revision) if receipt else None
@@ -532,8 +538,39 @@ def execution_resume_is_current(revision, *, now=None):
         expires = timezone.datetime.fromisoformat(receipt["expires_at"])
         horizon = timezone.datetime.fromisoformat(manifest["horizon_at"])
         window = _normal_reply_window_deadline(revision)
+        lifetime = RECOVERY_LIFETIME
+        tail = receipt.get("transport_tail")
+        if (revision.action_receipts or {}).get(TRANSPORT_TAIL_KEY):
+            ordinary = revision.action_receipts.get(EXECUTION_RESUME_KEY) or {}
+            bound_fields = set(ordinary) - {"digest", "issued_at", "expires_at"}
+            ordinary_started = timezone.datetime.fromisoformat(ordinary["issued_at"])
+            ordinary_expires = timezone.datetime.fromisoformat(ordinary["expires_at"])
+            if (not tail or ordinary.get("transport_tail")
+                or ordinary.get("digest") != _digest({key: value for key, value in ordinary.items() if key != "digest"})
+                or receipt.get("upgraded_from_digest") != ordinary.get("digest")
+                or any(receipt.get(key) != ordinary[key] for key in bound_fields)
+                or not ordinary_started <= started < ordinary_expires
+                or ordinary_expires > min(ordinary_started + RECOVERY_LIFETIME, horizon, window)):
+                return False
+        if tail is not None:
+            from management.services.instagram_bot import HTTP_TIMEOUT
+            from management.services.ig_revision_outbox import MAX_EFFECTS
+            count = tail.get("effect_count") if isinstance(tail, dict) else None
+            if (isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_EFFECTS
+                or tail.get("timeout_seconds") != HTTP_TIMEOUT):
+                return False
+            lifetime = timedelta(seconds=count * HTTP_TIMEOUT + 5)
+            effects = list(revision.delivery_effects.order_by("order_index", "id"))
+            if effects:
+                fields = tail.get("spec_fields") or []
+                expected_fields = ["activation_failure_code", "activation_group", "activation_part_index",
+                    "group", "kind", "order_index", "part_count", "part_index", "payload",
+                    "payload_digest", "projection_digest", "projection_metadata"]
+                if (fields != expected_fields or len(effects) != count
+                    or _digest([{name: getattr(effect, name) for name in fields} for effect in effects]) != tail.get("spec_digest")):
+                    return False
         if (not window or not started <= now < expires
-            or expires > min(started + RECOVERY_LIFETIME, horizon, window)):
+            or expires > min(started + lifetime, horizon, window)):
             return False
     except (KeyError, TypeError, ValueError):
         return False
@@ -559,7 +596,12 @@ def execution_resume_is_current(revision, *, now=None):
     # newly persisted source has not yet reached that producer.
     if InstagramBotMessage.objects.filter(client_id=revision.client_id, role__in=("user", "manager"), id__gt=max(sources)).exclude(role="manager", status="failed").exists():
         return False
-    if revision.delivery_effects.filter(state__in=("provider_started", "unknown", "definite_failed")).exists():
+    # A reserved exact plan owns its complete finite transport window. One
+    # group's uncertain/rejected effect never grants replay of itself: the
+    # outbox's group claim/activation gates retain that responsibility. Other
+    # groups may still deliver their independently useful text or fallback.
+    if not receipt.get("transport_tail") and revision.delivery_effects.filter(
+        state__in=("provider_started", "unknown", "definite_failed")).exists():
         return False
     graph = GeminiRequest.objects.filter(request_id=receipt["request_id"]).first()
     return bool(graph and graph.winner_attempt_id == receipt.get("winner_attempt_id")
@@ -568,16 +610,30 @@ def execution_resume_is_current(revision, *, now=None):
             policy_manifest=proposal.get("policy_manifest") or {}, lock=False))
 
 
-def _authorize_proposal_execution(revision, client, settings_row, *, now):
+def _authorize_proposal_execution(revision, client, settings_row, *, now, transport_specs=None,
+    expected_token="", transport_authority=None):
     """Issue once under settings -> client -> revision; no new graph or child."""
     from management.services.ig_revision_provider_execution import _manifest, REFERENCE_KEY
     from management.services.ig_revision_burst_budget import economic_root
     from management.services.ig_revision_outbox import PublicationBinding
 
-    if (revision.action_receipts or {}).get(EXECUTION_RESUME_KEY):
-        if execution_resume_is_current(revision, now=now):
+    upgrade_from = None
+    existing = effective_execution_receipt(revision)
+    if existing:
+        if transport_specs is not None:
+            tail = existing.get("transport_tail") or {}
+            if tail and tail.get("spec_digest") != _digest(transport_specs):
+                return RecoveryResult(revision.pk, reason="proposal_transport_plan_changed")
+        if not execution_resume_is_current(revision, now=now):
+            return _set_state(revision, "manual", "proposal_execution_resume_expired")
+        if transport_specs is not None and not existing.get("transport_tail"):
+            # Append once before planning; never rewrite the original resume
+            # receipt or enlarge time after any physical effect was admitted.
+            if revision.delivery_effects.exists():
+                return RecoveryResult(revision.pk, reason="proposal_transport_already_planned")
+            upgrade_from = existing
+        else:
             return _set_state(revision, "execution", "recovery_existing_proposal_requires_execution", due_at=now)
-        return _set_state(revision, "manual", "proposal_execution_resume_expired")
     rows, code = _lineage(revision)
     if code:
         return _set_state(revision, "manual", code)
@@ -590,7 +646,22 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
 
     if ingress_provider_namespace(settings_row) != _revision_namespace(revision):
         return _set_state(revision, "cancelled", "recovery_channel_changed")
-    code = _generation_proof(rows, client, settings_row)
+    code = _generation_proof(rows, client, settings_row) if transport_specs is None else "recovery_existing_proposal_requires_execution"
+    if transport_specs is not None:
+        from management.services.ig_revision_proposal import _generation_graph_matches
+        proposal = revision.generation_proposal or {}
+        generation = proposal.get("generation") or {}
+        admission = (revision.action_receipts or {}).get("generation_admission") or {}
+        if (not admission or admission.get("digest") != _digest({key: value for key, value in admission.items() if key != "digest"})
+            or admission.get("revision_id") != revision.pk or admission.get("snapshot_digest") != revision.snapshot_digest
+            or admission.get("settings_id") != settings_row.pk
+            or admission.get("settings_permission_epoch") != settings_row.reply_permission_epoch
+            or not revision.generation_proposal_digest or _digest(proposal) != revision.generation_proposal_digest
+            or not _generation_graph_matches(revision=revision,
+                source_ids=list(revision.sources.values_list("message_id", flat=True)),
+                request_id=generation.get("request_id", ""), model=generation.get("actual_model", ""),
+                policy_manifest=proposal.get("policy_manifest") or {})):
+            code = "recovery_success_result_missing"
     if code != "recovery_existing_proposal_requires_execution":
         return _set_state(revision, "manual", code or "recovery_success_result_missing")
     root = economic_root(revision)
@@ -604,7 +675,7 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
     horizon = timezone.datetime.fromisoformat(manifest["horizon_at"])
     if horizon <= now:
         return _set_state(revision, "manual", "provider_horizon_exhausted")
-    if client.automation_lease_token and client.automation_lease_until and client.automation_lease_until > now:
+    if transport_specs is None and client.automation_lease_token and client.automation_lease_until and client.automation_lease_until > now:
         if client.automation_lease_until >= horizon:
             return _set_state(revision, "manual", "provider_horizon_exhausted")
         return _set_state(revision, "waiting", "proposal_execution_lease_wait", due_at=client.automation_lease_until)
@@ -612,6 +683,21 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
     execution = proposal.get("execution_binding") or {}
     pub = (proposal.get("policy_manifest") or {}).get("instruction_publication") or {}
     authority = proposal.get("authority") or {}
+    if transport_specs is not None:
+        action = (revision.action_receipts or {}).get("client_configuration_update") or {}
+        if action:
+            if (action.get("generation_proposal_digest") != revision.generation_proposal_digest
+                or action.get("before_authority") != authority or not action.get("after_authority")):
+                return RecoveryResult(revision.pk, reason="proposal_transport_selection_invalid")
+            authority = action["after_authority"]
+        if transport_authority is not None:
+            facts, offers = list(transport_authority.fact_bindings), list(transport_authority.offer_bindings)
+            if (not transport_authority.ready
+                or any(binding not in facts for binding in authority.get("fact_bindings", ()))
+                or any(binding not in offers for binding in authority.get("offer_bindings", ()))):
+                return RecoveryResult(revision.pk, reason="proposal_transport_authority_changed")
+            authority = {"authority_digest": transport_authority.authority_digest,
+                "fact_bindings": facts, "offer_bindings": offers}
     if (execution != {"settings_id": settings_row.pk, "settings_permission_epoch": settings_row.reply_permission_epoch}
         or not all(key in pub for key in ("id", "version", "hash"))
         or "authority_digest" not in authority):
@@ -623,9 +709,19 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
         fact_bindings=authority.get("fact_bindings") or [], offer_bindings=authority.get("offer_bindings") or [],
         fact_checker=check_fact_bindings, offer_checker=check_offer_bindings, now=now)
     reasons = set(readiness.reasons) - {"revision_not_current", "revision_deadline_exhausted"}
+    if transport_specs is not None:
+        reasons = set(readiness.reasons)
+        if not expected_token or expected_token != revision.claim_token:
+            reasons.add("revision_not_current")
     if reasons:
         return _set_state(revision, "manual", sorted(reasons)[0])
-    expires = min(now + RECOVERY_LIFETIME, timezone.datetime.fromisoformat(manifest["horizon_at"]), _normal_reply_window_deadline(revision))
+    lifetime = RECOVERY_LIFETIME
+    if transport_specs is not None:
+        from management.services.instagram_bot import HTTP_TIMEOUT
+        lifetime = timedelta(seconds=len(transport_specs) * HTTP_TIMEOUT + 5)
+    expires = min(now + lifetime, timezone.datetime.fromisoformat(manifest["horizon_at"]), _normal_reply_window_deadline(revision))
+    if transport_specs is not None and expires < now + lifetime:
+        return RecoveryResult(revision.pk, reason="proposal_transport_window_insufficient")
     if expires <= now:
         return _set_state(revision, "manual", "provider_horizon_exhausted")
     graph = GeminiRequest.objects.get(request_id=proposal["generation"]["request_id"])
@@ -636,8 +732,21 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
         "settings_id": settings_row.pk, "settings_permission_epoch": settings_row.reply_permission_epoch,
         "source_message_ids": list(revision.sources.order_by("ordinal", "id").values_list("message_id", flat=True)),
         "issued_at": now.isoformat(), "expires_at": expires.isoformat()}
+    if transport_specs is not None:
+        receipt["transport_tail"] = {"effect_count": len(transport_specs), "timeout_seconds": HTTP_TIMEOUT,
+            "spec_digest": _digest(transport_specs), "spec_fields": sorted(transport_specs[0])}
+    if upgrade_from is not None:
+        receipt["upgraded_from_digest"] = upgrade_from["digest"]
     receipt["digest"] = _digest(receipt)
-    revision.action_receipts = {**revision.action_receipts, EXECUTION_RESUME_KEY: receipt}
+    receipt_key = TRANSPORT_TAIL_KEY if upgrade_from is not None else EXECUTION_RESUME_KEY
+    revision.action_receipts = {**revision.action_receipts, receipt_key: receipt}
+    if transport_specs is not None:
+        # The canonical plan may contain a gallery and text, up to MAX_EFFECTS.
+        # Retain this exact execution owner for that finite transport allowance;
+        # the generation deadline and provider admission remain unchanged.
+        revision.lease_until = max(revision.lease_until, expires)
+        revision.save(update_fields=["action_receipts", "lease_until", "updated_at"])
+        return _set_state(revision, "execution", "proposal_transport_tail", due_at=now)
     # The ordinary 180-second revision lease can outlive generation. Revoke
     # its stale token in the same transaction as the execution-only authority.
     revision.claim_token = ""
@@ -646,6 +755,39 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now):
     revision.state = revision.State.CLAIMED
     revision.save(update_fields=["action_receipts", "claim_token", "claimed_at", "lease_until", "state", "updated_at"])
     return _set_state(revision, "execution", "recovery_existing_proposal_requires_execution", due_at=now)
+
+
+def reserve_proposal_transport_tail(revision_id, token, *, effects, settings_id=1, authority=None, now=None):
+    """Reserve the exact finite transport plan once, before its first send.
+
+    This spends no provider budget and changes no generation deadline. The
+    immutable winner and exact payload plan receive only their physical HTTP
+    allowance; every part still passes ordinary CAS and SENT/UNKNOWN fences.
+    """
+    from management.services.ig_revision_outbox import MAX_EFFECTS, _normalize_specs
+    from management.services.instagram_bot import HTTP_TIMEOUT
+
+    now = now or timezone.now()
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if not identity:
+        return RecoveryResult(reason="revision_missing")
+    with transaction.atomic():
+        settings_row = InstagramBotSettings.objects.select_for_update().select_related("active_instruction_publication").filter(pk=settings_id).first()
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
+        if revision is None or client is None:
+            return RecoveryResult(reason="revision_missing")
+        try:
+            specs = _normalize_specs(effects, client.igsid)
+        except (ValueError, TypeError):
+            return RecoveryResult(revision.pk, reason="proposal_transport_plan_invalid")
+        if not 1 <= len(specs) <= MAX_EFFECTS:
+            return RecoveryResult(revision.pk, reason="proposal_transport_plan_limit")
+        if (not (revision.action_receipts or {}).get(EXECUTION_RESUME_KEY)
+            and revision.overall_deadline >= now + timedelta(seconds=len(specs) * HTTP_TIMEOUT + 5)):
+            return RecoveryResult(revision.pk, "execution", "proposal_transport_budget_available")
+        return _authorize_proposal_execution(revision, client, settings_row, now=now,
+            transport_specs=specs, expected_token=token, transport_authority=authority)
 
 
 def _classify_terminal_semantic_failure(revision, client, *, now):
@@ -659,6 +801,132 @@ def _classify_terminal_semantic_failure(revision, client, *, now):
     if state:
         return _set_state(revision, state, eligibility_reason)
     return _set_state(revision, "manual", reason)
+
+
+def _recover_unstarted_preparation(revision, client, settings_row, *, now, admitted=False):
+    """One queue-admission successor, before any immutable generation exists.
+
+    The expired parent's deadline never changes. An unsealed source has spent
+    no generation budget, so the child starts ordinary inbound admission, not
+    a fabricated sealed provider-recovery lineage.
+    """
+    from management.models import IgTurnMessage
+    from management.services.ig_permission_transitions import permission_transition_blocks
+    from management.services.ig_revision_echo import revision_echo_blocks
+    from management.services.ig_revision_provider_execution import HORIZON
+    from management.services.ig_turn_revisions import _source_payload
+    from management.services.instagram_bot import allowed_sender_ids, ingress_provider_namespace
+
+    if (revision.origin != "inbound" or revision.snapshot_digest or revision.bundle_snapshot
+        or revision.generation_proposal_digest or revision.generation_proposal
+        or any(key in (revision.action_receipts or {}) for key in (
+            "generation_admission", "provider_execution_manifest", "recovery_lineage",
+            "manager_handoff", "technical_holding", "provider_safe_reply"))):
+        return _set_state(revision, "manual", "preparation_recovery_exhausted")
+    if revision.lease_until and revision.lease_until > now:
+        return RecoveryResult(revision.pk, reason="preparation_lease_active")
+    if (client is None or client.reply_permission_epoch != revision.permission_epoch
+        or client.hidden_at or client.bot_paused or client.manager_takeover or client.is_blocked
+        or client.privacy_erasure_started_at or revision.erasure_started_at_snapshot or _active_opt_out(client)):
+        return _set_state(revision, "cancelled", "recovery_permission_changed")
+    if settings_row is None or not settings_row.is_enabled or not settings_row.ai_enabled:
+        return _set_state(revision, "cancelled", "recovery_settings_disabled")
+    namespace = _revision_namespace(revision)
+    allowlist = allowed_sender_ids(settings_row)
+    if (not namespace or ingress_provider_namespace(settings_row) != namespace
+        or (allowlist and client.igsid not in allowlist)):
+        return _set_state(revision, "cancelled", "recovery_channel_changed")
+    if (permission_transition_blocks(settings_id=settings_row.pk, client_id=client.pk)
+        or revision_echo_blocks(client.pk, namespace)):
+        return _set_state(revision, "cancelled", "recovery_permission_transition_pending")
+    if IgWebhookInboxEvent.objects.filter(namespace=namespace, customer_igsid=client.igsid,
+        decision__in=("accepted", "blocked"), processed_at__isnull=True).exists():
+        return _set_state(revision, "cancelled", "recovery_pending_inbound")
+    source_rows = list(revision.sources.select_related("message").order_by("ordinal", "id"))
+    source_ids = [row.message_id for row in source_rows]
+    if not source_rows or len(source_rows) != revision.source_count:
+        return _set_state(revision, "manual", "recovery_sources_invalidated")
+    if any(row.role != "user" or row.message.role != "user" or row.message.client_id != client.pk
+        or row.message.status != "pending" or row.message.send_state
+        or _source_payload(row.message, previous=row, ordinal=row.ordinal)["source_digest"] != row.source_digest
+        for row in source_rows):
+        return _set_state(revision, "cancelled", "recovery_sources_invalidated")
+    turn = IgCustomerTurn.objects.filter(pk=revision.turn_id, client_id=client.pk,
+        claim_state="open", terminal_reason="").first()
+    if (turn is None or set(IgTurnMessage.objects.filter(turn_id=revision.turn_id,
+        message_id__in=source_ids, role="user").values_list("message_id", flat=True)) != set(source_ids)):
+        return _set_state(revision, "cancelled", "recovery_turn_terminal")
+    if InstagramBotMessage.objects.filter(client_id=client.pk, role="user", pk__gt=max(source_ids)).exists():
+        return _set_state(revision, "cancelled", "recovery_newer_inbound")
+    if InstagramBotMessage.objects.filter(client_id=client.pk, role="manager", pk__gt=max(source_ids)).exclude(status="failed").exists():
+        return _set_state(revision, "cancelled", "recovery_manager_answered")
+    if (IgRevisionDeliveryEffect.objects.filter(revision__client_id=client.pk, source_message_id__in=source_ids).exists()
+        or GeminiRequest.objects.filter(
+        Q(logical_turn_id=f"ig-revision:{revision.pk}") | Q(source_execution_key=f"ig-revision:{revision.pk}")
+        | Q(client_id=client.pk, source_message_id__in=source_ids)).exists()
+        or GeminiRequestAttempt.objects.filter(client_id=client.pk, source_message_id__in=source_ids).exists()):
+        return _set_state(revision, "manual", "preparation_generation_already_started")
+    window = _normal_reply_window_deadline(revision)
+    horizon = min(revision.quiet_started_at + HORIZON, window) if window else now
+    if now + RECOVERY_LIFETIME >= horizon:
+        return _set_state(revision, "manual", "preparation_recovery_horizon_exhausted")
+    if not admitted:
+        # Waiting for a worker slot consumes no fresh preparation lifetime.
+        # Only the just-in-time consumer below may mint the one child.
+        return _set_state(revision, "waiting", "preparation_recovery_due", due_at=now)
+    payloads = _copied_source_payloads(source_rows)
+    next_number = (IgCustomerTurnRevision.objects.filter(client_id=client.pk)
+        .order_by("-revision").values_list("revision", flat=True).first() or 0) + 1
+    revision.active_slot = None
+    revision.state = revision.State.SUPERSEDED
+    revision.claim_token = ""
+    revision.claimed_at = None
+    revision.lease_until = None
+    revision.save(update_fields=["active_slot", "state", "claim_token", "claimed_at", "lease_until", "updated_at"])
+    child = IgCustomerTurnRevision.objects.create(client=client, turn_id=revision.turn_id,
+        parent=revision, revision=next_number, origin="inbound", successor_reason="outage_recovery",
+        state="collecting", active_slot=1, quiet_started_at=now, quiet_deadline=now, quiet_cap_at=now,
+        overall_deadline=now + RECOVERY_LIFETIME, source_count=revision.source_count,
+        text_chars=revision.text_chars, media_part_count=revision.media_part_count,
+        permission_epoch=revision.permission_epoch,
+        action_receipts={"recovery_lineage": {"schema": "unstarted-preparation.v1",
+            "root_revision_id": revision.pk, "round": 1, "source_digest": _digest(payloads),
+            "original_deadline": revision.overall_deadline.isoformat(), "horizon_at": horizon.isoformat()}})
+    _create_source_rows(child, payloads)
+    return _set_state(revision, "spawned", "preparation_recovery_child_created", child_id=child.pk)
+
+
+def due_preparation_recovery_ids(*, now=None, limit=25):
+    now = now or timezone.now()
+    return list(IgCustomerTurnRevision.objects.filter(active_slot=1,
+        recovery_state="waiting", recovery_code="preparation_recovery_due", recovery_due_at__lte=now)
+        .order_by("recovery_due_at", "pk").values_list("pk", flat=True)[:max(0, min(int(limit), 50))])
+
+
+def prepare_unstarted_preparation_recovery(revision_id, *, automation_lease_token, now=None):
+    """Admit the one preparation child inside its already acquired worker slot."""
+    now = now or timezone.now()
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if not identity:
+        return RecoveryResult(reason="revision_missing")
+    with transaction.atomic():
+        settings_row = InstagramBotSettings.objects.select_for_update().select_related("active_instruction_publication").filter(pk=1).first()
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
+        if revision is None or client is None:
+            return RecoveryResult(reason="revision_missing")
+        if revision.recovery_state == "spawned":
+            child = IgCustomerTurnRevision.objects.filter(parent=revision,
+                origin="inbound", successor_reason="outage_recovery").first()
+            return RecoveryResult(revision.pk, "spawned", "preparation_recovery_existing_child", child.pk if child else 0)
+        if (not automation_lease_token or client.automation_lease_token != automation_lease_token
+            or not client.automation_lease_until or client.automation_lease_until <= now):
+            return RecoveryResult(revision.pk, reason="preparation_worker_slot_missing")
+        if (revision.active_slot != 1 or revision.state not in {"collecting", "preparing"}
+            or revision.overall_deadline > now or revision.recovery_state != "waiting"
+            or revision.recovery_code != "preparation_recovery_due"):
+            return RecoveryResult(revision.pk, reason="preparation_recovery_not_due")
+        return _recover_unstarted_preparation(revision, client, settings_row, now=now, admitted=True)
 
 
 def schedule_revision_recovery(revision_id, *, now=None):
@@ -682,6 +950,9 @@ def schedule_revision_recovery(revision_id, *, now=None):
                 return semantic
         if revision.recovery_state:
             return RecoveryResult(revision.pk, revision.recovery_state, revision.recovery_code)
+        if (revision.overall_deadline <= now and revision.active_slot == 1
+            and revision.state in {"collecting", "preparing"}):
+            return _recover_unstarted_preparation(revision, client, settings_row, now=now)
         if revision.overall_deadline > now or revision.active_slot != 1 or revision.state not in {"sealed", "claimed"}:
             return RecoveryResult(revision.pk, reason="recovery_not_expired")
         # A successful last-budget answer is execution debt, not provider
@@ -715,7 +986,7 @@ def schedule_revision_recovery(revision_id, *, now=None):
         lineage = (revision.action_receipts or {}).get("recovery_lineage") or {}
         round_number = lineage.get("round", 0)
         delay = RETRY_DELAYS[min(round_number, len(RETRY_DELAYS) - 1)] if isinstance(round_number, int) and round_number >= 0 else RETRY_DELAYS[-1]
-        due = continuation.next_due_at or now + timedelta(seconds=delay)
+        due = now if continuation.ready else continuation.next_due_at or now + timedelta(seconds=delay)
         horizon = timezone.datetime.fromisoformat(continuation.manifest["horizon_at"])
         if due >= horizon:
             return _set_state(revision, "manual", "provider_horizon_exhausted")
@@ -727,7 +998,8 @@ def due_recovery_revision_ids(*, now=None, limit=25):
     return list(IgCustomerTurnRevision.objects.filter(
         Q(recovery_state="waiting", recovery_due_at__lte=now)
         | Q(recovery_state="manual", recovery_code="recovery_existing_proposal_requires_execution"),
-    ).order_by("recovery_due_at", "pk").values_list("pk", flat=True)[:max(0, min(int(limit), 50))])
+    ).exclude(recovery_code="preparation_recovery_due")
+        .order_by("recovery_due_at", "pk").values_list("pk", flat=True)[:max(0, min(int(limit), 50))])
 
 
 def prepare_outage_recovery(revision_id, *, now=None):
@@ -791,13 +1063,13 @@ def prepare_outage_recovery(revision_id, *, now=None):
         round_number = sum(row.origin == RECOVERY_ORIGIN for row in rows)
         if round_number >= MAX_RECOVERY_GENERATIONS:
             return _set_state(revision, "manual", "recovery_generations_exhausted")
-        # Unlike the legacy gate, an explicitly OPEN incident never ages out
-        # into permission to spend a customer recovery generation.
-        if IgProviderIncident.objects.filter(role="chat", state="open", failure_class__in=("quota", "unavailable", "timeout", "connect", "empty", "unknown")).exists():
-            due = now + INCIDENT_DELAY
-            if due >= horizon:
-                return _set_state(revision, "manual", "provider_horizon_exhausted")
-            return _set_state(revision, "waiting", "recovery_provider_incident_open", due_at=due)
+        # Incidents intentionally group alerts across projects. They are not
+        # route admission authority: the frozen continuation above already
+        # defers each failed project/model and enforces the shared HTTP,
+        # scarce-model and repair budgets. Its ready candidate still passes
+        # final project quota/deadline admission at before_provider.
+        if now + RECOVERY_LIFETIME >= horizon:
+            return _set_state(revision, "manual", "provider_horizon_exhausted")
         source_rows = list(revision.sources.order_by("ordinal", "id"))
         next_number = (IgCustomerTurnRevision.objects.filter(client_id=client.pk).order_by("-revision").values_list("revision", flat=True).first() or 0) + 1
         revision.active_slot = None

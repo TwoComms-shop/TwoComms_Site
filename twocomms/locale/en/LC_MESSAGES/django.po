@@ -7692,7 +7692,7 @@ msgstr ""
 
 #: storefront/support_content.py:34
 msgid "Де виробляється одяг TwoComms?"
-msgstr ""
+msgstr "Where is TwoComms clothing made?"
 
 #: storefront/support_content.py:35
 msgid "Усе виробництво у Харкові: дизайн, крій, пошив, DTF-друк, пакування. Жодних офшорних ланцюгів — кожна позиція проходить п’ять стадій контролю в одному цеху."
@@ -7844,7 +7844,7 @@ msgstr ""
 
 #: storefront/support_content.py:116
 msgid "Чи різняться розміри між футболками, худі та лонгслівами?"
-msgstr ""
+msgstr "Do sizes differ between t-shirts, hoodies and longsleeves?"
 
 #: storefront/support_content.py:117
 msgid "Так, посадка налаштована окремо: футболки і лонгсліви — regular з тонким нахилом до oversize, худі — повний oversize-крій. Орієнтуйтесь на конкретну розмірну сітку категорії."
@@ -7868,7 +7868,7 @@ msgstr ""
 
 #: storefront/support_content.py:130
 msgid "Чи злазить DTF-принт після прання?"
-msgstr ""
+msgstr "Does the DTF print peel after washing?"
 
 #: storefront/support_content.py:131
 msgid "Ні, при правильному догляді DTF-принт TwoComms тримає колір 30+ циклів. Найчастіша причина деградації — гаряча машинна сушка або агресивні відбілювачі."
@@ -7876,7 +7876,7 @@ msgstr ""
 
 #: storefront/support_content.py:134
 msgid "Що робити при виявленні браку?"
-msgstr ""
+msgstr "What should I do if I find a defect?"
 
 #: storefront/support_content.py:135
 msgid "Сфотографуйте дефект і напишіть менеджеру через контакти або Telegram протягом 14 днів з моменту отримання. Виробничий брак ми міняємо безкоштовно з безкоштовною доставкою в обидва боки."
@@ -7900,7 +7900,7 @@ msgstr ""
 
 #: storefront/support_content.py:150
 msgid "Які умови опту і дропшипінгу?"
-msgstr ""
+msgstr "What are the wholesale and dropshipping terms?"
 
 #: storefront/support_content.py:151
 msgid "Опт — від 8 одиниць однієї моделі або 30 одиниць у сумі по каталогу: знижка від 15 % до 35 % залежно від тиражу. Дропшипінг — без мінімального обороту, передаєте нам контакти клієнта і ми відправляємо посилку від вашого імені. Деталі — на сторінці «Співпраця»."
@@ -7916,7 +7916,7 @@ msgstr ""
 
 #: storefront/support_content.py:158
 msgid "Чи працюєте з волонтерськими і ветеранськими проєктами?"
-msgstr ""
+msgstr "Do you work with volunteer and veteran projects?"
 
 #: storefront/support_content.py:159
 msgid "Так. Для волонтерських ініціатив, фондів і ветеранських проєктів TwoComms надає пільгові тарифи. Напишіть менеджеру з описом проєкту — обговоримо умови і допоможемо із дизайном."
@@ -7932,7 +7932,7 @@ msgstr ""
 
 #: storefront/support_content.py:170
 msgid "Скільки коштує доставка?"
-msgstr ""
+msgstr "How much does shipping cost?"
 
 #: storefront/support_content.py:171
 msgid "За тарифами Нової Пошти / Укрпошти: відділення — 60-110 грн, поштомат — 65-90 грн, адресна — від 90 грн. Безкоштовна доставка при замовленні від 2 500 грн на основні відділення Нової Пошти / Укрпошти."
@@ -8044,7 +8044,7 @@ msgstr ""
 
 #: storefront/support_content.py:243
 msgid "При якій температурі прати одяг TwoComms?"
-msgstr ""
+msgstr "At what temperature should I wash TwoComms clothing?"
 
 #: storefront/support_content.py:244
 msgid "Прання в холодній воді 30 °C — оптимум для збереження кольору і форми. Вода 40 °C допустима для білих речей без принта; вода 60 °C руйнує DTF-принт і робить тканину жорсткою."
@@ -8052,7 +8052,7 @@ msgstr ""
 
 #: storefront/support_content.py:247
 msgid "Чи можна прати одяг із принтом у машинці?"
-msgstr ""
+msgstr "Can printed clothing be machine washed?"
 
 #: storefront/support_content.py:248
 msgid "Так, у режимі «делікатна» з віджимом до 600 об/хв і температурою 30 °C. Обов’язково — з виворіту, окремо від речей з блискавками і застібками-липучками. Засіб — рідкий, без хлору і відбілювачів."
@@ -8060,7 +8060,7 @@ msgstr ""
 
 #: storefront/support_content.py:251
 msgid "Як сушити одяг із DTF-принтом?"
-msgstr ""
+msgstr "How should I dry clothing with a DTF print?"
 
 #: storefront/support_content.py:252
 msgid "Тільки горизонтально на рушнику або на плічках у тіні (не на сонці). Електросушарка на високій температурі деформує тканину і прискорює деградацію принта. Допустима електросушарка тільки в режимі «холодне повітря»."
@@ -8068,7 +8068,7 @@ msgstr ""
 
 #: storefront/support_content.py:255
 msgid "Чи можна прасувати одяг із принтом?"
-msgstr ""
+msgstr "Can printed clothing be ironed?"
 
 #: storefront/support_content.py:256
 msgid "Так, з виворіту теплою (не гарячою) праскою без пари. Не направляйте праску прямо на принт — навіть з виворіту по принту краще не проходити. Якщо тканина зім’ялась тільки на принті, відпарьте на відстані 5-10 см без контакту."
@@ -8076,7 +8076,7 @@ msgstr ""
 
 #: storefront/support_content.py:259
 msgid "Як зберігати одяг між сезонами?"
-msgstr ""
+msgstr "How should I store clothing between seasons?"
 
 #: storefront/support_content.py:260
 msgid "У сухому шафовому просторі без прямого сонця, акуратно складеним або на плічках. Уникайте довготривалого вологого зберігання — це породжує запах і пожовтіння. Між сезонами одяг можна вакуумувати, але DTF-принт у вакуумній упаковці може злиплюватись — кладіть пергамент між шарами."
@@ -8084,7 +8084,7 @@ msgstr ""
 
 #: storefront/support_content.py:263
 msgid "Чи можна хімчистити одяг TwoComms?"
-msgstr ""
+msgstr "Can TwoComms clothing be dry cleaned?"
 
 #: storefront/support_content.py:264
 msgid "Хімчистка з перхлоретиленом ушкоджує DTF-принт. Якщо потрібна професійна обробка — оберіть aqua cleaning (вода + м’які детергенти), доступну в більшості сучасних хімчисток. Принт залишається у формі."
@@ -8092,7 +8092,7 @@ msgstr ""
 
 #: storefront/support_content.py:267
 msgid "Як прибрати пляму без шкоди для принта?"
-msgstr ""
+msgstr "How can I remove a stain without damaging the print?"
 
 #: storefront/support_content.py:268
 msgid "Точкова обробка холодною водою + м’яким засобом для делікатних речей. Не тріть зону принта — м’яко промокайте. Жирні плями попередньо обсипьте крохмалем, лишіть на 30 хвилин і змийте."
@@ -8100,7 +8100,7 @@ msgstr ""
 
 #: storefront/support_content.py:271
 msgid "Що робити, якщо принт помітно деформувався?"
-msgstr ""
+msgstr "What should I do if the print has visibly changed?"
 
 #: storefront/support_content.py:272
 msgid "Незначні деформації (мікротріщини, легкий «потертий» вигляд) — це природнє старіння DTF-друку після 50+ циклів прання, не дефект. Якщо принт відшаровується великими шматками — це ознака виробничого браку, повертаємо за гарантією протягом 12 місяців."
@@ -17532,3 +17532,243 @@ msgstr "For teams, brands and units"
 #: twocomms_django_theme/templates/partials/custom_print_mobile_hero.html
 msgid "Переглянути одяг для свого принта"
 msgstr "Preview garments for your print"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Єдиний поточний крій худі; свободу й довжину підбирайте за мірками."
+msgstr "The only current hoodie cut; choose ease and length by comparing measurements."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Бали та доступні винагороди відображаються в особистому кабінеті. 100 балів можна обміняти на право на знижку 10% за чинними умовами програми. Перевірте умови й доступність винагороди перед оплатою."
+msgstr "Points and available rewards appear in your account. You can exchange 100 points for a 10% discount entitlement under the current programme terms. Check the terms and reward availability before paying."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Вартість — за чинними тарифами перевізника для конкретної посилки. Безкоштовна доставка при замовленні від {threshold} грн після знижок і лише за повної оплати. При передоплаті 200 грн і післяплаті безкоштовна доставка не діє; доставка та комісія перевізника оплачуються окремо."
+msgstr "Shipping is charged at the carrier’s current rate for the specific parcel. Free shipping applies to orders of {threshold} UAH or more after discounts, only with full payment. Orders with a 200 UAH prepayment and cash on delivery do not qualify; shipping and the carrier’s payment fee are charged separately."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Готові товари належної якості можна повернути або обміняти протягом 14 днів з моменту отримання, якщо збережено товарний вигляд і немає слідів носіння та змін. Кастомний одяг, виготовлений за індивідуальним замовленням, не підлягає поверненню чи обміну, якщо його виконано належним чином і він відповідає погодженим параметрам."
+msgstr "Ready-made goods in proper condition may be returned or exchanged within 14 days of receipt if they retain their original appearance and show no wear or alterations. Custom clothing made to individual specifications cannot be returned or exchanged when correctly made to the agreed specifications."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Готові товари належної якості можна повернути протягом 14 днів з моменту отримання за умови, що збережено товарний вигляд, бірки і немає слідів носіння та змін. Кастомний одяг, виготовлений за індивідуальним замовленням, має окремі погоджені умови. Проблему з якістю або відхилення від погодженого макета розглядає команда."
+msgstr "Ready-made goods in proper condition may be returned within 14 days of receipt with their original appearance and tags intact, without wear or alterations. Custom clothing has separately agreed terms. The team reviews quality issues or differences from the approved artwork."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Де подивитися фото деталі або заміри?"
+msgstr "Where can I see a detail photo or measurements?"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Для готових товарів діє сервісний маршрут повернення та обміну: належну якість можна повернути або обміняти протягом 14 днів з моменту отримання за погодженими умовами, без носіння та змін."
+msgstr "Ready-made goods in proper condition may be returned or exchanged within 14 days of receipt under the agreed terms, without wear or alterations."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Для звичайного повернення невикористаного товару збережіть товарний вигляд і бірки. Якщо є проблема з якістю чи комплектацією, напишіть команді та додайте фото — звернення розглянемо окремо."
+msgstr "For an ordinary return of an unused item, keep its original appearance and tags. If there is a quality or fulfilment issue, contact the team with photos for a separate review."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Для поточних футболок і худі рекомендуємо 30 °C без агресивної хімії. Інші режими перевіряйте за ярликом конкретного виробу."
+msgstr "For current t-shirts and hoodies, we recommend 30 °C without harsh chemicals. Check the garment label for other care settings."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Для поточних футболок і худі рекомендуємо 30 °C. Не підвищуйте температуру та не використовуйте агресивну хімію; додаткові режими перевіряйте на ярлику конкретної речі."
+msgstr "For current t-shirts and hoodies, we recommend 30 °C. Do not increase the temperature or use harsh chemicals; check the specific garment label for other settings."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Для поточних футболок і худі рекомендуємо прання при 30 °C без агресивної хімії. Решту режимів звіряйте з ярликом конкретної речі. Повний гайд — на сторінці «Догляд за одягом»."
+msgstr "For current t-shirts and hoodies, we recommend washing at 30 °C without harsh chemicals. Follow the specific garment label for other settings. See the Clothing Care page for the full guide."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Дотримуйтесь ярлика конкретної речі. Для поточних футболок і худі рекомендоване прання при 30 °C без агресивної хімії; якщо ярлика немає або режим незрозумілий, уточніть його в команди перед пранням."
+msgstr "Follow the specific garment label. For current t-shirts and hoodies, washing at 30 °C without harsh chemicals is recommended. If the label is missing or a setting is unclear, check with the team before washing."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "За оцінкою засновника, нанесення витримує понад 100 прань за рекомендованого догляду: 30 °C, без агресивної хімії. Це оцінка засновника, а не результат лабораторного випробування чи обіцянка незмінності за будь-яких умов. Якщо виникла проблема з принтом, зверніться до команди з фото."
+msgstr "The founder estimates that the print withstands more than 100 washes with recommended care: 30 °C and no harsh chemicals. This is the founder’s assessment, not a laboratory test result or a promise of unchanged appearance under all conditions. If there is a print issue, contact the team with photos."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Звичайні каталожні товари належної якості можна повернути або обміняти протягом 14 днів з моменту отримання: збережені товарний вигляд і бірки, без носіння та змін. Умови відправлення погодьте з менеджером. Кастомні та сервісні звернення розглядаємо окремо."
+msgstr "Regular catalogue goods in proper condition may be returned or exchanged within 14 days of receipt, with their original appearance and tags intact and no wear or alterations. Agree shipping arrangements with the manager. Custom orders and service issues are reviewed separately."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Злегка oversize · унісекс"
+msgstr "Slightly oversized · unisex"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Мінімальний обсяг та формат оптової співпраці погоджуємо індивідуально. Напишіть, що хочете продавати, який обсяг плануєте та чи потрібна відправка кінцевим покупцям."
+msgstr "We agree minimum volumes and wholesale arrangements individually. Tell us what you want to sell, your planned volume and whether you need shipping to end customers."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Надішліть команді номер замовлення, фото та опис догляду. Перевіримо конкретний випадок і погодимо рішення; вигляд принта чи кількість прань самі по собі не визначають причину проблеми. Автоматичну заміну через певний строк не обіцяємо."
+msgstr "Send the team your order number, photos and care details. We will review the specific case and agree a resolution; print appearance or wash count alone does not establish the cause. We do not promise an automatic replacement after a set period."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Напишіть команді про проєкт, мету та потрібні речі. Умови для волонтерських, ветеранських і спеціальних бригадних замовлень адміністрація обговорює індивідуально, без наперед обіцяного відсотка."
+msgstr "Tell the team about your project, its purpose and the items needed. Administration discusses volunteer, veteran and special brigade orders individually, without a promised discount percentage."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Напишіть менеджеру через контакти або Telegram: додайте номер замовлення, опис проблеми й фото. Команда перевірить деталі та погодить рішення. Це окреме сервісне звернення, зокрема для кастомного виробу; 14-денний обмін невикористаного товару не замінює розгляд проблеми."
+msgstr "Contact the manager through the contact page or Telegram with your order number, a description and photos. The team will review the details and agree a resolution. This is a separate service case, including for custom garments; the 14-day unused-item exchange does not replace an issue review."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Напишіть, який товар, розмір і деталь хочете побачити: шов, принт чи замір лінійкою. Покажемо доступний матеріал або передамо запит на нове фото чи відео. Перед і спина в конструкторі — прев’ю розташування, а не фото конкретного виробу."
+msgstr "Tell us the product, size and detail you want to see: a seam, print or ruler measurement. We will show available material or pass on a request for a new photo or video. Front and back views in the configurator are placement previews, not photos of a specific garment."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Не застосовуйте хімчистку чи іншу спеціальну обробку без перевірки ярлика. Команда допоможе уточнити догляд для конкретної основи та принта."
+msgstr "Check the garment label before dry cleaning or any special treatment. The team can help confirm care for the specific base and print."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Оберіть товар, розмір і колір, додайте позицію в кошик, заповніть контакти, доставку та оплату. Наявність і можливість відправлення до потрібної дати уточніть до оплати."
+msgstr "Choose the product, size and colour, add it to your basket and enter contact, delivery and payment details. Confirm availability and whether dispatch by your required date is possible before paying."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Одяг виготовляємо в Харкові. За словами засновника, контроль проходить у три етапи: пошив, нанесення принта, пакування та відправлення."
+msgstr "We make clothing in Kharkiv. The founder describes three quality-control stages: sewing, print application, and packing and dispatch."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Опт і дропшипінг обговорюємо індивідуально: обсяг, формат співпраці та план продажів. Орієнтир для обговорення знижки — приблизно 10–20%, без автоматичного розрахунку за кількістю. Напишіть нам або зателефонуйте за актуальним номером на сторінці контактів."
+msgstr "We discuss wholesale and dropshipping individually, considering volume, arrangements and sales plans. Approximately 10–20% is a starting point for discount discussions, not an automatic quantity-based quote. Message us or call the current number on our contact page."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Орієнтир для індивідуального обговорення — приблизно 10–20% залежно від обсягу, схеми співпраці та плану продажів. Це не автоматична пропозиція: остаточні умови погоджує адміністрація."
+msgstr "Approximately 10–20% is a guide for individual discussions, depending on volume, arrangements and sales plans. This is not an automatic offer; administration agrees the final terms."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Основний спосіб — повна онлайн-оплата через доступні на сторінці оформлення способи. Для звичайного каталожного товару після консультації щодо розміру, подарунка чи якості можна погодити передоплату 200 грн і решту після огляду на пошті. Кастомні замовлення — з повною оплатою."
+msgstr "Full online payment using the options shown at checkout is the main method. For regular catalogue items, after discussing sizing, a gift or quality concerns, a 200 UAH prepayment and the balance after inspection at the carrier may be agreed. Custom orders require full payment."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Основний спосіб — повна оплата. Для звичайного каталожного товару після консультації можна погодити 200 грн передоплати й решту після огляду. При викупі 200 грн зараховуються у вартість товару; при звичайній відмові після огляду утримуються всі 200 грн. Доставка й комісія післяплати оплачуються окремо за чинними тарифами перевізника. Підтверджений брак або помилка магазину — окремий сервісний випадок."
+msgstr "Full payment is the main method. For regular catalogue items, a 200 UAH prepayment and the balance after inspection may be agreed following consultation. When collected, the 200 UAH counts towards the goods; on an ordinary refusal after inspection, all 200 UAH is retained. Shipping and cash-on-delivery fees are separate at the carrier’s current rates. A confirmed defect or store error is a separate service case."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Перед і спина — прев’ю конструктора для погодження розташування, а не фото конкретного виробу. Для фото деталі чи заміру зверніться до менеджера."
+msgstr "Front and back views are configurator previews for agreeing placement, not photos of a specific garment. Ask the manager for a detail photo or measurement."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Періть поточні футболки й худі при 30 °C; дотримуйтесь ярлика виробу."
+msgstr "Wash current t-shirts and hoodies at 30 °C; follow the garment label."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Платника й спосіб відправлення погоджуємо під час звернення залежно від причини. Підтверджений брак або помилку магазину розглядаємо окремо. Не відправляйте товар до погодження деталей із командою."
+msgstr "We agree who pays and the shipping method when reviewing your request, depending on the reason. Confirmed defects or store errors are reviewed separately. Agree the details with the team before sending goods."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Порядок невикуплених відправлень і розрахунків у дропшипінгу погоджуємо з партнером до запуску. Не прирівнюємо передоплату до фактичного тарифу перевізника; уточніть умови конкретної схеми в адміністрації."
+msgstr "We agree uncollected-parcel procedures and dropshipping settlements with the partner before starting. A prepayment is not the same as the carrier’s actual charge; check the specific arrangement with administration."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Порівняйте мірки зручної речі з сіткою конкретної моделі й оберіть бажану свободу та довжину. Зріст і вага — лише допоміжний орієнтир. Якщо потрібного заміру немає, уточніть його в менеджера до оплати."
+msgstr "Compare a comfortable garment’s measurements with the specific model’s size chart and choose your preferred ease and length. Height and weight are supporting guidance only. Ask the manager for any missing measurement before paying."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Поточне худі — злегка oversize, унісекс. Оберіть колір і зони друку."
+msgstr "The current hoodie is slightly oversized and unisex. Choose a colour and print areas."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Поточні футболки: 95% бавовна / 5% еластан, турецький кулір пеньє; regular — приблизно 190 г/м², oversize — приблизно 220 г/м². Поточне худі: 90% бавовна / 10% поліестер, тринитка пеньє, приблизно 320 г/м², злегка oversize, унісекс. Ці характеристики не поширюються автоматично на інші основи чи власний одяг клієнта."
+msgstr "Current t-shirts: 95% cotton / 5% elastane, Turkish combed single jersey; regular approximately 190 g/m², oversized approximately 220 g/m². Current hoodie: 90% cotton / 10% polyester, combed three-thread fabric, approximately 320 g/m², slightly oversized and unisex. These specifications do not automatically apply to other bases or customers’ own garments."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Режим прасування й допустимість пари звіряйте з ярликом виробу. Уникайте прямого контакту праски з принтом; якщо рекомендацій немає, уточніть їх у команди."
+msgstr "Check the garment label for ironing settings and whether steam is allowed. Avoid direct iron contact with the print; ask the team if instructions are missing."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Спосіб сушіння перевірте на ярлику виробу. Не застосовуйте гарячу сушарку без підтвердження для цієї основи; якщо є сумнів, уточніть догляд у команди."
+msgstr "Check the garment label for drying instructions. Do not use a hot dryer unless confirmed suitable for this base; ask the team if unsure."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Строк погоджуємо після перевірки макета, доступності основ і поточної завантаженості. Вкажіть бажану дату — менеджер перевірить можливість виконання до підтвердження замовлення."
+msgstr "We agree timing after checking artwork, base availability and current workload. Provide your preferred date; the manager will check feasibility before the order is confirmed."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Так, від однієї речі через сторінку «Кастомний принт». Додайте логотип чи опис ідеї, оберіть основу та зони друку. Макет, можливість виготовлення й умови партії погоджує менеджер."
+msgstr "Yes, from one item through the Custom Print page. Add a logo or describe your idea, choose a base and print areas. The manager agrees the artwork, feasibility and batch terms."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Так, від однієї речі. Завантажте макет або опишіть ідею на сторінці «Кастомний принт». Менеджер перевірить можливість виготовлення та погодить макет, комплектацію, ціну й строк для вашої партії."
+msgstr "Yes, from one item. Upload artwork or describe your idea on the Custom Print page. The manager will check feasibility and agree the artwork, contents, price and timing for your batch."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Так, такі запити обговорюємо індивідуально. Спеціальні бригадні та кастомні замовлення для підрозділів погоджує адміністрація. Для звичайного каталогу діють загальні доступні програми; автоматичної знижки за статусом немає."
+msgstr "Yes, we discuss these requests individually. Administration agrees special brigade and custom unit orders. Regular catalogue purchases use the available general programmes, without an automatic status-based discount."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "У старій публікації могла залишитися попередня ціна. Актуальна роздрібна ціна та доступна знижка розраховуються на сайті для вибраного товару й кошика. Надішліть публікацію, якщо потрібне уточнення — допоможемо звірити товар і поточний підсумок."
+msgstr "An older post may still show a previous price. The website calculates the current retail price and available discount for the selected item and basket. Send the post if you need clarification; we will help match the item and current total."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Уникайте агресивної хімії й сильного тертя по принту. Засіб і спосіб очищення звіряйте з ярликом; складну пляму краще обговорити з командою до обробки."
+msgstr "Avoid harsh chemicals and heavy rubbing on the print. Check the label for cleaning products and methods; discuss a difficult stain with the team before treating it."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Футболки мають regular та oversize посадку. Поточне худі має один крій — злегка oversize, унісекс. Розмір визначає свободу й довжину в межах цього крою; порівнюйте мірки конкретної речі."
+msgstr "T-shirts have regular and oversized fits. The current hoodie has one cut: slightly oversized and unisex. Size changes ease and length within that cut; compare measurements of the specific garment."
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Чому ціна в Instagram відрізняється від сайту?"
+msgstr "Why does the Instagram price differ from the website?"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Який ресурс DTF-принта за рекомендованого догляду?"
+msgstr "How long does a DTF print last with recommended care?"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Який склад поточних футболок і худі?"
+msgstr "What are the current t-shirts and hoodies made of?"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "для звичайного повернення невикористаної речі збережіть товарний вигляд і бірки;"
+msgstr "for an ordinary return of an unused garment, keep its original appearance and tags;"
+
+
+#. Reviewed owner brief 2026-10-18; current-base scope.
+msgid "Зберігайте річ сухою, без прямого сонця. Особливі способи зберігання уточніть у команди за ярликом конкретного виробу."
+msgstr "Store the garment dry and out of direct sunlight. Check special storage methods with the team using the specific garment label."

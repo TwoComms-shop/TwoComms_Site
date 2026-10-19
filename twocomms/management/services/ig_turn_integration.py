@@ -79,6 +79,30 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             "scope": signals.get("scope"), "observed_at": boundary["watermark"]["event_at"],
         }
     state_inputs.setdefault("slots", {}).update(policy_inputs.state_slots)
+    from management.services.ig_ad_context import ad_context_manifest
+    from management.services.ig_memory_timeline_consumers import capture_useful_memory, render_useful_memory
+    from management.services.ig_turn_intelligence import capture_digest
+    communication = policy_inputs.communication_preferences
+    pref_slots = communication.get("slots") or {}
+    if pref_slots:
+        state_inputs["slots"]["communication.preferences"] = {"value": communication,
+            "status": "confirmed", "authority": "customer_source", "scope": {key: boundary[key] for key in (
+                "client_id", "source_namespace", "reset_id", "reset_floor", "erasure_epoch", "episode_id", "line_id", "recipient_id")},
+            "source_refs": [{"kind": "message", "id": row["source_message_id"]} for row in pref_slots.values()],
+            "observed_at": boundary["watermark"]["event_at"]}
+    memory_capture = components.get("narrative") or {}
+    useful_memory = capture_useful_memory(revision.client, boundary=boundary, captured_memory=memory_capture,
+        sealed_sources=sources, history=detached_payload(context.captured_history))
+    if useful_memory.get("observations"):
+        state_inputs["slots"]["context.useful_memory"] = {"value": useful_memory,
+            "status": "confirmed", "authority": "customer_source", "scope": {key: boundary[key] for key in (
+                "client_id", "source_namespace", "reset_id", "reset_floor", "erasure_epoch", "episode_id", "line_id", "recipient_id")},
+            "source_refs": [{"kind": "message", "id": identity} for identity in useful_memory["source_message_ids"]],
+            "observed_at": boundary["watermark"]["event_at"]}
+    # Reuse the original captured mapping/version; a second lookup could race
+    # a manager edit and make the manifest differ from the provider input.
+    ad_context = components.get("ad_context") or {}
+
     from management.services.ig_review_reward_context import SLOT, VERSION as REVIEW_REWARD_CONTEXT_VERSION, capture_review_reward_context
     state_inputs["slots"][SLOT] = capture_review_reward_context(revision.client_id,
         boundary=boundary, captured_at=captured_at)
@@ -97,6 +121,9 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
     safe_versions["receipt_observation"] = "payment-observation.v1"
     from management.services.approved_public_facts import APPROVED_PUBLIC_FACTS_VERSION
     safe_versions["facts_version"] = APPROVED_PUBLIC_FACTS_VERSION
+    safe_versions["ad_context"] = "ig-ad-context-manifest.v1"
+    safe_versions["communication_preferences"] = communication["version"]
+    safe_versions["useful_memory"] = useful_memory["version"]
     safe_versions["ugc_review_benefit"] = REVIEW_REWARD_CONTEXT_VERSION
     from management.services.ig_payment_reminder_context import SLOT as REMINDER_SLOT, VERSION as REMINDER_VERSION, payment_reminder_manifest
     safe_versions["payment_reminder_context"] = REMINDER_VERSION
@@ -122,6 +149,14 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
                     "media_parts": int(budget.get("media_parts") or 0)},
         "view_versions": safe_versions,
         "memory_snapshot": metadata.get("memory_snapshot") or {},
+        "ad_context_snapshot": ad_context_manifest(ad_context),
+        "communication_snapshot": {"version": communication["version"], "reason": communication["reason"],
+            "slots": [{"kind": key, **{name: value[name] for name in ("value", "scope", "source_message_id", "source_digest")}}
+                      for key, value in pref_slots.items()]},
+        "useful_memory_snapshot": {"version": useful_memory["version"], "reason": useful_memory["reason"],
+            "source_message_ids": useful_memory["source_message_ids"], "head_version": useful_memory.get("head_version"),
+            "head_digest": useful_memory.get("head_digest", ""),
+            "observations_digest": capture_digest(useful_memory.get("observations", []))},
         "payment_reminder_snapshot": payment_reminder_manifest(state.as_dict()["slots"].get(REMINDER_SLOT) or {}),
         "fulfillment_review_snapshot": fulfillment_manifest(state.as_dict()["slots"].get(FULFILLMENT_SLOT) or {}),
         "media": {"admitted_part_ids": admitted, "omitted_part_ids": [],
@@ -130,6 +165,10 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
     readiness = generation_boundary.response_plan.readiness_snapshot
     dynamic_notes = {
         "automation": policy_inputs.automation_note,
+        "useful_memory": render_useful_memory(useful_memory),
+        "consultation_measurements": ("[ACTUAL GARMENT MEASUREMENTS]\n" + json.dumps(
+            generation_boundary.response_plan.configuration["consultation_measurements"], ensure_ascii=False, separators=(",", ":")))
+            if generation_boundary.response_plan.configuration.get("consultation_measurements") else "",
         "checkout_readiness": "[CAPTURED CHECKOUT READINESS]\n" + json.dumps(
             readiness, ensure_ascii=False, separators=(",", ":")),
         "shown_products": "", "funnel_journal": "",

@@ -18,7 +18,7 @@ _WISH = re.compile(r"\b(?:want|need|choose|хочу|хотів|хотел|пот
 _CORRECTION = re.compile(r"\b(?:actually|instead|rather|better|краще|лучше)\b|\b(?:не|not)\s+[^.!?;]{0,40}[,]\s*(?:а|but)\b", re.I)
 _HISTORY = re.compile(r"\b(?:раніше|раньше|ранее|вчера|учора|previously|earlier|formerly|yesterday|used\s+to)\b|(?:минул\w*|прошл\w*|previous|old)\s+(?:замовлен\w*|заказ\w*|order)", re.I)
 _REJECT = re.compile(r"\b(?:не|not|no)\s+(?:цікав\w*|интерес\w*|хочу|потріб\w*|нуж\w*|want|need|interested)|(?:не\s+(?:треба|потрібно|нужно)|don't\s+need)", re.I)
-_SPEC = re.compile(r"фурн[іи]тур\w*|люверс\w*|резинк\w*|манжет\w*|заст[іе]б\w*|блискавк\w*|молни\w*|ґудзик\w*|пуговиц\w*|заклеп\w*|матер[іи]ал\w*|тканин\w*|состав\w*|склад\s+(?:тканин\w*|матер[іи]ал\w*)|\b(?:eyelets?|grommets?|rib(?:bing)?|cuffs?|zipper\w*|hardware|buttons?|composition|fabric(?:\s+content)?)\b", re.I)
+_SPEC = re.compile(r"фурн[іи]тур\w*|люверс\w*|резинк\w*|манжет\w*|заст[іе]б\w*|блискавк\w*|молни\w*|ґудзик\w*|пуговиц\w*|заклеп\w*|матер[іи]ал\w*|тканин\w*|состав\w*|склад\s+(?:тканин\w*|матер[іи]ал\w*)|щільн\w*|плотност\w*|догляд\w*|прати|стират\w*|якіст\w*|качеств\w*|\b(?:eyelets?|grommets?|rib(?:bing)?|cuffs?|zipper\w*|hardware|buttons?|composition|density|gsm|care|wash|quality|fabric(?:\s+content)?)\b", re.I)
 _NEGATED = re.compile(r"\b(?:не|ні|not|no|без|without)(?:\s+(?:хочу|want|need|потріб\w*|нуж\w*|цвет|колір|color)){0,2}\s*$|\binstead\s+of\s*$", re.I)
 _SPEC_ASSERTION = re.compile(r"метал\w*|\bmetal\w*\b|пластик\w*|\bplastic\b|хлоп\w*|бавовн\w*|\bcotton\b|поліестер\w*|полиэстер\w*|\bpolyester\b|\b\d{1,3}\s*%|^\s*(?:так|да|yes)\b|^\s*(?:it|they|this|that)\s+(?:does|do|is|are|has|have|can)\b", re.I)
 _PRODUCTION = re.compile(r"зробимо|сделаем|виготов\w*|изготов\w*|відправ\w*|отправ\w*|\b(?:make|manufactur\w*|produce|ship|dispatch)\b", re.I)
@@ -63,7 +63,7 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
     from management.services.ig_reply_language import own_reply_text, resolve_own_source_reply_language
 
     rows = list(sources or [])
-    empty = {"schema": VERSION, "status": "none", "reason": "", "inquiries": [], "source_refs": [],
+    empty = {"schema": VERSION, "status": "none", "reason": "", "inquiries": [], "resolved_information": [], "base_context_assertions": [], "source_refs": [],
              "cart_identity": cart_identity(cart_capture), "locale": ""}
     if (not rows or len(rows) > 16 or any(not isinstance(row, dict) for row in rows)
         or any(type(row.get("message_id")) is not int or not isinstance(row.get("text", ""), str)
@@ -82,10 +82,16 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
     active_id = capture.get("active_line_id")
     active = next((row for row in lines if row.get("line_id") == active_id), lines[0] if len(lines) == 1 else {})
     state = states.get(active.get("line_id"), {})
+    active_state = deepcopy(state)
     product_id = ((state.get("product") or {}).get("id") or active.get("product_id")
                   or ((active.get("fields") or {}).get("product_id") or {}).get("value"))
     inquiries = []
-    for source in owned:
+    resolved = []
+    language = resolve_own_source_reply_language(sources=owned, profile_language=profile_language)
+    from management.services.ig_product_focus import information_subject
+    from management.services.approved_public_facts import _captured_base
+
+    for source_index, source in enumerate(owned):
         source_line = active
         source_product = product_id
         if len(lines) > 1:
@@ -95,6 +101,14 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
             source_product = (((source_line.get("fields") or {}).get("product_id") or {}).get("value")
                               or source_line.get("product_id"))
             state = states.get(source_line.get("line_id"), {})
+        information_state = state
+        subject = information_subject(owned[:source_index + 1])
+        native_garment = _captured_base(state, "composition")[1]
+        if subject and (subject.get("status") != "identified" or subject.get("future_base_requested")
+                        or subject.get("garment_type") != native_garment):
+            # A short follow-up inherits its information subject. Keeping a
+            # cart line does not turn its old garment into this question's base.
+            information_state = {}
         raw = own_reply_text(_current_source_text(source.get("text", "")))
         affirmed_color = _find_prefix_value(raw, _COLOR_WORDS)
         correction = bool(_CORRECTION.search(raw))
@@ -142,14 +156,33 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                         "line_id": source_line.get("line_id", ""), "product_id": source_product,
                         "axis": axis, "requested_value": wanted, "question": clause.strip()[:500], "reason": reason,
                         "catalog_authority": False, "checkout_authority": False}
+                if axis == "information":
+                    from management.services.approved_public_facts import approved_base_assertion, requested_product_topics
+
+                    topics = requested_product_topics(clause.strip())
+                    if topics:
+                        for topic in topics:
+                            qualified = {**item, "requested_topic": topic}
+                            assertion = approved_base_assertion(information_state, question=clause.strip(),
+                                language=language.template_family, topic=topic)
+                            if assertion is not None and assertion["product_id"] == source_product:
+                                resolved.append({**qualified, "reason": "approved_product_information", "assertion": assertion})
+                            else:
+                                inquiries.append(qualified)
+                        continue
                 if not any((row["source_message_id"], row["axis"], row["requested_value"]) ==
                            (item["source_message_id"], axis, wanted) for row in inquiries):
                     inquiries.append(item)
     language = resolve_own_source_reply_language(sources=owned, profile_language=profile_language)
     result = {**empty, "status": "manager_required" if inquiries else "none", "inquiries": inquiries[:32],
+              "resolved_information": resolved[:32],
               "source_refs": source_refs(owned), "locale": language.template_family,
               "reason": ("product_configuration_review" if any(item["axis"] != "information" for item in inquiries)
                          else "product_information_review" if inquiries else "")}
+    from management.services.approved_public_facts import approved_base_context
+
+    result["base_context_assertions"] = list(approved_base_context(active_state,
+        sources=owned, language=language.template_family))
     result["digest"] = _digest(result)
     return result
 
@@ -163,6 +196,7 @@ class ProductInquiryCapture:
     cart_json: str
     readiness_json: str
     profile_language: str
+    category_json: str = ""
 
     def recompute(self, revision):
         sources = (revision.bundle_snapshot or {}).get("sources") or []
@@ -183,6 +217,29 @@ class ProductInquiryCapture:
             readiness_by_line=readiness, profile_language=self.profile_language)
         if result.get("gap"):
             return None
+        if self.category_json:
+            if not isinstance(self.category_json, str) or len(self.category_json) > 16384:
+                return None
+            try:
+                category = json.loads(self.category_json)
+            except (ValueError, TypeError, RecursionError):
+                return None
+            if (not isinstance(category, dict) or set(category) != {"schema", "categories", "catalogue_digest", "snapshot_digest"}
+                or category.get("schema") != "current-category-catalogue.v1"
+                or category.get("snapshot_digest") != revision.snapshot_digest
+                or not re.fullmatch(r"[a-f0-9]{64}", str(category.get("catalogue_digest") or ""))
+                or not isinstance(category.get("categories"), list) or len(category["categories"]) > 64
+                or any(not isinstance(value, str) or len(value) > 80 for value in category["categories"])):
+                return None
+            from management.services.approved_public_facts import approved_category_context
+            from management.services.ig_product_focus import information_subject
+
+            proofs = approved_category_context(information_subject(sources),
+                current_catalogue_categories=category["categories"], language=result.get("locale", "uk"))
+            if proofs:
+                result = apply_approved_category_context(result, proofs)
+            result["category_catalogue_proof"] = category
+            result["digest"] = _digest({key: value for key, value in result.items() if key not in {"digest", "snapshot_digest"}})
         result["snapshot_digest"] = revision.snapshot_digest
         return result
 
@@ -233,7 +290,9 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
                 and type(color.get("selected_variant_id")) is int and color["selected_variant_id"] > 0):
                 color.update(resolved_choice=response_plan.choices.get("color"), verified_resolution=True)
         capability = ProductInquiryCapture(revision.snapshot_digest, json.dumps(source_refs(sources), sort_keys=True),
-            json.dumps(capture, sort_keys=True), json.dumps(readiness, sort_keys=True), revision.client.language)
+            json.dumps(capture, sort_keys=True), json.dumps(readiness, sort_keys=True), revision.client.language,
+            json.dumps(response_plan.configuration["current_category_catalogue"], sort_keys=True)
+                if response_plan.configuration.get("current_category_catalogue") else "")
         result = capability.recompute(revision) or {"status": "none", "reason": "", "gap": "product_inquiry_capture_invalid"}
         revision._product_inquiries = result
         revision._product_inquiry_capture = capability
@@ -266,9 +325,14 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
 
 
 def inquiry_prompt(disposition):
+    known = disposition.get("resolved_information") or []
+    approved = ("[SOURCE-BOUND APPROVED PRODUCT ANSWERS]\n" + json.dumps(known, ensure_ascii=False, separators=(",", ":"))
+        + "\nAnswer these known questions directly using their exact scope and resolved_text when present, otherwise reviewed assertion text. "
+        "These facts need no manager. Preserve owner attribution and care conditions for quality claims. "
+        "They grant no stock, selection, checkout or future-batch authority.") if known else ""
     if disposition.get("status") != "manager_required":
-        return ""
-    return ("[SOURCE-BOUND PRODUCT INQUIRIES]\n" + json.dumps(disposition, ensure_ascii=False, separators=(",", ":"))
+        return approved
+    return approved + ("\n[SOURCE-BOUND PRODUCT INQUIRIES]\n" + json.dumps(disposition, ensure_ascii=False, separators=(",", ":"))
             + "\nAcknowledge these exact wishes/questions naturally in the conversation language and say the manager will check. "
             "Emit manager=true. Do not substitute another colour/size. These are requests, not catalogue/stock/specification facts. "
             "Do not answer an unverified hardware/material/composition question confidently. No price, stock, timing or checkout authority is granted. "
@@ -278,8 +342,10 @@ def inquiry_prompt(disposition):
 def inquiry_reply(disposition):
     """A check commitment, never an already-sent notification assertion."""
     locale = disposition.get("locale")
+    known = " ".join(dict.fromkeys(row.get("resolved_text") or row["assertion"]["text"] for row in disposition.get("resolved_information", ())
+        if approved_inquiry_assertion(row)))
     if locale not in {"uk", "ru", "en"} or disposition.get("status") != "manager_required":
-        return ""
+        return known
     copy = {"uk": ("Уточню у менеджера", "ці параметри та можливість виконати ваш запит", "деталі товару за вашим питанням"),
             "ru": ("Уточню у менеджера", "эти параметры и возможность выполнить ваш запрос", "детали товара по вашему вопросу"),
             "en": ("I will check with our manager", "these options and whether we can fulfil your request", "the product details you asked about")}[locale]
@@ -288,11 +354,20 @@ def inquiry_reply(disposition):
               "ru": {"olive": "оливковый", "purple": "фиолетовый", "beige": "бежевый", "burgundy": "бордо", "orange": "оранжевый", "red": "красный", "yellow": "жёлтый", "brown": "коричневый", "black": "чёрный", "white": "белый", "blue": "синий", "green": "зелёный", "pink": "розовый", "grey": "серый"}}
     wishes = [labels.get(locale, {}).get(value, value) for value in wishes]
     detail = copy[1] + " (" + ", ".join(wishes) + ")" if wishes else copy[2]
-    return f"{copy[0]}: {detail}."
+    return " ".join(part for part in (known, f"{copy[0]}: {detail}.") if part)
 
 
 def validate_inquiry_response(disposition, response):
     """A deterministic handoff disposition, not a blanket keyword exception."""
+    from management.services.ig_reply_truth import validate_approved_product_claims
+
+    assertions = tuple(row["assertion"] for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row))
+    from management.services.approved_public_facts import approved_assertion_valid
+
+    assertions += tuple(row for row in disposition.get("base_context_assertions", ()) if approved_assertion_valid(row))
+    factual_reason = validate_approved_product_claims(response.reply_text, assertions)
+    if factual_reason:
+        return "product_information_unverified"
     if disposition.get("status") != "manager_required":
         return ""
     control, text = response.control, response.reply_text
@@ -321,7 +396,101 @@ def validate_inquiry_response(disposition, response):
     for clause in re.split(r"[.!;,:\n]+|\b(?:але|но|but)\b", own_reply_text(text)):
         match = _SPEC.search(clause) or _SPEC_ASSERTION.search(clause)
         if information and match and "?" not in clause:
+            if any(approved_product_topic_covered(row.get("resolved_topic", row["assertion"]["topic"]), clause, disposition)
+                   for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row)):
+                continue
             prefix = clause[:match.start()]
             if not re.search(r"^\s*(?:(?:я\s+)?(?:уточн\w*|перевір\w*|провер\w*|не\s+(?:зна\w*|мож\w*\s+підтверд\w*))|(?:i(?:['’]ll)?|we(?:['’]ll)?)\s+(?:will\s+)?(?:check|clarif\w*)|(?:i|we)\s+(?:don't|do\s+not)\s+know|let\s+(?:me|us)\s+check|потрібно\s+уточн\w*)", prefix, re.I):
                 return "product_information_unverified"
     return ""
+
+
+def approved_inquiry_assertion(row):
+    from management.services.approved_public_facts import approved_assertion_valid
+
+    assertion = row.get("assertion") if isinstance(row, dict) else None
+    if (approved_assertion_valid(assertion) and assertion.get("scope_kind") == "current_category"):
+        from management.services.approved_public_facts import requested_product_topics, _HARDWARE, _UNSCOPED
+
+        question = str(row.get("question") or "")
+        return (row.get("product_id") is None and row.get("source_message_id") in assertion["subject"]["source_message_ids"]
+                and row.get("resolved_topic") in requested_product_topics(question)
+                and row.get("resolved_text") == assertion.get("answer_texts", {}).get(row.get("resolved_topic"))
+                and not _HARDWARE.search(question) and not _UNSCOPED.search(question))
+    return (approved_assertion_valid(assertion) and row.get("product_id") == assertion.get("product_id")
+            and row.get("question") == assertion.get("question"))
+
+
+def approved_product_topic_covered(topic, reply_text, disposition):
+    """Semantic coverage of an actual scoped answer, never a manager flag."""
+    from management.services.ig_reply_truth import approved_product_assertion_covered
+
+    topic = str(topic).removeprefix("info:")
+    aliases = {"fabric": "material", "question": None}
+    wanted = aliases.get(topic, topic)
+    if wanted in {"audience", "fit"}:
+        from management.services.approved_public_facts import approved_assertion_valid
+
+        return any(approved_product_assertion_covered(reply_text, assertion, topic=wanted)
+            for assertion in disposition.get("base_context_assertions", ())
+            if approved_assertion_valid(assertion) and assertion.get("scope_kind") == "current_category")
+    rows = [row for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row)
+            and (wanted is None or row.get("resolved_topic", row["assertion"]["topic"]) == wanted
+                 or wanted == "material" and row.get("resolved_topic", row["assertion"]["topic"]) == "composition")]
+    return bool(rows and all(approved_product_assertion_covered(reply_text, row["assertion"],
+        topic=row.get("resolved_topic")) for row in rows))
+
+
+def apply_approved_category_context(disposition, category_assertions):
+    """Answer an own generic-category question while retaining the cart SKU.
+
+    Only the backend's captured category capability can resolve these rows.
+    An individual/hardware/future question still follows manager review.
+    """
+    from management.services.approved_public_facts import (
+        approved_assertion_valid, requested_product_topics, _HARDWARE, _UNSCOPED, _GARMENT_WORDS,
+    )
+    proofs = tuple(row for row in category_assertions if approved_assertion_valid(row)
+                   and row.get("scope_kind") == "current_category")
+    result = deepcopy(disposition)
+    remaining, known = [], []
+    pending = list(result.get("inquiries") or ())
+    for row in result.get("resolved_information", ()):
+        assertion = row.get("assertion") or {}
+        matching = next((proof for proof in proofs if row.get("source_message_id") in proof["subject"]["source_message_ids"]), None)
+        if matching and assertion.get("garment") != matching["garment"]:
+            # Rebind an earlier captured native answer when the inherited
+            # information subject proves it belonged to another category.
+            pending.append({key: value for key, value in row.items() if key not in {"assertion", "resolved_text", "resolved_topic"}})
+        else:
+            known.append(row)
+    expanded = []
+    for inquiry in pending:
+        topics = requested_product_topics(str(inquiry.get("question") or ""))
+        requested = inquiry.get("requested_topic")
+        for topic in ((requested,) if requested in topics else topics if requested is None else ()) or (None,):
+            expanded.append({**inquiry, **({"requested_topic": topic} if topic else {})})
+    for inquiry in expanded:
+        question = str(inquiry.get("question") or "")
+        topics = requested_product_topics(question)
+        topic = inquiry.get("requested_topic") if inquiry.get("requested_topic") in topics else ""
+        garment = {key for key, pattern in _GARMENT_WORDS.items() if pattern.search(question)}
+        proof = next((row for row in proofs if inquiry.get("source_message_id") in row["subject"]["source_message_ids"]
+            and garment in (set(), {row["garment"]})), None)
+        if (inquiry.get("axis") != "information" or not topic or proof is None
+            or _HARDWARE.search(question) or _UNSCOPED.search(question)
+            or topic not in proof.get("answer_texts", {})):
+            remaining.append(inquiry)
+            continue
+        known.append({**inquiry, "product_id": None, "retained_product_id": inquiry.get("product_id"),
+            "resolved_topic": topic, "resolved_text": proof["answer_texts"][topic],
+            "reason": "approved_current_category_information", "assertion": deepcopy(proof)})
+    combined = {row["digest"]: row for row in [*(result.get("base_context_assertions") or ()), *proofs]
+                if approved_assertion_valid(row)}
+    result.update(inquiries=remaining, resolved_information=known,
+        status="manager_required" if remaining else "none",
+        reason=("product_configuration_review" if any(row["axis"] != "information" for row in remaining)
+                else "product_information_review" if remaining else ""),
+        base_context_assertions=list(combined.values()))
+    result["digest"] = _digest({key: value for key, value in result.items() if key not in {"digest", "snapshot_digest"}})
+    return result

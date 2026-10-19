@@ -33,7 +33,7 @@ _VIEW_KEYS = {
     "state_view_version", "core_version",
     "reply_language",
     "conversation_agreement", "receipt_observation", "ugc_review_benefit", "payment_reminder_context",
-    "fulfillment_review_context",
+    "fulfillment_review_context", "ad_context", "communication_preferences", "useful_memory",
 }
 _DIGEST_VIEW_KEYS = {"response_plan_digest", "memory_capture_digest", "publication_hash"}
 _METADATA_KEYS = {
@@ -42,7 +42,7 @@ _METADATA_KEYS = {
     "selected_block_ids", "omitted_blocks", "readiness_codes", "budgets",
     "view_versions", "media",
 }
-_OPTIONAL_METADATA_KEYS = {"memory_snapshot", "payment_reminder_snapshot", "fulfillment_review_snapshot"}
+_OPTIONAL_METADATA_KEYS = {"memory_snapshot", "payment_reminder_snapshot", "fulfillment_review_snapshot", "ad_context_snapshot", "communication_snapshot", "useful_memory_snapshot"}
 _MEMORY_KEYS = {"version", "head_version", "capture_digest", "proof_digest", "summary_digest",
     "rendered_digest", "read_digest", "delta_rendered_digest", "source_message_ids",
     "delta_message_ids", "as_of", "reason", "selected", "omission_reason"}
@@ -172,6 +172,78 @@ def _tokens(values, *, codes=False):
     return result
 
 
+def _ad_context_snapshot(value, *, source_ids, reset_floor):
+    raw = _object(value, {"version", "status", "context_digest", "touches"}, exact=True)
+    if raw["version"] != "ig-ad-context-manifest.v1" or raw["status"] not in {"unknown", "resolved", "ambiguous", "unavailable"}:
+        _invalid()
+    touches = raw["touches"]
+    if not isinstance(touches, list) or len(touches) > 8:
+        _invalid()
+    result = {"version": raw["version"], "status": raw["status"], "context_digest": _digest(raw["context_digest"]), "touches": []}
+    for item in touches:
+        keys = {"source_message_id", "status", "reason_codes", "mapping_id", "revision", "mapping_digest", "candidates", "metadata_digest"}
+        if isinstance(item, dict) and "referral_event_id" in item:
+            keys.add("referral_event_id")
+        item = _object(item, keys, exact=True)
+        source_id = _count(item["source_message_id"], positive=True)
+        if source_id not in source_ids or source_id < reset_floor:
+            _invalid()
+        candidates = item["candidates"]
+        if not isinstance(candidates, list) or len(candidates) > 12:
+            _invalid()
+        rows = []
+        for candidate in candidates:
+            candidate = _object(candidate, {"product_id", "position"}, exact=True)
+            position = None if candidate["position"] is None else _count(candidate["position"], positive=True)
+            if position is not None and position > 12:
+                _invalid()
+            rows.append({"product_id": _count(candidate["product_id"], positive=True), "position": position})
+        if len(item["reason_codes"]) > 8:
+            _invalid()
+        result["touches"].append({"source_message_id": source_id, "status": _token(item["status"]),
+            "reason_codes": _tokens(item["reason_codes"], codes=True),
+            "mapping_id": None if item["mapping_id"] is None else _count(item["mapping_id"], positive=True),
+            "revision": _token(item["revision"]) if item["revision"] else "",
+            "mapping_digest": _digest(item["mapping_digest"]) if item["mapping_digest"] else "",
+            "metadata_digest": _digest(item["metadata_digest"]) if item["metadata_digest"] else "", "candidates": rows})
+        if "referral_event_id" in item:
+            result["touches"][-1]["referral_event_id"] = _count(item["referral_event_id"], positive=True)
+    return result
+
+
+def _communication_snapshot(value, *, reset_floor):
+    raw = _object(value, {"version", "reason", "slots"}, exact=True)
+    if raw["version"] != "source-communication-preferences.v1" or not isinstance(raw["slots"], list) or len(raw["slots"]) > 2:
+        _invalid()
+    slots = []
+    for item in raw["slots"]:
+        item = _object(item, {"kind", "value", "scope", "source_message_id", "source_digest"}, exact=True)
+        if item["kind"] not in {"verbosity", "emoji"} or item["scope"] not in {"persistent", "current_turn"}:
+            _invalid()
+        if item["value"] not in ({"short", "detailed", "default"} if item["kind"] == "verbosity" else {"omit", "allow", "default"}):
+            _invalid()
+        identity = _count(item["source_message_id"], positive=True)
+        if identity < reset_floor:
+            _invalid()
+        slots.append({**item, "source_message_id": identity, "source_digest": _digest(item["source_digest"])})
+    if len({row["kind"] for row in slots}) != len(slots):
+        _invalid()
+    return {"version": raw["version"], "reason": _token(raw["reason"]), "slots": slots}
+
+
+def _useful_memory_snapshot(value, *, reset_floor):
+    raw = _object(value, {"version", "reason", "source_message_ids", "head_version", "head_digest", "observations_digest"}, exact=True)
+    if raw["version"] != "useful-historical-memory.v1":
+        _invalid()
+    ids = _ids(raw["source_message_ids"])
+    if len(ids) > 32 or any(identity < reset_floor for identity in ids):
+        _invalid()
+    return {"version": raw["version"], "reason": _token(raw["reason"]), "source_message_ids": ids,
+        "head_version": None if raw["head_version"] is None else _count(raw["head_version"], positive=True),
+        "head_digest": _digest(raw["head_digest"]) if raw["head_digest"] else "",
+        "observations_digest": _digest(raw["observations_digest"])}
+
+
 def _metadata(value):
     raw = _object(value, _METADATA_KEYS | _OPTIONAL_METADATA_KEYS)
     omitted = raw.get("omitted_blocks", [])
@@ -229,6 +301,13 @@ def _metadata(value):
         result["fulfillment_review_snapshot"] = {"version": item["version"], "status": item["status"],
             "capture_digest": _digest(item["capture_digest"]) if item["capture_digest"] else "",
             "source_message_ids": ids, "decision_version": _count(item["decision_version"])}
+    if "ad_context_snapshot" in raw:
+        result["ad_context_snapshot"] = _ad_context_snapshot(raw["ad_context_snapshot"],
+            source_ids=result["source_message_ids"], reset_floor=result["reset_floor"])
+    if "communication_snapshot" in raw:
+        result["communication_snapshot"] = _communication_snapshot(raw["communication_snapshot"], reset_floor=result["reset_floor"])
+    if "useful_memory_snapshot" in raw:
+        result["useful_memory_snapshot"] = _useful_memory_snapshot(raw["useful_memory_snapshot"], reset_floor=result["reset_floor"])
     if set(result["selected_block_ids"]) & {item["block_id"] for item in safe_omitted}:
         _invalid()
     media_ids = [value for values in result["media"].values() for value in values]

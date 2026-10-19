@@ -13,7 +13,7 @@ import json
 from django.core.cache import cache
 
 from management.services.approved_public_facts import (
-    approved_provider_fact_definitions,
+    approved_provider_fact_definitions, approved_public_facts,
 )
 
 CACHE_KEY_PREFIX = "ig_bot_knowledge_manifest_v4"
@@ -36,15 +36,21 @@ class KnowledgeModule:
     id: str
     body: str
     priority: int
+    required: bool = False
+    source_ref: str = "reviewed:canonical-public-facts"
+    fact_version: str = ""
+    review_status: str = "reviewed"
 
     def policy_input(self) -> dict:
-        return {"id": self.id, "body": self.body, "priority": self.priority, "tags": (), "active": True}
+        return {"id": self.id, "body": self.body, "priority": self.priority, "tags": (), "active": True,
+                "required": self.required}
 
 
 @dataclass(frozen=True)
 class KnowledgeManifest:
     modules: tuple[KnowledgeModule, ...]
     content_hash: str
+    omissions: tuple[tuple[str, str], ...] = ()
 
     @property
     def text(self) -> str:
@@ -53,8 +59,18 @@ class KnowledgeManifest:
     def policy_inputs(self) -> list[dict]:
         return [module.policy_input() for module in self.modules]
 
+    def metadata(self, *, consumed_ids=()) -> dict:
+        """Editorial/review lineage; consumption is supplied by the compiler."""
+        consumed = set(consumed_ids)
+        return {"runtime_owner": "approved_public_facts", "content_hash": self.content_hash,
+            "modules": [{"id": module.id, "source_ref": module.source_ref,
+                         "version": module.fact_version, "review_status": module.review_status,
+                         "consumed": module.id in consumed, "required": module.required}
+                        for module in self.modules],
+            "omissions": [{"id": identity, "reason": reason} for identity, reason in self.omissions]}
 
-def read_knowledge_manifest(language: str = "uk") -> KnowledgeManifest:
+
+def read_knowledge_manifest(language: str = "uk", *, topics=None, base_keys=None) -> KnowledgeManifest:
     """Build provider modules from the reviewed runtime fact publication.
 
     No repository Markdown is opened here.  A missing runtime fact language
@@ -62,21 +78,37 @@ def read_knowledge_manifest(language: str = "uk") -> KnowledgeManifest:
     unreviewed archive.
     """
     try:
-        modules = [
-            KnowledgeModule(module_id, body, priority)
-            for module_id, body, priority in approved_provider_fact_definitions(language)
-        ]
+        definitions = approved_provider_fact_definitions(language)
+        facts = {fact.key: fact for fact in approved_public_facts(language)}
+        modules = []
+        omissions = []
+        for module_id, body, priority in definitions:
+            key = module_id.rsplit(":", 1)[-1]
+            fact = facts[key]
+            required = key == "unconfirmed_bases"
+            if topics is not None and not required:
+                wanted = set(topics)
+                wanted.update({"material"} if wanted & {"composition", "density"} else ())
+                if fact.topic not in wanted and key not in wanted:
+                    omissions.append((module_id, "not_relevant"))
+                    continue
+                if fact.base_keys and base_keys is not None and not set(fact.base_keys) & set(base_keys):
+                    omissions.append((module_id, "scope_unproven"))
+                    continue
+            modules.append(KnowledgeModule(module_id, body, priority, required,
+                                           fact.source_ref, fact.version, fact.review_status))
     except ValueError as exc:
         raise KnowledgeReadinessError(
             "approved_public_facts_unavailable",
             "approved public facts are unavailable for the requested language",
             details={"language": language},
         ) from exc
-    payload = [{"id": module.id, "body": module.body, "priority": module.priority} for module in modules]
+    payload = [{"id": module.id, "body": module.body, "priority": module.priority,
+                "required": module.required} for module in modules]
     digest = sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return KnowledgeManifest(tuple(modules), digest)
+    return KnowledgeManifest(tuple(modules), digest, tuple(omissions))
 
 
 def _read_all() -> str:

@@ -7,7 +7,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from orders.services.shipping_policy import (
-    ShippingPolicyError, build_shipping_snapshot, loses_automatic_free_shipping,
+    LEGACY_POLICY_VERSION, ShippingPolicyError, build_shipping_snapshot, loses_automatic_free_shipping,
     verify_shipping_snapshot,
 )
 from orders.services.delivery_payment import (
@@ -19,7 +19,7 @@ from orders.services.delivery_payment import (
 class ShippingPolicyArithmeticTests(SimpleTestCase):
     def snapshot(self, net, **values):
         return build_shipping_snapshot(merchandise_total=net,
-            evaluated_at='2026-10-14T11:00:00+00:00', **values)
+            evaluated_at='2026-10-14T11:00:00+00:00', payment_mode='online_full', **values)
 
     def test_inclusive_threshold_cents_and_progress_do_not_claim_early_success(self):
         for net, eligible, remaining in [('2999.99', False, '0.01'),
@@ -83,7 +83,8 @@ class NativeThresholdOrderTests(TestCase):
         cart = [{'product_id': product.pk, 'title': product.title,
             'qty': 1, 'unit_price': '3100.00', 'line_total': '3100.00'}]
         shipping = build_shipping_snapshot(merchandise_total='3000', gross_total='3100',
-            discount_amount='100', cart_digest=threshold_shipping_cart_digest(cart))
+            discount_amount='100', cart_digest=threshold_shipping_cart_digest(cart),
+            policy_version=LEGACY_POLICY_VERSION)
         self.attempt = PaymentAttempt.objects.create(fingerprint='b'*64,
             full_name=self.order.full_name, phone=self.order.phone, city=self.order.city,
             np_office='1', pay_type='prepay_200', gross_amount='3100', discount_amount='100',

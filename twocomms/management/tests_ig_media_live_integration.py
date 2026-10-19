@@ -83,10 +83,15 @@ class CanonicalMediaIntegrationTests(TransactionTestCase):
         from management.services.ig_turn_lineage import bind_request_id
         bind_request_id(request_id)
         decision = kwargs["result_validator"](self.parsed, usage=usage)
+        self.validation_reasons = decision.reason_codes
         if not decision.valid:
             from management.services.call_ai_analysis import CallAIAnalysisError
 
-            self.assertIsNone(kwargs["repair_payload_factory"](payload, self.parsed, decision.reason_codes))
+            repair = kwargs["repair_payload_factory"](payload, self.parsed, decision.reason_codes)
+            if getattr(self, "expect_product_scope_rejection", False):
+                self.assertIsNotNone(repair)
+            else:
+                self.assertIsNone(repair)
             raise CallAIAnalysisError("failed deterministic result validation")
         winner = GeminiRequestAttempt.objects.create(
             request_id=request_id, request_graph=graph, role="chat", key_name="GEMINI_API",
@@ -170,6 +175,41 @@ class CanonicalMediaIntegrationTests(TransactionTestCase):
             provider_native_mention=True,target_username=BRAND_TARGET_USERNAME,media_type="story_mention")
         self.source.save(update_fields=["attachment_media"])
 
+    def select_published_tee_before_media(self):
+        """Care authority comes from an earlier native choice, never the photo."""
+        from django.db import transaction
+        from django.utils import timezone
+        from management.models import IgCustomerTurn, IgTurnMessage
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        from productcolors.models import Color, ProductColorVariant
+        from storefront.models import Category, Product, ProductFitOption
+
+        category = Category.objects.create(name="Футболки", slug="tshirts")
+        product = Product.objects.create(title="Media care tee", slug="media-care-tee",
+            category=category, price=900, status="published")
+        ProductFitOption.objects.create(product=product, code="classic", label="Classic", is_active=True)
+        color = Color.objects.create(name="Black", primary_hex="#111111")
+        ProductColorVariant.objects.create(product=product, color=color, stock=20, is_default=True)
+        choice = self.source
+        choice.text = f"Хочу https://twocomms.shop/product/{product.slug}/, розмір M, колір black, крій classic"
+        choice.save(update_fields=["text"])
+        with transaction.atomic():
+            admitted = reduce_inbound_commerce_source(self.customer, choice,
+                expected_provider_namespace=choice.provider_namespace)
+        self.assertTrue(admitted.ready, admitted.reason)
+        choice.status = InstagramBotMessage.Status.DONE
+        choice.save(update_fields=["status"])
+        self.customer.refresh_from_db()
+        selection = capture_current_selection_lines(self.customer.pk)
+        self.assertEqual(selection["status"], "captured", selection)
+        self.assertEqual(selection["lines"][0]["fields"]["product_id"]["value"], product.pk)
+        self.assertEqual(selection["lines"][0]["fields"]["product_id"]["source"]["source_message_id"], choice.pk)
+        self.source = self._message("", "media-after-native-tee-choice")
+        self.turn = IgCustomerTurn.objects.create(client=self.customer, primary_source_message=self.source,
+            window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=self.turn, message=self.source, ordinal=1, role="user")
+
     def test_native_unboxing_uses_observed_kind_without_catalog_action(self):
         self.media(kinds=["unboxing"])
         self.native_ugc()
@@ -228,17 +268,23 @@ class CanonicalMediaIntegrationTests(TransactionTestCase):
         self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer,reason="revision_case:media_complaint").count(),1)
 
     def test_native_positive_photo_preserves_independent_care_question(self):
+        self.select_published_tee_before_media()
         self.media(kinds=["wearing"])
         self.native_ugc()
         self.source.text = "Чи можна прати цю футболку при 30 градусах?"
         self.source.save(update_fields=["text"])
-        self.parsed["reply_text"] = "Періть навиворіт при 30 градусах. Чи потрібно уточнити догляд?"
+        self.parsed["reply_text"] = "Радимо прати при 30 градусах, дотримуючись рекомендацій догляду, без агресивної хімії. Чи потрібно уточнити догляд?"
         self.parsed["controls"] = [{"kind": "product", "value": "999"}]
         self.run_media()
         reply = self.revision.generation_proposal["response"]
         self.assertIn("30 градусах", reply["reply_text"])
         self.assertIn("уточнити догляд?", reply["reply_text"])
         self.assertEqual(reply["controls"], [])
+        inquiry = self.revision.action_receipts["response_coverage"]["product_inquiries"]
+        self.assertEqual(inquiry["status"], "none")
+        self.assertTrue(any(row["assertion"]["topic"] == "care" for row in inquiry["resolved_information"]))
+        self.assertEqual(self.revision.action_receipts["response_coverage"]["remaining"], [])
+        self.assertFalse(IgFollowUpTask.objects.filter(client=self.customer, kind="manager_task").exists())
 
     def test_native_positive_photo_does_not_override_text_complaint(self):
         self.media(kinds=["wearing"])
@@ -250,6 +296,21 @@ class CanonicalMediaIntegrationTests(TransactionTestCase):
         reply = self.revision.generation_proposal["response"]["reply_text"]
         self.assertNotIn("чудово", reply)
         self.assertIn("шов", reply)
+
+    def test_unknown_wearing_photo_does_not_authorize_specific_care_answer(self):
+        self.expect_product_scope_rejection = True
+        self.media(kinds=["wearing"])
+        self.native_ugc()
+        self.source.text = "Чи можна прати цю футболку при 30 градусах?"
+        self.source.save(update_fields=["text"])
+        self.parsed["reply_text"] = "Радимо прати при 30 градусах, без агресивної хімії."
+        _result, http = self.run_media(expected_state="blocked")
+        self.assertEqual(self.validation_reasons, ("unverified_product_quality",))
+        self.assertFalse(GeminiRequestAttempt.objects.filter(winner_claimed=True).exists())
+        http.assert_not_called()
+        sent_text = " ".join(str((effect.payload.get("message") or {}).get("text") or "")
+            for effect in self.revision.delivery_effects.all())
+        self.assertNotIn("30 градусах", sent_text)
 
     def test_positive_negative_and_unavailable_parts_keep_service_and_outcomes(self):
         self.media(("image/jpeg","image/png"),sentiments=["positive","negative"],complaints=[False,True],unavailable=True)
@@ -280,12 +341,13 @@ class CanonicalMediaIntegrationTests(TransactionTestCase):
         self.assertEqual(self.source.attachment_media[1]["inspection"]["analysis_state"],"omitted")
 
     def test_meaningful_caption_answer_is_preserved_with_partial_media(self):
+        self.select_published_tee_before_media()
         self.media(sentiments=["neutral"],unavailable=True)
         self.source.text="Чи можна прати цю футболку при 30 градусах?"
         self.source.save(update_fields=["text"])
-        self.parsed["reply_text"]="Періть навиворіт у делікатному режимі при 30 градусах."
+        self.parsed["reply_text"]="Радимо прати при 30°C, дотримуючись рекомендацій догляду, без агресивної хімії."
         self.run_media()
-        self.assertIn("30 градусах",self.revision.generation_proposal["response"]["reply_text"])
+        self.assertIn("30°C",self.revision.generation_proposal["response"]["reply_text"])
 
     def test_unavailable_audio_asks_for_text_without_model(self):
         self.media(("audio/ogg",))

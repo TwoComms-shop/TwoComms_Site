@@ -225,6 +225,9 @@ def bound_media_parts(*, parts, observations=(), actual_inline_count,
             raw["outcome"] = "provider_omitted"
         else:
             state, origin = "legacy_unknown", "legacy_observation" if old else "observation_missing"
+        from management.services.ig_media_manifest import is_ad_context_part
+        if is_ad_context_part(part):
+            raw.update(ad_context_only=True, role=str(part["role"]))
         raw.update({"analysis_state": state, "origin": origin,
             "source_part_id": part["source_part_id"], "content_hash": part["content_hash"],
             "original_index": part["original_index"], "mime": mime})
@@ -305,6 +308,9 @@ def validate_bound_media_analysis(value, *, media, request_id, provider_model, l
 def media_reaction(analysis):
     """Conservative reply guidance; no action authority or delivery assertion."""
     rows = analysis.get("parts", ()) if isinstance(analysis, Mapping) else ()
+    # Advertising content is a source scene, never the customer's own social
+    # submission or complaint. Actual customer text retains its separate owner.
+    rows = [row for row in rows if not isinstance(row, Mapping) or row.get("ad_context_only") is not True]
     known = [row for row in rows if isinstance(row, Mapping)
         and row.get("analysis_state") == "understood" and row.get("origin") == "provider_observation"]
     sentiments = sorted({row.get("sentiment", "unknown") for row in known})

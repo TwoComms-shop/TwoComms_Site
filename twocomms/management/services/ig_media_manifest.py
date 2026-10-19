@@ -32,6 +32,14 @@ class MediaManifestError(ValueError):
     """The caller supplied a manifest that cannot prove an image binding."""
 
 
+AD_CONTEXT_ROLES = frozenset({"ad_context", "ad_photo", "ad_video_thumbnail"})
+
+
+def is_ad_context_part(value):
+    """Purpose is inherited from the immutable source role, never model text."""
+    return isinstance(value, Mapping) and str(value.get("role") or "") in AD_CONTEXT_ROLES
+
+
 def _nonnegative_int(value, *, default: int | None = None) -> int:
     if isinstance(value, bool):
         if default is None:
@@ -150,6 +158,8 @@ def public_media_manifest(media: Sequence[Mapping[str, object]] | None) -> list[
             "inspection_state": str(inspection.get("state") or "uninspected")[:32],
             "inspection_outcome": str(inspection.get("outcome") or "")[:32],
         }
+        if is_ad_context_part(raw):
+            entry.update(ad_context_only=True, role=str(raw["role"]))
         digest = _normalized_hash(raw.get("content_hash"))
         if digest:
             entry["content_hash"] = digest
@@ -266,6 +276,8 @@ def map_image_observations(
         ):
             raise MediaManifestError("invalid_image_observation")
         prize_certificate = value.get("prize_certificate")
+        if index < len(parts) and is_ad_context_part(parts[index]):
+            prize_certificate = None
         if prize_certificate is not None:
             if type_code != "certificate":
                 raise MediaManifestError("prize_requires_certificate")

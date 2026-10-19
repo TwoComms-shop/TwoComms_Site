@@ -90,9 +90,11 @@ _TURN_TRIGGERS: dict[str, re.Pattern] = {
     # Кастомний принт.
     "custom_print": re.compile(
         r"(?:свій принт|свой принт|власн\w* принт|кастом\w*|намалю\w*|"
-        r"нанест\w*|свій дизайн|свой дизайн|логотип компан\w*)",
+        r"нанест\w*|свій дизайн|свой дизайн|логотип компан\w*|custom\s+print|own\s+(?:print|design)|my\s+(?:print|design))",
         re.IGNORECASE,
     ),
+    "collaboration": re.compile(r"співпрац\w*|сотруднич\w*|collaborat\w*|портфоліо|портфолио|portfolio|фотограф\w*|відеограф\w*|видеограф\w*", re.I),
+    "ugc": re.compile(r"\bugc\b|репост\w*|repost|відміт\w*\s+вас|отмет\w*\s+вас|tag\s+you", re.I),
 }
 
 TURN_TRIGGER_NAMES = frozenset(_TURN_TRIGGERS)
@@ -115,8 +117,21 @@ def turn_triggers(text: str) -> set[str]:
     from management.services.ig_turn_intelligence import current_objections
 
     kinds = {item["kind"] for item in current_objections([{"message_id": 0, "text": value}])}
+    from management.services.ig_reply_language import own_reply_text
+
+    own_value = own_reply_text(value)
     result = {name for name, pattern in _TURN_TRIGGERS.items()
-              if name not in {"price_objection", "hesitation"} and pattern.search(value)}
+              if name not in {"price_objection", "hesitation", "custom_print", "collaboration", "ugc"} and pattern.search(own_value)}
+    from management.services.ig_turn_intelligence import _REPORTED, _HISTORICAL, _NEGATION
+
+    for name in ("custom_print", "collaboration", "ugc"):
+        for clause in re.split(r"[.!?;\n]+|\b(?:але|но|but)\b", own_value, flags=re.I):
+            if _REPORTED.search(clause.strip(" ,:")):
+                continue
+            if any(not _HISTORICAL.search(clause[:match.start()]) and not _NEGATION.search(clause[:match.start()])
+                   for match in _TURN_TRIGGERS[name].finditer(clause)):
+                result.add(name)
+                break
     if kinds & {"price", "cheaper_elsewhere"}:
         result.add("price_objection")
     if "thinking" in kinds:
@@ -158,7 +173,7 @@ def known_tags() -> set[str]:
     # інакше валідація почне лаятись на робочу розмітку.
     tags = {"global", "core", "sales", "post_sale", "service", "product", "catalog",
             "payment", "payment_pending", "discount", "fit", "exchange", "return",
-            "stop", "no_buy", "opt_out"}
+            "stop", "no_buy", "opt_out", "collaboration", "creator", "ugc", "ugc_review", "custom_print"}
     try:
         from management.models import IgClient, IgObjection
 

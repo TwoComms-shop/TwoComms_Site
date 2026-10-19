@@ -126,8 +126,11 @@ def record_response_coverage(revision_id, token, coverage):
             inquiry = captured.recompute(revision)
             if inquiry is None:
                 return False
-            if inquiry.get("status") == "manager_required":
-                receipt["product_inquiries"] = inquiry
+            # The backend capability proves resolved facts as well as open
+            # questions. Keep both under the same source/lease CAS so a fresh
+            # outbox owner does not lose native care/material authority and
+            # misclassify the original source as an unknown-product inquiry.
+            receipt["product_inquiries"] = inquiry
         if plan_digest:
             receipt["plan_digest"] = plan_digest
         if next_selector:

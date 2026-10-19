@@ -201,12 +201,10 @@ def detect_objection_type(text: str) -> str:
 
 
 def detect_objection_types(text: str) -> list[str]:
-    value = str(text or "")
-    found: list[str] = []
-    for kind, pattern in PATTERNS:
-        if pattern.search(value):
-            found.append(str(kind))
-    return found
+    from management.services.ig_turn_intelligence import current_objections
+
+    kinds = {item["kind"] for item in current_objections([{"message_id": 0, "text": str(text or "")}])}
+    return [str(kind) for kind, _pattern in PATTERNS if str(kind) in kinds]
 
 
 def _message_floor(client) -> int:

@@ -207,20 +207,21 @@ def _snapshot_image_url(product, variant):
 
 def _validate_negotiated_evidence(*, client, total, message_ids, items=()):
     from management.models import InstagramBotMessage
+    from management.services.ig_checkout_policy import (
+        PROPOSAL_TTL_SECONDS, accepts_current_commercial_offer, affirmative_commercial_statement,
+    )
+    from management.services.ig_funnel_reset import current_message_floor
 
     rows = list(
         InstagramBotMessage.objects.filter(
             client=client,
             pk__in=message_ids,
+            pk__gte=current_message_floor(client),
         ).order_by("id")
     )
     if len(rows) != len(set(message_ids)):
         raise CheckoutConfigurationError("invalid_price_evidence")
     amount_re = re.compile(r"(?<!\d)(\d{2,6}(?:[.,]\d{1,2})?)\s*(?:грн|uah|₴)", re.I)
-    acceptance_re = re.compile(
-        r"\b(так|да|ок|добре|хорошо|домов\w*|погодж\w*|соглас\w*|оформл\w*)\b",
-        re.I,
-    )
     order_total_re = re.compile(
         r"\b(сума|сумма|разом|итого|всього|всего|total)\b",
         re.I,
@@ -230,6 +231,14 @@ def _validate_negotiated_evidence(*, client, total, message_ids, items=()):
         r"одиниц\w*)|за\s+штуку|per\s+(?:item|unit)|each)\b",
         re.I,
     )
+    excluded_amount_role = re.compile(r'(?:достав\w*|перевез\w*|пересил\w*|комісі\w*|комисси\w*|'
+        r'зниж\w*|скид\w*|передоплат\w*|предоплат\w*|завдат\w*|депозит\w*|'
+        r'повернен\w*|возврат\w*|сертифікат\w*|сертификат\w*|бонус\w*|балів|балл\w*|'
+        r'доплат\w*|решт\w*|залиш\w*|остат\w*|бюджет\w*|budget|shipping|delivery|discount|deposit|commission|refund)', re.I)
+    goods_amount_role = re.compile(r'(?:ціна|цена|вартіст\w*|стоимост\w*|футбол\w*|худі|худи|'
+        r'світшот\w*|свитшот\w*|товар\w*|замовлен\w*|заказ\w*|пропон\w*|предлаг\w*|'
+        r'домовлен\w*|согласован\w*|разом|итого|всього|всего|total|price|offer|each|кожн\w*|кажд\w*)', re.I)
+    clause_boundary = re.compile(r'[,;!?\n]|(?<!\d)\.|\.(?!\d)')
     total_quantity = sum(int(item.quantity or 0) for item in items)
     # A generated assistant message is not commercial authorization. Only a
     # human/operator-originated offer can support a negotiated total.
@@ -239,32 +248,85 @@ def _validate_negotiated_evidence(*, client, total, message_ids, items=()):
     for index, row in enumerate(rows):
         if str(row.role or "").casefold() not in seller_roles:
             continue
-        amounts = []
-        for raw in amount_re.findall(row.text or ""):
+        if (not affirmative_commercial_statement(row.text)
+                or (timezone.now() - row.created_at).total_seconds() > PROPOSAL_TTL_SECONDS):
+            continue
+        text = row.text or ""
+        if re.search(r'\b(?:хотів\w*|хотел\w*|бажан\w*|бажав\w*|бажає\w*|побажан\w*|wishlist|wish|хочу|хоче\w*)\b', text, re.I):
+            continue
+        quantity_mentions = re.findall(r'\b(\d{1,3}|одну|один|одна|дві|два|две|три|чотири|четыре)\s*'
+            r'(?:шт\b|штук\w*|футбол\w*|худі\b|худи\b|світшот\w*|свитшот\w*)', text, re.I)
+        quantity_words = {'одну': 1, 'один': 1, 'одна': 1, 'дві': 2, 'два': 2, 'две': 2,
+            'три': 3, 'чотири': 4, 'четыре': 4}
+        mentioned_quantities = [int(value) if value.isdigit() else quantity_words[value.casefold()]
+            for value in quantity_mentions]
+        if any(quantity != total_quantity and not (quantity == 1 and len(items) == 1
+                and total_quantity > 1 and unit_price_re.search(text)) for quantity in mentioned_quantities):
+            continue
+        mentions = list(amount_re.finditer(text))
+        goods_totals = set()
+        unclassified_amount = False
+        previous_end = 0
+        for position, mention in enumerate(mentions):
+            boundaries = list(clause_boundary.finditer(text, previous_end, mention.start()))
+            start = boundaries[-1].end() if boundaries else previous_end
+            prefix = text[start:mention.start()]
+            next_start = mentions[position + 1].start() if position + 1 < len(mentions) else len(text)
+            suffix = clause_boundary.split(text[mention.end():next_start], maxsplit=1)[0]
+            previous_end = mention.end()
+            # Currency is not its semantic role: delivery charges, discounts,
+            # deposits and balances cannot authorize a merchandise quote.
+            if excluded_amount_role.search(prefix) or re.match(
+                    r'^\s*(?:за\s+)?' + excluded_amount_role.pattern, suffix, re.I):
+                continue
             try:
-                amounts.append(Decimal(raw.replace(",", ".")).quantize(Decimal("0.01")))
+                amount = Decimal(mention.group(1).replace(",", ".")).quantize(Decimal("0.01"))
             except InvalidOperation:
                 continue
-        text = row.text or ""
-        explicit_total = total in amounts and (
-            total_quantity <= 1 or order_total_re.search(text)
-        )
-        explicit_unit_total = bool(
-            len(items) == 1
-            and total_quantity > 1
-            and unit_price_re.search(text)
-            and any(amount * total_quantity == total for amount in amounts)
-        )
-        if explicit_total or explicit_unit_total:
+            local_role = prefix + ' ' + suffix
+            bare_price = len(mentions) == 1 and not text[:mention.start()].strip() and not text[mention.end():].strip(' .!')
+            named_goods = any(str(getattr(item.product, 'title', '') or '').casefold() in local_role.casefold()
+                for item in items if getattr(item, 'product', None) is not None and getattr(item.product, 'title', ''))
+            if not (bare_price or named_goods or goods_amount_role.search(local_role) or unit_price_re.search(local_role)):
+                unclassified_amount = True
+                continue
+            if total_quantity <= 1 or order_total_re.search(local_role):
+                goods_totals.add(amount)
+            elif len(items) == 1 and unit_price_re.search(local_role):
+                goods_totals.add(amount * total_quantity)
+        # Different unclassified goods figures are ambiguous even when one
+        # happens to equal the requested total. Require one exact goods quote.
+        if goods_totals == {total} and not unclassified_amount:
             offer_index = index
-    accepted = any(
+    acceptance = next((row for index, row in reversed(list(enumerate(rows))) if (
         index > (offer_index if offer_index is not None else len(rows))
         and str(row.role or "").casefold() in customer_roles
-        and acceptance_re.search(row.text or "")
-        for index, row in enumerate(rows)
-    )
-    if offer_index is None or not accepted:
+        and accepts_current_commercial_offer(row.text or "", amount=total)
+    )), None)
+    if offer_index is None or acceptance is None:
         raise CheckoutConfigurationError("invalid_price_evidence")
+    offer = rows[offer_index]
+    explicit_sizes = set(re.findall(r'(?:розмір|размер|size)\s*[:=-]?\s*(XXXL|XXL|XL|XS|S|M|L)\b', offer.text, re.I))
+    item_sizes = {str(item.size or '').upper() for item in items}
+    if explicit_sizes and not {size.upper() for size in explicit_sizes}.issubset(item_sizes):
+        raise CheckoutConfigurationError('invalid_price_evidence')
+    # Do not let selected evidence IDs hide an intervening basket edit,
+    # refusal, alternative price or a different manager offer.
+    intervening = InstagramBotMessage.objects.filter(client=client, pk__gt=offer.pk,
+        pk__lt=acceptance.pk, role__in=seller_roles | customer_roles).only('role', 'text')
+    if any(row.role in seller_roles or not accepts_current_commercial_offer(row.text, amount=total) for row in intervening):
+        raise CheckoutConfigurationError("invalid_price_evidence")
+    # Subsequent delivery questions and recipient details do not revoke an
+    # accepted price. A new commercial choice or later human price offer does.
+    changed_scope = re.compile(r'(?:\b(?:ні|нет|не\s+хочу|відмов\w*|отказ\w*|замість|вместо|'
+        r'інш\w*|друг\w*|змін\w*|измен\w*|замін\w*|дод\w*|добав\w*|прибер\w*|убер\w*|видал\w*|'
+        r'хочу|хочемо|скид\w*|зниж\w*|промокод\w*|розмір\w*|размер\w*|size|колір|цвет|кількіст\w*|количеств\w*)\b|'
+        r'\b(?:XXXL|XXL|XL|XS|S|M|L)\b|https?://|\d\s*(?:грн|uah|₴)|^\s*\d+\s*$)', re.I)
+    later = InstagramBotMessage.objects.filter(client=client, pk__gt=acceptance.pk,
+        role__in=seller_roles | customer_roles).only('role', 'text')
+    if any(changed_scope.search(row.text or '')
+            or row.role in seller_roles and amount_re.search(row.text or '') for row in later):
+        raise CheckoutConfigurationError('invalid_price_evidence')
 
 
 def tracked_stock_shortfall(variant, quantity: int) -> bool:

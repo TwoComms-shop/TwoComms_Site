@@ -116,20 +116,19 @@ def _message(kind: str, locale: str, order, tracking: str, *, exchange_size: str
         if locale == "en":
             return (
                 f"Payment received, thank you. Order #{number}, {payable} UAH. "
-                "We are packing it now and will send the tracking number as soon "
-                "as the parcel is handed over. If anything needs changing, reply "
-                "here within the next couple of hours."
+                "We will send the tracking number when it is created. "
+                "If you need a change, write here so the team can check whether it is still possible."
             )
         if locale == "ru":
             return (
                 f"Оплата получена, спасибо. Заказ №{number}, {payable} грн. "
-                "Собираем и пришлём номер ТТН сразу после отправки. "
-                "Если нужно что-то поменять — напишите здесь в ближайшие пару часов."
+                "Пришлём номер ТТН после её создания. "
+                "Если нужно что-то поменять — напишите здесь, команда проверит возможность изменения."
             )
         return (
             f"Оплату отримали, дякуємо. Замовлення №{number}, {payable} грн. "
-            "Збираємо і надішлемо номер ТТН відразу після відправки. "
-            "Якщо потрібно щось змінити — напишіть тут найближчі пару годин."
+            "Надішлемо номер ТТН після її створення. "
+            "Якщо потрібно щось змінити — напишіть тут, команда перевірить можливість зміни."
         )
     if kind == "ttn_assigned":
         if locale == "en":

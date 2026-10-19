@@ -298,7 +298,7 @@ class NativeCheckoutCartAmendmentTests(TestCase):
                 _validate_payload(self.proposal, {**payload, "delivery_policy_ack": "1", "delivery_policy_digest": "a" * 64})
             values = _validate_payload(self.proposal, {**payload, "delivery_policy_ack": "1",
                 "delivery_policy_digest": current["free_delivery"]["ack_digest"]})
-        attempt = PaymentAttempt.objects.create(fingerprint=uuid.uuid4().hex, cart_snapshot=_snapshot(self.proposal),
+        attempt = PaymentAttempt.objects.create(fingerprint=uuid.uuid4().hex, pay_type="online_full", cart_snapshot=_snapshot(self.proposal),
             gross_amount=self.proposal.catalog_total, discount_amount=values["promo_discount"],
             payable_amount=values["order_payable"], payment_amount=values["payment_amount"])
         freeze_checkout_shipping(attempt, self.proposal,
@@ -513,6 +513,13 @@ class NativeCheckoutCartAmendmentTests(TestCase):
         shown = displayed_revision_payload(page)
         payload = CheckoutGenerationRuntimeTests._delivery_payload(SimpleNamespace(_hosted_revision_payload=shown),
             payment_choice="prepay_200_cod")
+        preview = browser.post(entry["Location"], {**shown, "action": "promo_preview",
+            "payment_choice": "prepay_200_cod"}, HTTP_ACCEPT="application/json")
+        self.assertEqual(preview.status_code, 200, preview.content)
+        shipping = preview.json()["cart_state"]["free_delivery"]
+        self.assertTrue(shipping["ack_required"])
+        self.assertFalse(shipping["eligible"])
+        payload.update(delivery_policy_ack="1", delivery_policy_digest=shipping["ack_digest"])
         with patch("storefront.views.monobank._monobank_api_request", return_value={
                 "invoiceId": "native-200-dto", "pageUrl": "https://pay.example/native-200-dto"}):
             invoiced = browser.post(entry["Location"], payload, HTTP_ACCEPT="application/json")

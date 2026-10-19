@@ -1062,6 +1062,9 @@ def sync_episode_payment(*, review=None, deal=None, isolate_from_current: bool =
                 "needs_reconciliation": snapshot["needs_reconciliation"],
             },
         )
+        from management.services.ig_funnel_analytics import record_verified_manager_payment_in_transaction
+
+        record_verified_manager_payment_in_transaction(locked, snapshot=snapshot)
     return locked
 
 
@@ -1432,6 +1435,9 @@ def _record_order_funnel_facts(episode, order, *, source: str):
             "order_id": order.pk,
             "order_number": order.order_number,
             "creation_mode": source or "order_truth",
+            "applied_discount_amount": str(order.discount_amount),
+            "applied_promo_code_id": order.promo_code_id,
+            "payment_status_at_creation": order.payment_status,
         },
     )
     tracking_number = str(order.tracking_number or "").strip()
@@ -1848,6 +1854,10 @@ def episode_payload(episode) -> dict:
 
 
 def client_episode_payload(client, *, limit=20) -> dict:
+    from management.services.bot_payment_truth import confirmed_purchase_units
+
+    purchase_units = confirmed_purchase_units(client)
+    order_units = {unit["order_id"]: unit for unit in purchase_units if unit["order_id"]}
     episodes = list(
         client.commercial_episodes.select_related(
             "deal",
@@ -1857,11 +1867,31 @@ def client_episode_payload(client, *, limit=20) -> dict:
         ).prefetch_related("events").order_by("-sequence", "-id")[:limit]
     )
     items = [episode_payload(episode) for episode in episodes]
+    # Consultation sequence is never a purchase number. Only a real linked
+    # canonical paid unit can label an episode as a confirmed purchase.
+    paid_order_ids = set(order_units)
+    from management.services.ig_conversion_cohorts import _payment_observations
+
+    # If a legacy paid order has no dated payment observation its position is
+    # unknown; its creation date cannot stand in for the date money arrived.
+    dated_purchases = _payment_observations(client, timezone.now(), purchase_units=purchase_units)
+    ordered_paid_ids = [fact["order_id"] for fact in dated_purchases if fact["order_id"] in paid_order_ids]
+    if len(ordered_paid_ids) != len(paid_order_ids) or len(purchase_units) != len(paid_order_ids):
+        ordered_paid_ids = []
+    ordinals = {order_id: index + 1 for index, order_id in enumerate(ordered_paid_ids)}
+    for item in items:
+        order_id = (item.get("order") or {}).get("id")
+        item["confirmed_purchase"] = order_id in paid_order_ids
+        item["purchase_ordinal"] = ordinals.get(order_id)
+        item["consultation_sequence"] = item["sequence"]
     current = next((item for item in items if item["current"]), None)
     physical_count = _client_order_queryset(client).count()
     return {
         "count": client.commercial_episodes.count(),
         "physical_order_count": physical_count,
+        "confirmed_purchase_count": len(purchase_units),
+        "confirmed_order_purchase_count": len(order_units),
+        "purchase_lineage_unknown_count": sum(not unit["order_id"] for unit in purchase_units),
         "current": current,
         "items": items,
         "has_more": client.commercial_episodes.count() > len(items),

@@ -234,6 +234,45 @@ def _manifest_required_policy(value) -> dict:
     return result
 
 
+def _manifest_knowledge_lineage(value, *, selected_ids, knowledge_hash):
+    """Optional content-free knowledge trace; historical manifests omit it.
+
+    This validates recorded lineage, not the current deployed fact catalogue,
+    so an old immutable request remains readable after a later fact release.
+    """
+    code = "policy_manifest_knowledge_lineage_invalid"
+    raw = _manifest_object(value, keys={"runtime_owner", "content_hash", "modules", "omissions"}, code=code)
+    if raw["runtime_owner"] != "approved_public_facts":
+        raise RequestPolicyManifestError(code, "knowledge runtime owner is invalid")
+    digest = _manifest_hash(raw["content_hash"], code=code)
+    if digest != knowledge_hash or not isinstance(raw["modules"], list) or len(raw["modules"]) > 100:
+        raise RequestPolicyManifestError(code, "knowledge lineage differs from compiled knowledge")
+    selected, identities, modules = set(selected_ids), set(), []
+    for value in raw["modules"]:
+        item = _manifest_object(value, keys={"id", "source_ref", "version", "review_status", "consumed", "required"}, code=code)
+        identity = _manifest_token(item["id"], code=code)
+        source = item["source_ref"]
+        version = _manifest_token(item["version"], code=code)
+        review = _manifest_token(item["review_status"], code=code)
+        if (identity in identities or not identity.startswith("approved_public:")
+            or not isinstance(source, str) or not re.fullmatch(r"(?:owner|reviewed):[A-Za-z0-9_.:,-]{1,150}", source)
+            or not review.startswith("reviewed") or type(item["consumed"]) is not bool or type(item["required"]) is not bool
+            or item["consumed"] != (identity in selected) or item["required"] and not item["consumed"]):
+            raise RequestPolicyManifestError(code, "knowledge module lineage is inconsistent")
+        identities.add(identity)
+        modules.append({"id": identity, "source_ref": source, "version": version,
+                        "review_status": review, "consumed": item["consumed"], "required": item["required"]})
+    if {identity for identity in selected if identity.startswith("approved_public:")} - identities:
+        raise RequestPolicyManifestError(code, "compiled knowledge is absent from lineage")
+    omissions = _manifest_omissions(raw["omissions"], code=code)
+    omitted_ids = [item["id"] for item in omissions]
+    if (len(omitted_ids) != len(set(omitted_ids)) or set(omitted_ids) & (identities | selected)
+        or any(not identity.startswith("approved_public:") for identity in omitted_ids)):
+        raise RequestPolicyManifestError(code, "knowledge lineage omissions are inconsistent")
+    return {"runtime_owner": "approved_public_facts", "content_hash": digest,
+            "modules": modules, "omissions": omissions}
+
+
 def sanitize_request_policy_manifest(value) -> dict:
     """Accept only content-free compiler/publication metadata."""
     if value in (None, {}):
@@ -241,7 +280,8 @@ def sanitize_request_policy_manifest(value) -> dict:
     manifest = _manifest_object(
         value,
         keys=_MANIFEST_TOP_KEYS | ({"request_context"} if isinstance(value, dict) and "request_context" in value else set())
-            | ({"required_ids"} if isinstance(value, dict) and "required_ids" in value else set()),
+            | ({"required_ids"} if isinstance(value, dict) and "required_ids" in value else set())
+            | ({"knowledge_lineage"} if isinstance(value, dict) and "knowledge_lineage" in value else set()),
         code="policy_manifest_invalid",
     )
     core = _manifest_object(
@@ -372,6 +412,9 @@ def sanitize_request_policy_manifest(value) -> dict:
     required_policy = safe_selection.get("required_policy")
     if required_policy and required_policy["ready"] and not set(required_policy["required_ids"]) <= set(result.get("required_ids", [])):
         raise RequestPolicyManifestError("policy_manifest_required_invalid", "required selection was not reserved")
+    if "knowledge_lineage" in manifest:
+        result["knowledge_lineage"] = _manifest_knowledge_lineage(manifest["knowledge_lineage"],
+            selected_ids=result["selected_ids"], knowledge_hash=result["knowledge_hash"])
     if "request_context" in manifest:
         from management.services.ig_request_manifest import sanitize_request_context
 

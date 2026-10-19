@@ -315,19 +315,63 @@ def _catalog_inquiry_coverage(plan, response, evidence):
     return set(context["interest_source_ids"]), covered_media & bare_ids
 
 
-def _native_chart_coverage(plan, evidence):
-    """Admit only the prepared native chart bound to this sealed request.
+def _chart_absence_described(reply_text, fit):
+    aliases = r"classic|regular|класич\w*|классич\w*" if fit == "classic" else r"oversize|оверсайз\w*" if fit == "oversize" else r"(?!)"
+    return any(re.search(aliases, clause, re.I) and re.search(
+        r"немає|відсутн\w*|недоступн\w*|нет\b|unavailable|missing|not\s+(?:available|yet)", clause, re.I)
+        and re.search(r"сіт\w*|сет\w*|таблиц\w*|charts?|guides?", clause, re.I)
+        for clause in re.split(r"[.!?;\n]+", _unquoted_text(reply_text)))
 
-    This proves attachment coverage; outbox ownership still proves delivery.
-    No configuration, stock or checkout authority is created here.
+
+def _native_chart_absence_coverage(plan, evidence, reply_text):
+    from management.services.ig_product_inquiry_presentation import validate_fit_illustration_metadata
+    try:
+        effect = evidence.get("native_fit_illustration") if isinstance(evidence, dict) else None
+        expected = plan.configuration.get("native_chart_scope")
+        if not isinstance(effect, dict) or not isinstance(expected, dict):
+            return set()
+        metadata = effect["projection_metadata"]
+        if metadata.get("delivery") != "native" or not validate_fit_illustration_metadata(metadata,
+                payload=effect["payload"], group=effect["group"], kind=effect["kind"]):
+            return set()
+        manifest = metadata["fit_illustration"]
+        scope = manifest["scope"]
+        product_id = manifest["focus"].get("product_id")
+        focus_matches = manifest["focus"] == plan.product_focus or (
+            type(product_id) is int and product_id > 0 and plan.configuration.get("product_id") == product_id
+            and plan.product_focus.get("status") != "focused")
+        if (manifest["revision_id"] != expected["revision_id"] or not focus_matches
+            or any(scope.get(key) != expected[key] for key in
+                ("client_id", "client_epoch", "namespace", "revision_snapshot_digest"))):
+            return set()
+        fits = {fit for fit in manifest.get("unavailable_chart_fits", ()) if _chart_absence_described(reply_text, fit)}
+        line_ids = {line.line_id for line in plan.line_plans if line.as_dict()["configuration"].get("product_id") == product_id}
+        return {row["id"] for row in plan.obligations if fits and row["kind"] == "info:size_chart"
+            and row["source_message_id"] in expected["source_message_ids"]
+            and (not row.get("line_id") or row["line_id"] in line_ids)
+            and (not row.get("fit_code") or row["fit_code"] in fits)}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return set()
+
+
+def _native_chart_coverage(plan, evidence, reply_text=""):
+    """Credit authenticated attachments or proved, explicitly explained absence.
+
+    Outbox ownership still proves delivery; this grants no selection authority.
     """
+    absence = _native_chart_absence_coverage(plan, evidence, reply_text)
+    if isinstance(evidence, dict) and "native_size_charts" in evidence:
+        effects = evidence["native_size_charts"]
+        if not isinstance(effects, (list, tuple)) or len(effects) > 2:
+            return set()
+        return absence.union(*(_native_chart_coverage(plan, {"native_size_chart": effect}, reply_text) for effect in effects))
     from management.services.ig_catalog_choice_presentations import validate_catalog_chart_metadata
 
     try:
         effect = evidence.get("native_size_chart") if isinstance(evidence, dict) else None
         expected = plan.configuration.get("native_chart_scope")
         if not isinstance(effect, dict) or not isinstance(expected, dict):
-            return set()
+            return absence
         metadata = effect["projection_metadata"]
         if not validate_catalog_chart_metadata(metadata, payload=effect["payload"], group=effect["group"], kind=effect["kind"]):
             return set()
@@ -344,15 +388,20 @@ def _native_chart_coverage(plan, evidence):
         canonical = plan.configuration.get("product_id") == product_id and bool(product_id)
         discussed = (focus.get("status") == "focused" and focus.get("product_id") == product_id
             and (presentation.get("product_focus") or {}) == focus
-            and presentation.get("schema") == "discussed-product-configuration.v1"
+            and presentation.get("schema") in {"discussed-product-configuration.v1", "discussed-fit-comparison.v1"}
             and presentation.get("proof_digest")
             and presentation.get("fit_code") == chart["configuration_selector"].get("fit_code")
             and (presentation.get("scope") or {}).get("revision_id") == expected["revision_id"]
             and presentation["scope"].get("snapshot_digest") == expected["revision_snapshot_digest"])
         if not (canonical or discussed):
             return set()
-        return {row["id"] for row in plan.obligations if row["kind"] == "info:size_chart"
+        satisfied_fits = {chart["configuration_selector"].get("fit_code")}
+        for missing in chart.get("unavailable_requested_fits", ()):
+            if _chart_absence_described(reply_text, missing):
+                satisfied_fits.add(missing)
+        return absence | {row["id"] for row in plan.obligations if row["kind"] == "info:size_chart"
             and row["source_message_id"] in expected["source_message_ids"]
+            and (not row.get("fit_code") or row["fit_code"] in satisfied_fits)
             and (not row.get("line_id") or row["line_id"] == scope.get("line_id"))}
     except (AttributeError, KeyError, TypeError, ValueError):
         return set()
@@ -361,12 +410,13 @@ def _native_chart_coverage(plan, evidence):
 def _requested_topics(text, parsed_topics=()):
     """Retain information requests independently from a choice in that source."""
     from management.services.ig_reply_truth import _locally_negated
-    topics = {"info:" + str(topic).split(":", 1)[0] for topic in parsed_topics}
+    topics = {"info:" + ("size_chart" if str(topic).split(":", 1)[0] == "size_guide"
+        else str(topic).split(":", 1)[0]) for topic in parsed_topics}
     for clause in re.findall(r"[^.!?\n]+[?]?", _unquoted_text(text)):
         from management.services.ig_fit_consultation import fit_consultation_request
 
         fit_request = fit_consultation_request([{"role": "user", "text": clause}])
-        chart = re.search(r"таблиц\w*\s+р[ао]зм[іе]р\w*|(?:розмірн\w*|размерн\w*)\s+(?:сіт\w*|сет\w*)|size\s+(?:chart|guide)", clause, re.I)
+        chart = re.search(r"таблиц\w*\s+р[ао]зм[іе]р\w*|(?:розмірн\w*|размерн\w*)\s+(?:сіт\w*|сет\w*)|size\s+(?:chart|guide)|(?:обидв\w*|обе|both)\s+(?:сіт\w*|сет\w*|charts?|guides?)", clause, re.I)
         chart_request = bool(chart and not _locally_negated(clause, chart.start()) and re.search(
             r"\?|покаж\w*|надішл\w*|пришл\w*|скин\w*|дайте|send|show|please|можна|можно|can|could|потріб\w*|нуж\w*", clause, re.I))
         if chart_request:
@@ -395,6 +445,10 @@ def _requested_topics(text, parsed_topics=()):
             continue
         matched = presentation or bool(fit_request) or chart_request
         for topic, pattern in (
+            ("material", r"матеріал|материал|material|склад\b|состав|composition|cotton|бавов|хлоп"),
+            ("density", r"щільн|плотност|density|gsm|г/м"),
+            ("care", r"прат|стир|догляд|уход|wash|care"),
+            ("quality", r"якіст|качеств|quality|тріска|треска|crack"),
             ("payment", _PAYMENT_WORDS.pattern),
             ("price", r"ціна|ціну|вартість|кошту|цена|цену|стоим|стоит|price|cost|how\s+much"),
             ("dispatch_timing", r"відправ|отправ|dispatch|ship(?:ped|ping)?\b"),
@@ -410,6 +464,21 @@ def _requested_topics(text, parsed_topics=()):
     return sorted(topics)
 
 
+def _expand_chart_obligations(rows, source, *, supported_fits=()):
+    """A comparison requests each chart; one attachment cannot cover both."""
+    from management.services.ig_fit_consultation import requested_chart_fits
+    fits = requested_chart_fits([source], supported_fits=supported_fits)
+    if len(fits) < 2:
+        return rows
+    result = []
+    for row in rows:
+        if row["kind"] == "info:size_chart" and not row.get("fit_code"):
+            result.extend({**row, "id": row["id"] + ":" + fit, "fit_code": fit} for fit in fits)
+        else:
+            result.append(row)
+    return result
+
+
 def _topic_covered(kind, response, plan):
     """Require a protected, canonical answer assertion or an admitted handoff.
 
@@ -422,6 +491,9 @@ def _topic_covered(kind, response, plan):
         _RECRUITMENT_STATUS_RE, _RECRUITMENT_UNCERTAINTY_RE,
     )
     authority = plan.authority
+    from management.services.ig_product_inquiries import approved_product_topic_covered
+    if approved_product_topic_covered(kind, response.reply_text, plan.product_information):
+        return True
     if kind == "info:size_chart":
         # Only the separately authenticated native attachment covers a chart.
         return False
@@ -491,6 +563,7 @@ class ResponsePlan:
     catalog_inquiry: dict = field(default_factory=dict)
     fit_consultation: dict = field(default_factory=dict)
     product_focus: dict = field(default_factory=dict)
+    product_information: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -516,6 +589,8 @@ class ResponsePlan:
             payload["fit_consultation"] = deepcopy(self.fit_consultation)
         if self.product_focus:
             payload["product_focus"] = deepcopy(self.product_focus)
+        if self.product_information:
+            payload["product_information"] = deepcopy(self.product_information)
         return payload
 
     @property
@@ -553,7 +628,11 @@ class ResponsePlan:
                 authorized_price_ranges=tuple((Decimal(low), Decimal(high)) for low, high in authority["price_ranges"]),
                 allowed_sizes=tuple(authority["sizes"]), allowed_fits=tuple(authority["fits"]), allowed_colors=tuple(authority["colors"]))
             contexts[row["line_id"]] = ResponsePlan(row["choices"], row["evidence"], row["scope"],
-                row["configuration"], row["next_selector"], authority, tuple(row["obligations"])).truth_context(scoped)
+                row["configuration"], row["next_selector"], authority, tuple(row["obligations"]),
+                product_information={"resolved_information": [item for item in self.product_information.get("resolved_information", ())
+                    if item.get("line_id") == row["line_id"]],
+                    "base_context_assertions": [item for item in self.product_information.get("base_context_assertions", ())
+                        if item.get("product_id") == row["configuration"].get("product_id")]}).truth_context(scoped)
         return contexts
 
     def validate_multiline_claims(self, response, context):
@@ -584,7 +663,11 @@ class ResponsePlan:
     def truth_context(self, context):
         # Source preferences authorize only acknowledgement of a wish. They
         # never widen the old catalog/proposal size/fit/color allowlists.
-        return replace(context,
+        from management.services.ig_product_inquiries import approved_inquiry_assertion
+        assertions = tuple(row["assertion"] for row in self.product_information.get("resolved_information", ())
+                           if approved_inquiry_assertion(row))
+        assertions += tuple(self.product_information.get("base_context_assertions") or ())
+        return replace(context, approved_product_assertions=assertions,
                        source_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") and not self._audited_size() else (),
                        audited_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") and self._audited_size() else (),
                        source_chosen_fits=(str(self.choices["fit_option_code"]),) if self.choices.get("fit_option_code") else (),
@@ -597,6 +680,7 @@ class ResponsePlan:
         required-context budget owner rejects the complete projection if it
         cannot fit, rather than admitting a partial list of customer needs.
         """
+        from management.services.ig_fit_consultation import fit_consultation_projection
         groups = {}
         for obligation in self.obligations:
             key = (obligation.get("line_id"), obligation["source_message_id"])
@@ -615,6 +699,10 @@ class ResponsePlan:
                 del group["obligations"]
         payload = {"version": 1, "plan_digest": self.digest, "obligation_columns": ["id", "kind"],
             "obligation_groups": list(groups.values())}
+        chart_fits = [{key: row[key] for key in ("id", "source_message_id", "fit_code", "line_id") if key in row}
+            for row in self.obligations if row.get("fit_code") and row["kind"] == "info:size_chart"]
+        if chart_fits:
+            payload["requested_chart_alternatives"] = chart_fits
         def choice_sources(evidence):
             grouped = {}
             for name, proof in evidence.items():
@@ -664,11 +752,15 @@ class ResponsePlan:
         if self.plan_gap:
             payload["plan_gap"] = self.plan_gap
         if self.fit_consultation:
-            payload["fit_consultation"] = deepcopy(self.fit_consultation)
+            payload["fit_consultation"] = fit_consultation_projection(self.fit_consultation)
         if self.product_focus:
             payload["product_focus"] = deepcopy(self.product_focus)
         if self.configuration.get("focus_selection_candidate"):
             payload["focused_selection_candidate"] = deepcopy(self.configuration["focus_selection_candidate"])
+        if self.configuration.get("consultation_measurements"):
+            payload["consultation_measurements"] = deepcopy(self.configuration["consultation_measurements"])
+        if self.configuration.get("source_clarifications"):
+            payload["pending_source_clarifications"] = deepcopy(self.configuration["source_clarifications"])
         if self.configuration.get("reorder_observations"):
             payload["reorder_resolution"] = self.configuration["reorder_observations"]
         return payload
@@ -685,6 +777,8 @@ class ResponsePlan:
             "Do not repeat confirmed choices/questions/controls. Ask only the named next selector. "
             "Selection controls product/size/fit/option/qty require no payment; item/objhandle and unsupported effects are forbidden. "
         )
+        if self.configuration.get("source_clarifications"):
+            guidance += "\nThe current ad reference is ambiguous. Ask one short product clarification without selection/payment controls; retained cart choices do not answer that reference."
         if (not self.line_plans or self.payment_observation or self.payment_claim_source_ids
             or any(item["kind"].startswith(("payment:", "info:payment")) for item in self.obligations)):
             guidance += (
@@ -823,7 +917,7 @@ class ResponsePlan:
         if self.line_plans:
             return self._line_coverage(response, local=local, checkout_cart_binding=checkout_cart_binding,
                 catalog_media_evidence=catalog_media_evidence)
-        chart_ids = _native_chart_coverage(self, catalog_media_evidence)
+        chart_ids = _native_chart_coverage(self, catalog_media_evidence, response.reply_text)
         inquiry_ids, media_ids = _catalog_inquiry_coverage(self, response, catalog_media_evidence) if not local else (set(), set())
         text = response.reply_text
         covered, remaining = [], []
@@ -842,6 +936,9 @@ class ResponsePlan:
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
                         or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self))
                         or (kind.startswith("withdrawal:") and asks_next_selector(text, kind.split(":", 1)[1])))
+            if not done and kind in {"unresolved_line_operation", "info:question"}:
+                from management.services.ig_source_clarification import source_clarifier_covered
+                done = source_clarifier_covered(self.configuration, obligation["source_message_id"], response)
             (covered if done else remaining).append(obligation["id"])
         dependent_kinds = {"purchase_requested", "model_query"}
         if self.next_selector and not self.authority["prices"]:
@@ -869,7 +966,7 @@ class ResponsePlan:
 
             clauses[self.focused_candidate_line_id] = list(scoped_claim_clauses(_unquoted_text(response.reply_text)))
         admitted = admitted_checkout_line_ids(checkout_cart_binding, self.source_cart_capture, local=local)
-        chart_ids = _native_chart_coverage(self, catalog_media_evidence)
+        chart_ids = _native_chart_coverage(self, catalog_media_evidence, response.reply_text)
         covered, remaining = [], []
         rows = {line.line_id: line.as_dict() for line in self.line_plans}
         selector = self.next_selector_line
@@ -882,13 +979,22 @@ class ResponsePlan:
             done = False
             if obligation["id"] in chart_ids:
                 done = True
+            elif kind in {"unresolved_line_operation", "info:question"} and self.configuration.get("source_clarifications"):
+                from management.services.ig_source_clarification import source_clarifier_covered
+                done = source_clarifier_covered(self.configuration, obligation["source_message_id"], response)
+                if not done and kind == "info:question":
+                    done = _topic_covered(kind, response, self)
             elif kind.startswith(("payment:", "info:payment")):
                 done = _payment_covered(kind, response, self, obligation["source_message_id"])
             elif line_id in rows:
                 row = rows[line_id]
                 text = ". ".join(clauses[line_id])
                 plan = ResponsePlan(row["choices"], row["evidence"], row["scope"], row["configuration"],
-                    row["next_selector"], row["authority"], tuple(row["obligations"]))
+                    row["next_selector"], row["authority"], tuple(row["obligations"]),
+                    product_information={"resolved_information": [item for item in self.product_information.get("resolved_information", ())
+                        if item.get("line_id") == line_id],
+                        "base_context_assertions": [item for item in self.product_information.get("base_context_assertions", ())
+                            if item.get("product_id") == row["configuration"].get("product_id")]})
                 value = str(obligation.get("value") or "")
                 if kind in {"size", "fit_option_code", "color", "quantity", "garment_type"} and value:
                     done = _acknowledges_choice(kind, value, text, row["authority"], audited=kind == "size" and plan._audited_size())
@@ -1016,7 +1122,8 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             kinds.extend(sorted(payment_kinds))
             if "payment:claim" in payment_kinds:
                 payment_claim_ids.add(source["message_id"])
-        if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience", "info:size_chart")):
+        if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience", "info:size_chart",
+                "info:material", "info:density", "info:care", "info:quality")):
             commerce_present = True
         if topics:
             kinds.extend(topics)
@@ -1026,6 +1133,9 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
         for kind in kinds:
             obligations_list.append({"id": f"{source['message_id']}:{kind}", "kind": kind,
                                      "source_message_id": source["message_id"]})
+        source_rows = [row for row in obligations_list if row["source_message_id"] == source["message_id"]]
+        obligations_list = [row for row in obligations_list if row["source_message_id"] != source["message_id"]]
+        obligations_list.extend(_expand_chart_obligations(source_rows, source, supported_fits=context.allowed_fits))
     # Outside this commerce slice existing intent and delivery contracts retain
     # responsibility. Within it, an independent source never vanishes.
     obligations = tuple(obligations_list) if commerce_present else ()
@@ -1117,8 +1227,10 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
             obligations.extend({"id": f"{source_id}:{kind}", "kind": kind, "source_message_id": source_id} for kind in sorted(payment_kinds))
         for topic in topics:
             owner = next(iter(owners)) if len(owners) == 1 else None
-            obligations.append({"id": f"{source_id}:{owner}:{topic}" if owner else f"{source_id}:{topic}",
-                "kind": topic, "source_message_id": source_id, **({"line_id": owner} if owner else {})})
+            rows = [{"id": f"{source_id}:{owner}:{topic}" if owner else f"{source_id}:{topic}",
+                "kind": topic, "source_message_id": source_id, **({"line_id": owner} if owner else {})}]
+            supported = next((line.as_dict()["authority"].get("fits", ()) for line in lines if line.line_id == owner), context.allowed_fits)
+            obligations.extend(_expand_chart_obligations(rows, source, supported_fits=supported))
         # A typed operation with no current surviving source field remains debt.
         # Removed/replaced lines need a separate accepted-operation receipt.
         if not accepted_owners and not topics and not payment_kinds and source.get("text") and not re.fullmatch(
@@ -1181,6 +1293,8 @@ def _provided_source_cart(client, revision, capture):
 
 def capture_response_plan(client, *, revision=None, source_cart_capture=None):
     plan = _capture_response_plan_inputs(client, revision=revision, source_cart_capture=source_cart_capture)
+    if revision is None:
+        return plan
     if revision is not None:
         from management.services.ig_fit_consultation import capture_fit_consultation
         from management.services.ig_product_focus import capture_product_focus, focus_selection_candidate
@@ -1211,8 +1325,52 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
             else plan.next_selector)
         if fit and focus.get("status") == "focused":
             fit = {**fit, "next_consultation_selector": next_selector}
+        expanded = []
+        sources_by_id = {row["message_id"]: row for row in revision.bundle_snapshot.get("sources", ())}
+        focused_lines = {line.line_id for line in plan.line_plans
+            if line.as_dict()["configuration"].get("product_id") == focus.get("product_id")}
+        for obligation in plan.obligations:
+            source = sources_by_id.get(obligation["source_message_id"])
+            if (source and fit and focus.get("status") == "focused"
+                and (not obligation.get("line_id") or obligation["line_id"] in focused_lines)):
+                expanded.extend(_expand_chart_obligations([obligation], source, supported_fits=fit.get("supported_fits", ())))
+            else:
+                expanded.append(obligation)
+        from management.services.ig_response_cart_plan import MAX_OBLIGATIONS
         plan = replace(plan, fit_consultation=fit, product_focus=focus if focus.get("status") == "focused" else {},
-            configuration=configuration, next_selector=next_selector)
+            configuration=configuration, next_selector=next_selector, obligations=tuple(expanded),
+            plan_gap="response_plan_obligation_bound" if len(expanded) > MAX_OBLIGATIONS else plan.plan_gap)
+    from management.services.ig_product_inquiries import product_inquiries_for_revision
+    from management.services.ig_fit_consultation import capture_consultation_measurements
+    from management.services.ig_product_focus import information_subject
+    from management.services.ig_turn_intelligence import capture_digest
+    subject = information_subject(revision.bundle_snapshot.get("sources") or ())
+    if subject.get("status") == "identified" and all(subject.get(key) is False for key in (
+        "future_base_requested", "unsupported_detail_requested", "specific_product_requested")):
+        from storefront.models import Product
+        from management.services.ig_catalog_graph import _GARMENT_TYPES_BY_CATEGORY
+        category_aliases = [slug for slug, garment in _GARMENT_TYPES_BY_CATEGORY.items()
+            if garment == subject["garment_type"]]
+        witnesses = list(Product.objects.filter(status="published",
+            category__slug__in=category_aliases).order_by("pk").values_list("pk", flat=True)[:1])
+        categories = [subject["category_slug"]] if witnesses else []
+        plan = replace(plan, configuration={**plan.configuration, "current_category_catalogue": {
+            "schema": "current-category-catalogue.v1", "categories": categories,
+            "catalogue_digest": capture_digest({"categories": categories, "witness_ids": witnesses}),
+            "snapshot_digest": revision.snapshot_digest}, "information_subject": subject})
+    information = product_inquiries_for_revision(revision, response_plan=plan)
+    measurements = capture_consultation_measurements(revision, product_focus=plan.product_focus,
+        source_cart_capture=plan.source_cart_capture)
+    configuration = dict(plan.configuration)
+    if measurements.get("guides"):
+        configuration["consultation_measurements"] = measurements
+    plan = replace(plan, product_information=information, configuration=configuration)
+    from management.services.ig_source_clarification import capture_source_clarifications
+    clarifications = capture_source_clarifications(revision, plan.source_cart_capture, plan.obligations)
+    if clarifications:
+        configuration = {**plan.configuration, "source_clarifications": clarifications}
+        configuration.pop("focus_selection_candidate", None)
+        plan = replace(plan, configuration=configuration)
     observations = ((getattr(revision, "action_receipts", None) or {}).get("commerce_reduction") or {}).get("observations") or []
     if not isinstance(observations, (list, tuple)) or len(observations) > 32 or any(not isinstance(row, dict) for row in observations):
         return replace(plan, plan_gap="reorder_observation_changed")

@@ -75,11 +75,17 @@ class ApprovedPublicFactsTests(SimpleTestCase):
             f"{bot_knowledge.CACHE_KEY_PREFIX}:en:{expected_hash}",
         )
 
-    def test_unconfirmed_hoodie_and_longsleeve_weights_have_no_category_fallback(self):
+    def test_owner_current_bases_are_reviewed_without_unconfirmed_category_fallback(self):
         self.assertEqual(CATEGORY_COMMON["hoodie"]["para_material"], "")
         self.assertEqual(CATEGORY_COMMON["long-sleeve"]["para_material"], "")
         self.assertEqual(CATEGORY_COMMON["tshirts"]["para_material"], "")
         approved = "\n".join(f.body for f in approved_public_facts("uk"))
-        self.assertIn("regular — 190 г/м²", approved)
-        self.assertIn("oversize — 210–220 г/м²", approved)
-        self.assertNotIn("320 г/м²", approved)
+        self.assertIn("regular — близько 190 г/м²", approved)
+        self.assertIn("oversize — близько 220 г/м²", approved)
+        self.assertIn("близько 320 г/м²", approved)
+        self.assertNotIn("210–220", approved)
+        from management.services.approved_public_facts import approved_base_assertion
+        self.assertIsNone(approved_base_assertion(
+            {"product": {"id": 3, "kind": "longsleeves"}}, question="Який склад?"))
+        self.assertIsNotNone(approved_base_assertion(
+            {"product": {"id": 3, "kind": "hoodies"}}, question="Який склад?"))

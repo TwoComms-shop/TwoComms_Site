@@ -35,9 +35,9 @@ _CODE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _QUOTES = re.compile(r'«[^»]*»|“[^”]*”|"[^"\n]*"|‘[^’]*’|(?<!\w)\x27[^\x27\n]+\x27(?!\w)')
 _REPORTED = re.compile(r"^(?:це\s+цитата|цитата|у\s+(?:рекламі|статті)|в\s+(?:рекламе|статье)|"
-    r"(?:друг|подруга|він|вона|он|она)\s+(?:сказ\w*|напис\w*)|"
+    r"(?:друг|подруга|він|вона|он|она)\s+(?:сказ\w*|напис\w*|каже|говор\w*)|"
     r"(?:мені|мне)\s+(?:сказали|написали)|quote|(?:my\s+friend|he|she|they)\s+(?:said|wrote))\b", re.I)
-_HISTORICAL = re.compile(r"\b(?:раніше|раньше|колись|торік|минулого|вчора|вчера|previously|used\s+to|last\s+time)\b", re.I)
+_HISTORICAL = re.compile(r"\b(?:раніше|раньше|колись|торік|минулого|вчора|вчера|previously|earlier|historically|used\s+to|last\s+time)\b", re.I)
 _NEGATION = re.compile(r"\b(?:не|ні|not|never|no\s+longer|don['’]t|isn['’]t|wasn['’]t)\s+(?:\w+\s+){0,2}$", re.I)
 _OBJECTIONS = (
     ("price", re.compile(r"\b(?:дорог\w*|задорого|expensive|too\s+much|не\s+по\s+(?:кишен\w*|карман\w*))\b", re.I)),
@@ -48,6 +48,8 @@ _OBJECTIONS = (
     ("delivery_time", re.compile(r"\b(?:(?:занадто|надто|слишком)\s+(?:довго|долго)|не\s+встиг\w*|не\s+успе\w*)\b", re.I)),
     ("print_quality", re.compile(r"\b(?:принт\w*|друк\w*|печат\w*)\b.{0,90}\b(?:потріск\w*|тріск\w*|треск\w*|зліз\w*|слез\w*|зітр\w*|стир\w*)\b", re.I)),
     ("out_of_stock", re.compile(r"\b(?:немає|нет|відсутн\w*|отсутств\w*)\b.{0,60}\b(?:розмір\w*|размер\w*|кольор\w*|цвет\w*|варіант\w*|вариант\w*)\b", re.I)),
+    ("compare_brand", re.compile(r"\b(?:порівн\w*|сравн\w*|compare)\b.{0,70}\b(?:бренд\w*|конкурент\w*|brand\w*)\b", re.I)),
+    ("ask_partner", re.compile(r"\b(?:порад\w*|посовет\w*|спита\w*|спрошу|ask)\b.{0,70}\b(?:чоловік\w*|дружин\w*|партнер\w*|муж\w*|жен\w*|partner|wife|husband)\b", re.I)),
     ("payday", re.compile(r"\b(?:після|после)\s+(?:зарплат\w*|авансу?)\b", re.I)),
     ("thinking", re.compile(r"\b(?:подумаю|подумаємо|подумаем|поміркую|ще\s+подума\w*)\b", re.I)),
 )
@@ -777,11 +779,13 @@ def build_turn_context(*, boundary, sources, captured_at, history=(), media=None
             omit("context:memory", "narrative_integrity_invalid")
 
     conversation = {}
-    if referral_exact:
-        # Referral text remains quoted source data; no price/payment claim is
-        # smuggled into this optional customer-context module.
-        conversation["source_referral"] = {key: referral[key] for key in
-            ("source_message_id", "mapping_id", "product_id", "theme") if key in referral}
+    if referral.get("present"):
+        # Exact and ambiguous advertising data share one captured source. It
+        # remains quoted evidence and never selects a product for the buyer.
+        conversation["source_referral"] = {key: _plain(referral[key]) for key in
+            ("source_message_id", "status", "mapping_id", "product_id", "theme", "touches", "candidates", "context_digest") if key in referral}
+        if not referral_exact:
+            conversation["source_referral"].pop("product_id", None)
     if commerce.get("purchases_count"):
         conversation["returning_customer"] = True
         conversation["guidance"] = "Warm continuity only; purchase count grants no current selection or order authority."

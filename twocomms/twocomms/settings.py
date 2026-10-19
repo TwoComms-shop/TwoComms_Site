@@ -336,6 +336,12 @@ IG_LIFECYCLE_REASON_FUNNEL_ENABLED = _env_bool(
 # Owner-authorized dated narrative: one coalesced job after customer/CRM work.
 # Admission still requires active accounting and enforced non-live quota/source
 # checks immediately before dispatch. Environment flags retain explicit rollback.
+# Explicit optional read capability for observed advertising IDs only. Never
+# invoked from health/status/preflight or inline conversational generation.
+IG_AD_METADATA_ENABLED = _env_bool('IG_AD_METADATA_ENABLED', False)
+IG_AD_METADATA_READ_TOKEN = os.getenv('IG_AD_METADATA_READ_TOKEN', '')
+IG_AD_METADATA_API_VERSION = os.getenv('IG_AD_METADATA_API_VERSION', '')
+
 IG_MEMORY_TIMELINE_ENABLED = _env_bool('IG_MEMORY_TIMELINE_ENABLED', True)
 IG_MEMORY_GENERATION_ENABLED = _env_bool('IG_MEMORY_GENERATION_ENABLED', True)
 IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED = _env_bool('IG_MEMORY_PROVIDER_ADMISSION_ACCEPTED', True)

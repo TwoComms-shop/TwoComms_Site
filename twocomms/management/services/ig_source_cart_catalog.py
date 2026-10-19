@@ -190,12 +190,12 @@ def _resolve(capture, *, _catalog_readback=None):
     preferences = {row["line_id"]: source_line_preferences(capture, row) for row in capture["lines"]}
     if any(not row for row in preferences.values()):
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_source_unknown"},))
-    from management.services.ig_catalog_choice_actions import admitted_native_color_variants
-    native_variants = admitted_native_color_variants(capture, capture["lines"])
     product_ids = {row.get("values", {}).get("product_id") for row in preferences.values()}
     product_ids.discard(None)
     if len(product_ids) > MAX_PRODUCTS or any(not _positive(value) for value in product_ids):
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_product_bound"},))
+    from management.services.ig_catalog_choice_actions import admitted_native_color_variants
+    native_variants = admitted_native_color_variants(capture, capture["lines"])
     if _catalog_readback is not None:
         products, variants = _prepared_catalog_rows(capture, _catalog_readback, product_ids)
     else:

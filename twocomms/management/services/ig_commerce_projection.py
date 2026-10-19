@@ -46,6 +46,14 @@ def _original_choice_request(source, capture):
     key = (source.pk, hashlib.sha256(source.text.encode()).hexdigest())
     parsed = capture.setdefault("parsed_sources", {})
     if key not in parsed:
+        from types import SimpleNamespace
+        from management.services.ig_ad_choices import ad_choice_source_request
+        owner = SimpleNamespace(pk=source.client_id, igsid=capture["current"]["igsid"],
+            privacy_erasure_started_at=None)
+        ad_choice = ad_choice_source_request(owner, source, historical=True)
+        if ad_choice is not None:
+            parsed[key] = ad_choice
+            return ad_choice
         from management.services.ig_commerce_types import CatalogGraph
         # Shape detection must not resolve each URL through live ORM. Typed
         # line operations are then reparsed against the one captured graph.
@@ -939,7 +947,29 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
     if product_ids is None:
         return unavailable("selection_identity_bound_exceeded")
     sources = {row.source_message_id: row.source_message for row in rows if row.source_message_id is not None}
-    for source in {row.source_message_id: row.source_message for row in transitions if row.source_message_id is not None}.values():
+    # A short answer can select a reviewed ad candidate through an earlier
+    # delivered question. Its original ad/source remains a final fence input
+    # even when that earlier source made no commerce transition of its own.
+    dependency_ids = set()
+    for row in rows:
+        decision = getattr(row.source_message, "commerce_turn_decision", None)
+        ad_choice = (((decision.request_payload or {}).get("source_binding") or {}).get("ad_choice") or {}) if decision else {}
+        witnesses = [*(ad_choice.get("sources") or []),
+            *((ad_choice.get("previous_question") or {}).get("source_witnesses") or [])]
+        for witness in witnesses:
+            message_id = witness.get("message_id") if isinstance(witness, dict) else None
+            if type(message_id) is not int or message_id < reset_floor:
+                return unavailable("selection_dependency_scope_unknown")
+            dependency_ids.add(message_id)
+    if len(set(sources) | dependency_ids) > 64:
+        return unavailable("selection_dependency_bound_exceeded")
+    if dependency_ids - sources.keys():
+        dependencies = {source.pk: source for source in InstagramBotMessage.objects.filter(
+            pk__in=dependency_ids - sources.keys())}
+        if set(dependencies) != dependency_ids - sources.keys():
+            return unavailable("selection_dependency_source_missing")
+        sources.update(dependencies)
+    for source in sources.values():
         if (source.client_id != client_id or source.sender_id != owner["igsid"] or source.role != "user"
             or source.source != "webhook" or source.status == "failed" or source.provider_namespace != namespace
             or (source.provider_created_at or source.created_at) > now):

@@ -1,7 +1,6 @@
 """Fit illustrations retain the discussed print and grant no product choice."""
 from copy import deepcopy
 from dataclasses import dataclass
-import re
 
 from django.utils.crypto import constant_time_compare, salted_hmac
 
@@ -10,11 +9,11 @@ from management.services.ig_revision_outbox import _digest
 SCHEMA = "fit-illustration.v1"
 _LABELS = {
     "uk": {"classic": "Класичний крій", "oversize": "Оверсайз", "unknown": "Фото принта",
-        "focus": "Обговорюваний принт", "example": "Інший принт — лише приклад посадки"},
+        "focus": "Обговорюваний принт", "example": "Інший принт — лише приклад посадки", "blank": "Чиста основа: preview конструктора, без обговорюваного принта"},
     "ru": {"classic": "Классический крой", "oversize": "Оверсайз", "unknown": "Фото принта",
-        "focus": "Обсуждаемый принт", "example": "Другой принт — только пример посадки"},
+        "focus": "Обсуждаемый принт", "example": "Другой принт — только пример посадки", "blank": "Чистая основа: preview конструктора, без обсуждаемого принта"},
     "en": {"classic": "Classic fit", "oversize": "Oversize", "unknown": "Print photo",
-        "focus": "The discussed print", "example": "Another print, only an example of the fit"},
+        "focus": "The discussed print", "example": "Another print, only an example of the fit", "blank": "Blank base: constructor preview, without the discussed print"},
 }
 
 
@@ -32,7 +31,11 @@ class FitIllustrationPreparation:
 
 def _caption(item, locale):
     words = _LABELS[locale]
-    return words.get(item["fit_code"], words["unknown"]), words[item["role"]]
+    label = words.get(item["fit_code"], words["unknown"])
+    if item.get("view"):
+        label += " · " + {"uk": {"front": "Спереду", "back": "Ззаду"},
+            "ru": {"front": "Спереди", "back": "Сзади"}, "en": {"front": "Front", "back": "Back"}}[locale].get(item["view"], "")
+    return label, words[item["role"]]
 
 
 def _payloads(manifest):
@@ -72,7 +75,7 @@ def _seal_manifest(manifest):
 
 def _effects(manifest):
     native, fallback = _payloads(manifest)
-    rows = [("native", "template", "template", 0, native)]
+    rows = [("native", "template", "template", manifest.get("native_part_index", 0), native)]
     rows.extend(("fallback", "template_fallback", "fallback" if index == 0 else "image", index, payload)
         for index, payload in enumerate(fallback))
     result = []
@@ -81,7 +84,7 @@ def _effects(manifest):
             "fit_illustration": deepcopy(manifest), "delivery": delivery, "part_index": index,
             "prepared_payload_digest": _digest(payload)}}
         if delivery == "fallback":
-            row["activation"] = {"group": "template", "part_index": 0, "failure_code": "provider_rejected"}
+            row["activation"] = {"group": "template", "part_index": manifest.get("native_part_index", 0), "failure_code": "provider_rejected"}
         result.append(row)
     return tuple(result)
 
@@ -122,16 +125,30 @@ def _copy(context, locale, items):
             "ru": "Другой принт на карточке — только пример посадки для сравнения. Обсуждаемый принт остаётся прежним.",
             "en": "The other print on the card only illustrates the fit for comparison. The discussed print stays the same.",
         }[locale])
+    if any(row["role"] == "blank" for row in items):
+        messages.append({"uk": "Це чиста основа з preview конструктора — приклад крою, а не фото обговорюваного принта чи індивідуального заміру.",
+            "ru": "Это чистая основа из preview конструктора — пример кроя, а не фото обсуждаемого принта или индивидуального замера.",
+            "en": "This blank base is a constructor preview illustrating the cut, not a photo of the discussed print or an individual measurement."}[locale])
     return " ".join(messages)
 
 
-def prepare_fit_illustration(revision, response, settings_row, *, context=None):
+def _chart_fits_unavailable(product_id, fits):
+    from management.services.ig_catalog_configured_choices import capture_configured_choices
+    if not isinstance(fits, (list, tuple)) or not 1 <= len(fits) <= 2 or any(fit not in {"classic", "oversize"} for fit in fits):
+        return False
+    for fit in fits:
+        captured = capture_configured_choices(product_id, fit_code=fit, metadata_only=True)
+        grid = captured.get("grid") or {}
+        if grid.get("grid_id") and grid.get("image_name") and len(captured.get("configurations") or []) == 1:
+            return False
+    return True
+
+
+def prepare_fit_illustration(revision, response, settings_row, *, context=None, native_part_index=0, unavailable_chart_fits=()):
     """Use actual focused assets or explicitly labeled native fit examples."""
+    if type(native_part_index) is not int or not 0 <= native_part_index <= 16:
+        return FitIllustrationPreparation(True, reasons=("fit_illustration_native_slot_invalid",))
     if response.control.get("paylink") or response.control.get("order"):
-        return FitIllustrationPreparation()
-    if any(re.search(r"таблиц\w*\s+р[ао]зм[іе]р\w*|(?:розмірн\w*|размерн\w*)\s+(?:сіт\w*|сет\w*)|size\s+(?:chart|guide)",
-                     str(row.get("text") or ""), re.I)
-           for row in (revision.bundle_snapshot or {}).get("sources", ())):
         return FitIllustrationPreparation()
     if context is None:
         from management.services.ig_fit_consultation import capture_fit_consultation
@@ -145,9 +162,18 @@ def prepare_fit_illustration(revision, response, settings_row, *, context=None):
     capability = capture_fit_photo_capability(context["focus"]["product_id"], metadata_only=True)
     if capability.get("error") or capability.get("capability_digest") != (context.get("fit_photo_capability") or {}).get("capability_digest"):
         return FitIllustrationPreparation(True, reasons=("fit_illustration_capability_changed",))
+    if unavailable_chart_fits:
+        from management.services.ig_fit_consultation import requested_chart_fits
+        requested = requested_chart_fits((revision.bundle_snapshot or {}).get("sources") or [], capability.get("supported_fits", ()))
+        if (not isinstance(unavailable_chart_fits, (list, tuple)) or not 1 <= len(unavailable_chart_fits) <= 2
+            or not set(unavailable_chart_fits).issubset(requested) or not _chart_fits_unavailable(context["focus"]["product_id"], unavailable_chart_fits)):
+            return FitIllustrationPreparation(True, reasons=("fit_illustration_chart_absence_changed",))
     locale = _presentation_locale(revision, response)
     selected = []
     def usable_photo(row):
+        if row.get("asset_kind") == "blank_constructor_preview":
+            from management.services.ig_fit_illustration_assets import blank_illustration_available
+            return blank_illustration_available(row)
         actual = _photo_ref(_photo_field(row), product_id=row["product_id"], variant_id=row["variant_id"] or None)
         return bool(actual and actual["url"] == row["url"])
 
@@ -155,6 +181,7 @@ def prepare_fit_illustration(revision, response, settings_row, *, context=None):
     for fit in fits:
         candidates = [(row, "focus") for row in capability["photos"] if row["fit_code"] == fit]
         candidates += [(row, "example") for row in capability["examples"] if row["fit_code"] == fit]
+        candidates += [(row, "blank") for row in capability.get("illustrations", []) if row["fit_code"] == fit]
         for row, role in candidates:
             if usable_photo(row):
                 selected.append({**row, "role": role})
@@ -163,6 +190,12 @@ def prepare_fit_illustration(revision, response, settings_row, *, context=None):
         fallback_photo = next((row for row in capability["photos"] if usable_photo(row)), None)
         if fallback_photo:
             selected.insert(0, {**fallback_photo, "role": "focus"})
+    # One base request can show both approved constructor views. For a
+    # comparison, preserve one illustration per requested cut first.
+    if len(fits) == 1 and any(row["role"] == "blank" for row in selected):
+        selected += [{**row, "role": "blank"} for row in capability.get("illustrations", [])
+            if row["fit_code"] == fits[0] and row not in [{k: v for k, v in chosen.items() if k != "role"} for chosen in selected]
+            and usable_photo(row)]
     usable = selected[:3]
     if not usable:
         return FitIllustrationPreparation(True, reasons=("fit_illustration_photo_unavailable",))
@@ -177,6 +210,10 @@ def prepare_fit_illustration(revision, response, settings_row, *, context=None):
             "settings_id": settings_row.pk, "settings_epoch": settings_row.reply_permission_epoch,
             "client_epoch": revision.permission_epoch, "publication_id": publication.pk,
             "publication_version": publication.version, "publication_hash": publication.snapshot_hash}}
+    if native_part_index:
+        manifest["native_part_index"] = native_part_index
+    if unavailable_chart_fits:
+        manifest["unavailable_chart_fits"] = list(unavailable_chart_fits)
     _seal_manifest(manifest)
     return FitIllustrationPreparation(True, _effects(manifest), _copy(context, locale, usable))
 
@@ -199,7 +236,7 @@ def validate_fit_illustration_metadata(metadata, *, payload, group, kind):
             return False
         if metadata["delivery"] == "native":
             expected, expected_group, expected_kind = native, "template", "template"
-            if index != 0:
+            if type(manifest.get("native_part_index", 0)) is not int or not 0 <= manifest.get("native_part_index", 0) <= 16 or index != manifest.get("native_part_index", 0):
                 return False
         elif metadata["delivery"] == "fallback" and index < len(fallback):
             expected, expected_group = fallback[index], "template_fallback"
@@ -242,17 +279,19 @@ def validate_fit_illustration_reference(reference, client, settings_row):
         capability = capture_fit_photo_capability(reference["focus"]["product_id"], metadata_only=True)
         if capability.get("error") or capability["capability_digest"] != reference["capability_digest"]:
             return "fit_illustration_capability_changed"
+        if reference.get("unavailable_chart_fits") and not _chart_fits_unavailable(reference["focus"]["product_id"], reference["unavailable_chart_fits"]):
+            return "fit_illustration_chart_absence_changed"
         restored = deepcopy(reference)
         for row in restored["items"]:
             role = row["role"]
-            candidates = capability["photos"] if role == "focus" else capability["examples"] if role == "example" else []
+            candidates = capability["photos"] if role == "focus" else capability["examples"] if role == "example" else capability.get("illustrations", []) if role == "blank" else []
             matches = [photo for photo in candidates if {key: value for key, value in photo.items() if key != "url"}
                        == {key: value for key, value in row.items() if key != "role"}]
             if len(matches) != 1:
                 return "fit_illustration_asset_changed"
             row["url"] = matches[0]["url"]
         native, _fallback = _payloads(restored)
-        metadata = {"fit_illustration": restored, "delivery": "native", "part_index": 0,
+        metadata = {"fit_illustration": restored, "delivery": "native", "part_index": restored.get("native_part_index", 0),
                     "prepared_payload_digest": _digest(native)}
         if not validate_fit_illustration_metadata(metadata, payload=native, group="template", kind="template"):
             return "fit_illustration_manifest_changed"

@@ -717,6 +717,23 @@ class CartPageController {
     if (this.savingsPromoCodeEl) {
       this.savingsPromoCodeEl.textContent = data.applied_promo || '';
     }
+    if (Array.isArray(data.promo_details)) {
+      const vault = document.querySelector('[data-promo-vault]');
+      const rights = vault?.querySelector('[data-promo-rights]');
+      if (rights) {
+        rights.replaceChildren();
+        data.promo_details.forEach((right) => {
+          const row = document.createElement('li');
+          const expiry = right.expires_at ? new Date(right.expires_at).toLocaleString(document.documentElement.lang || 'uk') : '';
+          row.textContent = `${right.code}: −${formatUAH(parseNumber(right.discount))}${expiry ? ` · ${expiry}` : ''}`;
+          rights.append(row);
+        });
+      }
+      if (vault && !data.promo_details.length) {
+        vault.classList.remove('is-success');
+        vault.querySelector('[data-promo-vault-applied]')?.classList.add('d-none');
+      }
+    }
     if (this.savingsTotalEl) {
       toggleElement(this.savingsTotalEl, hasSavings);
     }
@@ -729,7 +746,7 @@ class CartPageController {
     const delivery = document.querySelector('[data-cart-delivery-status]');
     const bundleWords = document.getElementById('garment-bundle-copy');
     if (delivery && bundleWords && state && typeof state.shipping_free === 'boolean') {
-      try {const words = JSON.parse(bundleWords.textContent);delivery.textContent = state.shipping_free ? words.shipping_free : words.shipping_paid;} catch (_) {}
+      try {const words = JSON.parse(bundleWords.textContent);delivery.textContent = state.shipping_summary || (state.shipping_free ? words.shipping_free : words.shipping_paid);} catch (_) {}
     }
     if (!this.payNowAmountEl || !state) {
       return;
@@ -1037,6 +1054,17 @@ function initPromoVault() {
     status.textContent = cartText('promoApplied');
     applied.classList.remove('d-none');
     if (appliedCode) appliedCode.textContent = data.promo_code || code;
+    input.value = data.promo_code || code;
+    const rights = vault.querySelector('[data-promo-rights]');
+    if (rights) {
+      rights.replaceChildren();
+      (Array.isArray(data.promo_details) ? data.promo_details : []).forEach((right) => {
+        const row = document.createElement('li');
+        const expiry = right.expires_at ? new Date(right.expires_at).toLocaleString(document.documentElement.lang || 'uk') : '';
+        row.textContent = `${right.code}: −${formatUAH(parseNumber(right.discount))}${expiry ? ` · ${expiry}` : ''}`;
+        rights.append(row);
+      });
+    }
     if (appliedDiscount) appliedDiscount.textContent = `${cartText('discount')}: ${formatUAH(parseNumber(data.discount))}`;
   };
 
@@ -1064,6 +1092,7 @@ function initPromoVault() {
       input.value = '';
       applied.classList.add('d-none');
       if (appliedCode) appliedCode.textContent = '';
+      vault.querySelector('[data-promo-rights]')?.replaceChildren();
       if (appliedDiscount) appliedDiscount.textContent = '';
       status.textContent = data.message || cartText('promoRemoved');
       document.dispatchEvent(new CustomEvent('cartUpdated'));

@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from management.services.approved_public_facts import approved_public_fact_manifest
+from storefront.support_content import DELIVERY_FAQ_ITEMS
+from django.utils.translation import override
 
 
 POLICY_KEYS = ("dispatch", "service_boundary")
@@ -153,7 +155,20 @@ def apply_support_policy_copy(page: dict[str, Any], page_key: str, language: str
         page["meta_title"] = page["page_title"]
         # Keep only supported delivery/payment answers; route-specific options
         # remain in the surrounding sections and current checkout.
-        page["faq_items"] = [dispatch_faq, {
+        # Preserve the checkout-owned threshold and its full-payment condition.
+        # Localized legacy overrides omitted this FAQ entirely; taking the lazy
+        # source here keeps visible HTML and JSON-LD on the same current rule.
+        with override("uk"):
+            shipping_cost_faq = next(
+                item for item in DELIVERY_FAQ_ITEMS
+                if str(item["question"]) == "Скільки коштує доставка?"
+            )
+        with override(language):
+            shipping_cost_faq = {
+                "question": str(shipping_cost_faq["question"]),
+                "answer": str(shipping_cost_faq["answer"]),
+            }
+        page["faq_items"] = [dispatch_faq, shipping_cost_faq, {
             "question": _PAYMENT_QUESTION[language], "answer": policy["payment_boundary"],
         }, {
             "question": _DELAY_QUESTION[language], "answer": policy["delivery_delay"],

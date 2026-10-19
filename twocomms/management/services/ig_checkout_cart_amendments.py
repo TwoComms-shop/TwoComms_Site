@@ -295,6 +295,7 @@ def checkout_cart_state(proposal, token=None):
             gross_total="0.00" if empty else proposal.catalog_total,
             discount_amount="0.00" if empty else proposal.negotiated_discount,
             currency=proposal.currency, cart_digest=proposal.items_digest,
+            payment_mode=proposal.pay_type,
             owner={"proposal_id": str(proposal.public_id), "revision": proposal.revision,
                 "items_digest": proposal.items_digest})
         prior_eligible = proposal.cart_amendments.filter(source_body__previous_shipping__eligible=True,

@@ -219,7 +219,7 @@ def checkout_communication_prompt_guidance(context):
         "do not say fully paid while balance is positive or unknown. source_ref.paid_at is the native payment-confirmation "
         "timestamp when present; observed_at is only the capture clock, never a substitute payment date. "
         "Checkout changes are dated native customer actions. "
-        "An approved shipping threshold applies to full discounted merchandise, never to the deposit; it is not a product price "
+        "Automatic free delivery requires the discounted merchandise threshold AND full payment; 200+COD pays delivery separately. An unknown payment choice is only conditional eligibility. The threshold never applies to the deposit; it is not a product price "
         "or a carrier quote. Explain the verified payer naturally and help with the next step. Source IDs, hashes and proofs are backend metadata, never customer prose.")
 
 

@@ -11,7 +11,7 @@
   <title>TwoComms · {{ copy.page_title }}</title>
   <link rel="preload" href="{% static 'fonts/Inter-Regular.woff2' %}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{% static 'fonts/Inter-Bold.woff2' %}" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="{% static 'css/instagram-checkout.css' %}?v=20261014-cart-delivery-v4">
+  <link rel="stylesheet" href="{% static 'css/instagram-checkout.css' %}?v=20261019-commerce-promo-v5">
 </head>
 <body>
   <svg class="ig-icon-sprite" aria-hidden="true" focusable="false">
@@ -176,7 +176,7 @@
           <span class="ig-delivery-benefit__icon" aria-hidden="true"><svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9h8M1 14h5M3 19h5M12 7h19v17H12zM31 13h7l7 7v4H31zM38 13v7h7M18 28a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM38 28a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg></span>
           <div class="ig-delivery-benefit__copy">
             <strong data-delivery-benefit-title>{% if cart_state.free_delivery.eligible %}{% if html_lang == 'ru' %}Ваша доставка бесплатная{% elif html_lang == 'en' %}Your delivery is free{% else %}Ваша доставка безкоштовна{% endif %}{% elif cart_state.free_delivery and not cart_state.can_edit %}{% if html_lang == 'ru' %}Доставку оплачиваете отдельно Новой почте{% elif html_lang == 'en' %}You pay Nova Poshta for delivery separately{% else %}Доставку оплачуєте окремо Новій пошті{% endif %}{% elif cart_state.free_delivery %}{% if html_lang == 'ru' %}До бесплатной доставки — ещё{% elif html_lang == 'en' %}Free delivery is within reach — add{% else %}До безкоштовної доставки — ще{% endif %} {{ cart_state.free_delivery.remaining|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% elif cart_state.review_needed %}{% if html_lang == 'ru' %}Условия доставки уточняем{% elif html_lang == 'en' %}Confirming your delivery terms{% else %}Умови доставки уточнюємо{% endif %}{% elif assisted_selected_shipping.payer == 'merchant' %}{% if html_lang == 'ru' %}Доставку оплачивает TwoComms{% elif html_lang == 'en' %}TwoComms covers delivery{% else %}Доставку оплачує TwoComms{% endif %}{% else %}{% if html_lang == 'ru' %}Доставка по согласованным условиям{% elif html_lang == 'en' %}Delivery under your agreed terms{% else %}Доставка за погодженими умовами{% endif %}{% endif %}</strong>
-            <p data-delivery-benefit-detail>{% if cart_state.free_delivery %}{% if html_lang == 'ru' %}Товары после скидок{% elif html_lang == 'en' %}Items after discounts{% else %}Товари після знижок{% endif %}: {{ cart_state.free_delivery.basis_total|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% if cart_state.can_edit %} · {% if html_lang == 'ru' %}бесплатно от{% elif html_lang == 'en' %}free from{% else %}безкоштовно від{% endif %} {{ cart_state.free_delivery.threshold|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% endif %}{% elif cart_state.review_needed %}{% if html_lang == 'ru' %}Менеджер проверит обновлённую корзину и подтвердит доставку перед оплатой.{% elif html_lang == 'en' %}A manager will review your updated basket and confirm delivery before payment.{% else %}Менеджер перевірить оновлений кошик і підтвердить доставку перед оплатою.{% endif %}{% else %}{% if html_lang == 'ru' %}Согласованные с вами условия сохраняются отдельно от акции на бесплатную доставку.{% elif html_lang == 'en' %}Your agreed terms are separate from the free delivery promotion.{% else %}Погоджені з вами умови зберігаються окремо від акції на безкоштовну доставку.{% endif %}{% endif %}</p>
+            <p data-delivery-benefit-detail>{% if cart_state.free_delivery %}{% if html_lang == 'ru' %}Товары после скидок{% elif html_lang == 'en' %}Items after discounts{% else %}Товари після знижок{% endif %}: {{ cart_state.free_delivery.basis_total|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% if cart_state.can_edit %} · {% if html_lang == 'ru' %}бесплатно при полной оплате от{% elif html_lang == 'en' %}free with full payment from{% else %}безкоштовно за повної оплати від{% endif %} {{ cart_state.free_delivery.threshold|floatformat:'-2' }} {{ cart_state.free_delivery.currency }}{% endif %}{% elif cart_state.review_needed %}{% if html_lang == 'ru' %}Менеджер проверит обновлённую корзину и подтвердит доставку перед оплатой.{% elif html_lang == 'en' %}A manager will review your updated basket and confirm delivery before payment.{% else %}Менеджер перевірить оновлений кошик і підтвердить доставку перед оплатою.{% endif %}{% else %}{% if html_lang == 'ru' %}Согласованные с вами условия сохраняются отдельно от акции на бесплатную доставку.{% elif html_lang == 'en' %}Your agreed terms are separate from the free delivery promotion.{% else %}Погоджені з вами умови зберігаються окремо від акції на безкоштовну доставку.{% endif %}{% endif %}</p>
           </div>
           <div class="ig-delivery-benefit__meter" data-delivery-benefit-meter{% if not cart_state.free_delivery or not cart_state.can_edit %} hidden{% endif %}>
             <div class="ig-delivery-benefit__track" role="progressbar" aria-label="{% if html_lang == 'ru' %}До бесплатной доставки{% elif html_lang == 'en' %}Progress towards free delivery{% else %}До безкоштовної доставки{% endif %}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ cart_state.free_delivery.progress|default:0 }}" data-delivery-benefit-progress><span style="width:{{ cart_state.free_delivery.progress|default:0 }}%" data-delivery-benefit-bar></span></div>
@@ -294,6 +294,7 @@
                   </label>
                 {% endfor %}
               </fieldset>
+              {% if payment_options|length > 1 %}<p class="ig-field-hint" data-prepayment-disclosure>{% if html_lang == 'ru' %}Предоплата 200 грн засчитывается в стоимость вещи. При отказе от обычной посылки после осмотра эти 200 грн не возвращаются. Доставка и комиссия наложенного платежа — отдельно. При 200+COD доставка платная, в том числе от 3000 грн.{% elif html_lang == 'en' %}The UAH 200 deposit counts toward the item price. If you refuse an ordinary parcel after inspection, the full UAH 200 is retained. Delivery and cash-on-delivery fees are separate. Delivery with a deposit is paid, including orders from UAH 3,000.{% else %}Передоплата 200 грн зараховується у вартість речі. Якщо відмовитесь від звичайної посилки після огляду, ці 200 грн не повертаються. Доставка й комісія післяплати — окремо. За 200+COD доставка платна, зокрема від 3000 грн.{% endif %}</p>{% endif %}
             {% endif %}
 
             {% if proposal.allow_promo %}
@@ -301,8 +302,11 @@
                 <summary>{{ copy.have_promo }}</summary>
                 <div class="ig-field">
                   <label for="ig-promo"><span>{{ copy.promo }}</span></label>
-                  <input id="ig-promo" type="text" name="promo_code" autocomplete="off" maxlength="32" placeholder="{{ copy.promo_placeholder }}" value="{{ form_values.promo_code|default:'' }}" aria-describedby="ig-promo-hint">
-                  <small id="ig-promo-hint">{{ copy.promo_hint }}</small>
+                  <input id="ig-promo" type="text" name="promo_code" autocomplete="off" maxlength="340" placeholder="CODE1, CODE2" value="{{ form_values.promo_code|default:'' }}" aria-describedby="ig-promo-hint">
+                  <button type="button" class="ig-cart-retry" data-promo-preview>{% if html_lang == 'ru' %}Проверить коды и сумму{% elif html_lang == 'en' %}Check codes and total{% else %}Перевірити коди й суму{% endif %}</button>
+                  <p role="status" aria-live="polite" data-promo-preview-status></p>
+                  <ul data-promo-rights></ul>
+                  <small id="ig-promo-hint">{% if html_lang == 'ru' %}Несколько кодов — через запятую. Проверим права и срок каждого; проценты применяются последовательно.{% elif html_lang == 'en' %}Separate codes with commas. Each right and expiry is checked; percentage discounts apply sequentially.{% else %}Кілька кодів — через кому. Перевіримо права й строк кожного; відсотки застосовуються послідовно.{% endif %}</small>
                 </div>
               </details>
             {% endif %}
@@ -419,6 +423,6 @@
   <script type="module" src="{% static 'js/modules/nova-poshta-form-bridge.js' %}?v=20260801c3"></script>
   <script defer src="{% static 'js/analytics-loader.js' %}?v=20261009-analytics-v14"></script>
   {{ cart_state|json_script:"ig-cart-state" }}
-  <script defer src="{% static 'js/instagram-checkout.js' %}?v=20261014-cart-delivery-v4"></script>
+  <script defer src="{% static 'js/instagram-checkout.js' %}?v=20261019-commerce-promo-v5"></script>
 </body>
 </html>

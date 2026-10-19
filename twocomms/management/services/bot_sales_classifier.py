@@ -1565,7 +1565,10 @@ def classify_message(
     # доставка?» одновременно получал intent=delivery и objection=price, а
     # playbook — теги price/discount. Бот предлагал скидку на вопрос о стоимости
     # доставки. Вопрос о цене доставки ценовым возражением не является.
-    hard_price = bool(HARD_PRICE_OBJECTION_RE.search(low))
+    from management.services.ig_turn_intelligence import current_objections
+
+    own_objections = {item["kind"] for item in current_objections([{"message_id": 0, "text": text}])}
+    hard_price = bool(own_objections & {"price", "cheaper_elsewhere"})
     # IMP-057: a product price question is commercial intent, not an objection.
     # Only explicit negative affordability/value wording may open PRICE.
     price_objection = hard_price
@@ -1573,7 +1576,7 @@ def classify_message(
         objection = IgClient.Objection.PRICE
         readiness += 12
         add(IgConversationSignal.Type.PRICE_OBJECTION, conf=0.85)
-    if not is_manager and not no_buy and not opt_out and PREPAY_RE.search(low):
+    if not is_manager and not no_buy and not opt_out and "prepayment_trust" in own_objections:
         objection = IgClient.Objection.PREPAYMENT
         readiness += 10
         add(IgConversationSignal.Type.PREPAYMENT_OBJECTION, conf=0.9)
@@ -1581,7 +1584,7 @@ def classify_message(
         # F-SCORE-006: «розмір не підійшов, хочу обмін» is not an objection to
         # buying. The purchase already happened, so filing it under objections
         # put a completed sale into the «Заперечення клієнтів» table.
-        if objection == IgClient.Objection.NONE and not post_sale_request:
+        if objection == IgClient.Objection.NONE and not post_sale_request and "size_risk" in own_objections:
             objection = IgClient.Objection.SIZE
         readiness += 8
         add(IgConversationSignal.Type.SIZE_CONCERN, conf=0.8)
@@ -1589,7 +1592,7 @@ def classify_message(
         not is_manager
         and not no_buy
         and not opt_out
-        and THINKING_RE.search(low)
+        and "thinking" in own_objections
         # F-PAT-001 #5: «думаю візьму L» — решение, не сомнение. Ярлык THINKING
         # ставил follow-up на 12 часов вместо 2 и подавал в промпт тег
         # «сомневается» готовому купить.

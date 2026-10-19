@@ -17,11 +17,11 @@ _PHOTO_CANCEL = re.compile(r"\b(?:не\s+(?:треба|потрібн\w*|над�
 _AUDIENCE = re.compile(r"\b(?:унісекс|унисекс|unisex|жіноч\w*|женск\w*|чоловіч\w*|мужск\w*|жінок|женщин|дівчат\w*|девуш\w*|women|womens|female|mens|male)\b", re.I)
 _ASSORTMENT = re.compile(r"\b(?:(?:інші|інший|другие|другой|другую|other|another|different)\s+(?:принт\w*|дизайн\w*|модел\w*|designs?|prints?|products?)|асортимент\w*|ассортимент\w*|(?:весь|увесь|весь|whole|full)\s+(?:каталог|catalog))\b", re.I)
 _TSHIRT = re.compile(r"\b(?:футбол\w*|t[ -]?shirts?|tee(?:s)?)\b", re.I)
-_OTHER_GARMENT = re.compile(r"\b(?:худі|худи|hoodies?|світшот\w*|свитшот\w*|sweatshirts?)\b", re.I)
+_OTHER_GARMENT = re.compile(r"\b(?:худі|худи|hoodies?|лонгслів\w*|лонгслив\w*|long[ -]?sleeves?|zip|зіп|зип|світшот\w*|свитшот\w*|sweatshirts?)\b", re.I)
 _EXAMPLE_LABEL = re.compile(r"\b(?:приклад\w*|пример\w*|examples?)\b", re.I)
 _OTHER_DESIGN = re.compile(r"\b(?:інш\w*\s+(?:принт\w*|дизайн\w*)|друг\w*\s+(?:принт\w*|дизайн\w*)|(?:another|different|other)\s+(?:print|design))\b", re.I)
 _SHOW = re.compile(r"\b(?:покаж\w*|надішл\w*|пришл\w*|show|send)\b", re.I)
-_CHART = re.compile(r"таблиц\w*\s+(?:розмір\w*|размер\w*)|розмірн\w*\s+(?:таблиц\w*|сіт\w*)|размерн\w*\s+(?:таблиц\w*|сет\w*)|size\s+(?:chart|guide)", re.I)
+_CHART = re.compile(r"таблиц\w*\s+(?:розмір\w*|размер\w*)|розмірн\w*\s+(?:таблиц\w*|сіт\w*)|размерн\w*\s+(?:таблиц\w*|сет\w*)|size\s+(?:chart|guide)|(?:обидв\w*|обе|обоих|both)\s+(?:сіт\w*|сет\w*|таблиц\w*|charts?|guides?)", re.I)
 
 
 def _text(value):
@@ -99,7 +99,9 @@ def fit_consultation_request(sources):
     fits = [key for key, pattern in _FIT.items() if any(
         not _locally_negated(combined, match.start()) for match in pattern.finditer(combined))]
     fit_topic = bool(fits or _FIT_WORD.search(combined))
-    if not fits and re.search(r"\b(?:розмір\w*|размер\w*|sizes?)\b", combined, re.I):
+    explicit_cut = bool(re.search(r"\b(?:крій|крою|крої|крой|крои|кро[её]м|посадк\w*|фасон\w*|cuts?)\b", combined, re.I)
+        or (_PHOTO.search(combined) and _FIT_WORD.search(combined)))
+    if not fits and not explicit_cut and re.search(r"\b(?:розмір\w*|размер\w*|sizes?)\b", combined, re.I):
         fit_topic = False
     audience = bool(_AUDIENCE.search(combined))
     photos = False
@@ -109,9 +111,12 @@ def fit_consultation_request(sources):
         chart = chart or row_chart
         explicit_examples = bool(re.search(r"приклад\w*|пример\w*|examples?", text, re.I))
         photo_text = re.sub(r"(?:фото|photos?|images?|pictures?)\s+(?:таблиц\w*|розмірн\w*|размерн\w*|(?:of\s+)?(?:the\s+)?size\s+chart)", "", text, flags=re.I)
+        cut_match, chart_match = _FIT_WORD.search(text), _CHART.search(text)
+        show_cut = bool(explicit_cut and _SHOW.search(text) and cut_match and (not chart_match
+            or cut_match.start() < chart_match.start() or re.search(r"\b(?:та|й|і|и|and)\b", text[chart_match.end():cut_match.start()], re.I)))
         if _PHOTO_CANCEL.search(text):
             photos = False
-        elif (not row_chart or explicit_examples) and (_PHOTO.search(photo_text) or (fit_topic and _SHOW.search(text))):
+        elif (not row_chart or explicit_examples or show_cut or (explicit_cut and _PHOTO.search(photo_text))) and (_PHOTO.search(photo_text) or (fit_topic and _SHOW.search(text))):
             photos = True
     asking = bool(_QUESTION.search(combined) or photos or chart or (fit_topic and _SHOW.search(combined))
         or (audience and re.search(r"\b(?:є|есть)\b", combined, re.I))
@@ -129,24 +134,96 @@ def fit_consultation_request(sources):
         "tshirt_source_scope": bool(_TSHIRT.search(combined) and not _OTHER_GARMENT.search(combined))}
 
 
+def requested_chart_fits(sources, supported_fits=()):
+    """Only actual requested chart alternatives; comparison never chooses one."""
+    request = fit_consultation_request(sources)
+    texts = [_text(row.get("text")) for row in sources or () if row.get("role", "user") == "user"]
+    text = "\n".join(texts)
+    from management.services.ig_reply_truth import _locally_negated
+    if not any(not _locally_negated(text, match.start()) and not re.search(
+        r"(?:не\s+(?:показ\w*|надсил\w*|надішл\w*|присыл\w*|отправ\w*|треба|потріб\w*|надо|нуж\w*)|(?:do\s+not|don['’]t)\s+(?:show|send))\s*$",
+        text[max(0, match.start() - 70):match.start()], re.I) for match in _CHART.finditer(text)):
+        return []
+    explicit = (request or {}).get("requested_fits") or []
+    if explicit:
+        return list(dict.fromkeys(explicit))
+    supported = [fit for fit in dict.fromkeys(supported_fits or ()) if fit in {"classic", "oversize"}]
+    if re.search(r"\b(?:обидв\w*|обе|обоих|both)\b", text, re.I) or len(supported) == 1:
+        return supported
+    return []
+
+
 def build_fit_consultation(sources, *, focus=None, photo_capability=None, approved_fact_keys=()):
     request = fit_consultation_request(sources)
     if not request:
         return {}
+    from management.services.ig_product_focus import information_subject, information_category
+
+    subject = information_subject(sources)
     focus = focus if isinstance(focus, dict) else {}
+    if subject and (subject.get("status") != "identified" or subject.get("future_base_requested") or subject.get("category_slug") != information_category(focus.get("category_slug"))):
+        focus = {}
     focused = (focus.get("schema") == "discussed-product-focus.v1" and focus.get("status") == "focused"
         and type(focus.get("product_id")) is int and focus["product_id"] > 0
         and bool(focus.get("proof_digest")))
-    result = {**request, "focus": deepcopy(focus) if focused else {},
+    result = {**request, "information_subject": subject, "focus": deepcopy(focus) if focused else {},
         "selection_authority": False, "stock_authority": False, "checkout_authority": False}
     photo = photo_capability if isinstance(photo_capability, dict) else {}
     if (focused and photo.get("schema") == "fit-photo-capability.v1"
         and photo.get("product_id") == focus["product_id"] and photo.get("capability_digest") and not photo.get("error")):
         result["fit_photo_capability"] = deepcopy(photo)
-    tshirt = (focus.get("category_slug") == "tshirts") if focused else request["tshirt_source_scope"]
-    result["approved_fact_keys"] = [key for key in approved_fact_keys if tshirt
-        and key in {"current_tshirt_bases", "current_tshirt_audience"}]
+    tshirt = (information_category(focus.get("category_slug")) == "tshirts") if focused else request["tshirt_source_scope"]
+    hoodie = focused and information_category(focus.get("category_slug")) == "hoodies"
+    allowed = set() if subject.get("future_base_requested") else {"current_tshirt_bases", "current_tshirt_audience"} if tshirt else (
+        {"current_hoodie_bases", "current_hoodie_audience"} if hoodie else set())
+    result["approved_fact_keys"] = [key for key in approved_fact_keys if key in allowed]
+    return_fits = photo.get("supported_fits") or []
+    result["supported_fits"] = list(return_fits) if "fit_photo_capability" in result else []
+    if result["supported_fits"]:
+        result["customer_requested_fits"] = list(request["requested_fits"])
+        result["unsupported_requested_fits"] = [fit for fit in request["requested_fits"] if fit not in return_fits]
+        result["requested_fits"] = [fit for fit in request["requested_fits"] if fit in return_fits] or list(return_fits)
+        result["comparison_requested"] = request["comparison_requested"] and len(result["requested_fits"]) > 1
     return result
+
+
+def capture_consultation_measurements(revision, *, product_focus=None, source_cart_capture=None):
+    """Independent numeric-guide input, including plain measurement questions.
+
+    Exact confirmed cut/variant selectors narrow the read-only guide lookup;
+    unresolved cut alternatives remain separate and explicitly scoped.
+    """
+    from management.services.ig_product_focus import capture_product_focus, information_subject, information_category
+    from management.services.ig_catalog_configured_choices import capture_configured_choices
+
+    focus = product_focus if product_focus is not None else capture_product_focus(revision, source_cart_capture=source_cart_capture)
+    subject = information_subject((revision.bundle_snapshot or {}).get("sources") or [])
+    if (focus.get("status") != "focused" or (subject and (subject.get("status") != "identified"
+        or subject.get("future_base_requested") or subject.get("category_slug") != information_category(focus.get("category_slug"))))):
+        return {}
+    cart = source_cart_capture or {}
+    fields = next((row.get("fields") or {} for row in cart.get("lines") or []
+        if row.get("line_id") == cart.get("active_line_id")), {})
+    selected_product = fields.get("product_id") or {}
+    selectors = {}
+    if selected_product.get("status") == "confirmed" and selected_product.get("value") == focus["product_id"]:
+        fit, variant = fields.get("fit_option_code") or {}, fields.get("color_variant_id") or {}
+        if fit.get("status") == "confirmed" and fit.get("value") in {"classic", "oversize"}:
+            selectors["fit_code"] = fit["value"]
+        if variant.get("status") == "confirmed" and type(variant.get("value")) is int:
+            selectors["variant_id"] = variant["value"]
+    configured = capture_configured_choices(focus["product_id"], metadata_only=True, **selectors)
+    guides, seen = [], set()
+    for row in configured.get("configurations", ()):
+        guide = (row.get("grid") or {}).get("measurements") or {}
+        identity = (guide.get("guide_version"), guide.get("option_key"), guide.get("variant_id"))
+        if guide and identity not in seen:
+            guides.append(guide)
+            seen.add(identity)
+    return {"schema": "consultation-measurements.v1", "product_id": focus["product_id"],
+        "guides": guides[:8], "complete": len(guides) <= 8,
+        "configuration_digest": configured.get("configuration_digest", ""),
+        "selection_authority": False, "stock_authority": False}
 
 
 def capture_fit_consultation(revision, *, source_cart_capture=None, product_focus=None):
@@ -167,6 +244,10 @@ def capture_fit_consultation(revision, *, source_cart_capture=None, product_focu
     context = build_fit_consultation(sources, focus=focus, photo_capability=photos, approved_fact_keys=facts)
     if not context.get("requested"):
         return {}
+    if context.get("focus"):
+        measurements = capture_consultation_measurements(revision, product_focus=focus, source_cart_capture=source_cart_capture)
+        context["size_measurements"] = measurements.get("guides", [])
+        context["size_measurements_complete"] = measurements.get("complete", True)
     cart = source_cart_capture or {}
     lines = cart.get("lines") or []
     if (focus.get("status") == "focused" and cart.get("status") == "captured" and len(lines) == 1
@@ -174,15 +255,46 @@ def capture_fit_consultation(revision, *, source_cart_capture=None, product_focu
         fields = lines[0].get("fields") or {}
         selected = {key: row.get("value") for key, row in fields.items()
             if isinstance(row, dict) and row.get("status") == "confirmed"}
-        context["next_consultation_selector"] = ("fit" if not selected.get("fit_option_code") else
+        context["next_consultation_selector"] = ("fit" if not selected.get("fit_option_code") and len(context.get("supported_fits") or []) > 1 else
             "size" if not selected.get("size") else "")
     return context
+
+
+def fit_consultation_projection(context, *, include_measurements=False):
+    """Provider presentation only; canonical plan and signed refs stay intact."""
+    if not context:
+        return {}
+    result = {key: deepcopy(value) for key, value in context.items()
+        if key not in {"fit_photo_capability", "size_measurements", "focus"}}
+    focus = context.get("focus") or {}
+    if focus:
+        result["focus"] = {key: deepcopy(focus[key]) for key in
+            ("product_id", "title", "category_slug", "source_message_ids", "proof_digest") if key in focus}
+    capability = context.get("fit_photo_capability") or {}
+    if capability:
+        photo = {key: deepcopy(capability[key]) for key in
+            ("schema", "product_id", "supported_fits", "missing_fit_photos", "example_product_ids") if key in capability}
+        for field in ("photos", "examples", "illustrations"):
+            rows, seen = [], set()
+            for row in capability.get(field, ()):
+                item = {key: row[key] for key in ("product_id", "fit_code", "fit_basis", "garment_type", "asset_kind",
+                    "base_key", "view", "asset_version", "illustration_only", "exact_design_photo") if key in row}
+                identity = tuple(sorted(item.items()))
+                if identity not in seen:
+                    rows.append(item)
+                    seen.add(identity)
+            if rows:
+                photo[field] = rows
+        result["fit_photo_capability"] = photo
+    if include_measurements and context.get("size_measurements"):
+        result["size_measurements"] = deepcopy(context["size_measurements"])
+    return result
 
 
 def fit_consultation_guidance(context):
     if not context:
         return ""
-    return ("The customer asks about garment fit/audience or examples of cuts. Explain regular/classic versus oversize "
+    return ("The customer asks about garment fit/audience or examples of cuts. Use only supported_fits from the captured capability. Never ask a regular/oversize choice for a single cut; lining and size are separate axes. Hoodie is slightly oversize unisex only with its own approved hoodie facts. A different information_subject suspends the old product facts without changing retained cart selections. Explain regular/classic versus oversize "
         "using the scoped approved T-shirt facts when applicable. Keep the source-proved discussed print as the topic; "
         "this question does not choose a different product, buy anything, or authorize payment. A request for examples "
         "of cuts is not a request for a different catalog assortment. Do not ask them to pick a print again. "
@@ -201,26 +313,53 @@ def deterministic_fit_reply(context, *, language="uk"):
         return ""
     wanted = set(context.get("approved_fact_keys") or ())
     if not context.get("audience_requested"):
-        wanted.discard("current_tshirt_audience")
+        wanted.difference_update({"current_tshirt_audience", "current_hoodie_audience"})
     if not context.get("fit_explanation_requested"):
-        wanted.discard("current_tshirt_bases")
+        wanted.difference_update({"current_tshirt_bases", "current_hoodie_bases"})
     if not wanted:
         return ""
     language = language if language in {"uk", "ru", "en"} else "uk"
-    facts = [fact.public_text for fact in approved_public_facts(language) if fact.key in wanted]
+    base_copy = {
+        "current_tshirt_bases": {"uk": "Classic — звична посадка; oversize — вільніша, з ширшими проймою, рукавом і горловиною.",
+            "ru": "Classic — обычная посадка; oversize — более свободная, с более широкими проймой, рукавом и горловиной.",
+            "en": "Classic is a regular fit; oversize is roomier, with a wider armhole, sleeve and neckline."},
+        "current_hoodie_bases": {"uk": "У поточних худі один крій — злегка oversize, помірно вільна посадка.",
+            "ru": "У текущих худи один крой — слегка oversize, умеренно свободная посадка.",
+            "en": "Current hoodies have one cut: slightly oversize, a moderately relaxed fit."},
+    }
+    facts = [base_copy[fact.key][language] if fact.key in base_copy else fact.public_text
+        for fact in approved_public_facts(language) if fact.key in wanted]
     focused = context.get("focus") or {}
     if not facts:
         return ""
+    supported = context.get("supported_fits") or []
+    if focused.get("category_slug") == "tshirts" and len(supported) == 1:
+        # Scope the approved category facts down to this actual configured
+        # base; the other category-level cut must not become a fresh offer.
+        fit = supported[0]
+        facts = []
+        if context.get("fit_explanation_requested") and fit in {"classic", "oversize"}:
+            facts.append({
+                "uk": {"classic": "У цієї моделі один варіант крою: classic — звична посадка.", "oversize": "У цієї моделі один варіант крою: oversize — вільніша посадка."},
+                "ru": {"classic": "У этой модели один вариант кроя: classic — обычная посадка.", "oversize": "У этой модели один вариант кроя: oversize — более свободная посадка."},
+                "en": {"classic": "This model has one configured cut: classic, a regular fit.", "oversize": "This model has one configured cut: oversize, a roomier fit."},
+            }[language][fit])
+        if context.get("audience_requested") and "current_tshirt_audience" in wanted:
+            facts.append({"uk": "Ця футболочна основа — унісекс, підходить жінкам і чоловікам.",
+                "ru": "Эта основа футболки — унисекс, подходит женщинам и мужчинам.",
+                "en": "This T-shirt base is unisex, suitable for women and men."}[language])
     prefix = {"uk": "Принт залишаємо той самий: ", "ru": "Принт оставляем тот же: ",
               "en": "Keeping the same print: "}[language] + str(focused.get("title") or "") + "." if focused else ""
     photo = context.get("fit_photo_capability") or {}
     missing = photo.get("missing_fit_photos") or []
     photo_note = ""
-    if context.get("photos_requested") and "classic" in missing:
+    if context.get("photos_requested") and "classic" in missing and "classic" in context.get("supported_fits", []):
         photo_note = {"uk": "Окремого підтвердженого фото цього принта у classic зараз немає; це не означає, що такий крій недоступний.",
             "ru": "Отдельного подтверждённого фото этого принта в classic сейчас нет; это не означает, что такой крой недоступен.",
             "en": "There is no separately confirmed classic-fit photo of this print; that does not mean the cut is unavailable."}[language]
     selector = context.get("next_consultation_selector")
+    if selector == "fit" and len(context.get("supported_fits") or []) < 2:
+        selector = "size"
     question = ({"uk": "Яка посадка вам ближча — звична чи вільніша?", "ru": "Какая посадка вам ближе — обычная или более свободная?",
         "en": "Which fit would you prefer: regular or roomier?"}[language] if selector == "fit" else
         {"uk": "Який розмір вам потрібен?", "ru": "Какой размер вам нужен?", "en": "Which size would you like?"}[language] if selector == "size" else "")
@@ -229,12 +368,12 @@ def deterministic_fit_reply(context, *, language="uk"):
 
 def validate_fit_consultation(context, response):
     """Enforce print retention before catalog fallback can acquire send rights."""
-    if (context and "current_tshirt_audience" in context.get("approved_fact_keys", ())
+    if (context and set(context.get("approved_fact_keys", ())).intersection({"current_tshirt_audience", "current_hoodie_audience"})
         and re.search(r"унісекс|унисекс|unisex", response.reply_text, re.I)
         and re.search(r"\b(?:весь|увесь|ус[іе]|все|all|entire|whole)[^.!?\n]{0,25}\b(?:каталог\w*|одяг\w*|одежд\w*|catalog\w*|products|clothes|clothing)\b", response.reply_text, re.I)):
         return "focused_fit_audience_scope_exceeded"
     if (context and context.get("audience_requested")
-        and "current_tshirt_audience" in context.get("approved_fact_keys", ())
+        and set(context.get("approved_fact_keys", ())).intersection({"current_tshirt_audience", "current_hoodie_audience"})
         and not _audience_answer(response.reply_text)):
         return "focused_fit_audience_unanswered"
     focus = (context or {}).get("focus") or {}
@@ -287,6 +426,6 @@ def fit_topic_covered(kind, response, context):
         return bool(mentioned and (not context.get("comparison_requested") or len(mentioned) == 2)
             and re.search(r"вільн\w*|свобод\w*|прям\w*|обляг\w*|шир\w*|звич\w*|обычн\w*|loose\w*|relaxed|straight|roomier|roomy", text, re.I))
     if kind == "info:audience":
-        return bool("current_tshirt_audience" in context.get("approved_fact_keys", ())
+        return bool(set(context.get("approved_fact_keys", ())).intersection({"current_tshirt_audience", "current_hoodie_audience"})
             and _audience_answer(text))
     return False

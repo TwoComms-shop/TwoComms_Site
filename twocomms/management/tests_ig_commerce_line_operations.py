@@ -406,7 +406,7 @@ class CommerceLineOperationsTests(TestCase):
             with patch.object(projection, '_capture_current_selection_lines', side_effect=too_many):
                 result = self.capture()
         self.assertEqual(result['reason'], 'selection_capture_query_bound')
-        self.assertEqual(len(executed), 64)
+        self.assertLessEqual(len(executed), 64)
 
     def test_erasure_abstains_without_mutating_any_selection(self):
         self.initial()

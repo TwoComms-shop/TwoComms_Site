@@ -1345,6 +1345,7 @@ def size_grid_for_fit(product, fit_code: str, *, variant=None) -> dict:
         return empty
     try:
         from copy import deepcopy
+        from management.services.ig_catalog_configured_choices import size_measurements
 
         from django.core.exceptions import ValidationError
 
@@ -1384,6 +1385,9 @@ def size_grid_for_fit(product, fit_code: str, *, variant=None) -> dict:
             "image_url": image_url,
             "columns": tuple(columns),
             "sizes": sizes,
+            "measurements": size_measurements(
+                grid, product_id=product.pk, variant_id=getattr(variant, "pk", None),
+                option_key=f"fit={code}", allowed_sizes=set(sizes)),
             "resolved": True,
         }
     except Exception:

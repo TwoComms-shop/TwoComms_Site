@@ -139,9 +139,9 @@
     saving: "Saving changes…", saved: "Changes saved.", review: "Changes saved. Awaiting manager confirmation.", unknown: "Checking saved changes. Payment is unavailable.", failed: "Changes could not be saved.", stale: "Basket updated. Check the current total.", blocked: "This order cannot be edited right now.", pendingPrice: "After confirmation", empty: "Your basket is empty.",
   };
   const deliveryCopy = ({
-    uk: { free: "Ваша доставка безкоштовна", remaining: "До безкоштовної доставки — ще", goods: "Товари після знижок", threshold: "безкоштовно від", gained: "Тепер доставка безкоштовна — її оплачує TwoComms.", lost: "Кошик оновлено. Доставка тепер оплачується окремо Новій пошті; підтвердьте ці умови, щоб продовжити.", covered: "Доставку оплачує TwoComms", manual: "Доставка за погодженими умовами", manualDetail: "Погоджені з вами умови зберігаються окремо від акції на безкоштовну доставку.", review: "Умови доставки уточнюємо", reviewDetail: "Менеджер перевірить оновлений кошик і підтвердить доставку перед оплатою.", ack: "Підтвердьте нові умови доставки нижче, щоб продовжити з цими товарами." },
-    ru: { free: "Ваша доставка бесплатная", remaining: "До бесплатной доставки — ещё", goods: "Товары после скидок", threshold: "бесплатно от", gained: "Теперь доставка бесплатная — её оплачивает TwoComms.", lost: "Корзина обновлена. Доставка теперь оплачивается отдельно Новой почте; подтвердите эти условия, чтобы продолжить.", covered: "Доставку оплачивает TwoComms", manual: "Доставка по согласованным условиям", manualDetail: "Согласованные с вами условия сохраняются отдельно от акции на бесплатную доставку.", review: "Условия доставки уточняем", reviewDetail: "Менеджер проверит обновлённую корзину и подтвердит доставку перед оплатой.", ack: "Подтвердите новые условия доставки ниже, чтобы продолжить с этими товарами." },
-    en: { free: "Your delivery is free", remaining: "Free delivery is within reach — add", goods: "Items after discounts", threshold: "free from", gained: "Your delivery is now free — TwoComms covers it.", lost: "Your basket is updated. Delivery is now paid separately to Nova Poshta; confirm these terms to continue.", covered: "TwoComms covers delivery", manual: "Delivery under your agreed terms", manualDetail: "Your agreed terms are separate from the free delivery promotion.", review: "Confirming your delivery terms", reviewDetail: "A manager will review your updated basket and confirm delivery before payment.", ack: "Confirm the updated delivery terms below to continue with these items." },
+    uk: { free: "Ваша доставка безкоштовна", remaining: "До безкоштовної доставки — ще", goods: "Товари після знижок", threshold: "безкоштовно за повної оплати від", gained: "Тепер доставка безкоштовна — її оплачує TwoComms.", lost: "Кошик оновлено. Доставка тепер оплачується окремо Новій пошті; підтвердьте ці умови, щоб продовжити.", covered: "Доставку оплачує TwoComms", manual: "Доставка за погодженими умовами", manualDetail: "Погоджені з вами умови зберігаються окремо від акції на безкоштовну доставку.", review: "Умови доставки уточнюємо", reviewDetail: "Менеджер перевірить оновлений кошик і підтвердить доставку перед оплатою.", ack: "Підтвердьте нові умови доставки нижче, щоб продовжити з цими товарами." },
+    ru: { free: "Ваша доставка бесплатная", remaining: "До бесплатной доставки — ещё", goods: "Товары после скидок", threshold: "бесплатно при полной оплате от", gained: "Теперь доставка бесплатная — её оплачивает TwoComms.", lost: "Корзина обновлена. Доставка теперь оплачивается отдельно Новой почте; подтвердите эти условия, чтобы продолжить.", covered: "Доставку оплачивает TwoComms", manual: "Доставка по согласованным условиям", manualDetail: "Согласованные с вами условия сохраняются отдельно от акции на бесплатную доставку.", review: "Условия доставки уточняем", reviewDetail: "Менеджер проверит обновлённую корзину и подтвердит доставку перед оплатой.", ack: "Подтвердите новые условия доставки ниже, чтобы продолжить с этими товарами." },
+    en: { free: "Your delivery is free", remaining: "Free delivery is within reach — add", goods: "Items after discounts", threshold: "free with full payment from", gained: "Your delivery is now free — TwoComms covers it.", lost: "Your basket is updated. Delivery is now paid separately to Nova Poshta; confirm these terms to continue.", covered: "TwoComms covers delivery", manual: "Delivery under your agreed terms", manualDetail: "Your agreed terms are separate from the free delivery promotion.", review: "Confirming your delivery terms", reviewDetail: "A manager will review your updated basket and confirm delivery before payment.", ack: "Confirm the updated delivery terms below to continue with these items." },
   }[locale] || null);
   let cartState = null;
   try {
@@ -153,6 +153,8 @@
   let removedCartFocus = false;
   let pendingCartOperation = null;
   let paymentCreating = false;
+  let promoPreviewing = false;
+  let promoPreviewDirty = false;
   let previousDeliveryPolicy = null;
   const operationId = () => window.crypto?.randomUUID?.() || "";
   const cartStorageKey = `twc-cart-amendment:${root.dataset.proposalUrl || window.location.pathname}`;
@@ -180,10 +182,10 @@
     }
     if (cartRetry) cartRetry.hidden = !pendingCartOperation || cartSaving;
   };
-  const cartCanPay = () => !cartSaving && !cartNeedsReload && !pendingCartOperation && !paymentCreating
+  const cartCanPay = () => !promoPreviewDirty && !promoPreviewing && !cartSaving && !cartNeedsReload && !pendingCartOperation && !paymentCreating
     && (!cartState || cartState.can_pay === true) && !checkoutExpired;
   const syncCartCapabilities = () => {
-    const canEdit = cartState?.can_edit === true && !checkoutExpired && !cartSaving
+    const canEdit = cartState?.can_edit === true && !promoPreviewing && !checkoutExpired && !cartSaving
       && !cartNeedsReload && !pendingCartOperation && !paymentCreating;
     cartProducts?.setAttribute("aria-busy", cartSaving ? "true" : "false");
     cartProducts?.querySelectorAll("[data-cart-action]").forEach((button) => {
@@ -214,6 +216,10 @@
     const money = (value) => `${new Intl.NumberFormat(locale === "uk" ? "uk-UA" : locale === "ru" ? "ru-UA" : "en-GB", {
       maximumFractionDigits: 2,
     }).format(Number(value))} ${policy?.currency || "UAH"}`;
+    const selectedMode = document.querySelector('[name="payment_choice"]:checked')?.value;
+    const depositSelected = policy?.requires_full_payment === true && (selectedMode || policy.payment_mode) === 'prepay_200_cod'
+      && Number(policy.basis_total) > 200;
+    const showFree = policy?.eligible === true && !depositSelected;
     const title = card.querySelector("[data-delivery-benefit-title]");
     const detail = card.querySelector("[data-delivery-benefit-detail]");
     const meter = card.querySelector("[data-delivery-benefit-meter]");
@@ -225,11 +231,11 @@
     const editable = state.can_edit === true && !paymentCreating && !checkoutExpired;
     const recipientCopy = { uk: "Доставку оплачуєте окремо Новій пошті", ru: "Доставку оплачиваете отдельно Новой почте", en: "You pay Nova Poshta for delivery separately" };
     card.hidden = !policy && !pending && !card.dataset.manualPayer;
-    card.classList.toggle("is-achieved", policy?.eligible === true);
+    card.classList.toggle("is-achieved", showFree);
     card.classList.toggle("is-review", pending);
     if (meter) meter.hidden = !policy || !editable;
-    if (title) title.textContent = policy ? policy.eligible ? deliveryCopy.free
-      : editable ? `${deliveryCopy.remaining} ${money(policy.remaining)}` : recipientCopy[locale] || recipientCopy.en
+    if (title) title.textContent = policy ? showFree ? deliveryCopy.free
+      : depositSelected || policy.conditional ? recipientCopy[locale] || recipientCopy.en : editable ? `${deliveryCopy.remaining} ${money(policy.remaining)}` : recipientCopy[locale] || recipientCopy.en
       : pending ? deliveryCopy.review : card.dataset.manualPayer === "merchant" ? deliveryCopy.covered : deliveryCopy.manual;
     if (detail) detail.textContent = policy ? `${deliveryCopy.goods}: ${money(policy.basis_total)}${editable ? ` · ${deliveryCopy.threshold} ${money(policy.threshold)}` : ""}`
       : pending ? deliveryCopy.reviewDetail : deliveryCopy.manualDetail;
@@ -266,6 +272,7 @@
   const applyCartState = (state) => {
     if (!validCartState(state)) return false;
     const changed = cartState && (cartState.digest !== state.digest || cartState.revision !== state.revision);
+    if (changed && checkoutForm?.elements.namedItem('promo_code')?.value?.trim()) promoPreviewDirty = true;
     cartState = state;
     renderDeliveryPolicy(state);
     const renderedLines = new Set([...cartProducts?.querySelectorAll("[data-cart-line]") || []].map((row) => row.dataset.cartLine));
@@ -329,6 +336,61 @@
     if (cartNeedsReload) window.location.reload();
     return true;
   };
+  const renderPromoRights = (state) => {
+    const list = document.querySelector('[data-promo-rights]');
+    if (!list) return;
+    list.replaceChildren();
+    (Array.isArray(state?.promo_details) ? state.promo_details : []).forEach((right) => {
+      const row = document.createElement('li');
+      const expiry = right.expires_at ? new Date(right.expires_at).toLocaleString(document.documentElement.lang || 'uk') : '';
+      row.textContent = `${right.code}: −${right.discount} ${state.currency || 'UAH'}${expiry ? ` · ${expiry}` : ''}`;
+      list.append(row);
+    });
+  };
+  const previewPromos = async () => {
+    if (promoPreviewing || cartSaving || cartNeedsReload || pendingCartOperation || paymentCreating
+      || checkoutExpired || !checkoutForm || cartState?.can_pay !== true) return;
+    promoPreviewing = true;
+    syncCartCapabilities();
+    const button = document.querySelector('[data-promo-preview]');
+    const status = document.querySelector('[data-promo-preview-status]');
+    if (button) button.disabled = true;
+    const previewCopy = ({
+      uk: { checking: 'Перевіряємо коди й суму…', checked: 'Коди перевірено. Суму оновлено.' },
+      ru: { checking: 'Проверяем коды и сумму…', checked: 'Коды проверены. Сумма обновлена.' },
+      en: { checking: 'Checking codes and total…', checked: 'Codes checked. Total updated.' },
+    }[locale]);
+    if (status) status.textContent = previewCopy?.checking || 'Checking codes…';
+    const fields = [checkoutForm.elements.namedItem('promo_code'), ...document.querySelectorAll('[name="payment_choice"]')].filter(Boolean);
+    const disabledBefore = fields.map((field) => field.disabled);
+    try {
+      const body = new FormData(checkoutForm);
+      body.set('action', 'promo_preview');
+      body.set('expected_revision', String(cartState.revision));
+      body.set('expected_digest', cartState.digest);
+      fields.forEach((field) => { field.disabled = true; });
+      const response = await fetch(root.dataset.proposalUrl || window.location.href, {
+        method: 'POST', body, credentials: 'same-origin', cache: 'no-store',
+        headers: { Accept: 'application/json', 'X-CSRFToken': csrfToken() },
+      });
+      const result = await readJsonResponse(response);
+      if (!response.ok || !validCartState(result.cart_state)) throw new Error(result.error || 'promo_invalid');
+      promoPreviewDirty = false;
+      applyCartState(result.cart_state);
+      renderPromoRights(result.cart_state);
+      const input = checkoutForm.elements.namedItem('promo_code');
+      if (input && Array.isArray(result.cart_state.promo_codes)) input.value = result.cart_state.promo_codes.join(', ');
+      if (status) status.textContent = previewCopy?.checked || 'Codes checked.';
+    } catch (error) {
+      if (status) status.textContent = paymentErrorMessage(error instanceof Error ? error.message : 'promo_invalid');
+    } finally {
+      promoPreviewing = false;
+      fields.forEach((field, index) => { field.disabled = checkoutExpired || disabledBefore[index]; });
+      if (button) button.disabled = false;
+      syncCartCapabilities();
+    }
+  };
+  document.querySelector('[data-promo-preview]')?.addEventListener('click', () => { void previewPromos(); });
   const submitCartOperation = async () => {
     if (!pendingCartOperation || cartSaving || paymentCreating || checkoutExpired) return;
     cartSaving = true;
@@ -408,9 +470,20 @@
       if (error?.textContent === deliveryCopy?.ack) error.hidden = true;
     }
   });
+  document.querySelectorAll('[name="payment_choice"]').forEach((input) => input.addEventListener('change', () => {
+    const ack = document.querySelector('[data-delivery-policy-ack]');
+    if (ack) ack.checked = false;
+    renderDeliveryPolicy(cartState);
+    void previewPromos();
+  }));
   checkoutForm?.elements.namedItem("promo_code")?.addEventListener("input", () => {
+    promoPreviewDirty = true;
+    syncCartCapabilities();
     const ack = document.querySelector("[data-delivery-policy-ack]");
     if (ack) ack.checked = false;
+    document.querySelector('[data-promo-rights]')?.replaceChildren();
+    const status = document.querySelector('[data-promo-preview-status]');
+    if (status) status.textContent = '';
   });
   if (pendingCartOperation) showCartStatus(cartCopy.unknown, "error");
   let dialogTrigger = null;
@@ -948,7 +1021,10 @@
           window.location.assign(payload.redirect);
           return;
         }
-        if (validCartState(payload.cart_state || payload.current)) applyCartState(payload.cart_state || payload.current);
+        if (validCartState(payload.cart_state || payload.current)) {
+          applyCartState(payload.cart_state || payload.current);
+          renderPromoRights(payload.cart_state || payload.current);
+        }
         if (!response.ok || !payload.invoice_url) {
           throw new Error(typeof payload.error === "string" ? payload.error : "payment_unavailable");
         }

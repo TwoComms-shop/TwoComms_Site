@@ -341,6 +341,8 @@ class FinalOfferReachabilityTests(FollowupCoreMixin, TestCase):
         )
         client.discount_offered_percent = 5
         client.save(update_fields=["discount_offered_percent", "updated_at"])
+        InstagramBotMessage.objects.create(client=client, sender_id="final-offer-price",
+                                           role="user", text="Не можу собі дозволити за таку суму", status="done")
 
         task = schedule_rescue_offer(client, explicit_negotiation=True)
 
@@ -358,6 +360,8 @@ class FinalOfferReachabilityTests(FollowupCoreMixin, TestCase):
         client = self._client(
             "final-offer-qualifying", stage=IgClient.Stage.QUALIFYING, level=1
         )
+        InstagramBotMessage.objects.create(client=client, sender_id="final-offer-qualifying",
+                                           role="user", text="Для мене це занадто дорого", status="done")
 
         task = schedule_rescue_offer(client)
 

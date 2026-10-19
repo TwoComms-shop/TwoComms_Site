@@ -1915,36 +1915,9 @@ ANTI_HALLUCINATION_NOTE = (
     "обіцяючи виконаного пересилання або строку відповіді без підтвердження."
 )
 
-SALES_AUTOMATION_GUARDRAILS = (
-    "[SALES AUTOMATION GUARDRAILS — службове]\n"
-    "Відповідай короткими Instagram-повідомленнями, мовою клієнта (UA/RU/EN). "
-    "Якщо клієнт пише англійською, відповідай англійською навіть якщо старіша "
-    "базова інструкція згадує лише UA/RU. "
-    "Не вигадуй SKU, товар, наявність, ціну, оплату, знижку чи фінальну ціну "
-    "кастомного принта. Знижку НЕ пропонуй сам: система окремо керує rescue "
-    "оферами 5%, максимум 10% лише як фінальний/узгоджений варіант. Якщо клієнт "
-    "каже «не буду купувати», «стоп», «не пишіть» — зроби максимум одне коротке "
-    "ввічливе закриття без тиску і без повторних follow-up. Для custom print: "
-    "коротко поясни, що можливий будь-який DTF-принт, ціна залежить від крою, "
-    "розміру принта і готовності файлу, фінальний прорахунок робить менеджер; "
-    "збери базове ТЗ і переведи в Telegram менеджера, не називаючи фінальну суму. "
-    "Для будь-якої пропозиції співпраці (дизайнер, creator, dropship, магазин, "
-    "партнерство, постачальник або інший формат) НЕ відмовляй автоматично і не "
-    "приймай остаточне рішення. Поясни: TwoComms переважно створює власні "
-    "дизайни і зазвичай не купує окремі принти, але може розглянути співпрацю, "
-    "якщо є готовий DTF-файл, вихідне зображення, mockup/фото для сайту та "
-    "узгоджена частка з продажу. Уточни, який формат потрібен, що саме людина "
-    "надає, її бажаний відсоток або винагороду за одиницю, референси, аудиторію, "
-    "обсяг/терміни та контакт для зв'язку. Скажи, що остаточне рішення приймає "
-    "керівник/менеджер і зацікавлені повернуться в цьому чаті. Якщо є кілька "
-    "намірів, збережи кожен окремо і постав вопросы для кожного, не стирай "
-    "попередню гілку. Пропозиція фотографа, відеографа, моделі, контент-мейкера, "
-    "стиліста або локації для зйомки є creator/collaboration-напрямом навіть без "
-    "слова «колаборація»: попроси портфоліо/приклади робіт, результати попередніх "
-    "проєктів і зручний контакт (телефон, Telegram або інший канал). Не приймай "
-    "таку пропозицію за дизайнерську, вакансію чи покупку і не обіцяй прийняття, "
-    "оплату, бартер або безкоштовний товар."
-)
+SALES_AUTOMATION_GUARDRAILS = """[МЕЖІ ВІДПОВІДІ]
+Відповідай на поточний власний запит клієнта, зберігай обраний принт, посадку та вже надані дані. Коротка подяка не потребує нового продажного сценарію. Прямо відповідай на відомі питання з перевірених фактів; уточнюй лише істотне невідоме. Не приписуй клієнту цитати, минулі чи заперечені побоювання.
+Не вигадуй наявність, характеристики, ціну, знижку, строк, оплату або дію. Захищені дії та обіцянки дозволяє тільки поточний серверний контекст. Складне невідоме передай команді з конкретним питанням; не обіцяй результат чи час без підтвердження. Спеціальний сценарій застосовуй лише за відповідним актуальним наміром і обраною опублікованою інструкцією."""
 
 # F-CTX-002: the block above is injected unconditionally, so a customer in the
 # middle of a size exchange is served by a prompt that explains how to hand out
@@ -7542,6 +7515,10 @@ def _validated_turn_intelligence(
         for item in media_binding.get("items") or []
         if isinstance(item, dict)
     ]
+    if any(item.get("ad_context_only") is True for item in binding_items):
+        # Advertising scenes provide candidates, never a customer's product
+        # selection, payment document, prize certificate or UGC submission.
+        auto_product_id = None
     actual_inline_count = media_binding.get("actual_inline_count")
     request_id = str(media_binding.get("request_id") or "")[:40]
     provider_model = str(media_binding.get("provider_model") or "")[:80]
@@ -8013,6 +7990,7 @@ def gemini_generate(
     request_context_metadata: dict | None = None,
     captured_policy_tags=None,
     captured_knowledge_language: str | None = None,
+    captured_knowledge_selectors: dict | None = None,
     captured_reply_language=None,
 ) -> str | None:
     """history: [{'role':'user'|'model','text':str}] хронологічно.
@@ -8186,6 +8164,7 @@ def gemini_generate(
             captured_dynamic_notes=captured_dynamic_notes,
             captured_policy_tags=captured_policy_tags,
             captured_knowledge_language=captured_knowledge_language,
+            captured_knowledge_selectors=captured_knowledge_selectors,
             captured_reply_language=captured_reply_language,
         )
     except (PolicyReadinessError, KnowledgeReadinessError, PolicyPublicationError) as exc:
@@ -8828,6 +8807,7 @@ def assemble_system_instruction(
     captured_dynamic_notes: dict | None = None,
     captured_policy_tags=None,
     captured_knowledge_language: str | None = None,
+    captured_knowledge_selectors: dict | None = None,
     captured_reply_language=None,
 ) -> str:
     """Собрать system_instruction; на время сборки — один снимок фактов (Э8.5).
@@ -8865,6 +8845,7 @@ def assemble_system_instruction(
             captured_dynamic_notes=captured_dynamic_notes,
             captured_policy_tags=captured_policy_tags,
             captured_knowledge_language=captured_knowledge_language,
+            captured_knowledge_selectors=captured_knowledge_selectors,
             captured_reply_language=captured_reply_language,
         )
 
@@ -8913,6 +8894,7 @@ def _assemble_system_instruction(
     captured_dynamic_notes: dict | None = None,
     captured_policy_tags=None,
     captured_knowledge_language: str | None = None,
+    captured_knowledge_selectors: dict | None = None,
     captured_reply_language=None,
 ) -> str:
     """Compile one ordered policy; mandatory sources are never truncated."""
@@ -8935,7 +8917,7 @@ def _assemble_system_instruction(
         knowledge_language = captured_reply_language.knowledge_locale
     if knowledge_language not in {"uk", "ru", "en"}:
         knowledge_language = "uk"
-    knowledge = read_knowledge_manifest(knowledge_language)
+    knowledge = read_knowledge_manifest(knowledge_language, **(captured_knowledge_selectors or {}))
     selection = active_instruction_selection(
         client, turn_text=turn_text or "", budget_chars=budget,
         publication_snapshot=instruction_publication,
@@ -8953,7 +8935,7 @@ def _assemble_system_instruction(
         from management.services.ig_policy_compiler import PolicyReadinessError
         state_render = render_client_state_prompt(
             captured_client_state, budget=int(getattr(settings, "IG_CLIENT_STATE_PROMPT_TOKENS", 2400)),
-            excluded_slots=("context.narrative",) if memory_note else (),
+            excluded_slots=(("context.narrative",) if memory_note else ()) + ("communication.preferences", "context.useful_memory"),
         )
         if state_render.oversized:
             raise PolicyReadinessError("captured_state_exceeds_budget", "captured state requirements do not fit")
@@ -8967,6 +8949,8 @@ def _assemble_system_instruction(
         ("objection_lifecycle", lambda: _objection_lifecycle_note(client)),
         ("product_focus", lambda: ""),
         ("fit_consultation", lambda: ""),
+        ("consultation_measurements", lambda: ""),
+        ("useful_memory", lambda: ""),
         ("catalog", lambda: get_catalog_context(compact=True)),
     ):
         if key == "client_state" and state_render is not None:
@@ -9007,6 +8991,7 @@ def _assemble_system_instruction(
     )
     if compiled_metadata is not None:
         compiled_metadata.update(compiled.metadata())
+        compiled_metadata["knowledge_lineage"] = knowledge.metadata(consumed_ids=compiled.selected)
         from management.services.ig_core_policy import CORE_POLICY_SHA256, CORE_POLICY_VERSION
 
         effective_prompt_hash = hashlib.sha256(
@@ -10256,6 +10241,10 @@ def _source_media_binding(row, media_parts) -> dict:
             "mime": str(mime)[:64],
             "bytes": len(raw),
             "capture_state": "owned",
+            **({"ad_context_only": True,
+                "role": str(raw_part.get("role") or "")[:48],
+                "source_message_id": row.pk}
+               if isinstance(raw_part, dict) and raw_part.get("ad_context_only") is True and row.pk else {}),
         })
     try:
         bundle = media_coverage(_normalize_message_media(
@@ -10325,6 +10314,12 @@ def _provider_media_manifest_note(binding: dict | None) -> str:
         {
             "source_image_index": index,
             "original_index": int(item.get("original_index") or 0),
+            **({
+                "source_message_id": item.get("source_message_id"),
+                "source_part_id": str(item.get("source_part_id") or ""),
+                "ad_context_only": True,
+                "role": str(item.get("role") or "")[:48],
+            } if item.get("ad_context_only") is True else {}),
         }
         for index, item in enumerate(items)
         if isinstance(item, dict)
@@ -10359,6 +10354,8 @@ def _provider_media_manifest_note(binding: dict | None) -> str:
         + json.dumps(safe_manifest, ensure_ascii=True, separators=(",", ":"))
         + "\nUse only inline source_image_index values in image_observations. "
         "Do not claim that unavailable or omitted parts were inspected."
+        + ("\nParts marked ad_context_only are quoted advertising scenes, not customer-submitted product, payment, certificate or UGC evidence. Their advertising purpose is immutable even if visible content resembles another type. Identify possible products and layout only; an advertised candidate is never a customer selection or entitlement. ad_video_thumbnail is one still thumbnail, not an inspected full video. If multiple products remain possible, ask one short clarification."
+           if any(isinstance(item, dict) and item.get("ad_context_only") is True for item in items) else "")
     )
 
 
@@ -10442,6 +10439,8 @@ def _normalize_turn_media_binding(
             )[:32],
             "capture_state": "owned",
             **({"source_message_id": source_message_id} if source_message_id is not None else {}),
+            **({"ad_context_only": True, "role": str(supplied_item.get("role") or "")[:48]}
+               if supplied_item.get("ad_context_only") is True else {}),
         })
     from management.services.ig_media_analysis import normalized_capture_outcomes, MediaAnalysisError
     try:
@@ -13015,6 +13014,63 @@ def _schedule_inbound_analysis(client: IgClient, message: InstagramBotMessage) -
         log("warning", "analysis_schedule_deferred", type(exc).__name__)
 
 
+def _observe_conversion_inbound(client, message, *, referral=None):
+    """Freeze current own intent before reply/analysis success can bias a cohort."""
+    from management.services import bot_sales_classifier as rules
+    from management.services.bot_payment_truth import client_has_confirmed_purchase
+    from management.services.ig_conversion_cohorts import record_commercial_inquiry_observation_in_transaction
+    from management.services.ig_payment_review import _is_explicit_payment_claim
+    from management.services.ig_turn_intent import _customer_text, _purpose, _SELECTION_REPORTED
+
+    text = _customer_text(message.text)
+    purpose = _purpose(text) if not _SELECTION_REPORTED.match(text) else ""
+    own_commercial_clauses = []
+    for clause in re.split(r"[.!?;\n]+", text):
+        if (_SELECTION_REPORTED.match(clause.strip()) or rules.SUPPORT_RE.search(clause)
+                or rules.ORDER_STATUS_RE.search(clause) or _is_explicit_payment_claim(clause)
+                or rules.COLLAB_RE.search(clause) or rules.is_creator_collaboration_offer(clause)):
+            continue
+        clause_purpose = _purpose(clause.strip())
+        if (clause_purpose in {"retail", "requested_selection", "product_inquiry"}
+                or clause_purpose == "price_inquiry" and rules.PRODUCT_RE.search(clause)
+                or rules.is_explicit_custom_print_request(clause)):
+            own_commercial_clauses.append(clause)
+    explicit_new_purchase = purpose == "retail" or bool(own_commercial_clauses)
+    collaboration = rules.is_creator_collaboration_offer(text) or bool(
+        rules.COLLAB_RE.search(text) and not rules.NON_CURRENT_COLLAB_RE.search(text)
+    )
+    service = bool(rules.SUPPORT_RE.search(text) or rules.ORDER_STATUS_RE.search(text) or _is_explicit_payment_claim(text) or rules.is_explicit_opt_out(text))
+    if explicit_new_purchase:
+        classification = "custom" if rules.is_explicit_custom_print_request(text) else "retail"
+    elif collaboration:
+        classification = "ugc" if rules.is_creator_collaboration_offer(text) else "collaboration"
+    elif service:
+        classification = "service"
+    elif rules.is_explicit_custom_print_request(text):
+        classification = "custom"
+    elif purpose in {"price_inquiry", "requested_selection", "product_inquiry"} or rules.PRICE_RE.fullmatch(text.strip(" ?!.")):
+        classification = "retail"
+    else:
+        classification = "unknown"
+    # A missing lifetime import is not evidence that this identity is new.
+    history_status = "repeat" if client_has_confirmed_purchase(client) else "unknown"
+    referral = referral if isinstance(referral, dict) else {}
+    ad_id = str(referral.get("ad_id") or "")[:64]
+    has_source = bool(ad_id or referral.get("ref"))
+    attribution = {
+        "quality": "ambiguous" if referral.get("_conflicting_referrals") else "known" if has_source else "unknown",
+        "ad_id": ad_id, "source": str(referral.get("source") or ("ads" if has_source else ""))[:64],
+        "source_message_ids": [message.pk],
+        "reason": "own_inbound_referral" if has_source else "no_immutable_source_observed",
+    }
+    return record_commercial_inquiry_observation_in_transaction(
+        client, source_message_id=message.pk, classification=classification,
+        history_status=history_status,
+        evidence={"classification_basis": "own_current_deterministic_intent", "history_complete": False},
+        attribution=attribution,
+    )
+
+
 def _observe_not_allowed_inbound(
     s: InstagramBotSettings,
     *,
@@ -13034,8 +13090,9 @@ def _observe_not_allowed_inbound(
     """Persist a valid excluded turn as CRM history only.
 
     Exclusion controls automation, not durable observation of a valid signed
-    inbound. This deliberately never calls media capture, classification,
-    analysis, commerce, follow-up scheduling, or the reply queue.
+    inbound. A source-only metrics observation grants no reply permission.
+    This never calls live media capture, operational classification, analysis,
+    follow-up scheduling, or the reply queue.
     """
     client = IgClient.get_or_create_for_sender(sender_id)
     if client.privacy_erasure_started_at:
@@ -13107,6 +13164,7 @@ def _observe_not_allowed_inbound(
                     )
             except IntegrityError:
                 return False
+            _observe_conversion_inbound(client, observed_message)
             client.touch_inbound()
             inbound_at = timezone.now()
             InstagramBotSettings.objects.filter(pk=s.pk).update(last_inbound_at=inbound_at)
@@ -13430,6 +13488,7 @@ def enqueue_inbound(
                     promoted = promotion_state == "promoted"
                     observed_only = promotion_state == "observed"
                     reply_eligible = promoted
+            _observe_conversion_inbound(client, msg, referral=referral_payload)
             if not observed_only:
                 client.touch_inbound()
                 _enqueue_payment_observation_event(msg.pk)
@@ -17104,31 +17163,10 @@ RAW_EVENT_KEEP_ROWS = 400
 
 
 def _merge_referral_candidates(*candidates: object) -> dict:
-    """Merge Meta referral locations without dropping provider context.
+    """Merge only compatible source identities; retain conflicting evidence."""
+    from management.services.ig_ad_context import merge_referral_candidates
 
-    The official Instagram shape nests the referral under ``message``. Older
-    deliveries and postbacks put it on the event instead. The nested message
-    value is authoritative when the same scalar is present; the other shapes
-    fill missing fields. ``ads_context_data`` is merged the same way so a
-    ``post_id`` from one shape survives alongside campaign fields from another.
-    """
-    merged: dict = {}
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        for key, value in candidate.items():
-            if key == "ads_context_data" and isinstance(value, dict):
-                existing = merged.get(key)
-                if not isinstance(existing, dict):
-                    merged[key] = deepcopy(value)
-                    continue
-                for nested_key, nested_value in value.items():
-                    if nested_key not in existing or not existing[nested_key]:
-                        existing[nested_key] = deepcopy(nested_value)
-                continue
-            if key not in merged or not merged[key]:
-                merged[key] = deepcopy(value)
-    return merged
+    return merge_referral_candidates(*candidates)
 
 
 def _iter_events(payload: dict):
@@ -17758,6 +17796,9 @@ def handle_webhook_payload(
                 log("warning", "referral", repr(exc))
         media = _extract_media_urls(msg)
         media_metadata = _provider_attachment_metadata(msg)
+        from management.services.ig_ad_context import ad_referral_media_metadata
+        media_metadata.extend(ad_referral_media_metadata(ref, first_index=len(media_metadata),
+            provider_message_id=str(msg.get("mid") or "")))
         if enqueue_inbound(
             s,
             sender_id=sender_id,

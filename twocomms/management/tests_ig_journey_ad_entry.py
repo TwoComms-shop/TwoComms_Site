@@ -45,7 +45,9 @@ class JourneyAdEntryTests(TestCase):
         with self.assertNumQueries(0):
             self.assertEqual(self.project(is_history=True), self.graph)
         self.client.ad_id = ''
-        with self.assertNumQueries(0):
+        # Immutable request/source/referral receipts may exist without mutable
+        # account-level ad fields; proving absence requires bounded DB reads.
+        with self.assertNumQueries(4):
             self.assertEqual(self.project(), self.graph)
         self.client.ad_id = 'ad-123'
         self.client.privacy_erasure_started_at = 'now'

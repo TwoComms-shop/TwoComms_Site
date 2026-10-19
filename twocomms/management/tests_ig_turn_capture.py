@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import timedelta
 import hashlib
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -107,9 +108,9 @@ class RevisionTurnCaptureTests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             result = self.capture(revision, collection, boundary)
         # Six original source reads plus two bounded independent observation
-        # reads. A plain transcript must stay within fourteen SELECTs, with no
-        # writes; do not rely on the implementation's incidental exact count.
-        self.assertReadBudget(queries, maximum=14)
+        # reads and one bounded standalone-attribution absence read. A plain
+        # transcript stays within fifteen SELECTs and performs no writes.
+        self.assertReadBudget(queries, maximum=15)
         self.assertEqual(result.metadata["captured_source_ids"], (first.pk, second.pk))
         self.assertEqual(result.boundary["sealed_sources_digest"], capture_digest(original["sources"]))
         self.assertEqual(result.source_bindings[0]["source_digest"], original["sources"][0]["source_digest"])
@@ -278,7 +279,10 @@ class RevisionTurnCaptureTests(TestCase):
         self.assertIn(str(campaign.pk), result.context_note)
         BotAdCampaign.objects.create(ad_id="sealed-ad", is_active=True, theme="duplicate")
         result = self.capture(revision, collection, boundary)
-        self.assertIsNone(result.context_note)
+        quoted = json.loads(result.context_note.split("\n", 1)[1])["source_referral"]
+        self.assertEqual(quoted["status"], "ambiguous")
+        self.assertIsNone(quoted.get("product_id"))
+        self.assertEqual(quoted["candidates"], [])
         self.assertTrue(result.facts.ambiguous_ad_referral)
 
     def test_admitted_image_audio_and_video_preserve_seal_identity(self):
@@ -325,7 +329,7 @@ class RevisionTurnCaptureTests(TestCase):
             result = self.capture(revision, collection, boundary)
         # Basic sealed capture/observation reads plus canonical narrative
         # current-head/reset/session/source/freshness verification.
-        self.assertReadBudget(queries, maximum=19)
+        self.assertReadBudget(queries, maximum=20)
         self.assertIn("Клієнт просить уточнити ціну принта.", result.memory_note)
         self.assertEqual(result.metadata["view_versions"]["memory_capture_digest"],
             self.client_row.memory_provenance["capture"]["generation_input_digest"])
@@ -490,7 +494,7 @@ class RevisionTurnCaptureTests(TestCase):
                 "management.services.instagram_bot._provider_http") as http:
             result = self.capture(revision, collection, boundary)
         http.assert_not_called()
-        self.assertReadBudget(queries, maximum=15)
+        self.assertReadBudget(queries, maximum=16)
         self.assertIn(manager.pk, result.metadata["captured_history_ids"])
         history = next(row for row in result.provider_history if row.get("message_id") == manager.pk)
         self.assertIn("Правил немає", history["text"])
