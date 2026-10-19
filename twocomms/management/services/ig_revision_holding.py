@@ -69,11 +69,11 @@ def parked_collaboration_revision_ids(*, limit=25):
         holding_blocked_effect=Exists(blocked_effects), holding_failed_graph=Exists(failed_graph),
         holding_has_source=Exists(sources),
         holding_latest_source=Subquery(sources.order_by("-message_id").values("message_id")[:1]),
-    ).filter(holding_blocked_effect=False, holding_failed_graph=True, holding_has_source=True).annotate(
-        holding_newer_source=Exists(InstagramBotMessage.objects.filter(
-            client_id=OuterRef("client_id"), role="user", pk__gt=OuterRef("holding_latest_source"),
-        )),
-    ).filter(holding_newer_source=False)
+    ).filter(holding_blocked_effect=False, holding_failed_graph=True, holding_has_source=True)
+    # Freshness is checked by the signed-ingress reader inside the claim below.
+    # A raw higher transcript PK can be a historical backfill. Let a genuinely
+    # newer source receive the same bounded, durable rejection as other stale
+    # candidates instead of treating transcript insertion as customer ingress.
     return list(queue.order_by("id").values_list("id", flat=True)[:max(0, min(int(limit), 50))])
 
 
@@ -217,9 +217,12 @@ def _positive_current_request(client, revision):
 
 def _collaboration_holding_reply(
     language: str, *, evidence_present: bool = False,
-    results_present: bool = False, contact_present: bool = False,
+    results_present: bool = False, contact_present: bool = False, business_cooperation=None,
 ) -> str:
     """Acknowledge the handoff and ask only for missing review inputs."""
+    if business_cooperation:
+        from management.services.ig_policy_fault_ack import business_acknowledgement
+        return business_acknowledgement(language, business_cooperation=business_cooperation)
     missing = {
         "uk": [
             "портфоліо або приклади фото- чи відеоробіт" if not evidence_present else "",
@@ -244,19 +247,19 @@ def _collaboration_holding_reply(
     }.get(language, [])
     missing = [item for item in missing if item]
     if language == "ru":
-        prefix = "Спасибо за предложение о сотрудничестве. Я передала его руководству на рассмотрение."
+        prefix = "Спасибо за предложение о сотрудничестве. Зафиксировала его для рассмотрения руководством."
         request = " Пожалуйста, пришлите " + ", ".join(missing) + "." if missing else ""
         suffix = " Если предложение заинтересует команду, с вами свяжутся."
     elif language == "en":
-        prefix = "Thank you for your collaboration proposal. I have passed it to our management for review."
+        prefix = "Thank you for your collaboration proposal. I have recorded it for our management to review."
         request = " Please send " + ", ".join(missing) + "." if missing else ""
         suffix = " If the team is interested, they will contact you."
     elif language == "hi":
-        prefix = "आपके सहयोग प्रस्ताव के लिए धन्यवाद। मैंने इसे समीक्षा के लिए हमारी टीम को भेज दिया है।"
+        prefix = "आपके सहयोग प्रस्ताव के लिए धन्यवाद। मैंने इसे हमारी टीम की समीक्षा के लिए दर्ज कर लिया है।"
         request = " कृपया भेजें: " + ", ".join(missing) + "।" if missing else ""
         suffix = " अगर टीम को प्रस्ताव में रुचि होगी, तो वह आपसे संपर्क करेगी।"
     else:
-        prefix = "Дякую за пропозицію співпраці. Я передала її керівництву на розгляд."
+        prefix = "Дякую за пропозицію співпраці. Зафіксувала її для розгляду керівництвом."
         request = " Будь ласка, надішліть " + ", ".join(missing) + "." if missing else ""
         suffix = " Якщо пропозиція зацікавить команду, з вами зв'яжуться."
     return prefix + request + suffix
@@ -298,6 +301,9 @@ def _ensure_collaboration_review_case(revision, client):
     """Create an open collaboration decision case from the sealed snapshot."""
     from management.services.instagram_bot import notify_manager
     from management.services.ig_revision_intents import collaboration_brief_for_revision
+    from management.services.ig_business_cooperation import business_cooperation_for_sources
+
+    business = business_cooperation_for_sources(revision.bundle_snapshot.get("sources", ()))
 
     task = IgFollowUpTask.objects.select_for_update().filter(
         client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK,
@@ -315,7 +321,8 @@ def _ensure_collaboration_review_case(revision, client):
             kind=IgFollowUpTask.Kind.MANAGER_TASK, reason="revision_case:collaboration_review",
             manager_approval_status=IgFollowUpTask.ManagerApprovalStatus.PENDING,
             manager_approval_requested_at=now,
-            message_text="Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт.",
+            message_text=("Клієнт питає про бізнес-співпрацю: перевірити партнерські умови та запитання; умови не погоджено."
+                if business else "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."),
             event_key=f"ig-revision-case:{client.pk}:{revision.pk}:collaboration_review"[:180],
             trigger=IgFollowUpTask.Trigger.EVENT, event_occurred_at=now,
             policy_started_at=now, policy_version="revision-case-v1",
@@ -327,15 +334,18 @@ def _ensure_collaboration_review_case(revision, client):
     context.update({
         "schema_version": 1, "case_kind": "collaboration_review",
         "latest_revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
-        "required_decisions": ["portfolio_review", "collaboration_terms"],
+        "required_decisions": (["business_cooperation_review", "partnership_terms", "customer_questions"]
+            if business else ["portfolio_review", "collaboration_terms"]),
         "authority": {"price_confirmed": False, "fulfillment_started": False},
     })
     context["collaboration_brief"] = collaboration_brief_for_revision(revision)
+    if business:
+        context.update(cooperation_kind="business", business_cooperation=business)
     task.manager_context = context
     task.save(update_fields=["manager_context", "updated_at"])
     key = f"ig-revision-collaboration-case:{task.pk}"
     notify_manager(
-        "Перевірте пропозицію creator/фото-відео співпраці клієнта.",
+        "Перевірте запит клієнта про бізнес-співпрацю." if business else "Перевірте пропозицію creator/фото-відео співпраці клієнта.",
         dedupe_key=key, event_type="escalation", client=client,
         metadata={"revision_id": revision.pk, "manager_task_id": task.pk, "case_kind": "collaboration_review"},
         deliver_immediately=False, raise_on_error=True,
@@ -394,6 +404,12 @@ def holding_receipt_valid(revision, *, text=None):
         or receipt.get("reply_digest") != _digest(receipt.get("reply_text") or "")
         or (text is not None and str(text) != receipt.get("reply_text"))):
         return False
+    if receipt.get("acknowledgement_mode") == "local_policy_fault":
+        from management.services.ig_policy_fault_ack import policy_fault_ack_valid
+        return policy_fault_ack_valid(revision, receipt)
+    if receipt.get("acknowledgement_mode") == "local_rate_limit":
+        from management.services.ig_revision_rate_handoff import rate_ack_valid
+        return rate_ack_valid(revision, receipt)
     if not GeminiRequest.objects.filter(
         request_id=receipt.get("failed_request_id"), logical_turn_id=f"ig-revision:{revision.pk}",
         client_id=revision.client_id, terminal_resolution="failed", winner_attempt__isnull=True,
@@ -430,6 +446,11 @@ def holding_receipt_valid(revision, *, text=None):
     if any(item["notification"] for item in wait_notification_receipts(revision, exclude_revision_id=revision.pk)):
         return False
     return True
+
+
+def record_policy_fault_ack(revision_id, token, *, settings_id):
+    from management.services.ig_policy_fault_ack import record_policy_fault_ack as record
+    return record(revision_id, token, settings_id=settings_id)
 
 
 def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=False, product_inquiry_capture=None):
@@ -558,7 +579,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 "uk": "Уточню це питання з командою 💛",
                 "ru": "Уточню этот вопрос с командой 💛",
                 "en": "I’ll check this with our team 💛",
-                "hi": "मैं आपके अनुरोध का भरोसेमंद जवाब तैयार नहीं कर सकी। मैंने इसे स्पष्टीकरण के लिए हमारी टीम को भेज दिया है।",
+                "hi": "मैं आपके अनुरोध का भरोसेमंद जवाब तैयार नहीं कर सकी। मैंने इसे हमारी टीम की समीक्षा के लिए दर्ज कर लिया है।",
             } if positive_request else {
                 "uk": "Дякую за повідомлення.",
                 "ru": "Спасибо за сообщение.",
@@ -572,10 +593,12 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 if row.get("role") == "user"
             )
             if collaboration_request:
+                from management.services.ig_business_cooperation import business_cooperation_for_sources
                 evidence_present, results_present, contact_present = _collaboration_holding_inputs(revision)
                 text = _collaboration_holding_reply(
                     language, evidence_present=evidence_present,
                     results_present=results_present, contact_present=contact_present,
+                    business_cooperation=business_cooperation_for_sources(revision.bundle_snapshot.get("sources", ())),
                 )
                 collaboration_task, collaboration_notification = _ensure_collaboration_review_case(revision, client)
             else:
@@ -679,6 +702,9 @@ def finalize_technical_holding(locked, effects):
     locked.lease_until = None
     locked.save(update_fields=["action_receipts", "recovery_state", "recovery_code", "recovery_due_at",
                                "claim_token", "claimed_at", "lease_until", "updated_at"])
+    if admission.get("acknowledgement_mode") == "local_rate_limit":
+        from management.services.ig_revision_rate_handoff import park_rate_handoff
+        park_rate_handoff(locked)
 
 
 def confirmed_holding_effect_ids(revision):

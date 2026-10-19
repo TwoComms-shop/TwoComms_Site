@@ -222,6 +222,8 @@ class RequiredPolicyRuntimeTests(TestCase):
         http.assert_not_called()
 
     def test_actual_assembly_provider_payload_and_manifest_use_same_required_module(self):
+        from management.services.approved_public_facts import approved_provider_fact_text
+
         instruction = self.create_instruction(intent_tags="on:size_question")
         provider_result = {"parsed": {"reply_text": "Допоможу підібрати розмір.", "controls": []},
                            "model": "gemini-test", "usage": {}, "meta": {"key": "test", "reasoning_task": "customer_chat"}}
@@ -230,9 +232,20 @@ class RequiredPolicyRuntimeTests(TestCase):
         self.assertTrue(result.valid)
         manifest = provider.call_args.kwargs["request_policy_manifest"]
         identity = f"instruction:{instruction.pk}"
-        self.assertEqual(manifest["required_ids"], [identity])
+        safety_identity = "approved_public:uk:unconfirmed_bases"
+        # The instruction selector owns its declared size module. The final
+        # compiler also reserves the canonical knowledge safety boundary.
+        self.assertEqual(manifest["required_ids"], [identity, safety_identity])
         self.assertEqual(manifest["instruction_selection"]["required_policy"]["required_ids"], [identity])
-        self.assertIn("Reviewed size guidance", provider.call_args.args[0]["system_instruction"]["parts"][0]["text"])
+        prompt = provider.call_args.args[0]["system_instruction"]["parts"][0]["text"]
+        for module_id, body in ((identity, instruction.body),
+                (safety_identity, approved_provider_fact_text("unconfirmed_bases", "uk"))):
+            self.assertIn(module_id, manifest["selected_ids"])
+            self.assertEqual(prompt.count(body), 1)
+        safety_lineage = next(module for module in manifest["knowledge_lineage"]["modules"]
+            if module["id"] == safety_identity)
+        self.assertTrue(safety_lineage["required"])
+        self.assertTrue(safety_lineage["consumed"])
         self.assertEqual(sanitize_request_policy_manifest(manifest), manifest)
 
     def test_draft_changes_do_not_change_capture_and_rollback_restores_declared_snapshot(self):

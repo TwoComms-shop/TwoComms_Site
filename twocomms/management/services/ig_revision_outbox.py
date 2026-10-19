@@ -212,12 +212,13 @@ def _normal_reply_window_deadline(revision):
 
 
 def revision_has_newer_source(revision):
-    """Durable ingress survives acknowledgement of its inbox work item."""
+    """Only a current inbound source can supersede an unanswered live turn."""
+    from management.services.ig_ingress_source_proof import newer_customer_sources
+
     source_ids = [item.get("message_id") for item in revision.bundle_snapshot.get("sources", ())
                   if isinstance(item, dict) and isinstance(item.get("message_id"), int)]
-    return bool(source_ids) and InstagramBotMessage.objects.filter(
-        client_id=revision.client_id, role=InstagramBotMessage.Role.USER,
-        pk__gt=max(source_ids),
+    return bool(source_ids) and newer_customer_sources(
+        revision.client_id, max(source_ids), namespace=_revision_namespace(revision),
     ).exists()
 
 
@@ -229,9 +230,10 @@ def revision_sources_current(revision):
     projections, so completing a bound image inspection does not stale a reply.
     """
     from management.services.ig_turn_revisions import _source_payload
+    from management.services.ig_ingress_source_proof import is_current_customer_source
 
     snapshots = (revision.bundle_snapshot or {}).get("sources") or []
-    rows = list(revision.sources.select_related("message").order_by("ordinal", "id"))
+    rows = list(revision.sources.select_related("message__client").order_by("ordinal", "id"))
     if not rows or len(rows) != revision.source_count or len(rows) != len(snapshots):
         return False
     try:
@@ -241,6 +243,7 @@ def revision_sources_current(revision):
             and source.ordinal == snapshot.get("ordinal")
             and source.source_digest == snapshot.get("source_digest")
             and source.message.client_id == revision.client_id
+            and is_current_customer_source(source.message, namespace=source.source_namespace)
             and _source_payload(source.message, previous=source, ordinal=source.ordinal)["source_digest"] == source.source_digest
             for source, snapshot in zip(rows, snapshots, strict=True)
         )

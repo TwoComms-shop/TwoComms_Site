@@ -31,6 +31,8 @@ REASON_CODES = (
     "unverified_paid_basket",
     "unverified_product_material",
     "unverified_product_quality",
+    "unverified_product_story",
+    "unverified_payment_policy",
 )
 
 CORRECTED_REQUIREMENT_RE = re.compile(
@@ -185,6 +187,8 @@ class ReplyTruthContext:
     full_payment_confirmed: bool | None = None
     shipping_authorities: tuple[ShippingAuthority, ...] = ()
     approved_product_assertions: tuple[dict, ...] = ()
+    # Public policy explanation is not a SKU price, payment mode or refund.
+    approved_payment_policy: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1096,14 +1100,103 @@ _PRODUCT_TEMPERATURE = re.compile(
 _PRODUCT_WASHES = re.compile(r"(?P<count>\d+)\s*\+?\s*(?:пран\w*|стир\w*|wash\w*)", re.I)
 _PRODUCT_OWNER = re.compile(r"засновник\w*|власник\w*|основател\w*|владел\w*|founder|owner", re.I)
 _PRODUCT_CARE = re.compile(r"догляд\w*|уход\w*|рекоменд\w*|recommended\s+care|care\s+guidance", re.I)
-_PRODUCT_UNSUPPORTED_QUALITY = re.compile(r"лаборатор\w*|laboratory|lab[- ]tested|найкращ\w*\s+в\s+україн\w*|лучш\w*\s+в\s+украин\w*|best\s+in\s+ukraine|вічн\w*|вечн\w*|eternal|ніколи\s+не\s+тріск\w*|никогда\s+не\s+треск\w*|never\s+cracks?|не\s+сіда\w*\s+(?:взагалі|зовсім)|вообще\s+не\s+сад\w*|never\s+shrinks?", re.I)
+_PRODUCT_UNSUPPORTED_QUALITY = re.compile(r"лаборатор\w*|laboratory|lab[- ]tested|найкращ\w*\s+в\s+україн\w*|лучш\w*\s+в\s+украин\w*|best\s+in\s+ukraine|вічн\w*|вечн\w*|eternal|ніколи\s+не\s+(?:тріск\w*|вицвіт\w*|вигор\w*|линя\w*)|никогда\s+не\s+(?:треск\w*|выцвет\w*|выгор\w*|линя\w*)|never\s+(?:cracks?|fades?|discolou?rs?)|(?:не\s+(?:вицвіт\w*|вигор\w*|линя\w*)\s+ніколи|не\s+(?:выцвет\w*|выгор\w*|линя\w*)\s+никогда)|не\s+сіда\w*\s+(?:взагалі|зовсім)|вообще\s+не\s+сад\w*|never\s+shrinks?", re.I)
 _PRODUCT_UNCERTAIN = re.compile(r"уточн\w*|перевір\w*|провер\w*|не\s+(?:зна\w*|підтвердж\w*|подтвержд\w*)|cannot\s+confirm|don't\s+know|do\s+not\s+know|will\s+check|i['’]ll\s+check|let\s+me\s+check", re.I)
+_DESIGN_STORY_SUBJECT = re.compile(r"\b(?:принт\w*|дизайн\w*|малюн\w*|рисунк\w*|ілюстрац\w*|иллюстрац\w*|prints?|designs?|artwork)\b", re.I)
+_DESIGN_STORY_CLAIM = re.compile(
+    r"створ(?:или|ив|ила|ено|ений|ена|ене|ені)\b|созда(?:ли|л|ла|но|н\w*)\b|"
+    r"намалюва(?:ли|в|ла)\b|намальован\w*|нарисова(?:ли|л|ла|н\w*)\b|присвяч\w*|посвящ\w*|натхнен\w*|вдохнов\w*|"
+    r"символ[іи]з\w*|означає\w*|означает\w*|пов['’]?язан\w*|связан\w*|позивн\w*|позывн\w*|"
+    r"\b(?:created|drawn|inspired|commemorates?|dedicated|symboli[sz]es?|represents?|means?|originated|callsign)\b|"
+    r"(?:історі\w*|истори\w*|story|origin)[^.!?]{0,50}(?:почал\w*|начал\w*|поход\w*|произош\w*|began|comes?\s+from)", re.I)
+
+
+def _approved_brand_originality(clause):
+    """Only the published general brand claim; no SKU/story identity grant."""
+    from management.services.approved_public_facts import approved_public_facts
+
+    normalized = _normalize(clause).rstrip(".!;")
+    for language in ("uk", "ru", "en"):
+        fact = next((row for row in approved_public_facts(language) if row.key == "brand_originality"), None)
+        if (fact is None or fact.scope != "public_brand_originality"
+            or fact.source_ref != "owner:2026-10-18:Q08"
+            or fact.version != "2026-10-18.owner-brand-originality.1"
+            or fact.review_status != "reviewed:owner-brief:2026-10-18"):
+            continue
+        if normalized in {_normalize(sentence).rstrip(".!;") for sentence in _claim_sentences(fact.public_text, ())}:
+            return True
+        # Finite equivalent wording for the same plural brand claim. Full
+        # matching excludes exact-print references, locations, causes, future
+        # collections, custom artwork, competitors and appended claims.
+        equivalent = {
+            "uk": r"наші (?:принти|дизайни) (?:створені|намальовані|розроблені) з нуля",
+            "ru": r"наши (?:принты|дизайны) (?:созданы|нарисованы|разработаны) с нуля",
+            "en": r"our (?:prints|designs) are (?:created|drawn|developed) from scratch",
+        }[language]
+        if re.fullmatch(equivalent, normalized, re.I):
+            return True
+    return False
+
+
+def _unverified_design_story(clause):
+    """A selected garment is not an exact reviewed design/artwork story."""
+    subjects = list(_DESIGN_STORY_SUBJECT.finditer(clause))
+    if not subjects:
+        return False
+    claims = list(_DESIGN_STORY_CLAIM.finditer(clause))
+    if not claims:
+        return False
+    # Generic hypothetical examples do not assert an origin for this SKU.
+    if (re.search(r"наприклад|например|for\s+example", clause, re.I)
+        and re.search(r"може|может|could|might|can\s+be", clause, re.I)
+        and not re.search(r"\b(?:цей|ця|цього|цієї|этот|эта|этого|этой|this|your)\b", clause, re.I)):
+        return False
+    for match in claims:
+        if _product_claim_negated(clause, match.start()):
+            continue
+        if re.fullmatch(r"означає\w*|означает\w*|means?", match.group(), re.I):
+            preceding = [subject for subject in subjects if subject.end() <= match.start()]
+            if not preceding or re.search(r"\b(?:regular|classic|oversize|крій|крою|крой|розмір\w*|размер\w*|fit|cut|size)\b",
+                clause[preceding[-1].end():match.start()], re.I):
+                continue
+        return True
+    return False
+_PRODUCT_PERCENT_UNIT = r"(?:%|відсот\w*|процент\w*|percent(?:age)?|per\s+cent)"
+_PRODUCT_PURITY = re.compile(
+    r"\b(?:повністю|цілком|виключно|полностью|целиком|исключительно|стовідсот\w*|"
+    r"стопроцент\w*|entirely|wholly)\b|"
+    r"\b(?:сто\s+(?:відсот\w*|процент\w*)|one\s+hundred\s+(?:percent|per\s+cent))\b|"
+    r"\b(?:без\s+(?:доміш\w*|примес\w*|синтетик\w*)|without\s+(?:any\s+)?(?:additives|admixtures|synthetics))\b",
+    re.I)
+
+
+def _product_fiber_amount(clause, fiber_match):
+    """Interpret customer-facing percentages and purity against one fiber."""
+    before, after = clause[:fiber_match.start()], clause[fiber_match.end():]
+    amount = re.search(rf"(?<!\w)(\d{{1,3}}(?:[.,]\d+)?)\s*{_PRODUCT_PERCENT_UNIT}\s*(?:\w+\s+)?$", before, re.I)
+    if amount is None:
+        amount = re.match(rf"\W*(?:(?:становить|складає|составляет|is)\s+)?(\d{{1,3}}(?:[.,]\d+)?)\s*{_PRODUCT_PERCENT_UNIT}", after, re.I)
+    if amount is not None:
+        return _decimal(amount.group(1))
+    exclusive = re.search(r"\b(?:all|only|pure|чист(?:а|ий|ої|ого|ая|ый|ой))(?:[-\s]+(?:natural|organic|натуральн\w*))?[-\s]+$", before, re.I)
+    if exclusive is not None and not _product_claim_negated(clause, exclusive.start()):
+        return Decimal("100")
+    if re.match(r"\s+(?:only|is\s+pure)\b", after, re.I):
+        return Decimal("100")
+    # A purity promise is an effective 100% claim. Keep its own negation,
+    # rather than allowing 'not pure cotton' to acquire a positive promise.
+    nearby = clause[max(0, fiber_match.start() - 50):fiber_match.end() + 50]
+    offset = max(0, fiber_match.start() - 50)
+    if any(not _product_claim_negated(clause, offset + match.start())
+           for match in _PRODUCT_PURITY.finditer(nearby)):
+        return Decimal("100")
+    return None
 
 
 def _product_claim_negated(clause, start):
     before = clause[max(0, start - 70):start]
     return (_locally_negated(clause, start) or bool(re.search(
-        r"\b(?:не|not|no|without)\s+(?:(?:з|із|из|from|made|sewn|пошит\w*|сшит\w*|виготовлен\w*)\s+)?(?:\d{1,3}\s*%\s*)?$",
+        rf"\b(?:не|not|no|without)\s+(?:(?:з|із|из|from|made|sewn|пошит\w*|сшит\w*|виготовлен\w*)\s+)?(?:\d{{1,3}}(?:[.,]\d+)?\s*{_PRODUCT_PERCENT_UNIT}\s*)?$",
         before, re.I)))
 
 
@@ -1146,6 +1239,11 @@ def validate_approved_product_claims(reply_text, assertions=(), *, quoted_data=(
                 and not re.search(r"(?:\b\d+\s*%|\b(?:зроблен\w*|сделан\w*|made|is|are|з|из)\b)", clause, re.I)
                 and not any(pattern.search(clause) for pattern in _PRODUCT_FIBERS.values())):
                 continue
+            # Current editorial story leads have no reviewed design/version
+            # identity. Neither a SKU/base proof nor a similar photo supplies
+            # it. Add an exact publication capability before granting stories.
+            if _unverified_design_story(clause) and not _approved_brand_originality(clause):
+                return "unverified_product_story"
             allowed = _product_statement_assertions(clause, sentence_allowed, inherit_category=True)
             if any(row.get("scope_kind") == "current_category" and row.get("garment") == "hoodie"
                    and "current_hoodie_audience" in row.get("fact_keys", ()) for row in allowed):
@@ -1156,10 +1254,8 @@ def validate_approved_product_claims(reply_text, assertions=(), *, quoted_data=(
                 for match in pattern.finditer(clause):
                     if _product_claim_negated(clause, match.start()):
                         continue
-                    amount = re.search(r"(\d{1,3})\s*%\s*(?:\w+\s+){0,1}$", clause[:match.start()])
-                    if amount is None:
-                        amount = re.match(r"\W*(\d{1,3})\s*%", clause[match.end():])
-                    if not any(any(pair[1] == fiber and (amount is None or pair[0] == int(amount.group(1)))
+                    amount = _product_fiber_amount(clause, match)
+                    if not any(any(pair[1] == fiber and (amount is None or pair[0] == amount)
                                    for pair in row.get("composition", ())) for row in allowed):
                         return "unverified_product_material"
             for match in _PRODUCT_DENSITY.finditer(clause):
@@ -1236,9 +1332,8 @@ def approved_product_assertion_covered(reply_text, assertion, *, topic=None):
         return bool(re.search(r"regular|classic|класич\w*|классичес\w*", text, re.I)
                     and re.search(r"oversize|оверсайз\w*", text, re.I))
     if topic == "composition":
-        return all(any(re.search(rf"\b{amount}\s*%\s*(?:\w+\s+)?(?:{pattern.pattern})", clause, re.I)
-                       or re.search(rf"(?:{pattern.pattern})\W*{amount}\s*%", clause, re.I)
-                       for clause in clauses)
+        return all(any(_product_fiber_amount(clause, match) == amount
+                       for clause in clauses for match in pattern.finditer(clause))
                    for amount, fiber in assertion["composition"] for pattern in (_PRODUCT_FIBERS[fiber],))
     if topic == "density":
         return any(int(match.group("gsm")) in assertion.get("allowed_gsm", [assertion["gsm"]]) for match in _PRODUCT_DENSITY.finditer(text))
@@ -1248,6 +1343,51 @@ def approved_product_assertion_covered(reply_text, assertion, *, topic=None):
         return bool(_PRODUCT_TEMPERATURE.search(text) and _PRODUCT_CARE.search(text))
     if topic == "quality":
         return bool(_PRODUCT_WASHES.search(text) and _PRODUCT_OWNER.search(text) and _PRODUCT_CARE.search(text))
+    return False
+
+
+def _approved_payment_policy_sentences(context):
+    """Re-resolve a bounded reviewed proof; public prose grants no price right."""
+    import hashlib
+    from management.services.approved_public_facts import approved_public_facts
+
+    proofs = context.approved_payment_policy
+    if not isinstance(proofs, (tuple, list)) or len(proofs) > 3:
+        return frozenset()
+    sentences = set()
+    for proof in proofs:
+        if (not isinstance(proof, (tuple, list)) or len(proof) != 3
+            or not all(isinstance(value, str) for value in proof)):
+            continue
+        language, version, digest = proof
+        if language not in {"uk", "ru", "en"}:
+            continue
+        fact = next((row for row in approved_public_facts(language) if row.key == "payment_boundary"), None)
+        if (fact is None or not fact.review_status.startswith("reviewed:") or fact.version != version
+            or hashlib.sha256(fact.public_text.encode()).hexdigest() != digest):
+            continue
+        sentences.update(_normalize(sentence) for sentence in _claim_sentences(fact.public_text, ()))
+    return frozenset(sentences)
+
+
+def _unverified_deposit_refund(sentence, reply_text):
+    """Ordinary refusal cannot turn the retained deposit into a refund claim."""
+    deposit = re.search(r"передоплат\w*|предоплат\w*|\b(?:deposit|prepayment)\b", reply_text, re.I)
+    if not deposit:
+        return False
+    service_review = (re.search(r"брак|дефект|помилк\w*\s+магазин\w*|ошибк\w*\s+магазин\w*|defect|store\s+error", sentence, re.I)
+        and re.search(r"розгляд\w*|рассмотр\w*|перевір\w*|провер\w*|review|check", sentence, re.I))
+    if service_review:
+        return False
+    refund_subject = re.search(r"передоплат\w*|предоплат\w*|\b(?:deposit|prepayment)\b|\b200\b|"
+        r"(?:звичайн\w*|обычн\w*)[^.!?]{0,25}(?:відмов\w*|отказ\w*)|ordinary\s+refusal", sentence, re.I)
+    if refund_subject:
+        for match in re.finditer(r"поверта\w*|поверне\w*|возвращ\w*|верн[её]\w*|\b(?:refund\w*|return(?:ed|s)?(?:\s+(?:to\s+you|the\s+deposit))?)\b", sentence, re.I):
+            if not _product_claim_negated(sentence, match.start()):
+                return True
+    for match in re.finditer(r"(?:лише|тільки|только|only|just)[^.!?;]{0,45}(?:достав\w*|shipping)|нічого\s+не\s+втрач\w*|ничего\s+не\s+теря\w*|lose\s+nothing", sentence, re.I):
+        if not _product_claim_negated(sentence, match.start()):
+            return True
     return False
 
 
@@ -1287,7 +1427,12 @@ def validate_reply_truth(
     discount_percents = {_decimal(value) for value in context.authorized_discount_percents}
     discount_amounts = {_decimal(value) for value in context.authorized_discount_amounts}
 
+    policy_sentences = _approved_payment_policy_sentences(context)
     for sentence in _claim_sentences(reply_text, context.quoted_data):
+        if _normalize(sentence) in policy_sentences:
+            continue
+        if _unverified_deposit_refund(sentence, reply_text):
+            _add(reasons, "unverified_payment_policy")
         if not _shipping_claims_verified(sentence, context):
             _add(reasons, "unverified_shipping")
         if not _checkout_basket_verified(sentence, context):

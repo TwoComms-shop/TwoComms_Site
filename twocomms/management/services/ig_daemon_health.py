@@ -160,6 +160,7 @@ def _unhandled_technical_debt_cases(cases: list[dict]) -> list[dict]:
 
 
 _DEBT_LABELS = {
+    "unanswered_customer_obligation": "Клієнтський запит залишається без відповіді",
     "canonical_delivery_incomplete": "Частину відповіді не відправлено",
     "canonical_delivery_unknown": "Результат відправлення потребує звірки",
     "legacy_send_unknown": "Результат попереднього відправлення потребує звірки",
@@ -183,12 +184,17 @@ def technical_debt_alert_decision(technical_debt):
     """One durable notification per unhandled observation, without time buckets."""
     from management.services.ig_alerts import format_alert, management_base_url
 
-    cases = _unhandled_technical_debt_cases(technical_debt.get("cases") or [])
+    cases = _unhandled_technical_debt_cases([
+        case for case in technical_debt.get("cases") or []
+        if not (case.get("reason") == "unanswered_customer_obligation"
+                and case.get("manager_notification_recorded"))
+    ])
     if not cases:
         return None
     fingerprint = technical_debt_fingerprint(cases)
     total = sum(int(row.get("count") or 0) for row in cases)
     facts = [f"{_DEBT_LABELS.get(row.get('reason'), 'Потрібна технічна перевірка')}: {int(row.get('count') or 0)}"
+             + (f"; запит #{row['revision_id']}, задача #{row['task_id']}" if row.get("revision_id") and row.get("task_id") else "")
              for row in cases[:8]]
     return {
         "dedupe_key": f"ig_technical_debt:{fingerprint}",
@@ -206,7 +212,13 @@ def technical_debt_alert_decision(technical_debt):
                 {"reason": str(row.get("reason") or "")[:64],
                  "scope": str(row.get("scope") or "")[:64],
                  "count": int(row.get("count") or 0),
-                 "oldest_age_seconds": row.get("oldest_age_seconds")}
+                 "oldest_age_seconds": row.get("oldest_age_seconds"),
+                 **({"revision_id": row["revision_id"], "task_id": row["task_id"],
+                     "source_message_ids": row.get("sample_ids", []),
+                     "customer_ack_owed": row.get("customer_ack_owed"),
+                     "substantive_owed": row.get("substantive_owed"),
+                     "manager_informed": row.get("manager_informed")}
+                    if row.get("reason") == "unanswered_customer_obligation" else {})}
                 for row in cases[:20]
             ],
             "technical_debt_coverage_complete": bool(technical_debt.get("coverage_complete")),
@@ -228,7 +240,7 @@ def revalidate_technical_debt_notification(notification_id, *, snapshot=None, no
 
     now = now or timezone.now()
     snapshot = technical_debt_snapshot(now=now) if snapshot is None else snapshot
-    decision = technical_debt_alert_decision(snapshot) if snapshot.get("coverage_complete") else None
+    decision = technical_debt_alert_decision(snapshot)
     with transaction.atomic():
         row = IgBotNotification.objects.select_for_update().filter(
             pk=notification_id, event_type="ig_technical_debt",
@@ -237,15 +249,15 @@ def revalidate_technical_debt_notification(notification_id, *, snapshot=None, no
         if row is None:
             return False
         payload = row.payload if isinstance(row.payload, dict) else {}
+        if decision and row.dedupe_key == decision["dedupe_key"] and payload.get("technical_debt_alert_policy_version") == DEBT_ALERT_POLICY_VERSION:
+            row.payload = {**payload, **decision["metadata"], "text": decision["text"]}
+            row.save(update_fields=["payload", "updated_at"])
+            return row.status in {"pending", "failed"}
         if not snapshot.get("coverage_complete"):
             if row.status in {"pending", "failed"}:
                 row.next_attempt_at = now + timedelta(minutes=5)
             row.save(update_fields=["next_attempt_at", "updated_at"])
             return False
-        if decision and row.dedupe_key == decision["dedupe_key"] and payload.get("technical_debt_alert_policy_version") == DEBT_ALERT_POLICY_VERSION:
-            row.payload = {**payload, **decision["metadata"], "text": decision["text"]}
-            row.save(update_fields=["payload", "updated_at"])
-            return row.status in {"pending", "failed"}
         resolution = "debt_alert_obsolete" if decision else "debt_alert_recovered"
         before = row.status
         row.status = IgBotNotification.Status.RESOLVED

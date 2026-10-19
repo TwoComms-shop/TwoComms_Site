@@ -1243,6 +1243,15 @@ def build_reply_truth_context(
     elif fulfillment_status == "reviewed":
         _append_unique(evidence, "manager_reviewed_fulfillment_timing")
 
+    # Reviewed explanation is a separate, reproducible policy proof. Its money
+    # never becomes a catalogue price, payment receipt or checkout capability.
+    from management.services.approved_public_facts import (
+        approved_public_facts, SUPPORTED_PUBLIC_FACT_LANGUAGES,
+    )
+    payment_policy = tuple((language, fact.version, hashlib.sha256(fact.public_text.encode()).hexdigest())
+        for language in SUPPORTED_PUBLIC_FACT_LANGUAGES for fact in approved_public_facts(language)
+        if fact.key == "payment_boundary" and fact.review_status.startswith("reviewed:"))
+
     return AuthorityReplyTruthContext(
         authorized_prices=tuple(prices),
         authorized_price_ranges=tuple(ranges),
@@ -1269,6 +1278,7 @@ def build_reply_truth_context(
         authorized_actions=(),
         conversation_amounts=conversation_amounts,
         agreement_choices=agreement_choices,
+        approved_payment_policy=payment_policy,
         readiness_gaps=tuple(gaps),
         evidence_codes=tuple(evidence),
     )

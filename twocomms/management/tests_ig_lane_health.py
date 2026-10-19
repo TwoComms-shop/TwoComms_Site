@@ -104,23 +104,23 @@ class OperationalLaneHealthTests(TestCase):
         self.assertEqual(lane["attention_total"], 0)
         self.assertTrue(lane["healthy"])
 
-    def test_expired_revision_requires_real_manual_owner(self):
+    def test_expired_revision_stays_attention_after_internal_task_creation(self):
         _source, revision = self.revision(age=3600)
         self.assertFalse(self.snapshot()["healthy"])
         record_reply_debt(revision, "provider_candidates_exhausted", now=self.now)
         result = self.snapshot()
-        self.assertTrue(result["healthy"], result)
-        self.assertEqual(result["lanes"]["customer_revisions"]["counts"]["manual"], 1)
+        self.assertFalse(result["healthy"], result)
+        self.assertEqual(result["lanes"]["customer_revisions"]["counts"]["attention"], 1)
 
     def test_reviewed_no_reply_cancellation_remains_manual_owned(self):
+        from django.contrib.auth import get_user_model
+        from management.services.ig_response_debt import review_reply_debt
+
         _source, revision = self.revision(age=3600)
         task = record_reply_debt(revision, "provider_candidates_exhausted", now=self.now)
-        task.manager_context = {
-            **task.manager_context,
-            "operator_review": {"outcome": "reviewed_no_reply", "reply_confirmed": False},
-        }
-        task.status = IgFollowUpTask.Status.CANCELLED
-        task.save(update_fields=["manager_context", "status", "updated_at"])
+        actor = get_user_model().objects.create_user(username="exact-review-owner")
+        self.assertTrue(review_reply_debt(revision.client_id, task.pk, actor=actor,
+            expected_revision_id=revision.pk, now=self.now)["ok"])
 
         result = self.snapshot()
         lane = result["lanes"]["customer_revisions"]

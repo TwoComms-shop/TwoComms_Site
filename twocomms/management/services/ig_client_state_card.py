@@ -759,6 +759,9 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
                 if name not in {"freshness", "source_watermark", "mandatory", "capture_scope", "scope_status"}
                 and not (name in {"applicability", "availability"} and value == "unknown")
                 and not (name in {"conflict", "superseded_by"} and value is None)}}
+            if key == "fulfillment.review":
+                from management.services.ig_fulfillment_context import fulfillment_prompt_value
+                projected["value"] = fulfillment_prompt_value(slot["value"])
         block = _json(projected)
         (mandatory if slot["mandatory"] else optional).append((key, block))
     if cart.get("status") == "captured":

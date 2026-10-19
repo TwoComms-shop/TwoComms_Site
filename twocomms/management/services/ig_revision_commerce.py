@@ -14,6 +14,7 @@ from management.models import (
 )
 from management.services.ig_revision_outbox import _digest
 from management.services.ig_commerce_source_identity import resolve_source_product_request
+from management.services.ig_ingress_source_proof import is_current_customer_source
 
 
 RECEIPT_KEY = "commerce_reduction"
@@ -108,7 +109,7 @@ def _decision_metadata(decision, source_digest):
 
 
 def reduce_inbound_commerce_source(client, source, *, expected_provider_namespace=None):
-    """Admit one accepted webhook source inside its existing client transaction.
+    """Admit one accepted live source inside its existing client transaction.
 
     The caller holds the client/settings locks. This adds no delivery authority
     and uses the same source decision that later sealed revisions reference.
@@ -119,9 +120,9 @@ def reduce_inbound_commerce_source(client, source, *, expected_provider_namespac
     from management.services.ig_commerce_state import apply_turn, CommerceNonMutation
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     current = IgClient.objects.select_for_update().filter(pk=client.pk).first()
-    owned = InstagramBotMessage.objects.select_for_update().filter(pk=source.pk,
-        client_id=client.pk, sender_id=client.igsid, role="user", source="webhook").first()
-    if current is None or owned is None:
+    owned = InstagramBotMessage.objects.select_for_update().select_related("client").filter(pk=source.pk,
+        client_id=client.pk, sender_id=client.igsid, role="user").first()
+    if current is None or not is_current_customer_source(owned, namespace=expected_provider_namespace):
         return RevisionCommerceResult(reason="commerce_source_owner_changed")
     if not owned.provider_namespace or (expected_provider_namespace is not None and owned.provider_namespace != expected_provider_namespace):
         return RevisionCommerceResult(reason="commerce_source_namespace_changed")
@@ -210,11 +211,12 @@ def _has_owned_repeat_boundary(client, revision):
         return False
     ids = {row.get("message_id") for row in revision.bundle_snapshot.get("sources") or []}
     boundaries = set(episode.repeat_evidence_message_ids or []) & ids
-    return bool(boundaries) and IgCommerceTurnDecision.objects.filter(
+    decisions = IgCommerceTurnDecision.objects.select_related("source_message__client").filter(
         source_message_id__in=boundaries, session__commercial_episode=episode,
         accepted=True, is_stale=False, request_payload__new_purchase_requested=True,
         source_message__client=client, source_message__sender_id=client.igsid,
-        source_message__role="user", source_message__source="webhook").exists()
+        source_message__role="user")
+    return bool(boundaries) and any(is_current_customer_source(row.source_message) for row in decisions)
 
 
 def _apply_source_language(client, source, *, origin):
@@ -244,10 +246,10 @@ def _validated_sealed_source(client, revision, snapshot):
         message_id=snapshot.get("message_id"), ordinal=snapshot.get("ordinal"),
         source_digest=snapshot.get("source_digest")).exists():
         raise _Blocked("commerce_source_digest_invalid")
-    source = InstagramBotMessage.objects.select_for_update().filter(
+    source = InstagramBotMessage.objects.select_for_update().select_related("client").filter(
         pk=snapshot.get("message_id"), client=client, sender_id=client.igsid,
-        role="user", source="webhook").first()
-    if source is None or any((
+        role="user").first()
+    if not is_current_customer_source(source, namespace=snapshot.get("source_namespace")) or any((
         source.text != snapshot.get("text"),
         source.quick_reply_payload != snapshot.get("quick_reply_payload"),
         source.reply_to_provider_message_id != snapshot.get("reply_to_provider_message_id"),
@@ -419,7 +421,9 @@ def synchronize_selected_session(client, *, source_message_id=None):
     keys = ("product_id", "size", "color", "quantity", "fit_option_code", "color_variant_id", "option_values", "pay_type")
     if all(current.get(key) == selected.get(key) or (current.get(key) in (None, "") and selected.get(key) in (None, "")) for key in keys):
         return {"session_id": session.pk, "before": before, "after": before}
-    source = InstagramBotMessage.objects.select_for_update().filter(pk=source_message_id, client=client, sender_id=client.igsid, role="user", source="webhook").first()
+    source = InstagramBotMessage.objects.select_for_update().select_related("client").filter(pk=source_message_id, client=client, sender_id=client.igsid, role="user").first()
+    if not is_current_customer_source(source):
+        source = None
     existing = IgCommerceTurnDecision.objects.filter(source_message=source).first() if source else None
     prior_action = IgCommerceSelectionTransition.objects.filter(source_message=source, action="selection_authorized").first() if source else None
     if (source is None or prior_action is not None

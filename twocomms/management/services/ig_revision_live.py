@@ -88,6 +88,9 @@ def _start_revision_presence_advisory(revision, token, settings_row, scope, *, p
     state = revision.State.PREPARING if preparing else revision.State.CLAIMED
 
     def current_owner():
+        from management.services.ig_ingress_source_proof import presence_source_current
+        from management.services.ig_revision_outbox import _revision_namespace
+
         now = timezone.now()
         query = IgCustomerTurnRevision.objects.filter(
             pk=revision.pk, client_id=revision.client_id, active_slot=1,
@@ -97,7 +100,8 @@ def _start_revision_presence_advisory(revision, token, settings_row, scope, *, p
             query = query.filter(recovery_state="manual")
         else:
             query = query.filter(Q(overall_deadline__gt=now) | Q(recovery_state="execution"))
-        return query.exists()
+        return query.exists() and presence_source_current(
+            _revision_namespace(revision), revision.client_id, revision.client.igsid, watermark)
 
     def completed_owner():
         from management.services.ig_revision_outbox import revision_has_newer_source
@@ -322,10 +326,16 @@ def capture_revision_source(*, message_id, deadline_at, remaining_seconds,
     if remaining_seconds <= 0 or deadline_at <= timezone.now():
         return
     row = InstagramBotMessage.objects.select_related("client").filter(
-        pk=message_id, role=InstagramBotMessage.Role.USER, source="webhook",
+        pk=message_id, role=InstagramBotMessage.Role.USER,
         client__privacy_erasure_started_at__isnull=True,
     ).first()
-    if row is None:
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+
+    if row is None or not is_current_customer_source(row):
+        return
+    # Poll proof admits current text to the canonical reducer, not media byte
+    # recapture. Richer webhook delivery retains ownership of that operation.
+    if row.source == "poll":
         return
     from management.services.instagram_bot import _capture_message_media
 
@@ -347,9 +357,11 @@ def capture_revision_source(*, message_id, deadline_at, remaining_seconds,
                 or client.privacy_erasure_started_at is not None or _active_opt_out(client)):
                 return False
             ids = list(owner.sources.values_list("message_id", flat=True))
-            return bool(message_id in ids and ids and not InstagramBotMessage.objects.filter(
-                client_id=owner.client_id, role="user", pk__gt=max(ids),
-            ).exists())
+            from management.services.ig_ingress_source_proof import newer_customer_sources
+            from management.services.ig_revision_outbox import _revision_namespace
+
+            return bool(message_id in ids and ids and not newer_customer_sources(
+                owner.client_id, max(ids), namespace=_revision_namespace(owner)).exists())
 
         if not still_owned():
             return
@@ -1078,6 +1090,7 @@ def _revision_media_reply_sources(revision, client):
     """Fresh owned source rows, never a changed or historical caption."""
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     from management.services.ig_turn_revisions import _source_payload
+    from management.services.ig_ingress_source_proof import is_current_customer_source
 
     floor = conversation_route_reset_floor(client.pk)
     snapshots = {row["message_id"]: row for row in revision.bundle_snapshot.get("sources", ())}
@@ -1085,7 +1098,8 @@ def _revision_media_reply_sources(revision, client):
     for source in revision.sources.select_related("message").order_by("ordinal", "id"):
         row, snapshot = source.message, snapshots.get(source.message_id)
         if (snapshot is None or row.client_id != client.pk or row.pk < floor
-            or row.role != "user" or row.source != "webhook" or row.sender_id != client.igsid
+            or row.role != "user" or not is_current_customer_source(row, namespace=source.source_namespace)
+            or row.sender_id != client.igsid
             or row.provider_namespace != source.source_namespace
             or snapshot.get("source_digest") != source.source_digest):
             continue
@@ -2125,6 +2139,21 @@ def execute_claimed_revision(revision_id, token, settings_row, *, presence_scope
         _PRESENCE_SCOPE.reset(context_token)
 
 
+def _park_policy_fault_ack(revision_id, token, reason):
+    """Keep failed finite acknowledgement debt; never rewrite its send ledger."""
+    from management.services.ig_response_debt import park_manual_revision
+
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(
+            pk=revision_id, claim_token=token).first()
+        if client is not None and revision is not None:
+            park_manual_revision(revision, f"policy_fault_ack_{reason}"[:100])
+
+
 def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveResult:
     """Execute an explicitly claimed revision; never delegates to legacy sends."""
     if connection.in_atomic_block:
@@ -2205,13 +2234,26 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     )
     if not cancelled_timers.ready:
         return RevisionLiveResult(revision_id, "blocked", (cancelled_timers.reason,))
-    if input_decision.origin == "no_reply":
-        if input_decision.reason == "rate_limited":
-            from management.services.ig_revision_intents import ensure_revision_rate_alert
+    if input_decision.reason == "rate_limited":
+        from management.services.ig_revision_rate_handoff import record_rate_handoff, park_rate_handoff
 
-            notification = ensure_revision_rate_alert(revision.pk, token, settings_id=settings_row.pk)
-            if not notification.ready:
-                return RevisionLiveResult(revision_id, "blocked", (notification.reason,))
+        handoff = record_rate_handoff(revision.pk, token, settings_id=settings_row.pk,
+            automation_lease_token=(_PRESENCE_SCOPE.get() or {}).get("lease", ""))
+        if not handoff.ready:
+            return RevisionLiveResult(revision_id, "blocked", (handoff.reason,))
+        if handoff.origin == "technical_holding":
+            try:
+                outcome = _execute_deterministic_input(revision, token, settings_row, handoff.receipt)
+            finally:
+                with transaction.atomic():
+                    IgClient.objects.select_for_update().get(pk=revision.client_id)
+                    current = IgCustomerTurnRevision.objects.select_for_update().filter(
+                        pk=revision.pk, claim_token=token).first()
+                    if current is not None:
+                        park_rate_handoff(current)
+            return outcome
+        return RevisionLiveResult(revision_id, "delivery_pending", (handoff.reason,))
+    if input_decision.origin == "no_reply":
         consumed = complete_no_reply_input(revision.pk, token)
         return RevisionLiveResult(revision_id, "completed" if consumed else "blocked", (input_decision.reason,))
     _start_revision_presence(revision, token, settings_row, _PRESENCE_SCOPE.get())
@@ -2357,8 +2399,27 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
                 recorded = record_policy_readiness_failure(
                     revision.pk, token, settings_id=settings_row.pk,
                     settings_permission_epoch=boundary.settings_epoch, publication=publication,
-                    code=policy_failure["code"], details=policy_failure.get("details"),
+                    code=policy_failure["code"], details=policy_failure.get("details"), park=False,
                 )
+                if recorded.ready:
+                    from management.services.ig_revision_holding import record_policy_fault_ack
+
+                    acknowledgement = record_policy_fault_ack(revision.pk, token, settings_id=settings_row.pk)
+                    if acknowledgement.ready:
+                        try:
+                            outcome = _execute_deterministic_input(revision, token, settings_row, acknowledgement.receipt)
+                        except Exception:
+                            _park_policy_fault_ack(revision.pk, token, "execution_exception")
+                            raise
+                        if outcome.state != "completed":
+                            _park_policy_fault_ack(revision.pk, token,
+                                outcome.reasons[0] if outcome.reasons else outcome.state)
+                        return outcome
+                    recorded = record_policy_readiness_failure(
+                        revision.pk, token, settings_id=settings_row.pk,
+                        settings_permission_epoch=boundary.settings_epoch, publication=publication,
+                        code=policy_failure["code"], details=policy_failure.get("details"),
+                    )
                 return RevisionLiveResult(revision_id, "blocked", reasons if recorded.ready else
                     tuple(dict.fromkeys((*reasons, recorded.reason))))
             from management.services.ig_revision_input import record_source_preference_fallback
@@ -2581,7 +2642,10 @@ def _log_revision_blocked(revision_id, client_id, outcome, *, event="revision_ex
 def process_pending_revisions(settings_row, *, max_items=15, create_new=True) -> int:
     """Bounded optional worker; flag rollback only resumes canonical effects."""
     from management.services import instagram_bot as bot
-    from management.services.ig_revision_execution import due_revision_ids, prepare_revision, expired_revision_debt_ids, record_expired_revision_debt
+    from management.services.ig_revision_execution import (
+        available_client_automation_q, due_revision_ids, prepare_revision,
+        expired_revision_debt_ids, record_expired_revision_debt,
+    )
 
     limit = max(0, min(int(max_items), 50))
     if not limit or connection.in_atomic_block:
@@ -2652,34 +2716,43 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
     if recover_new:
         from management.services.ig_revision_recovery import due_recovery_revision_ids, prepare_outage_recovery
 
+        # Permission-invalid jobs must settle even when client lease admission
+        # refuses them. This producer can cancel/park, never mint a new lifetime.
         for revision_id in due_recovery_revision_ids(limit=limit):
-            recovery = prepare_outage_recovery(revision_id)
+            recovery = prepare_outage_recovery(revision_id, classify_only=True)
             if recovery.state == "manual":
-                record_expired_revision_debt(
-                    revision_id,
-                    cutover_at=rollout.cutover_at if create_new else None,
-                )
+                record_expired_revision_debt(revision_id, cutover_at=rollout.cutover_at)
     from management.services.ig_revision_commerce import source_producer_owned_q
 
+    candidate_now = timezone.now()
     candidates = list(IgCustomerTurnRevision.objects.filter(
-        state=IgCustomerTurnRevision.State.CLAIMED, lease_until__lte=timezone.now(),
-    ).filter(Q(overall_deadline__gt=timezone.now()) | Q(recovery_state="execution"))
+        state=IgCustomerTurnRevision.State.CLAIMED, lease_until__lte=candidate_now,
+    ).filter(Q(overall_deadline__gt=candidate_now) | Q(recovery_state="execution"))
+        .filter(available_client_automation_q(now=candidate_now))
         .exclude(claim_token__startswith="finalize:").exclude(claim_token__startswith="debt:")
         .filter(Q(delivery_effects__isnull=False) | (Q(active_slot=1) if create_new else (
             Q(active_slot=1) & source_producer_owned_q())))
         .order_by("lease_until", "id").values_list("id", flat=True).distinct()[:limit])
     if create_new:
-        from management.services.ig_revision_recovery import due_preparation_recovery_ids
-        candidates.extend(due_preparation_recovery_ids(limit=limit))
+        from management.services.ig_revision_recovery import due_preparation_recovery_ids, due_recovery_revision_ids
+        candidates.extend(due_preparation_recovery_ids(limit=limit, available_only=True))
+        candidates.extend(due_recovery_revision_ids(limit=limit, available_only=True))
         candidates.extend(due_revision_ids(limit=limit, cutover_at=rollout.cutover_at))
     else:
         # Intake already admitted these sources to the revision reducer. Finish
         # that owner across rollback even when preparation has not started yet.
         candidates.extend(due_revision_ids(limit=limit, source_producer_only=True))
-    for revision_id in list(dict.fromkeys(candidates))[:max(0, limit - handled)]:
+    # Merge bounded lanes by source age instead of allowing a full stale lane
+    # to hide every fresh head. Recheck availability before the combined LIMIT;
+    # the exact lease CAS below remains the concurrency authority.
+    candidates = list(IgCustomerTurnRevision.objects.filter(pk__in=candidates)
+        .filter(available_client_automation_q(now=timezone.now()))
+        .order_by("quiet_deadline", "id").values_list("pk", flat=True)[:max(0, limit - handled)])
+    for revision_id in candidates:
         if bot.maintenance_status()["active"]:
             break
-        identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id", "state").first()
+        identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values(
+            "client_id", "state", "recovery_state", "recovery_code").first()
         if not identity:
             continue
         client, lease = bot.acquire_client_automation_lease(identity["client_id"])
@@ -2687,6 +2760,22 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
             continue
         presence_scope = {"lease": lease, "handle": None}
         try:
+            if create_new and (identity["recovery_state"] == "waiting"
+                and identity["recovery_code"] != "preparation_recovery_due"
+                or identity["recovery_state"] == "manual"
+                and identity["recovery_code"] == "recovery_existing_proposal_requires_execution"):
+                from management.services.ig_revision_recovery import prepare_outage_recovery
+
+                recovery = prepare_outage_recovery(revision_id, automation_lease_token=lease)
+                if recovery.state == "spawned" and recovery.child_id:
+                    revision_id = recovery.child_id
+                    identity = {**identity, "state": IgCustomerTurnRevision.State.SEALED}
+                elif recovery.state == "execution":
+                    identity = {**identity, "state": IgCustomerTurnRevision.State.CLAIMED}
+                else:
+                    if recovery.state == "manual":
+                        record_expired_revision_debt(revision_id, cutover_at=rollout.cutover_at)
+                    continue
             # An unstarted job receives its one fresh preparation window only
             # when this worker owns its client lease and can actually run it.
             if create_new and identity["state"] in {IgCustomerTurnRevision.State.COLLECTING, IgCustomerTurnRevision.State.PREPARING}:

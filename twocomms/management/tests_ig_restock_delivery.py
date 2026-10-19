@@ -1,6 +1,7 @@
 """Native restock dispatch cannot borrow consent, stock or future capability."""
 from datetime import timedelta
 import json
+from unittest import skipUnless
 from unittest.mock import patch
 
 from django.db import connection, transaction, OperationalError, IntegrityError
@@ -268,6 +269,7 @@ class NativeRestockDeliveryTests(_RestockFixture, TransactionTestCase):
         count, physical = self.dispatch(task, before_http=reset)
         self.assertEqual((count, physical), (0, []))
 
+    @skipUnless(connection.vendor == "mysql", "Physical migration guard verification requires disposable native MariaDB")
     def test_ninety_day_subscription_expiry_cannot_be_extended_by_runtime_cache(self):
         inv, subscription, task = self.event()
         expected = OperationalError if connection.vendor == "mysql" else IntegrityError

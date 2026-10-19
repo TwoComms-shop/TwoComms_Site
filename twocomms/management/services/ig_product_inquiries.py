@@ -22,6 +22,8 @@ _SPEC = re.compile(r"фурн[іи]тур\w*|люверс\w*|резинк\w*|м�
 _NEGATED = re.compile(r"\b(?:не|ні|not|no|без|without)(?:\s+(?:хочу|want|need|потріб\w*|нуж\w*|цвет|колір|color)){0,2}\s*$|\binstead\s+of\s*$", re.I)
 _SPEC_ASSERTION = re.compile(r"метал\w*|\bmetal\w*\b|пластик\w*|\bplastic\b|хлоп\w*|бавовн\w*|\bcotton\b|поліестер\w*|полиэстер\w*|\bpolyester\b|\b\d{1,3}\s*%|^\s*(?:так|да|yes)\b|^\s*(?:it|they|this|that)\s+(?:does|do|is|are|has|have|can)\b", re.I)
 _PRODUCTION = re.compile(r"зробимо|сделаем|виготов\w*|изготов\w*|відправ\w*|отправ\w*|\b(?:make|manufactur\w*|produce|ship|dispatch)\b", re.I)
+_DESIGN_STORY = re.compile(r"історі\w*|истори\w*|походжен\w*|происхожден\w*|\b(?:story|origin|meaning)\b", re.I)
+_DESIGN = re.compile(r"принт\w*|дизайн\w*|малюн\w*|рисунк\w*|\b(?:print|design|artwork)\b", re.I)
 
 
 def _digest(value):
@@ -124,8 +126,9 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
         for clause in re.split(r"[.!;,\n]+|\b(?:але|но|but|а)\b", raw):
             if not clause.strip() or _HISTORY.search(clause):
                 continue
-            product_context = bool(source_product or _PRODUCT.search(raw))
-            asking = bool(_ASK.search(clause))
+            design_story = bool(_DESIGN_STORY.search(clause) and _DESIGN.search(clause))
+            product_context = bool(source_product or _PRODUCT.search(raw) or design_story)
+            asking = bool(_ASK.search(clause) or design_story and re.search(r"розкаж\w*|расскаж\w*|explain|tell", clause, re.I))
             wishing = bool(_WISH.search(clause) or correction or affirmed_color)
             if not product_context or not (asking or wishing):
                 continue
@@ -151,6 +154,8 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
             ui_button = bool(re.search(r"buttons?", clause, re.I) and re.search(r"click|tap|press|pay|checkout|клік|натис|нажат|оплат", clause, re.I))
             if asking and not _REJECT.search(clause) and not ui_button and (spec or re.search(r"(?:який|яка|what)\s+(?:склад|composition)\b", clause, re.I)):
                 candidates.append(("information", spec.group() if spec else "composition", "product_fact_unverified"))
+            if asking and design_story and not _REJECT.search(clause):
+                candidates.append(("information", "design_story", "product_fact_unverified"))
             for axis, wanted, reason in candidates:
                 item = {"source_message_id": source["message_id"], "source_digest": source.get("source_digest", ""),
                         "line_id": source_line.get("line_id", ""), "product_id": source_product,

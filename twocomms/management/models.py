@@ -3915,6 +3915,9 @@ class InstagramBotMessage(models.Model):
     # Immutable provenance for the current single-account consumer. Raw Meta
     # IDs remain unchanged for reply-to/echo reconciliation.
     provider_namespace = models.CharField(max_length=128, blank=True, default="", db_default="", db_index=True)
+    # Signed admission of a current provider-polled USER source. Historical
+    # rows and unproved legacy poll labels grant no canonical reply authority.
+    ingress_proof = models.JSONField(default=dict, db_default={}, blank=True)
     synthetic_event_key = models.CharField(
         max_length=64, null=True, blank=True, unique=True, db_index=True
     )

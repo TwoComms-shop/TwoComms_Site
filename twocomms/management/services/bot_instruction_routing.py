@@ -124,7 +124,11 @@ def turn_triggers(text: str) -> set[str]:
               if name not in {"price_objection", "hesitation", "custom_print", "collaboration", "ugc"} and pattern.search(own_value)}
     from management.services.ig_turn_intelligence import _REPORTED, _HISTORICAL, _NEGATION
 
-    for name in ("custom_print", "collaboration", "ugc"):
+    from management.services.bot_sales_classifier import is_explicit_custom_print_request
+
+    if is_explicit_custom_print_request(value):
+        result.add("custom_print")
+    for name in ("ugc",):
         for clause in re.split(r"[.!?;\n]+|\b(?:але|но|but)\b", own_value, flags=re.I):
             if _REPORTED.search(clause.strip(" ,:")):
                 continue
@@ -132,6 +136,13 @@ def turn_triggers(text: str) -> set[str]:
                    for match in _TURN_TRIGGERS[name].finditer(clause)):
                 result.add(name)
                 break
+    from management.services.ig_business_cooperation import current_cooperation_sources, extract_business_cooperation
+
+    cooperation_sources = current_cooperation_sources([{"text": value}])
+    if (extract_business_cooperation(value) or any(
+        _TURN_TRIGGERS["collaboration"].search(own_reply_text(row["text"])) for row in cooperation_sources
+    )):
+        result.add("collaboration")
     if kinds & {"price", "cheaper_elsewhere"}:
         result.add("price_objection")
     if "thinking" in kinds:

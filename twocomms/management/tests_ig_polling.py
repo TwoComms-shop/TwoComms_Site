@@ -11,11 +11,25 @@ from management.models import IgClient, IgPollCursor, InstagramBotMessage, Insta
 from management.services import instagram_bot as bot
 
 
+# Provider fixtures below use one explicit July conversation chronology. Keep
+# its current-message tests current without depending on the machine's date.
+_provider_clock = patch("django.utils.timezone.now", return_value=datetime(2026, 7, 9, 15, tzinfo=timezone.utc))
+
+
+def setUpModule():
+    _provider_clock.start()
+
+
+def tearDownModule():
+    _provider_clock.stop()
+
+
 def _message(mid: str, minute: int, sender: str = "customer") -> dict:
     return {
         "id": mid,
         "message": mid,
         "from": {"id": sender},
+        "to": {"data": [{"id": "page"}]},
         "created_time": f"2026-07-09T14:{minute:02d}:00+0000",
         "attachments": [{"type": "image", "payload": {"url": f"https://cdn/{mid}.jpg"}}],
     }
@@ -26,11 +40,12 @@ class PollCursorTests(TestCase):
         self.settings = InstagramBotSettings.load()
         self.settings.is_enabled = True
         self.settings.receive_via_poll = True
+        self.settings.page_id = "page"
         self.settings.ig_user_id = "page"
         self.settings.reply_after = None
         self.settings.last_started_at = None
         self.settings.save(update_fields=[
-            "is_enabled", "receive_via_poll", "ig_user_id", "reply_after", "last_started_at",
+            "is_enabled", "receive_via_poll", "page_id", "ig_user_id", "reply_after", "last_started_at",
         ])
 
     def test_processes_all_messages_in_provider_order_and_persists_cursor(self):
@@ -290,17 +305,36 @@ class PollCursorTests(TestCase):
             "m-old-instagram",
         )
 
+    def test_legacy_old_unseen_message_is_history_only(self):
+        old = django_timezone.now() - timedelta(hours=24)
+        message = {**_message("m-old-legacy", 1), "created_time": old.isoformat()}
+        with patch.object(bot, "provider_transport", return_value=bot.LEGACY_PAGE_TRANSPORT), \
+             patch.object(bot, "get_page_token", return_value="PT"), \
+             patch.object(bot, "get_conv_ids_cached", return_value=["conv-old-legacy"]), \
+             patch.object(bot, "_http", return_value=(200, json.dumps({"messages": {"data": [message]}}))), \
+             patch.object(bot, "enqueue_inbound") as enqueue:
+            result = bot.poll_ingest(self.settings)
+        self.assertEqual(result["enqueued"], 0)
+        self.assertFalse(result["degraded"])
+        enqueue.assert_not_called()
+        row = InstagramBotMessage.objects.get(mid=message["id"])
+        self.assertEqual((row.source, row.status), ("poll_history", "done"))
+        self.assertFalse(row.revision_sources.exists())
+        self.assertEqual(IgPollCursor.objects.get(conversation_id="conv-old-legacy").last_message_id, message["id"])
+
 
 class ConversationDiscoveryTests(TestCase):
     def setUp(self):
         self.settings = InstagramBotSettings.load()
         self.settings.page_id = "page"
+        self.settings.ig_user_id = "page"
         self.settings.is_enabled = True
         self.settings.receive_via_poll = True
         self.settings.conversation_discovery_ids = []
         self.settings.conversation_discovery_cursor = ""
         self.settings.save(update_fields=[
             "page_id",
+            "ig_user_id",
             "is_enabled",
             "receive_via_poll",
             "conversation_discovery_ids",

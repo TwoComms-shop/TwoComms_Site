@@ -840,6 +840,44 @@ class SelectionCaptureReadError(RuntimeError):
     """Finite observation failure; no partial cart is publication authority."""
 
 
+def _captured_native_removals(capture, scope, sources, *, now):
+    """Carry signed removal history through later chat, never into live lines."""
+    from management.services.ig_checkout_cart_amendments import (
+        verify_native_transition, CheckoutAmendmentError, _digest, SCHEMA, AUTHORITY,
+    )
+    expected = _source_snapshot(capture["snapshot"])
+    revision = capture["session"].revision
+    for transition in capture["transitions"]:
+        if transition.to_revision != revision or _source_snapshot(transition.next_snapshot) != expected:
+            return []
+        if transition.checkout_amendment_id is not None:
+            try:
+                body = verify_native_transition(transition, now=now, historical=True)
+            except CheckoutAmendmentError as exc:
+                raise SelectionCaptureReadError("native_removal_source_unverified") from exc
+            base = body.get("base_capture") or {}
+            # Legacy native receipts without an immutable chat/reset binding
+            # cannot establish historical scope after a later chat transition.
+            if not base or any((base.get("scope") or {}).get(key) != scope.get(key)
+                    for key in ("client_id", "episode_id", "reset_id", "reset_floor", "source_namespace")):
+                return []
+            source_ids = (base.get("fence") or {}).get("source_ids", [])
+            if (body.get("episode_id") != scope["episode_id"]
+                    or any(source_id not in sources for source_id in source_ids)
+                    or _digest({source_id: _source_fence_row(sources[source_id]) for source_id in source_ids})
+                        != (base.get("fence") or {}).get("source_digest")):
+                raise SelectionCaptureReadError("native_removal_source_changed")
+            active = {line["line_id"] for line in capture["snapshot"].get("lines", [])}
+            proof = {"amendment_id": str(transition.checkout_amendment_id), "transition_id": transition.pk,
+                "source_digest": transition.checkout_amendment.source_hmac, "source_kind": SCHEMA,
+                "authority": AUTHORITY, "observed_at": transition.checkout_amendment.created_at.isoformat()}
+            return [{**deepcopy(row), "source": deepcopy(proof)} for row in body.get("removed", [])
+                if row.get("line_id") not in active]
+        expected = _source_snapshot(transition.previous_snapshot)
+        revision = transition.from_revision
+    return []
+
+
 def capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=None, _catalog_readback=None):
     """Public read facade with a hard SQL budget and no writes/bootstrap."""
     from django.db import connection, DatabaseError
@@ -980,6 +1018,7 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         "namespace": namespace, "reset_id": scope["reset_id"], "order_id": scope["order_id"],
         "parsed_sources": {}, "copy_cache": {}, "catalog_product_ids": product_ids,
         "catalog_readback": _catalog_readback}
+    removed = _captured_native_removals(capture, scope, sources, now=now)
     client = SimpleNamespace(pk=client_id)
     captured_lines = []
     omissions = []
@@ -1016,6 +1055,8 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         "active_line_id": lines[snapshot["active_index"]]["line_id"] if lines and 0 <= snapshot["active_index"] < len(lines) else None,
         "source_watermark": watermark, "lines": captured_lines, "omissions": omissions,
         "coverage_complete": not omissions, "transition_limit": 64, "line_limit": 16, "query_limit": 64, "fence": fence}
+    if removed:
+        payload["removed"] = removed
     payload["capture_digest"] = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), default=str).encode()).hexdigest()
     if _catalog_readback is not None and _catalog_readback.get("prepared") is True:

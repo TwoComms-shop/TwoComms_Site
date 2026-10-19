@@ -246,12 +246,24 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             requirements.append({**extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now), "source_id": row.pk})
         if not sources or len(sources) > 16:
             return {"created": False, "reason": "source_bound", "pure": False}
+        context_requirements = _context_requirements(requirements)
+        explicit = bool(context_requirements) or any(hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") in {"changed", "withdrawn"} for hint in requirements)
+        from management.services.ig_business_cooperation import business_cooperation_for_sources
+        business = business_cooperation_for_sources([
+            {"message_id": row.pk, "role": "user", "text": row.text} for row in source_rows])
+        # A product mentioned for resale is not a retail selection requesting
+        # stock/preparation review. Mixed messages with an actual fulfillment
+        # requirement retain the same review and source authority as before.
+        own_availability = any(is_restock_interest(row.text) or (
+            re.search(r"\b(?:мо[яєюї]|мій|мого|моя|мою|мое|моё|мой|моего|my|our|замовлен\w*|заказ\w*|ця|цей|це|эта|этот|this|that|XS|S|M|L|XL|XXL|[2-6]XL)\b", row.text, re.I)
+            and re.search(r"(?:наявн|налич|доступн|availab|in\s+stock)", row.text, re.I)
+            and "?" in row.text) for row in source_rows)
+        if business and not explicit and not own_availability:
+            return {"created": False, "reason": "no_review_requirement", "pure": False}
         cart = capture_current_selection_lines(client.pk, now=now)
         if cart.get("status") != "captured" or not cart.get("coverage_complete") or not cart.get("lines"):
             return {"created": False, "reason": "source_cart_unavailable", "pure": False}
         lines = _lines(cart, max(row.pk for row in source_rows), now)
-        context_requirements = _context_requirements(requirements)
-        explicit = bool(context_requirements) or any(hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") in {"changed", "withdrawn"} for hint in requirements)
         # Partial product selection is not an out-of-stock incident. Automatic
         # checks start only after an exact target exists; an explicit customer
         # timing/availability question can still request clarification.

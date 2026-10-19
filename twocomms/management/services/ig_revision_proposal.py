@@ -1034,6 +1034,7 @@ def project_revision_image_inspections(
         }
         from management.services.ig_conversation_routes import conversation_route_reset_floor
         from management.services.ig_turn_revisions import _source_payload
+        from management.services.ig_ingress_source_proof import is_current_customer_source
 
         floor = conversation_route_reset_floor(client.pk)
         source_rows = {row.message_id: row for row in revision.sources.all()}
@@ -1042,7 +1043,7 @@ def project_revision_image_inspections(
         for message_id in message_ids:
             message, source, snapshot = messages.get(message_id), source_rows.get(message_id), snapshots.get(message_id)
             if (message_id < floor or message is None or source is None or snapshot is None
-                or message.role != "user" or message.source != "webhook" or message.sender_id != client.igsid
+                or not is_current_customer_source(message, namespace=source.source_namespace)
                 or message.provider_namespace != source.source_namespace
                 or message.private_media_state not in {message.PrivateMediaState.NONE, message.PrivateMediaState.ACTIVE}
                 or (message_id in submitted_owners and message.private_media_state != message.PrivateMediaState.ACTIVE)

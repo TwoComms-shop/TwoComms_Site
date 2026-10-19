@@ -17,7 +17,8 @@ _GIFT = re.compile(r"\b(?:подар\w*|gift|present)\b", re.I)
 _URGENT = re.compile(r"\b(?:сроч\w*|терміново|термінов\w*|urgent\w*|asap)\b", re.I)
 _NEGATIVE = re.compile(r"(?:\b(?:не|ні|not|no|never|don't|don’t|не\s+потріб\w*|не\s+нуж\w*)\s+)(?:\w+\s+){0,2}$", re.I)
 _ARRIVAL = re.compile(r"\b(?:успе\w*|встиг\w*|достав\w*|отрима\w*|получ\w*|arriv\w*|receiv\w*|delivery|make\s+it)\b", re.I)
-_DISPATCH = re.compile(r"\b(?:відправ\w*|отправ\w*|виготов\w*|изготов\w*|вироб\w*|production|dispatch\w*|ship(?:ping|ped)?|prepar\w*)\b", re.I)
+_DISPATCH = re.compile(r"\b(?:відправ\w*|отправ\w*|виготов\w*|изготов\w*|вироб(?:ити|ите|ля|лення|ництв)\w*|production|dispatch\w*|ship(?:ping|ped)?|prepar\w*)\b", re.I)
+_GENERAL_SHIPPING = re.compile(r"\b(?:(?:умов\w*|услов\w*|правил\w*)\s+(?:достав\w*|відправ\w*|отправ\w*)|(?:shipping|delivery|dispatch)\s+(?:terms|conditions|policy)|(?:terms|conditions)\s+(?:of\s+)?(?:shipping|delivery)|how\s+(?:does\s+)?(?:shipping|delivery)\s+work\w*)\b", re.I)
 _DATE_CUE = re.compile(r"\b(?:до|к|на|by|before|on|deadline|дедлайн|дат\w*|числа|потріб\w*|нуж\w*)\b", re.I)
 _WITHDRAW = re.compile(r"(?:дата|дату|дедлайн|deadline|термін|срок)[^.!?;\n]{0,35}(?:неваж\w*|не\s+важ\w*|скасов\w*|отмен\w*|no\s+longer|doesn['’]t\s+matter|not\s+important|withdrawn|cancelled|removed)|(?:скасу\w*|отмен\w*|withdraw|cancel)[^.!?;\n]{0,25}(?:дедлайн|deadline|дат\w*|термін|срок)|\bне\s+(?:потрібно|нужно)\s+(?:до|к)\s+\d", re.I)
 _CHANGED = re.compile(r"\b(?:тепер|теперь|instead|changed|change\s+the\s+date|перен\w*|змін\w*|измен\w*)\b", re.I)
@@ -103,6 +104,17 @@ def extract_requirements(text, *, provider_timestamp=None, now=None):
         result["reasons"].append("input_bound")
         return result
     value, hypothetical = _customer_text(raw)
+    # Trade logistics policies are business questions, not a requested ETA for
+    # a purchase. Filter only those clauses; a real deadline/urgency in a mixed
+    # message must retain the ordinary source-bound fulfillment path.
+    from management.services.ig_business_cooperation import extract_business_cooperation
+    if extract_business_cooperation(raw):
+        clauses = re.split(r"(?<=[!?;\n])|(?<=\.)(?!\d)", value)
+        value = " ".join(clause for clause in clauses if not (
+            _GENERAL_SHIPPING.search(clause)
+            and not (_NUMERIC.search(clause) or _LOCAL_DATE.search(clause)
+                or _RELATIVE.search(clause) or _BARE_DAY.search(clause)
+                or _URGENT.search(clause))))
     if hypothetical:
         result["reasons"].append("hypothetical_or_reported_clause_ignored")
     gift = list(_GIFT.finditer(value))

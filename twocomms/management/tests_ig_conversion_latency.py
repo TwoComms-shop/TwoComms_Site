@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from management import tests_ig_revision_live as live
 from management import tests_ig_revision_provider_execution as provider
+from management import tests_ig_revision_recovery as recovery
 from management.tests_gemini_accounting_shadow import SHADOW
 from management.models import (GeminiRequest, GeminiRequestAttempt, IgBotNotification,
     IgClient, IgCustomerTurn, IgCustomerTurnRevision, IgFollowUpTask, IgProviderIncident,
@@ -153,8 +154,11 @@ class IndependentProjectLatencyTests(TransactionTestCase):
         self.assertEqual(self.revision.recovery_due_at, now)
         IgProviderIncident.objects.create(role="chat", failure_class="quota", fingerprint="shared-A",
             active_fingerprint="shared-A", state="open", opened_at=now, last_failure_at=now)
+        token = "independent-project-recovery-worker"
+        IgClient.objects.filter(pk=self.customer.pk).update(automation_lease_token=token,
+            automation_lease_until=now + timedelta(minutes=3))
         with patch("management.services.instagram_bot._provider_http", side_effect=AssertionError("no recovery I/O")):
-            result = prepare_outage_recovery(self.revision.pk, now=now)
+            result = prepare_outage_recovery(self.revision.pk, now=now, automation_lease_token=token)
         self.assertEqual(result.state, "spawned", result.reason)
         child = IgCustomerTurnRevision.objects.get(pk=result.child_id)
         remaining = inspect_revision_provider_execution(child, now=now)
@@ -195,6 +199,7 @@ class ExactTransportTailLatencyTests(TransactionTestCase):
     _generate = live.RevisionLiveTests._generate
     _execute = live.RevisionLiveTests._execute
     _replace_bundle = live.RevisionLiveTests._replace_bundle
+    _recover = recovery.RevisionRecoveryTests._recover
 
     def _proposal(self):
         from management.services.ig_revision_live import execute_claimed_revision
@@ -475,7 +480,8 @@ class ExactTransportTailLatencyTests(TransactionTestCase):
         from management.services.ig_revision_delivery import ProviderPartResult, drain_group
         self._proposal()
         now = self.revision.overall_deadline + timedelta(seconds=1)
-        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "execution")
+        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "waiting")
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "execution")
         self.revision.refresh_from_db()
         ordinary = self.revision.action_receipts[EXECUTION_RESUME_KEY].copy()
         with patch("management.services.ig_revision_live.timezone.now", return_value=now):
@@ -513,7 +519,8 @@ class ExactTransportTailLatencyTests(TransactionTestCase):
         from management.services.ig_revision_live import _reclaim_execution
         self._proposal()
         now = self.revision.overall_deadline + timedelta(seconds=1)
-        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "execution")
+        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "waiting")
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "execution")
         self.revision.refresh_from_db()
         ordinary = self.revision.action_receipts[EXECUTION_RESUME_KEY].copy()
         with patch("management.services.ig_revision_live.timezone.now", return_value=now):

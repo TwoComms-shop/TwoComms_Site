@@ -389,6 +389,7 @@ def _collect_db(now, limit):
     from management.services.ig_revision_execution import incomplete_revision_deliveries
 
     cases = []
+    cases.extend(_collect_response_obligations(now, limit))
     cutoff = now - STALE_CLAIM
     transient_cutoff = now - TRANSIENT_DEBT_GRACE
     cases.append(_query_case(
@@ -465,6 +466,50 @@ def _collect_db(now, limit):
         IgWebhookInboxEvent.objects.filter(decision="blocked", processed_at__isnull=True),
         reason="webhook_ingress_blocked", scope="webhook_inbox", now=now,
         limit=limit, time_field="received_at"))
+    return cases
+
+
+def _collect_response_obligations(now, limit):
+    """Observe each debt source independently of active-head/claim labels."""
+    from management.services.ig_response_debt import DEBT_REASON, response_obligation
+    from management.models import IgCustomerTurnRevision, IgBotNotification, IgFollowUpTask
+
+    tasks = list(IgFollowUpTask.objects.filter(kind="manager_task", reason=DEBT_REASON)
+                 .order_by("-created_at", "-pk")[:MAX_LIMIT + 1])
+    if not tasks:
+        return []
+    payloads = {task.pk: task.event_payload if isinstance(task.event_payload, dict) else {} for task in tasks}
+    revisions = {row.pk: row for row in IgCustomerTurnRevision.objects.select_related("client").prefetch_related(
+        "sources", "delivery_effects").filter(
+        pk__in=[payloads[task.pk].get("revision_id") for task in tasks[:MAX_LIMIT]
+                if isinstance(payloads[task.pk].get("revision_id"), int)],
+        client__privacy_erasure_started_at__isnull=True,
+    )}
+    notifications = list(IgBotNotification.objects.filter(client_id__in={row.client_id for row in revisions.values()},
+        payload__manager_task_id__in=[task.pk for task in tasks[:MAX_LIMIT]]))
+    cases = []
+    for task in tasks[:MAX_LIMIT]:
+        revision = revisions.get(payloads[task.pk].get("revision_id"))
+        if revision is None or revision.client_id != task.client_id:
+            continue
+        obligation = response_obligation(revision, task=task, manager_notifications=notifications)
+        if not obligation["requires_attention"]:
+            continue
+        case = _case("unanswered_customer_obligation", f"revision:{revision.pk}", count=1,
+            oldest=_age(now, revision.quiet_started_at), ids=obligation["source_message_ids"][:limit],
+            sampled=len(obligation["source_message_ids"]) > limit, has_more=False)
+        case.update(customer_ack_owed=obligation["customer_ack_owed"],
+                    substantive_owed=obligation["substantive_owed"],
+                    manager_informed=obligation["manager_informed"], task_id=task.pk,
+                    manager_notification_recorded=obligation["manager_notification_recorded"],
+                    manager_notification_id=obligation["manager_notification_id"],
+                    manager_notification_status=obligation["manager_notification_status"],
+                    revision_id=revision.pk, coverage_complete=True)
+        cases.append(case)
+    if len(tasks) > MAX_LIMIT:
+        cases.append({**_case("response_obligation_scan_unavailable", "reply_debt", count=0,
+            oldest=None, ids=[], sampled=True, has_more=True), "coverage_complete": False,
+            "coverage_reason": "response_obligation_scan_capped"})
     return cases
 
 

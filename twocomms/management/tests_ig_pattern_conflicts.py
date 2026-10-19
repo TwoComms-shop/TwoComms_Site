@@ -21,7 +21,8 @@ class CollaborationBriefTests(TestCase):
         from management.services.ig_revision_holding import _collaboration_holding_reply
 
         reply = _collaboration_holding_reply("uk")
-        self.assertIn("керівництву", reply)
+        self.assertIn("Зафіксувала її для розгляду керівництвом.", reply)
+        self.assertNotIn("передала", reply.casefold())
         self.assertIn("портфоліо", reply)
         self.assertIn("результати", reply)
         self.assertIn("Telegram", reply)
@@ -129,25 +130,29 @@ class CollaborationBriefTests(TestCase):
 
     def test_store_and_print_questions_do_not_enter_collaboration_manager_route(self):
         from management.services.ig_revision_intents import manager_case_reason
+        from management.services.ig_turn_revisions import _digest
 
         for text in (
             "В якому магазині ви знаходитесь?",
             "Хочу футболку з принтом",
             "Покажіть модель для вашого бренду",
         ):
-            revision = SimpleNamespace(
-                client=SimpleNamespace(intent=""),
-                bundle_snapshot={"sources": [{"role": "user", "text": text}]},
-                generation_proposal={},
-            )
+            snapshot = {"sources": [{"message_id": 42, "role": "user", "text": text,
+                                      "source_digest": "source-42"}]}
+            revision = SimpleNamespace(pk=901, client=SimpleNamespace(intent="", language="uk"),
+                bundle_snapshot=snapshot, snapshot_digest=_digest(snapshot),
+                generation_proposal={}, action_receipts={})
             self.assertNotEqual(manager_case_reason(revision), "collaboration_review", text)
 
     def test_withdrawn_collaboration_route_does_not_reopen_manager_handoff(self):
         from management.services.ig_revision_intents import manager_case_reason
+        from management.services.ig_turn_revisions import _digest
 
+        snapshot = {"sources": [{"message_id": 42, "role": "user", "text": "Більше не актуально",
+                                  "source_digest": "source-42"}]}
         revision = SimpleNamespace(
-            client=SimpleNamespace(intent=""),
-            bundle_snapshot={"sources": [{"role": "user", "text": "Більше не актуально"}]},
+            pk=901, client=SimpleNamespace(intent="", language="uk"), action_receipts={},
+            bundle_snapshot=snapshot, snapshot_digest=_digest(snapshot),
             generation_proposal={"customer_routes": {"intents": [{
                 "kind": "collaboration", "subtype": "creator", "operation": "withdraw",
             }]}},
@@ -213,7 +218,9 @@ class CollaborationManagerCaseIntegrationTests(TestCase):
         )
         self.assertNotIn("портфоліо", reply)
         self.assertNotIn("результати", reply)
-        self.assertIn("керівництву", reply)
+        self.assertNotIn("Telegram", reply)
+        self.assertIn("Зафіксувала її для розгляду керівництвом.", reply)
+        self.assertNotIn("передала", reply.casefold())
 
     def test_holding_reply_recognizes_brand_experience_as_existing_evidence(self):
         from management.services.ig_revision_holding import _collaboration_holding_inputs

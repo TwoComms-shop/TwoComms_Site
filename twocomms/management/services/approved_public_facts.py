@@ -75,6 +75,14 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "public_assistant_identity",
         ),
         ApprovedPublicFact(
+            "brand_originality",
+            "Наші принти намальовані з нуля. Це авторські дизайни TwoComms; готові малюнки з Pinterest не використовуємо.",
+            "public_brand_originality",
+            "Загальний факт про авторські принти бренду. Не визначає історію, місце, подію чи значення конкретного design/version, майбутню партію або чужий custom-макет. Не роби тверджень про конкурентів.",
+            topic="brand", source_ref="owner:2026-10-18:Q08", review_status="reviewed:owner-brief:2026-10-18",
+            version="2026-10-18.owner-brand-originality.1",
+        ),
+        ApprovedPublicFact(
             "current_tshirt_audience",
             "Поточні футболки TwoComms у класичному крої (regular) та oversize — "
             "унісекс: їх носять і жінки, і чоловіки. Класика має звичну посадку, "
@@ -130,6 +138,14 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "отвечает на прямой вопрос об этом и помогает с подтверждёнными "
             "товарами и условиями.",
             "public_assistant_identity",
+        ),
+        ApprovedPublicFact(
+            "brand_originality",
+            "Наши принты нарисованы с нуля. Это авторские дизайны TwoComms; готовые рисунки из Pinterest не используем.",
+            "public_brand_originality",
+            "Общий факт об авторских принтах бренда. Не определяет историю, место, событие или смысл конкретного design/version, будущую партию или чужой custom-макет. Не утверждай ничего о конкурентах.",
+            topic="brand", source_ref="owner:2026-10-18:Q08", review_status="reviewed:owner-brief:2026-10-18",
+            version="2026-10-18.owner-brand-originality.1",
         ),
         ApprovedPublicFact(
             "current_tshirt_audience",
@@ -188,6 +204,14 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
             "direct question about this honestly and helps with confirmed "
             "products and terms.",
             "public_assistant_identity",
+        ),
+        ApprovedPublicFact(
+            "brand_originality",
+            "Our prints are drawn from scratch. These are original TwoComms designs; we do not use ready-made artwork from Pinterest.",
+            "public_brand_originality",
+            "A general fact about the brand's original prints. It does not establish an exact design/version's history, location, event or meaning, a future batch, or someone else's custom artwork. Do not make claims about competitors.",
+            topic="brand", source_ref="owner:2026-10-18:Q08", review_status="reviewed:owner-brief:2026-10-18",
+            version="2026-10-18.owner-brand-originality.1",
         ),
         ApprovedPublicFact(
             "current_tshirt_audience",
@@ -326,7 +350,7 @@ _TOPICS = {
     "density": re.compile(r"щільн\w*|плотност\w*|density|gsm|г/м", re.I),
     "care": re.compile(r"догляд\w*|ухаж\w*|уход|прати|стират\w*|wash|care|температур\w*", re.I),
     "quality": re.compile(r"якіст\w*|качеств\w*|quality|скільки\s+пран\w*|сколько\s+стир\w*|тріск\w*|треск\w*", re.I),
-    "brand": re.compile(r"бренд\w*|brand|twocomms|засновник\w*|основател\w*|founder", re.I),
+    "brand": re.compile(r"бренд\w*|brand|twocomms|засновник\w*|основател\w*|founder|авторськ\w*|авторск\w*|оригінальн\w*|оригинальн\w*|\boriginal\b|pinterest|(?:з|с)\s+нуля|from\s+scratch", re.I),
     "identity": re.compile(r"ти\s+бот|ви\s+бот|ты\s+бот|вы\s+бот|are\s+you\s+(?:a\s+)?bot|хто\s+ти|кто\s+ты|who\s+are\s+you", re.I),
     "fit": re.compile(r"посадк\w*|крій|крою|крой|фасон\w*|ун[іи]секс|unisex|\bfit\b|oversize|regular|жіноч\w*|женск\w*|чоловіч\w*|мужск\w*", re.I),
     "payment": re.compile(r"оплат\w*|передоплат\w*|предоплат\w*|післяплат\w*|налож\w*|payment|deposit|cash\s+on\s+delivery", re.I),

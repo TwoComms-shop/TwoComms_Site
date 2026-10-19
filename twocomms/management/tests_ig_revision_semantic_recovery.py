@@ -71,7 +71,7 @@ class SemanticRecoveryTests(TransactionTestCase):
             recovery_due_at=timezone.now() + timedelta(minutes=5),
         )
         InstagramBotMessage.objects.create(
-            client=self.customer, sender_id="owner-1", role="manager", source="human_reply",
+            client=self.customer, sender_id=self.customer.igsid, role="manager", source="human_reply",
             provider_namespace=self.source.provider_namespace, text="Відповідь менеджера на вибір клієнта",
             status="done", send_state="sent", provider_message_id="confirmed-manager-answer",
         )

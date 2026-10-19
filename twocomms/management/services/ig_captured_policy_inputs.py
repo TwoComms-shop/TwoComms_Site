@@ -174,6 +174,19 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
     from management.services.approved_public_facts import approved_base_context, approved_assertion_valid, knowledge_topics
 
     triggers = set().union(*(turn_triggers(str(row.get("text") or "")) for row in sources))
+    from management.services.ig_business_cooperation import current_cooperation_sources
+
+    # Cooperation can be explicitly withdrawn by a later source in the same
+    # burst. A per-message union must not restore that superseded invitation.
+    triggers.difference_update({"collaboration", "ugc"})
+    cooperation_text = ". ".join(str(row.get("text") or "")
+        for row in current_cooperation_sources(sources))
+    triggers.update(turn_triggers(cooperation_text) & {"collaboration", "ugc"})
+    from management.services.bot_sales_classifier import custom_print_requested_for_sources
+
+    triggers.discard("custom_print")
+    if custom_print_requested_for_sources(sources):
+        triggers.add("custom_print")
     topics = knowledge_topics(sources)
     base_keys = set()
     captured_assertions = [*approved_base_context(getattr(response_plan, "readiness_snapshot", {}) or {},

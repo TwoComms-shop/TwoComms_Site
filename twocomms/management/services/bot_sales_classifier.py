@@ -142,7 +142,9 @@ SIZE_RE = re.compile(
 )
 CUSTOM_REQUEST_RE = re.compile(
     r"(?:\b(?:кастом(?:н\w*)?|custom)(?:\s+(?:принт\w*|дизайн\w*))?\b|"
-    r"\b(?:св(?:ой|ій)|власн\w*|мо[йяє]|мій)\s+(?:принт\w*|дизайн\w*)\b|"
+    r"\b(?:св(?:ой|ій|оїм|оим|оє|ое|оё|ого|ою|оей)|власн\w*|мо(?:й|я|є|їм|им|ю)|мій|"
+    r"my(?:\s+own)?|our(?:\s+own)?|own)\s+"
+    r"(?:принт\w*|дизайн\w*|малюн\w*|рисун\w*|зображенн\w*|изображен\w*|artworks?|images?|designs?|illustrations?)\b|"
     r"\b(?:зроб(?:іть|ити)|сдел(?:айте|ать)|надрук\w*|напечат\w*|нанес\w*|"
     # F-PAT-001 #4: «замінити принт на свій» — это запрос кастома. Здесь знали
     # «змінити», но не «замінити», поэтому текст доставался EXCHANGE_RE и
@@ -643,19 +645,28 @@ NON_CURRENT_COLLAB_RE = re.compile(
 
 def extract_collaboration_brief(text: str) -> dict:
     """Return bounded, evidence-only collaboration facts for CRM/funnel use."""
-    value = str(text or "")
+    from management.services.ig_business_cooperation import (
+        current_cooperation_sources, extract_business_cooperation,
+    )
+    from management.services.ig_reply_language import own_reply_text
+
+    value = ". ".join(row["text"] for row in current_cooperation_sources([{"text": str(text or "")}]))
     if NON_CURRENT_COLLAB_RE.search(value):
         return {}
+    business = extract_business_cooperation(value)
+    routing_value = own_reply_text(value)
     creator_offer = is_creator_collaboration_offer(value)
-    if not COLLAB_RE.search(value) and not any(pattern.search(value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS) and not creator_offer:
+    if not business and not COLLAB_RE.search(routing_value) and not any(pattern.search(routing_value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS) and not creator_offer:
         return {}
-    subtypes = [name for name, pattern in COLLABORATION_SUBTYPE_PATTERNS if pattern.search(value)]
+    subtypes = [name for name, pattern in COLLABORATION_SUBTYPE_PATTERNS if pattern.search(routing_value)]
+    if business:
+        subtypes = list(dict.fromkeys([*subtypes, *business["subtypes"]]))
     if "designer" in subtypes and not (
         re.search(r"\b(?:дизайнер\w*|design(?:er)?s?|artist|художник\w*)\b", value, re.I)
         or any(COLLAB_ASSET_PATTERNS[key].search(value) for key in ("dtf_ready", "source_art"))
     ):
         subtypes.remove("designer")
-    if "wholesale_store" in subtypes and not (WHOLESALE_RE.search(value) or "dropship" in subtypes or COLLAB_RE.search(value)):
+    if "wholesale_store" in subtypes and not (business or WHOLESALE_RE.search(value) or "dropship" in subtypes or COLLAB_RE.search(value)):
         subtypes.remove("wholesale_store")
     if not subtypes and not creator_offer:
         return {}
@@ -677,7 +688,7 @@ def extract_collaboration_brief(text: str) -> dict:
     percentages = [int(match) for match in COLLAB_TERM_PERCENT_RE.findall(value)][:3]
     contacts = [match[:120] for match in COLLAB_CONTACT_RE.findall(value)][:2]
     lowered = value.casefold()
-    return {
+    brief = {
         "schema_version": 1,
         "subtypes": subtypes[:5],
         "primary_subtype": subtypes[0],
@@ -692,6 +703,9 @@ def extract_collaboration_brief(text: str) -> dict:
         "decision_owner": "manager",
         "multiple_intents": len(subtypes) > 1,
     }
+    if business:
+        brief.update({key: business[key] for key in ("business_cooperation", "shop_launch", "requested_topics")})
+    return brief
 
 
 def is_creator_collaboration_offer(text: str) -> bool:
@@ -700,7 +714,12 @@ def is_creator_collaboration_offer(text: str) -> bool:
     A role alone (for example, ``я модель``) is insufficient. The same message
     must also offer work, a deliverable, or a stated production capability.
     """
-    value = str(text or "")
+    from management.services.ig_business_cooperation import current_cooperation_sources
+    from management.services.ig_reply_language import own_reply_text
+
+    value = own_reply_text(". ".join(
+        row["text"] for row in current_cooperation_sources([{"text": str(text or "")}])
+    ))
     if NON_CURRENT_COLLAB_RE.search(value):
         return False
     return bool(
@@ -763,14 +782,54 @@ def is_reaction_only(text: str) -> bool:
     )
 
 
+def current_custom_print_sources(sources):
+    """Current own clauses only; a later withdrawal clears an earlier request.
+
+    The retained source identities are evidence, never price or manufacturing
+    approval. An unrelated retail question cannot revive a withdrawn design.
+    """
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_turn_intelligence import _REPORTED, _HISTORICAL
+
+    withdrawal = re.compile(r"\b(?:не\s+(?:хоч\w*|потріб\w*|треба|цікав\w*|нуж\w*|интерес\w*|буду|будемо)|"
+        r"(?:більше|больше)\s+не|відмов\w*|отказ\w*|скасуй\w*|отмени\w*|"
+        r"not\s+(?:interested|needed|my|our)|no\s+longer|(?:do\s+not|don['’]t)\s+want|cancel\w*|withdraw\w*)\b", re.I)
+    terse = re.compile(r"^(?:передумав\w*|передумала|передумали|передумал\w*|не\s+(?:актуальн\w*|треба|потріб\w*|нуж\w*)|"
+        r"більше\s+не\s+актуальн\w*|больше\s+не\s+актуальн\w*|never\s+mind|changed\s+my\s+mind)$", re.I)
+    result = []
+    for source in sources or ():
+        if not isinstance(source, dict) or source.get("role", "user") != "user":
+            continue
+        clauses = []
+        for part in re.split(r"[.!?;\n]+|\b(?:але|но|but)\b|,\s*(?:а|зате|instead)\s+", own_reply_text(str(source.get("text") or "")), flags=re.I):
+            clause = part.strip(" ,:")
+            if not clause or _REPORTED.search(clause):
+                continue
+            historical = _HISTORICAL.search(clause)
+            if historical:
+                current = re.search(r"\b(?:зараз|тепер|сейчас|теперь|now|currently)\b", clause[historical.end():], re.I)
+                if current is None:
+                    continue
+                clause = clause[historical.end() + current.start():]
+            signal = CUSTOM_REQUEST_RE.search(clause)
+            if terse.fullmatch(clause) or (signal and withdrawal.search(clause)):
+                result.clear()
+                clauses.clear()
+                continue
+            clauses.append(clause)
+        if clauses:
+            result.append({**source, "text": ". ".join(clauses)})
+    return result
+
+
+def custom_print_requested_for_sources(sources):
+    return any(CUSTOM_REQUEST_RE.search(row["text"]) and not SUPPORT_RE.search(row["text"])
+               and not COLLAB_RE.search(row["text"]) for row in current_custom_print_sources(sources))
+
+
 def is_explicit_custom_print_request(text: str) -> bool:
-    """Return true only for explicit manufacturing or design-change intent."""
-    value = str(text or "")
-    return bool(
-        CUSTOM_REQUEST_RE.search(value)
-        and not SUPPORT_RE.search(value)
-        and not COLLAB_RE.search(value)
-    )
+    """Return true only for the customer's current manufacturing/design intent."""
+    return custom_print_requested_for_sources([{"role": "user", "text": str(text or "")}])
 
 
 def _contains_any(text: str, terms: Iterable[str]) -> int:
@@ -1202,10 +1261,19 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
     # і коллаб цікавить» становилось collaboration и оптовый лид не попадал в
     # фильтр wholesale_b2b. Опт — это выручка, коллаб — это переговоры о
     # бартере, поэтому при одновременном совпадении опт важнее.
-    if WHOLESALE_RE.search(text or ""):
+    from management.services.ig_business_cooperation import (
+        current_cooperation_sources, extract_business_cooperation,
+    )
+    from management.services.ig_reply_language import own_reply_text
+
+    cooperation_text = own_reply_text(". ".join(
+        row["text"] for row in current_cooperation_sources([{"text": text or ""}])
+    ))
+    business = extract_business_cooperation(cooperation_text)
+    if WHOLESALE_RE.search(cooperation_text) or (business and set(business["subtypes"]) & {"wholesale_store", "dropship"}):
         return types.WHOLESALE_B2B
     if is_creator_collaboration_offer(text or "") or (
-        COLLAB_RE.search(text or "") and not NON_CURRENT_COLLAB_RE.search(text or "")
+        COLLAB_RE.search(cooperation_text) and not NON_CURRENT_COLLAB_RE.search(cooperation_text)
     ):
         return types.COLLABORATION
     if result.get("intent") == IgClient.Intent.CUSTOM_PRINT:

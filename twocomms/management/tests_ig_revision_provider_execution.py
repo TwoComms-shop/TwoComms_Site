@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
-from management.models import GeminiRequest, GeminiRequestAttempt, IgCustomerTurnRevision, IgProviderIncident, InstagramBotMessage
+from management.models import GeminiRequest, GeminiRequestAttempt, IgClient, IgCustomerTurnRevision, IgProviderIncident, InstagramBotMessage
 from management.services import gemini_accounting_runtime as runtime
 from management.services.ig_revision_provider_execution import (
     MANIFEST_KEY, REFERENCE_KEY, REPAIR_KEY, inspect_revision_provider_execution, revision_provider_continuation,
@@ -157,7 +157,10 @@ class RevisionProviderExecutionTests(TransactionTestCase):
         self.assertEqual(scheduled.state, "waiting", scheduled.reason)
         self.revision.refresh_from_db()
         due = self.revision.recovery_due_at
-        recovered = prepare_outage_recovery(self.revision.pk, now=due)
+        token = "provider-recovery-worker"
+        IgClient.objects.filter(pk=self.customer.pk).update(automation_lease_token=token,
+            automation_lease_until=due + timedelta(minutes=3))
+        recovered = prepare_outage_recovery(self.revision.pk, now=due, automation_lease_token=token)
         self.assertEqual(recovered.state, "spawned", recovered.reason)
         child = IgCustomerTurnRevision.objects.get(pk=recovered.child_id)
         state = inspect_revision_provider_execution(child, now=due)

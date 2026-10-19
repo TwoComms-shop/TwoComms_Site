@@ -223,3 +223,4 @@ DATABASE_ROUTERS = []
 TEST_NETWORK_POLICY = "deny-external-allow-loopback"
 TEST_DTF_SCOPE = "excluded-with-dependency-stub"
 REVIEW_WRITE_FREEZE_MARKER = _REVIEW_WRITE_FREEZE_MARKER
+TEST_RUNNER = "test_support.ig_mariadb_runner.InstagramMariaDbGateRunner"

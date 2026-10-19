@@ -73,9 +73,9 @@ class PresenceLifecycleTests(SimpleTestCase):
         finally:
             release.set()
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls, ["mark_seen", "typing_on", "typing_off"])
+        self.assertEqual(calls, ["typing_on", "typing_off"])
 
-    def test_stop_during_seen_never_starts_typing(self):
+    def test_stop_during_initial_typing_never_marks_seen(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
 
@@ -90,7 +90,7 @@ class PresenceLifecycleTests(SimpleTestCase):
         handle.stop()
         release.set()
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls, ["mark_seen"])
+        self.assertEqual(calls, ["typing_on", "typing_off"])
 
     def manual(self, *, controller=None, guard=lambda cleanup: True, transport=accepted, **kwargs):
         controller = controller or presence.PresenceController()
@@ -228,7 +228,7 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertEqual(handle.refresh_seconds, 0)
         handle.stop()
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls, ["mark_seen", "typing_on", "typing_off"])
+        self.assertEqual(calls, ["typing_on", "typing_off"])
 
     def test_nominal_lifetime_expiry_stops_further_actions(self):
         transport = Mock(side_effect=accepted)
@@ -280,7 +280,7 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertTrue(handle._allowed())
         handle.stop()
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls, ["mark_seen", "typing_on", "typing_off"])
+        self.assertEqual(calls, ["typing_on", "typing_off"])
 
     def test_fast_sent_before_thread_start_still_marks_seen_without_typing(self):
         calls = []
@@ -347,7 +347,7 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertTrue(entered.wait(1))
         handle.stop()
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls, ["mark_seen", "typing_on", "typing_off"])
+        self.assertEqual(calls, ["typing_on", "typing_off"])
 
     def test_long_generation_refreshes_only_after_accepted_typing(self):
         calls, refreshed = [], threading.Event()
@@ -361,7 +361,7 @@ class PresenceLifecycleTests(SimpleTestCase):
 
         handle = self.start(
             transport, refresh_seconds=0.01, report=report,
-            refresh_authorized=lambda: True,
+            refresh_authorized=lambda: True, completion_guard=lambda: True,
         )
         self.assertTrue(refreshed.wait(1))
         handle.begin_dispatch()
@@ -369,7 +369,7 @@ class PresenceLifecycleTests(SimpleTestCase):
         self.assertTrue(handle.finished.wait(1))
         count = calls.count("typing_on")
         self.assertGreaterEqual(count, 2)
-        self.assertEqual(calls[-1], "typing_off")
+        self.assertEqual(calls[-2:], ["typing_off", "mark_seen"])
         report.assert_called_once()
         self.assertEqual(report.call_args.args[0]["our_mark_seen"], "accepted")
         self.assertEqual(report.call_args.args[0]["typing_requests"], count)
@@ -390,7 +390,7 @@ class PresenceLifecycleTests(SimpleTestCase):
 
         handle = self.start(rejected, refresh_seconds=0.01)
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls, ["mark_seen", "typing_on"])
+        self.assertEqual(calls, ["typing_on"])
         self.assertFalse(handle.typing_attempted)
 
     def test_periodic_refresh_does_not_run_without_durable_authorization(self):
@@ -412,7 +412,7 @@ class PresenceLifecycleTests(SimpleTestCase):
         time.sleep(0.35)
         handle.stop()
         self.assertTrue(handle.finished.wait(1))
-        self.assertEqual(calls[:2], ["mark_seen", "typing_on"])
+        self.assertEqual(calls[0], "typing_on")
         self.assertEqual(calls.count("typing_on"), 1)
         refresh_authorized.assert_called()
         persistence.assert_not_called()
@@ -578,7 +578,7 @@ class PresenceTransportTests(SimpleTestCase):
 
 class DurablePresenceGuardTests(TestCase):
     def setUp(self):
-        from management.models import IgClient, InstagramBotSettings
+        from management.models import IgClient, InstagramBotSettings, InstagramBotMessage
         from management.services.ig_reply_boundary import capture_reply_permission
 
         self.settings_row = InstagramBotSettings.load()
@@ -590,6 +590,9 @@ class DurablePresenceGuardTests(TestCase):
             igsid="presence-test-recipient", automation_lease_token="owner-one",
             automation_lease_until=timezone.now() + timedelta(seconds=60),
         )
+        self.source = InstagramBotMessage.objects.create(client=self.client,
+            sender_id=self.client.igsid, role="user", source="webhook", status="pending",
+            mid="presence-source", provider_namespace="instagram_login:17841400000000001")
         self.route = patch("management.services.instagram_bot.provider_transport", return_value="instagram_login")
         self.route.start()
         self.addCleanup(self.route.stop)
@@ -598,7 +601,7 @@ class DurablePresenceGuardTests(TestCase):
         with patch.object(presence._controller, "start") as start:
             presence.start_presence(
                 self.settings_row, client_id=self.client.pk, recipient_id=self.client.igsid,
-                owner_token="owner-one", source_watermark=1, permission=self.permission,
+                owner_token="owner-one", source_watermark=self.source.pk, permission=self.permission,
                 completion_check=lambda: self.completion_valid,
             )
         self.guard = start.call_args.kwargs["guard"]

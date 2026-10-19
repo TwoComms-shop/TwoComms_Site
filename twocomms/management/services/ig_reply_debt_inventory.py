@@ -299,6 +299,14 @@ def _revision_delivery_proof(revision, effects) -> tuple[str, str]:
         for effect in effects
     ):
         return "unsupported", "substantive_reply_missing"
+    from management.services.ig_response_debt import response_coverage, response_coverage_complete
+
+    if response_coverage(revision).get("remaining"):
+        return "manual", "semantic_reply_incomplete"
+    if ((revision.action_receipts or {}).get("provider_safe_reply") or {}).get("reply_mode") == "neutral_ack":
+        return "manual", "neutral_ack_only"
+    if not response_coverage_complete(revision):
+        return "manual", "semantic_coverage_unverified"
     return "coverage", "canonical_delivery_proof"
 
 

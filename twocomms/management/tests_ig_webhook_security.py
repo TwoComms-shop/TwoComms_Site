@@ -14,8 +14,10 @@ from management.models import (
     InstagramBotLog,
     InstagramBotMessage,
     InstagramBotSettings,
+    IgWebhookInboxEvent,
 )
 from management.services import instagram_bot as bot
+from management.services.ig_webhook_inbox import drain_webhook_inbox
 
 
 class WebhookSignatureTests(SimpleTestCase):
@@ -61,11 +63,35 @@ class WebhookEndpointSecurityTests(TestCase):
         settings_obj = InstagramBotSettings.load()
         settings_obj.is_enabled = True
         settings_obj.allowed_senders = ""
-        settings_obj.save(update_fields=["is_enabled", "allowed_senders"])
+        settings_obj.page_id = "page-id"
+        settings_obj.ig_user_id = "page-id"
+        settings_obj.save(update_fields=["is_enabled", "allowed_senders", "page_id", "ig_user_id"])
         self.client = Client()
 
+    def _owned_payload(self, payload):
+        """Authenticated provider envelope for the configured fixture account."""
+        payload["object"] = "instagram"
+        for entry in payload.get("entry", []):
+            entry["id"] = "page-id"
+            for event in entry.get("messaging", []):
+                event.setdefault("recipient", {"id": "page-id"})
+        return payload
+
+    def _drain(self):
+        with patch.dict(os.environ, {"IG_APP_SECRET": "test-secret", "IG_PROVIDER_TRANSPORT": "legacy_page"}, clear=True):
+            return drain_webhook_inbox(InstagramBotSettings.load())
+
+    def _assert_durable_only(self):
+        receipt = IgWebhookInboxEvent.objects.get()
+        self.assertEqual(receipt.namespace, "legacy_page:page-id")
+        self.assertEqual(receipt.decision, "accepted")
+        self.assertIsNone(receipt.processed_at)
+        self.assertFalse(InstagramBotMessage.objects.exists())
+        self.assertFalse(IgConversationAnalysisJob.objects.exists())
+        return receipt
+
     def test_unsigned_post_is_rejected_without_secret(self):
-        payload = json.dumps({"entry": []})
+        payload = json.dumps(self._owned_payload({"entry": []}))
         with patch.dict(os.environ, {}, clear=True), patch("management.bot_webhook.bot.log"):
             response = self.client.post(
                 "/bot/webhook/", data=payload, content_type="application/json",
@@ -74,7 +100,7 @@ class WebhookEndpointSecurityTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_unsigned_post_requires_explicit_override(self):
-        payload = json.dumps({"entry": []})
+        payload = json.dumps(self._owned_payload({"entry": []}))
         with patch.dict(os.environ, {"IG_BOT_ALLOW_UNSIGNED_WEBHOOKS": "1"}, clear=True), \
              patch("management.bot_webhook.bot.record_raw_event"), \
              patch("management.bot_webhook.bot.handle_webhook_payload", return_value=0) as handle:
@@ -83,7 +109,9 @@ class WebhookEndpointSecurityTests(TestCase):
                 HTTP_HOST="management.twocomms.shop",
             )
         self.assertEqual(response.status_code, 200)
-        handle.assert_called_once()
+        handle.assert_not_called()
+        self.assertFalse(IgWebhookInboxEvent.objects.exists())
+        self.assertFalse(InstagramBotMessage.objects.exists())
 
     def test_signed_inbound_ack_does_not_run_work_or_spawn_request_thread(self):
         payload = {
@@ -94,7 +122,7 @@ class WebhookEndpointSecurityTests(TestCase):
                 }],
             }],
         }
-        raw = json.dumps(payload).encode("utf-8")
+        raw = json.dumps(self._owned_payload(payload)).encode("utf-8")
         digest = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
         with patch.dict(os.environ, {"IG_APP_SECRET": "test-secret"}, clear=True), \
              patch("management.bot_webhook.bot.record_raw_event"), \
@@ -115,6 +143,8 @@ class WebhookEndpointSecurityTests(TestCase):
         self.assertEqual(response.status_code, 200)
         classify.assert_not_called()
         webhook_threading.Thread.assert_not_called()
+        self._assert_durable_only()
+        self.assertEqual(self._drain(), 1)
         message = InstagramBotMessage.objects.get(mid="fast-path-mid")
         self.assertEqual(message.status, InstagramBotMessage.Status.PENDING)
         job = IgConversationAnalysisJob.objects.get(client=message.client)
@@ -130,6 +160,8 @@ class WebhookEndpointSecurityTests(TestCase):
                 HTTP_X_HUB_SIGNATURE_256=f"sha256={digest}",
             )
         self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(IgWebhookInboxEvent.objects.count(), 1)
+        self.assertEqual(self._drain(), 0)
         self.assertEqual(InstagramBotMessage.objects.filter(mid="fast-path-mid").count(), 1)
         self.assertEqual(IgConversationAnalysisJob.objects.filter(client=message.client).count(), 1)
 
@@ -148,7 +180,7 @@ class WebhookEndpointSecurityTests(TestCase):
                 }],
             }],
         }
-        raw = json.dumps(payload).encode("utf-8")
+        raw = json.dumps(self._owned_payload(payload)).encode("utf-8")
         digest = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
 
         with patch.dict(os.environ, {"IG_APP_SECRET": "test-secret"}, clear=True), \
@@ -161,6 +193,9 @@ class WebhookEndpointSecurityTests(TestCase):
                 HTTP_HOST="management.twocomms.shop",
                 HTTP_X_HUB_SIGNATURE_256=f"sha256={digest}",
             )
+            self.assertEqual(response.status_code, 200)
+            self._assert_durable_only()
+            self.assertEqual(self._drain(), 1)
 
         self.assertEqual(response.status_code, 200)
         message = InstagramBotMessage.objects.get(mid="unlisted-webhook-mid")
@@ -203,7 +238,7 @@ class WebhookEndpointSecurityTests(TestCase):
                 }],
             }],
         }
-        raw = json.dumps(payload).encode("utf-8")
+        raw = json.dumps(self._owned_payload(payload)).encode("utf-8")
         digest = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
         with patch.dict(os.environ, {"IG_APP_SECRET": "test-secret"}, clear=True), \
              patch("management.bot_webhook.bot.record_raw_event"), \
@@ -221,6 +256,8 @@ class WebhookEndpointSecurityTests(TestCase):
         classify.assert_not_called()
         deliver.assert_not_called()
         webhook_threading.Thread.assert_not_called()
+        self._assert_durable_only()
+        self.assertEqual(self._drain(), 1)
         client = IgClient.objects.get(igsid="manager-echo-user")
         self.assertTrue(client.manager_takeover)
         message = InstagramBotMessage.objects.get(mid="manager-echo-mid")
@@ -245,6 +282,8 @@ class WebhookEndpointSecurityTests(TestCase):
                 HTTP_X_HUB_SIGNATURE_256=f"sha256={digest}",
             )
         self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(IgWebhookInboxEvent.objects.count(), 1)
+        self.assertEqual(self._drain(), 0)
         self.assertEqual(
             InstagramBotMessage.objects.filter(mid="manager-echo-mid").count(),
             1,
@@ -267,7 +306,7 @@ class WebhookEndpointSecurityTests(TestCase):
                 }],
             }],
         }
-        raw = json.dumps(payload).encode("utf-8")
+        raw = json.dumps(self._owned_payload(payload)).encode("utf-8")
         digest = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
 
         def partially_schedule_then_fail(client, message, **_kwargs):
@@ -285,7 +324,7 @@ class WebhookEndpointSecurityTests(TestCase):
              patch(
                  "management.services.bot_conversation_analysis.schedule_analysis",
                  side_effect=partially_schedule_then_fail,
-             ):
+             ) as schedule:
             response = self.client.post(
                 "/bot/webhook/",
                 data=raw,
@@ -293,15 +332,22 @@ class WebhookEndpointSecurityTests(TestCase):
                 HTTP_HOST="management.twocomms.shop",
                 HTTP_X_HUB_SIGNATURE_256=f"sha256={digest}",
             )
+            self.assertEqual(response.status_code, 200)
+            schedule.assert_not_called()
+            self._assert_durable_only()
+            self.assertEqual(self._drain(), 1)
+            schedule.assert_called_once()
         self.assertEqual(response.status_code, 200)
         message = InstagramBotMessage.objects.get(mid="durability-mid")
         self.assertEqual(message.status, InstagramBotMessage.Status.PENDING)
         self.assertFalse(IgConversationAnalysisJob.objects.filter(client=message.client).exists())
         deferred = InstagramBotLog.objects.get(event="analysis_schedule_deferred")
         self.assertEqual(deferred.level, "warning")
-        self.assertEqual(deferred.detail, "RuntimeError")
+        self.assertEqual(json.loads(deferred.detail)["schema_version"], 1)
+        self.assertNotIn("analysis queue unavailable", deferred.detail)
+        self.assertIsNotNone(IgWebhookInboxEvent.objects.get().processed_at)
 
-    def test_signed_manager_echo_returns_retry_without_partial_message_when_scheduling_fails(self):
+    def test_signed_manager_echo_keeps_durable_retry_without_partial_message_when_scheduling_fails(self):
         payload = {
             "entry": [{
                 "messaging": [{
@@ -315,14 +361,14 @@ class WebhookEndpointSecurityTests(TestCase):
                 }],
             }],
         }
-        raw = json.dumps(payload).encode("utf-8")
+        raw = json.dumps(self._owned_payload(payload)).encode("utf-8")
         digest = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
         with patch.dict(os.environ, {"IG_APP_SECRET": "test-secret"}, clear=True), \
              patch("management.bot_webhook.bot.record_raw_event"), \
              patch(
                  "management.services.bot_conversation_analysis.schedule_analysis",
                  side_effect=RuntimeError("analysis queue unavailable"),
-             ):
+             ) as schedule:
             response = self.client.post(
                 "/bot/webhook/",
                 data=raw,
@@ -330,7 +376,16 @@ class WebhookEndpointSecurityTests(TestCase):
                 HTTP_HOST="management.twocomms.shop",
                 HTTP_X_HUB_SIGNATURE_256=f"sha256={digest}",
             )
-        self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.status_code, 200)
+            schedule.assert_not_called()
+            self._assert_durable_only()
+            self.assertEqual(self._drain(), 0)
+        receipt = IgWebhookInboxEvent.objects.get()
+        self.assertEqual(receipt.decision, "accepted")
+        self.assertIsNone(receipt.processed_at)
+        self.assertEqual(receipt.attempts, 1)
+        self.assertEqual(receipt.last_error, "RuntimeError")
+        self.assertIsNotNone(receipt.next_attempt_at)
         self.assertFalse(
             InstagramBotMessage.objects.filter(mid="manager-durability-mid").exists()
         )
@@ -339,3 +394,9 @@ class WebhookEndpointSecurityTests(TestCase):
                 client__igsid="manager-durability-user"
             ).exists()
         )
+        # The authenticated receipt survives failure and can materialize once
+        # the scheduler recovers; no new webhook delivery is required.
+        IgWebhookInboxEvent.objects.filter(pk=receipt.pk).update(next_attempt_at=None)
+        self.assertEqual(self._drain(), 1)
+        self.assertEqual(InstagramBotMessage.objects.filter(mid="manager-durability-mid").count(), 1)
+        self.assertEqual(IgConversationAnalysisJob.objects.filter(client__igsid="manager-durability-user").count(), 1)

@@ -134,6 +134,7 @@ def _contracted_size_negation(before):
 
 def _source_size(text: str) -> str:
     """A chosen size, with explicit corrections winning over rejected mentions."""
+    original = text
     text = _preference_source_text(text)
     candidates = list(_SIZE_RE.finditer(text))
     selected = []
@@ -157,6 +158,19 @@ def _source_size(text: str) -> str:
         token = re.sub(r"\s+", "", match.group()).casefold()
         if token in {"с", "м"} and text.strip(" .!").casefold() != token and not re.search(r"(?:розмір|размер|size)\s*$", before):
             continue
+        # Distinct affirmative mentions usually require clarification. A
+        # current, explicit self-correction replaces earlier mentions instead:
+        # "L. Ні, краще M". Question, quote/report and negation checks above
+        # still apply to the new choice; unordered alternatives remain below.
+        if (re.search(r"(?:^|[.!?;\n,])\s*(?:(?:ні|нет|no)\s*,?\s*"
+            r"(?:краще|лучше|better|actually|rather|make\s+it)|"
+            r"(?:насправді|на\s+самом\s+деле|actually|rather))\s+"
+            r"(?:(?:розмір|размер|size)\s+)?$", text[:match.start()], re.I)
+            and not re.search(r"\b(?:мабуть|можливо|подумаю|наверно|возможно|maybe|perhaps|might)\b"
+                r"|не\s+(?:впевнен\w*|уверен\w*)|not\s+sure|still\s+thinking", segment)
+            and not re.search(r"написан\w*|написав\w*|писа[вл]\w*|\b(?:said|wrote|reported|caption|description)\b",
+                original[start:end], re.I)):
+            selected.clear()
         selected.append(_canonical_source_size(token))
     if re.search(r"\b(?:или|або|чи|or)\b|/", text) and len(candidates) > 1:
         return ""

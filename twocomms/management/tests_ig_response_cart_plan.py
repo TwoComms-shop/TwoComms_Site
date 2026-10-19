@@ -237,10 +237,13 @@ class ResponseCartPlanTests(unittest.TestCase):
                 if single:
                     field["source"].pop("operation_index", None)
         capture["capture_digest"] = capture_digest({key: value for key, value in capture.items() if key != "capture_digest"})
-        client = SimpleNamespace(pk=4, current_commercial_episode_id=7, privacy_erasure_started_at=None)
-        bundle = {"sources": [{"message_id": 8, "role": "user", "text": "Худі M і футболка L",
-            "source_namespace": "test:ig", "provider_created_at": stamp}]}
-        revision = SimpleNamespace(client_id=4, bundle_snapshot=bundle, snapshot_digest=capture_digest(bundle), erasure_started_at_snapshot=None)
+        client = SimpleNamespace(pk=4, igsid="response-cart-owner", language="uk",
+            current_commercial_episode_id=7, privacy_erasure_started_at=None)
+        bundle = {"permission_epoch": 0, "sources": [{"message_id": 8, "role": "user", "text": "Худі M і футболка L",
+            "source_namespace": "test:ig", "source_digest": "c" * 64, "provider_created_at": stamp}]}
+        revision = SimpleNamespace(pk=44, client=client, client_id=client.pk, permission_epoch=0,
+            bundle_snapshot=bundle, snapshot_digest=capture_digest(bundle), erasure_started_at_snapshot=None,
+            action_receipts={}, generation_proposal={})
         return capture, client, revision
 
     def test_explicit_original_cart_single_and_multiline_never_recaptures(self):

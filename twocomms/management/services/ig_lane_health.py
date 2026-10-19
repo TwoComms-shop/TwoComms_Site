@@ -213,7 +213,12 @@ def _revision_lane(*, now, settings_row, allowed, observation_limit=None, includ
     ).select_related("client", "turn").order_by("overall_deadline", "id")
 
     def manual_owned(row):
-        return bool(row.manual_owner) if observation_limit is not None else _manual_owned(row)
+        owned = bool(row.manual_owner) if observation_limit is not None else _manual_owned(row)
+        if not owned:
+            return False
+        from management.services.ig_response_debt import response_obligation
+
+        return not response_obligation(row)["requires_attention"]
 
     def classify(row):
         if row.uncertain:
@@ -301,14 +306,18 @@ def _revision_lane(*, now, settings_row, allowed, observation_limit=None, includ
     # with that classifier; the old SQL predicate only covered empty recovery
     # state and reported a false zero for an unowned manual recovery.
     from management.services.ig_revision_recovery import execution_resume_is_current
-    risk_query = query.filter(recovery_state="manual")
+    risk_query = query.filter(Q(recovery_state="manual") | Q(manual_owner=True))
     risk_complete = True
     if observation_limit is not None:
         risk_rows = list(risk_query[:sample_limit + 1])
         risk_complete = len(risk_rows) <= sample_limit
         risk_query = risk_rows[:sample_limit]
     for recovery in risk_query:
-        if recovery.uncertain or recovery.failed_effect or recovery.manual_owner:
+        if recovery.uncertain or recovery.failed_effect:
+            continue
+        if recovery.manual_owner:
+            if not manual_owned(recovery):
+                bad += 1
             continue
         if not execution_resume_is_current(recovery, now=now):
             bad += 1

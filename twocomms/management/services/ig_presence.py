@@ -587,8 +587,9 @@ class PresenceSession:
 
     def _run(self):
         try:
-            # An unsupported seen action must not suppress independent typing.
-            self._perform("mark_seen")
+            # A read receipt is customer-visible acknowledgement. Preparation
+            # and typing do not prove an answer was delivered; defer seen until
+            # the caller confirms substantive SENT evidence below.
             if not self._perform("typing_on"):
                 return
             next_refresh = time.monotonic() + self.refresh_seconds
@@ -736,11 +737,17 @@ def start_presence(settings_row, *, client_id, recipient_id, owner_token,
                 return client["automation_lease_token"] in {"", owner_token}
             if client["automation_lease_token"] != owner_token or not client["automation_lease_until"] or client["automation_lease_until"] <= timezone.now():
                 return False
+            from management.services.ig_ingress_source_proof import presence_source_current
+            if not presence_source_current(namespace, client_id, recipient_id, source_watermark):
+                return False
             current = capture_reply_permission(settings_row.pk, client_id)
             return bool(current and current.settings_epoch == permission.settings_epoch and current.client_epoch == permission.client_epoch)
 
         def completed_guard():
             if not guard(True) or completion_check is None:
+                return False
+            from management.services.ig_ingress_source_proof import presence_source_current
+            if not presence_source_current(namespace, client_id, recipient_id, source_watermark):
                 return False
             current = capture_reply_permission(settings_row.pk, client_id)
             return bool(current and current.settings_epoch == permission.settings_epoch

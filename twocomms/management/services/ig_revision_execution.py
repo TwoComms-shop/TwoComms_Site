@@ -33,6 +33,13 @@ from management.services.ig_turn_revisions import (
 MAX_DUE_SCAN = 50
 
 
+def available_client_automation_q(*, now):
+    """Cheap queue admission only; the consumer still acquires the lease CAS."""
+    return (Q(client__automation_lease_token="")
+        | Q(client__automation_lease_until__isnull=True)
+        | Q(client__automation_lease_until__lte=now))
+
+
 @dataclass(frozen=True)
 class RevisionPreparationResult:
     revision_id: int = 0
@@ -102,6 +109,7 @@ def due_revision_ids(*, now=None, limit: int = 25, cutover_at=None, source_produ
                 IgRevisionDeliveryEffect.objects.filter(revision_id=OuterRef("pk"))
             )
         ).filter(active_slot=1)
+        .filter(available_client_automation_q(now=now))
         .filter(overall_deadline__gt=now)
         .filter(
             Q(

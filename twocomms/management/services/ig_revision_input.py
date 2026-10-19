@@ -117,8 +117,13 @@ def decide_revision_input(revision_id, token, *, settings_id, now=None):
         )
         already_counted = recent.filter(snapshot_digest=revision.snapshot_digest).exists()
         admitted_count = recent.values("snapshot_digest").distinct().count()
+        rate_window = None
         if rate_counted and not already_counted and admitted_count >= RATE_LIMIT:
-            origin, reason, reply, rate_counted = "no_reply", "rate_limited", "", False
+            anchor = recent.order_by("created_at", "pk").first()
+            rate_window = {"anchor_revision_id": anchor.pk if anchor else revision.pk,
+                "until": ((anchor.created_at if anchor else now) + RATE_WINDOW).isoformat(),
+                "limit": RATE_LIMIT, "admitted_count": admitted_count}
+            origin, reason, reply, rate_counted = "rate_handoff", "rate_limited", "", False
         receipt = {
             "version": VERSION, "origin": origin, "reason": reason,
             "snapshot_digest": revision.snapshot_digest,
@@ -130,6 +135,8 @@ def decide_revision_input(revision_id, token, *, settings_id, now=None):
             "static_settings_digest": _digest({"ai_enabled": bool(settings_row.ai_enabled), "trigger_text": settings_row.trigger_text, "reply_text": settings_row.reply_text}),
             "rate_counted": rate_counted, "recorded_at": now.isoformat(),
         }
+        if rate_window:
+            receipt["rate_window"] = rate_window
         revision.action_receipts = {**(revision.action_receipts or {}), RECEIPT_KEY: receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])
         return RevisionInputDecision(True, origin, reason, receipt)
@@ -146,6 +153,8 @@ def complete_no_reply_input(revision_id, token):
         if client is None or revision is None or client.privacy_erasure_started_at is not None:
             return False
         receipt = (revision.action_receipts or {}).get(RECEIPT_KEY) or {}
+        if receipt.get("reason") == "rate_limited":
+            return False
         if receipt.get("origin") != "no_reply" or receipt.get("snapshot_digest") != revision.snapshot_digest:
             return False
         if revision.state == revision.State.PROCESSED:

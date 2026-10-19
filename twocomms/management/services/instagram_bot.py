@@ -12845,9 +12845,14 @@ def _promote_manual_refresh_message(
     force_observed: bool = False,
 ) -> str:
     """Promote a matching history row when its delayed live webhook arrives."""
+    from management.services.ig_ingress_source_proof import is_promotable_poll_placeholder
+
+    poll_placeholder = source == "webhook" and is_promotable_poll_placeholder(
+        existing, current_settings, received_at=received_at,
+    )
     if (
         source != "webhook"
-        or existing.source != "manual_refresh"
+        or not (existing.source == "manual_refresh" or poll_placeholder)
         or existing.sender_id != sender_id
         or existing.client_id != client.pk
         or existing.role != InstagramBotMessage.Role.USER
@@ -12875,7 +12880,7 @@ def _promote_manual_refresh_message(
         return False
     incoming_text = _project_media_text(text, attachment_metadata)
     existing_text = (existing.text or "").strip()
-    if incoming_text and existing_text not in ({""} | _GENERIC_MEDIA_TEXTS):
+    if incoming_text and not poll_placeholder and existing_text not in ({""} | _GENERIC_MEDIA_TEXTS):
         if incoming_text != existing_text:
             return ""
     update_fields = []
@@ -13185,6 +13190,7 @@ def enqueue_inbound(
     reply_to_provider_message_id: str = "",
     quick_reply_payload: str = "",
     referral_payload: dict | None = None,
+    poll_ingress_proof: dict | None = None,
     persistence_only: bool = False,
     _commercial_lock_held: bool = False,
 ) -> bool:
@@ -13199,6 +13205,17 @@ def enqueue_inbound(
         return False
     if mid and not _valid_message_id(mid):
         return False
+    if source == "poll":
+        from management.services.ig_ingress_source_proof import validate_polled_ingress_proof
+
+        if not validate_polled_ingress_proof(
+            s, poll_ingress_proof, sender_id=sender_id, text=text, mid=mid,
+            attachments=attachments, attachment_metadata=attachment_metadata,
+            received_at=received_at,
+            reply_to_provider_message_id=reply_to_provider_message_id,
+            quick_reply_payload=quick_reply_payload,
+        ):
+            return False
     if not text and not attachments:
         if not attachment_metadata:
             return False  # ні тексту, ні вкладення, ні контексту події
@@ -13250,6 +13267,7 @@ def enqueue_inbound(
                 reply_to_provider_message_id=reply_to_provider_message_id,
                 quick_reply_payload=quick_reply_payload,
                 referral_payload=referral_payload,
+                poll_ingress_proof=poll_ingress_proof,
                 persistence_only=persistence_only,
                 _commercial_lock_held=True,
             )
@@ -13421,9 +13439,15 @@ def enqueue_inbound(
                 try:
                     with transaction.atomic():
                         media_scope = mid or synthetic_event_key
+                        initial_media_metadata = list(attachment_metadata or ()) or _attachment_media_metadata(
+                            attachments, source=source,
+                        )
+                        if source == "poll":
+                            # Signed current ingress permits a text answer;
+                            # polled URLs still have no capture authority.
+                            initial_media_metadata = _historicalize_provider_media(initial_media_metadata)
                         initial_media = _normalize_message_media(
-                            list(attachment_metadata or ())
-                            or _attachment_media_metadata(attachments, source=source),
+                            initial_media_metadata,
                             message_scope=media_scope,
                             identity_origin=(
                                 "ingress" if source == "webhook" else "legacy_positional"
@@ -13488,6 +13512,10 @@ def enqueue_inbound(
                     promoted = promotion_state == "promoted"
                     observed_only = promotion_state == "observed"
                     reply_eligible = promoted
+            if source == "poll" and not observed_only:
+                from management.services.ig_ingress_source_proof import bind_polled_ingress_proof
+
+                bind_polled_ingress_proof(msg, poll_ingress_proof)
             _observe_conversion_inbound(client, msg, referral=referral_payload)
             if not observed_only:
                 client.touch_inbound()
@@ -13506,7 +13534,7 @@ def enqueue_inbound(
                     log("warning", "customer_turn", type(exc).__name__)
                     if persistence_only:
                         raise
-                if source == "webhook":
+                if source in {"webhook", "poll"}:
                     from management.services.ig_revision_live import revision_execution_enabled, revision_owned_turn_ids
 
                     # Inbox persistence_only is independent of execution rollout.
@@ -17510,6 +17538,14 @@ def _persist_polled_message(
     attachment_metadata = _historicalize_provider_media(
         _provider_attachment_metadata(message)
     )
+    # Normalize before creation as well as merges, using the same provider
+    # identity so an identical history replay is not new analysis evidence.
+    initial_media = _normalize_message_media(
+        attachment_metadata or _attachment_media_metadata(
+            attachments, source="poll_history" if observed_only else "poll",
+        ),
+        message_scope=mid,
+    )
     if not text:
         text = _media_fallback_text(attachment_metadata) if attachment_metadata else "(медіа)"
     is_page_side = bool(sender and sender == page_id)
@@ -17533,13 +17569,7 @@ def _persist_polled_message(
                 "status": InstagramBotMessage.Status.DONE,
                 "source": "poll_history" if observed_only else "poll",
                 "attachments": json.dumps(attachments) if attachments else "",
-                "attachment_media": (
-                    attachment_metadata
-                    or _attachment_media_metadata(
-                        attachments,
-                        source="poll_history" if observed_only else "poll",
-                    )
-                ),
+                "attachment_media": initial_media,
                 "provider_created_at": _parse_ig_time(
                     message.get("created_time", "")
                 ),
@@ -17586,7 +17616,7 @@ def _persist_polled_message(
                 media = _merge_attachment_media(
                     media,
                     incoming_media,
-                    message_scope=row.pk,
+                    message_scope=mid,
                 )[:8]
                 projected_text = _project_media_text(row.text, media)
                 if projected_text != row.text:
@@ -17927,8 +17957,7 @@ def _polled_message_is_historical(
     if reply_after and created and created <= reply_after:
         return True
     return bool(
-        instagram_login
-        and created
+        created
         and created <= now - POLL_REPLY_WINDOW
     )
 
@@ -18246,6 +18275,8 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
                 if not message_text and not message_attachments:
                     _persist_polled_message(s, message, observed_only=True)
                     continue
+                from management.services.ig_ingress_source_proof import build_polled_ingress_proof
+
                 if enqueue_inbound(
                     s,
                     sender_id=sender,
@@ -18253,6 +18284,10 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
                     mid=message["id"],
                     source="poll",
                     attachments=message_attachments,
+                    attachment_metadata=_provider_attachment_metadata(message),
+                    poll_ingress_proof=build_polled_ingress_proof(
+                        s, message, conversation_id=cid,
+                    ),
                     received_at=created,
                     reply_to_provider_message_id=_reply_to_provider_message_id(message),
                     quick_reply_payload=_quick_reply_payload(message),
@@ -18331,6 +18366,8 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
                     _persist_polled_message(s, message, observed_only=True)
                 ) and conversation_handled
                 continue
+            from management.services.ig_ingress_source_proof import build_polled_ingress_proof
+
             added = enqueue_inbound(
                 s,
                 sender_id=sender,
@@ -18338,6 +18375,10 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
                 mid=mid,
                 source="poll",
                 attachments=message_attachments,
+                attachment_metadata=_provider_attachment_metadata(message),
+                poll_ingress_proof=build_polled_ingress_proof(
+                    s, message, conversation_id=cid,
+                ),
                 received_at=created,
                 reply_to_provider_message_id=_reply_to_provider_message_id(message),
                 quick_reply_payload=_quick_reply_payload(message),

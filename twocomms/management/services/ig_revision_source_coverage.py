@@ -206,14 +206,17 @@ def plan_source_transfer(head, client, fresh_messages, *, now):
         return denied("existing_manual_debt")
     if TRANSFER_IN in receipts and not validate_source_transfer(head):
         return denied("predecessor_transfer_invalid")
-    rows = list(head.sources.select_for_update().select_related("message").order_by("ordinal", "id"))
+    rows = list(head.sources.select_for_update().select_related("message__client").order_by("ordinal", "id"))
     if not rows or len(rows) != head.source_count or len(rows) + len(fresh_messages) > MAX_SOURCES:
         return denied("source_count_limit")
     payloads = _copied_source_payloads(rows)
     for row, payload in zip(rows, payloads, strict=True):
         message = row.message
+        from management.services.ig_ingress_source_proof import is_current_customer_source
+
         if (row.role != "user" or message.role != "user" or message.client_id != client.pk
-            or message.source != "webhook" or message.sender_id != client.igsid
+            or not is_current_customer_source(message, namespace=row.source_namespace)
+            or message.sender_id != client.igsid
             or message.status != "pending" or message.send_state
             or message.quick_reply_payload
             or row.source_digest != _digest({key: value for key, value in payload.items() if key != "source_digest"})

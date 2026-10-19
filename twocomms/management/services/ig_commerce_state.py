@@ -684,7 +684,6 @@ def apply_turn(
     # later website basket. Never fabricate a provider timestamp or permission.
     if (source.role == "user" and source.source == "webhook"
             and source.sender_id == locked_client.igsid and source.status != "failed"):
-        from management.models import IgCommerceSelectionTransition
         from management.services.ig_checkout_cart_amendments import verify_native_transition, CheckoutAmendmentError
         native = (IgCommerceSelectionTransition.objects.filter(session__client=locked_client,
             session__commercial_episode_id=locked_client.current_commercial_episode_id,

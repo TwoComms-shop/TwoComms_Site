@@ -405,7 +405,9 @@ class RevisionCheckoutV2PrepayTests(TransactionTestCase):
 
     def test_latest_unrelated_customer_message_cannot_reuse_old_policy_source(self):
         self.controls[-1] = {"kind": "paylink", "value": "prepay"}
-        InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid, role="user", text="Добре")
+        InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid,
+            role="user", source="webhook", provider_namespace=self.source.provider_namespace,
+            mid="checkout-new-current-question", provider_created_at=timezone.now(), status="pending", text="Добре")
         result = self._prepare()
         self.assertFalse(result.planned)
         self.assertIn("readiness:pending_inbound", result.reasons)

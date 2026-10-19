@@ -8755,7 +8755,7 @@ class IgCustomerTurnRevision(models.Model):
                 prior_receipts = previous["action_receipts"] or {}
                 allowed_receipts = {
                     "input_decision", "client_configuration_update", "manager_handoff",
-                    "rate_alert", "postback_decision", "normal_followups", "commerce_reduction",
+                    "rate_alert", "rate_handoff", "postback_decision", "normal_followups", "commerce_reduction",
                     "manual_resume_authorization", "generation_admission", "recovery_lineage",
                     "policy_readiness_failure",
                     "media_unavailable_reply", "provider_execution_manifest",

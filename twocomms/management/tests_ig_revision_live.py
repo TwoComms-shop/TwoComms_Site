@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.db import connection
+from django.db.models import Max
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
@@ -40,17 +41,18 @@ class RevisionLiveTests(TransactionTestCase):
         self.addCleanup(environment.stop)
         snapshot = {"schema_version": 1, "instructions": []}
         self.publication = BotPolicyPublication.objects.create(
-            version=1, kind=BotPolicyPublication.Kind.PUBLISH, schema_version=1,
+            version=int(BotPolicyPublication.objects.aggregate(value=Max("version"))["value"] or 0) + 1,
+            kind=BotPolicyPublication.Kind.PUBLISH, schema_version=1,
             snapshot=snapshot,
             snapshot_hash=hashlib.sha256(json.dumps(
                 snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             ).encode()).hexdigest(),
             compiler_version="instruction-set-v1", instruction_count=0,
         )
-        self.settings = InstagramBotSettings.objects.create(
-            pk=1, is_enabled=True, ai_enabled=True, ig_user_id="owner-1",
-            active_instruction_publication=self.publication,
-        )
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(pk=1, defaults={
+            "is_enabled": True, "ai_enabled": True, "ig_user_id": "owner-1",
+            "reply_permission_epoch": 0, "active_instruction_publication": self.publication,
+        })
         self.customer = IgClient.objects.create(igsid="17840000000001", language="uk")
         self.source = self._message("Що ви можете порадити?", "first")
         self.turn = IgCustomerTurn.objects.create(
@@ -528,7 +530,7 @@ class RevisionLiveTests(TransactionTestCase):
 
         self._prepare()
         successor_publication = BotPolicyPublication.objects.create(
-            version=2, kind=BotPolicyPublication.Kind.PUBLISH, schema_version=1,
+            version=self.publication.version + 1, kind=BotPolicyPublication.Kind.PUBLISH, schema_version=1,
             snapshot=self.publication.snapshot, snapshot_hash=self.publication.snapshot_hash,
             compiler_version="instruction-set-v1", instruction_count=0,
         )
@@ -638,7 +640,7 @@ class RevisionLiveTests(TransactionTestCase):
             revision = create_collecting_revision(turn, [source], bypass_quiet=True).revision
             prepared = prepare_revision(revision.pk, lambda **_kwargs: None)
             limited = decide_revision_input(revision.pk, prepared.execution_token, settings_id=self.settings.pk)
-        self.assertEqual(limited.origin, "no_reply")
+        self.assertEqual(limited.origin, "rate_handoff")
         self.assertEqual(limited.reason, "rate_limited")
         self.assertFalse(GeminiRequest.objects.exists())
 
@@ -858,7 +860,7 @@ class RevisionLiveTests(TransactionTestCase):
         self.assertEqual(task.manager_context["sources"][0]["message_id"], self.source.pk)
         self.assertFalse(task.manager_context["authority"]["price_confirmed"])
 
-    def test_rate_alert_is_deferred_db_intent_and_does_not_send_customer_reply(self):
+    def test_rate_alert_records_one_handoff_ack_and_keeps_customer_question_owed(self):
         from management.models import IgBotNotification
 
         self._prepare()
@@ -867,13 +869,15 @@ class RevisionLiveTests(TransactionTestCase):
             patch("management.services.instagram_bot._deliver_manager_notification") as deliver_notification,
         ):
             result, generation, http = self._execute()
-        self.assertEqual(result.state, "completed", result.reasons)
-        self.assertEqual(result.reasons, ("rate_limited",))
+        self.assertEqual(result.state, "delivery_pending", result.reasons)
+        self.assertEqual(result.reasons, ("technical_holding_sent",))
         generation.assert_not_called()
-        http.assert_not_called()
+        self.assertEqual(http.call_count, 1)
         deliver_notification.assert_not_called()
         self.assertEqual(IgBotNotification.objects.get().event_type, "sender_rate_limited")
         self.assertEqual(IgBotNotification.objects.get().status, "pending")
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.status, "pending")
 
     def test_diagnostic_postback_is_deterministic_and_has_no_gemini_graph(self):
         self.source.quick_reply_payload = f"twc:1:diagnostic:inout:{self.customer.pk}"

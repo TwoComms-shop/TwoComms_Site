@@ -245,8 +245,15 @@ class ReplyDebtInventoryTests(TestCase):
         first = self._source(client)
         second = self._source(client)
         revision = self._canonical_revision(client, [first, second])
-        # A physical reply has one anchor, but its immutable bundle covers both
-        # source messages in the logical customer turn.
+        # Both semantic coverage and physical delivery bind the whole source
+        # bundle; a physical anchor alone does not prove both questions answered.
+        coverage = {"version": 1, "snapshot_digest": revision.snapshot_digest,
+                    "source_message_ids": [first.pk, second.pk],
+                    "covered": [f"{first.pk}:info:product", f"{second.pk}:info:product"],
+                    "remaining": [], "disposition": "complete"}
+        coverage["digest"] = _digest(coverage)
+        revision.action_receipts = {"response_coverage": coverage}
+        revision.save(update_fields=["action_receipts"])
         self._effects(revision, first, [IgRevisionDeliveryEffect.State.SENT])
         with CaptureQueriesContext(connection) as queries:
             report = inventory_reply_debt(source_message_ids=[second.pk, first.pk])

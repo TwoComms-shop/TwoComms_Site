@@ -260,15 +260,22 @@ class ReorderConsumerGuardTests(SimpleTestCase):
         import hashlib
         from types import SimpleNamespace
         from management.tests_ig_response_cart_plan import ResponseCartPlanTests
+        from management.services.ig_turn_intelligence import capture_digest
         plan = ResponseCartPlanTests().plan()
         text = "Ещё такую же"
         row = {"schema": "commerce-source-observation.v1", "classification": "reorder_clarification",
             "reason": "reorder_order_ambiguous", "client_id": 4, "source_message_id": 8,
             "source_digest": hashlib.sha256(text.encode()).hexdigest(), "source_namespace": "test:ig",
             "reset_floor": 1, "event_at": "2026-10-06T12:00:00+00:00"}
-        revision = SimpleNamespace(action_receipts={"commerce_reduction": {"observations": [row]}},
-            bundle_snapshot={"sources": [{"message_id": 8, "text": text, "source_namespace": "test:ig"}]})
-        return plan, SimpleNamespace(pk=4), revision
+        client = SimpleNamespace(pk=4, igsid="reorder-consumer-owner", language="uk",
+            current_commercial_episode_id=7, privacy_erasure_started_at=None)
+        bundle = {"permission_epoch": 0, "sources": [{"message_id": 8, "role": "user", "text": text,
+            "source_namespace": "test:ig", "source_digest": row["source_digest"],
+            "provider_created_at": row["event_at"]}]}
+        revision = SimpleNamespace(pk=44, client=client, client_id=client.pk, permission_epoch=0,
+            action_receipts={"commerce_reduction": {"observations": [row]}}, generation_proposal={},
+            bundle_snapshot=bundle, snapshot_digest=capture_digest(bundle), erasure_started_at_snapshot=None)
+        return plan, client, revision
 
     def test_source_bound_pending_reorder_reaches_prompt_and_digest(self):
         from management.services.ig_response_plan import capture_response_plan
@@ -281,8 +288,10 @@ class ReorderConsumerGuardTests(SimpleTestCase):
 
     def test_changed_original_source_cannot_admit_observation(self):
         from management.services.ig_response_plan import capture_response_plan
+        from management.services.ig_turn_intelligence import capture_digest
         plan, client, revision = self.fixture()
         revision.bundle_snapshot["sources"][0]["text"] = "different original source"
+        revision.snapshot_digest = capture_digest(revision.bundle_snapshot)
         with patch("management.services.ig_response_plan._capture_response_plan_inputs", return_value=plan):
             guarded = capture_response_plan(client, revision=revision)
         self.assertEqual(guarded.plan_gap, "reorder_observation_changed")

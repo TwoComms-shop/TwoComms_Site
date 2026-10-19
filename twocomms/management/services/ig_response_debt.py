@@ -6,8 +6,9 @@ answered message, and a later unrelated reply is not proof that this debt ended.
 import re
 
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Q, Subquery
-from django.db.models.functions import Now
+from django.db.models import BigIntegerField, CharField, Count, Exists, F, OuterRef, Q, Subquery, Value
+from django.db.models.fields.json import KeyTextTransform, KeyTransform
+from django.db.models.functions import Cast, Concat, Now
 from django.utils import timezone
 
 from management.models import IgClient, IgCustomerTurnRevision, IgFollowUpTask
@@ -23,11 +24,28 @@ def paused_response_obligation_q():
     They do not acknowledge customer sources or prove transport delivery. A
     fresh inbound has its own successor and is not paused by this predicate.
     """
-    return Q(recovery_state="manual", recovery_code__in=PAUSED_RESPONSE_CODES,
-             claim_token="", lease_until__isnull=True)
+    case_key = Concat(Value("ig-rate-handoff:"), Cast(OuterRef("client_id"), CharField()),
+        Value(":"), Cast(OuterRef("action_receipts__rate_handoff__window__anchor_revision_id"), CharField()))
+    rate_task = IgFollowUpTask.objects.filter(
+        pk=Cast(OuterRef("action_receipts__rate_handoff__task_id"), BigIntegerField()),
+        client_id=OuterRef("client_id"), kind="manager_task", reason="revision_case:rate_limit_handoff",
+        event_key=case_key,
+        event_payload__rate_window_digest=OuterRef("action_receipts__rate_handoff__window_digest"))
+    rate_receipt = KeyTransform("rate_handoff", "action_receipts")
+    rate = Q(recovery_code="rate_limit_handoff",
+        action_receipts__rate_handoff__version="revision-rate-handoff-v1",
+        action_receipts__rate_handoff__substantive_obligation="open_manager_reply",
+        pk=Cast(KeyTextTransform("revision_id", rate_receipt), BigIntegerField()),
+        snapshot_digest=KeyTextTransform("snapshot_digest", rate_receipt)) & Q(Exists(rate_task))
+    return Q(recovery_state="manual", claim_token="", lease_until__isnull=True) & (
+        Q(recovery_code__in=PAUSED_RESPONSE_CODES) | rate)
 
 
 def response_obligation_paused(revision):
+    if (revision.recovery_state == "manual" and revision.recovery_code == "rate_limit_handoff"
+        and not revision.claim_token and revision.lease_until is None):
+        from management.services.ig_revision_rate_handoff import rate_handoff_scope_valid
+        return rate_handoff_scope_valid(revision)
     return (revision.recovery_state == "manual" and revision.recovery_code in PAUSED_RESPONSE_CODES
             and not revision.claim_token and revision.lease_until is None)
 
@@ -52,9 +70,12 @@ def response_coverage(revision):
     """Read a source-bound semantic receipt; physical SENT alone is not coverage."""
     from management.services.ig_revision_outbox import _digest
 
-    receipt = (revision.action_receipts or {}).get(COVERAGE_KEY) or {}
+    receipts = revision.action_receipts if isinstance(revision.action_receipts, dict) else {}
+    receipt = receipts.get(COVERAGE_KEY) or {}
     if not receipt:
         return {}
+    if not isinstance(receipt, dict) or not isinstance(revision.bundle_snapshot, dict):
+        return {"remaining": ["coverage_unverified"], "disposition": "manual"}
     material = {key: value for key, value in receipt.items() if key != "digest"}
     ids = [row.get("message_id") for row in (revision.bundle_snapshot or {}).get("sources", ())]
     if (receipt.get("version") != 1 or receipt.get("snapshot_digest") != revision.snapshot_digest
@@ -62,6 +83,30 @@ def response_coverage(revision):
         or receipt.get("source_message_ids") != ids or receipt.get("digest") != _digest(material)):
         return {"remaining": ["coverage_unverified"], "disposition": "manual"}
     return receipt
+
+
+def response_coverage_complete(revision):
+    """Missing semantic evidence cannot establish a completed customer answer."""
+    coverage = response_coverage(revision)
+    covered = coverage.get("covered")
+    if not (coverage.get("version") == 1 and coverage.get("disposition") == "complete"
+            and isinstance(covered, list) and all(isinstance(item, str) and item for item in covered)
+            and coverage.get("remaining") == []):
+        return False
+    if covered:
+        return True
+    # The native plan deliberately has no commerce obligations for an isolated
+    # greeting/thanks. Retain its actual validated plan receipt; an absent
+    # receipt, arbitrary empty list, mixed question or media cannot use this.
+    from management.services.ig_turn_intent import _NONACTION_GREETING
+
+    plan_digest = coverage.get("plan_digest")
+    sources = (revision.bundle_snapshot or {}).get("sources") or []
+    return bool(isinstance(plan_digest, str) and re.fullmatch(r"[0-9a-f]{64}", plan_digest)
+                and sources and all(isinstance(source, dict) and source.get("role") == "user"
+                    and _NONACTION_GREETING.fullmatch(str(source.get("text") or "").strip())
+                    and not source.get("media_parts") and not source.get("discovered_media")
+                    for source in sources))
 
 
 def record_response_coverage(revision_id, token, coverage):
@@ -180,6 +225,8 @@ class UtcObservationNow(Now):
 DEBT_REASON = "revision_case:execution_debt"
 DEBT_KIND = "revision_execution_debt"
 REASON_LABELS = {
+    "captured_state_exceeds_budget": "Підготовка відповіді зупинилася; потрібно опрацювати запит вручну",
+    "semantic_reply_incomplete": "Запит клієнта опрацьовано не повністю",
     "provider_dispatch_budget": "Потрібна відповідь команди: ліміт підготовки відповіді вичерпано",
     "provider_candidates_exhausted": "Не вдалося підготувати відповідь після кількох спроб",
     "generation_failed": "Бот не зміг підготувати відповідь",
@@ -205,6 +252,153 @@ def unresolved_reply_debts():
     ).exclude(status__in=(
         IgFollowUpTask.Status.COMPLETED, IgFollowUpTask.Status.CANCELLED,
     ))
+
+
+def reply_debt_notification_key(revision, source_ids):
+    from management.services.ig_revision_outbox import _digest
+
+    return f"revision-reply-debt:{revision.pk}:{_digest(list(source_ids))[:24]}"
+
+
+def ensure_reply_debt_notification(revision, task, *, now=None):
+    """Queue the exact manager handoff without making a provider request.
+
+    A task is internal ownership, not evidence that its owner was informed.
+    Source identity, rather than elapsed time, is the durable dedupe boundary.
+    """
+    from management.services.instagram_bot import notify_manager
+    from management.services.ig_alerts import client_admin_url
+
+    source_ids = list(revision.sources.order_by("ordinal", "id").values_list("message_id", flat=True))
+    if (not source_ids or task.status in {task.Status.COMPLETED, task.Status.CANCELLED}
+        or task.client_id != revision.client_id or task.event_key != f"ig-revision-debt:{revision.pk}"
+        or (task.event_payload or {}).get("source_message_ids") != source_ids):
+        return False
+    reason = str((task.event_payload or {}).get("reason") or "reply_unresolved")
+    return notify_manager(
+        f"Потрібна відповідь клієнту. {REASON_LABELS.get(reason, 'Запит залишився незавершеним.')}\n"
+        f"Клієнт #{revision.client_id}; запит #{revision.pk}; задача #{task.pk}.\n"
+        f"Перевірте запит і надішліть відповідь: {client_admin_url(revision.client_id)}",
+        dedupe_key=reply_debt_notification_key(revision, source_ids), event_type="escalation",
+        client=revision.client, deliver_immediately=False, raise_on_error=True,
+        metadata={"case_kind": DEBT_KIND, "manager_task_id": task.pk,
+                  "revision_id": revision.pk, "source_message_ids": source_ids,
+                  "snapshot_digest": revision.snapshot_digest, "reason": reason,
+                  "customer_reply_confirmed": False, "requires_human_review": True},
+    )
+
+
+def response_obligation(revision, *, task=None, effects=None, manager_notifications=None, _visited=()):
+    """Observe exact customer coverage separately from internal handoff state.
+
+    This function only reads. An unrelated outbound or manager notification
+    never covers the source; an operator disposition is not a delivered reply.
+    """
+    from management.models import IgBotNotification
+    from management.services.ig_revision_execution import _completion_decision, _whole_sent_proof
+
+    source_ids = [row.message_id for row in revision.sources.all()]
+    effects = list(revision.delivery_effects.all()) if effects is None else list(effects)
+    coverage = response_coverage(revision)
+    receipts = revision.action_receipts if isinstance(revision.action_receipts, dict) else {}
+    safe = receipts.get("provider_safe_reply") or {}
+    safe = safe if isinstance(safe, dict) else {"reply_mode": "neutral_ack"}
+    try:
+        proof = bool(effects and _whole_sent_proof(revision, effects)[0])
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        proof = False
+    acknowledged = proof and any(row.state == "sent" for row in effects)
+    complete = bool(proof and _completion_decision(effects) == (True, False, "delivered")
+                    and any(row.state == "sent" and row.purpose == "normal_reply"
+                            and row.group == "substantive_text" for row in effects)
+                    and response_coverage_complete(revision) and safe.get("reply_mode") != "neutral_ack")
+    if task is None:
+        task = IgFollowUpTask.objects.filter(client_id=revision.client_id,
+            event_key=f"ig-revision-debt:{revision.pk}", kind="manager_task", reason=DEBT_REASON).first()
+    payload = task.event_payload if task and isinstance(task.event_payload, dict) else {}
+    context = task.manager_context if task and isinstance(task.manager_context, dict) else {}
+    exact_task = bool(task and payload.get("source_message_ids") == source_ids
+                      and payload.get("revision_id") == revision.pk and context.get("owner") == "manager"
+                      and context.get("revision_id") == revision.pk)
+    review = (context.get("operator_review") or {}) if exact_task else {}
+    review = review if isinstance(review, dict) else {}
+    reviewed = bool(task and task.status == task.Status.CANCELLED
+                    and review.get("outcome") == "reviewed_no_reply"
+                    and review.get("revision_id") == revision.pk
+                    and review.get("source_message_ids") == source_ids and review.get("reply_confirmed") is False)
+    if reviewed:
+        from management.models import AdminAuditLog
+
+        reviewed = AdminAuditLog.objects.filter(action="ig_reply_debt_reviewed", entity_type="IgFollowUpTask",
+            entity_id=str(task.pk), after__revision_id=revision.pk, after__source_message_ids=source_ids,
+            after__outcome="reviewed_no_reply", after__reply_confirmed=False).exists()
+    settled = False
+    if exact_task and task.status == task.Status.COMPLETED and task.skip_reason == "manager_reply_confirmed":
+        from management.services.ig_lane_health import _manual_owner_tasks
+
+        settled = _manual_owner_tasks().filter(pk=task.pk).exists()
+    if manager_notifications is None:
+        manager_notifications = IgBotNotification.objects.filter(client_id=revision.client_id,
+            payload__manager_task_id=task.pk if exact_task else 0)
+    matching_notifications = [row for row in manager_notifications if exact_task
+        and row.client_id == revision.client_id and isinstance(row.payload, dict)
+        and row.payload.get("manager_task_id") == task.pk and row.payload.get("revision_id") == revision.pk
+        and row.payload.get("source_message_ids") == source_ids
+        and row.dedupe_key == reply_debt_notification_key(revision, source_ids)]
+    informed = any(row.status in {"sent", "resolved"} and row.sent_at and row.telegram_message_id
+                   for row in matching_notifications)
+    notification = next((row for row in matching_notifications if row.status in {
+        "pending", "sending", "failed", "unknown", "dead_letter"} or
+        (row.status in {"sent", "resolved"} and row.sent_at and row.telegram_message_id)), None)
+    waiting = bool(coverage.get("remaining") and delivered_selector_wait(revision, effects=effects))
+    disposition = ("answered" if complete or settled else "reviewed_no_reply" if reviewed
+                   else "waiting_on_customer" if waiting else "substantive_reply_owed")
+    result = {"source_message_ids": source_ids, "revision_id": revision.pk,
+            "task_id": task.pk if exact_task else None, "disposition": disposition,
+            "customer_ack_owed": bool(source_ids and not (acknowledged or complete or settled)),
+            "substantive_owed": bool(source_ids and not (complete or settled)),
+            "manager_informed": informed,
+            "manager_notification_recorded": notification is not None,
+            "manager_notification_id": notification.pk if notification else None,
+            "manager_notification_status": notification.status if notification else "",
+            "requires_attention": bool(source_ids and not (complete or settled or reviewed or waiting))}
+    if receipts.get("rate_handoff"):
+        from management.services.ig_revision_rate_handoff import rate_handoff_scope_valid, rate_handoff_answered
+
+        if rate_handoff_scope_valid(revision):
+            scope = receipts["rate_handoff"]
+            initial = scope.get("initial_scope") is True
+            notice = IgBotNotification.objects.filter(pk=scope["notification_id"],
+                client_id=revision.client_id, payload__manager_task_id=scope["task_id"],
+                payload__revision_id=revision.pk).first() if initial else None
+            if notice and notice.payload.get("source_message_ids") != source_ids:
+                notice = None
+            human_answered = rate_handoff_answered(revision)
+            result.update({"task_id": scope["task_id"], "disposition": "answered" if human_answered else "substantive_reply_owed",
+                "substantive_owed": not human_answered, "customer_ack_owed": not (acknowledged or human_answered),
+                "manager_informed": bool(notice and notice.status in {"sent", "resolved"}
+                    and notice.sent_at and notice.telegram_message_id),
+                "manager_notification_recorded": notice is not None,
+                "manager_notification_id": notice.pk if notice else None,
+                "manager_notification_status": notice.status if notice else "",
+                "requires_attention": not human_answered})
+    transfer = receipts.get("source_transfer_out") or {}
+    if (not effects and isinstance(transfer, dict) and transfer.get("successor_revision_id")
+        and revision.pk not in _visited and len(_visited) < 8):
+        from management.services.ig_revision_source_coverage import validate_source_transfer
+
+        successor = IgCustomerTurnRevision.objects.select_related("client").filter(
+            pk=transfer["successor_revision_id"], client_id=revision.client_id).first()
+        try:
+            valid_transfer = successor is not None and validate_source_transfer(successor)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            valid_transfer = False
+        if valid_transfer:
+            transferred = response_obligation(successor, _visited=(*_visited, revision.pk))
+            result.update({key: transferred[key] for key in (
+                "customer_ack_owed", "substantive_owed", "manager_informed", "requires_attention")})
+            result.update(disposition="transferred", successor_revision_id=successor.pk)
+    return result
 
 
 def record_reply_debt(revision, reason, *, effects=(), now=None):
@@ -236,6 +430,7 @@ def record_reply_debt(revision, reason, *, effects=(), now=None):
                 "automatic_http_retry": False},
         },
     )
+    ensure_reply_debt_notification(revision, task, now=now)
     return task
 
 
@@ -354,6 +549,44 @@ def review_reply_debt(client_id, task_id, *, actor, expected_revision_id, now=No
         return {"ok": True, "idempotent": False, "task_id": task.pk}
 
 
+def confirmed_human_reply_source(command, *, lock_parts=False):
+    """Read the same exact physical proof for settlement and later observation."""
+    from management.services.ig_human_reply_delivery import _part_rows, _valid_plan, _current_context_reason
+    from management.services.ig_human_reply_transport import has_planned_human_delivery
+    from management.ig_human_reply_models import HumanReplyPart
+    from management.services.ig_delivery_plan import DEFAULT_MAX_CHUNKS
+
+    client = command.client
+    if (client.hidden_at or client.privacy_erasure_started_at or command.state != command.State.SENT
+        or not command.context_message_id or not command.provider_started_at or not command.terminal_at
+        or not command.provider_message_ids
+        or len(set(command.provider_message_ids)) != len(command.provider_message_ids)):
+        return None
+    source = command.context_message
+    if (source is None or source.client_id != client.pk or source.role != "user"
+        or source.sender_id != client.igsid or command.recipient_igsid != client.igsid
+        or (source.provider_namespace and source.provider_namespace != command.provider_namespace)):
+        return None
+    if has_planned_human_delivery(command):
+        parts = (_part_rows(command) if lock_parts else list(HumanReplyPart.objects.filter(
+            command_id=command.pk).order_by("ordinal")[:DEFAULT_MAX_CHUNKS + 1]))
+        if (not _valid_plan(command, parts, current_owner=False) or _current_context_reason(command)
+            or any(part.state != part.State.SENT or not part.provider_started_at
+                   or not part.terminal_at or not part.provider_message_id for part in parts)
+            or [part.provider_message_id for part in parts] != command.provider_message_ids):
+            return None
+    else:
+        reply = command.reply_message
+        if (reply is None or reply.client_id != client.pk or reply.role != "manager"
+            or reply.source != "human_reply" or reply.status != "done" or reply.send_state != "sent"
+            or reply.provider_namespace != command.provider_namespace or reply.text != command.text
+            or reply.delivery_provider_message_ids != command.provider_message_ids
+            or reply.provider_message_id != command.provider_message_ids[0]
+            or command.context_revision != str(source.pk)):
+            return None
+    return source
+
+
 def settle_human_reply_obligation(command_id, *, now=None):
     """Settle only a confirmed human command's exact single-source reply debt.
 
@@ -363,8 +596,6 @@ def settle_human_reply_obligation(command_id, *, now=None):
     """
     from management.models import AdminAuditLog, InstagramBotMessage
     from management.ig_bot_models import HumanReplyCommand
-    from management.services.ig_human_reply_delivery import _part_rows, _valid_plan, _current_context_reason
-    from management.services.ig_human_reply_transport import has_planned_human_delivery
 
     identity = HumanReplyCommand.objects.filter(pk=command_id).values("client_id").first()
     if identity is None:
@@ -373,32 +604,12 @@ def settle_human_reply_obligation(command_id, *, now=None):
     with transaction.atomic():
         client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
         command = HumanReplyCommand.objects.select_for_update().select_related("context_message", "reply_message").filter(pk=command_id).first()
-        if (client is None or command is None or client.hidden_at or client.privacy_erasure_started_at
-            or command.state != command.State.SENT or not command.context_message_id
-            or not command.provider_started_at or not command.terminal_at
-            or not command.provider_message_ids or len(set(command.provider_message_ids)) != len(command.provider_message_ids)):
+        if client is None or command is None:
             return 0
-        source = command.context_message
-        if (source is None or source.client_id != client.pk or source.role != "user"
-            or source.sender_id != client.igsid or command.recipient_igsid != client.igsid
-            or (source.provider_namespace and source.provider_namespace != command.provider_namespace)):
+        command.client = client
+        source = confirmed_human_reply_source(command, lock_parts=True)
+        if source is None:
             return 0
-        if has_planned_human_delivery(command):
-            parts = _part_rows(command)
-            if (not _valid_plan(command, parts, current_owner=False) or _current_context_reason(command)
-                or any(part.state != part.State.SENT or not part.provider_started_at
-                       or not part.terminal_at or not part.provider_message_id for part in parts)
-                or [part.provider_message_id for part in parts] != command.provider_message_ids):
-                return 0
-        else:
-            reply = command.reply_message
-            if (reply is None or reply.client_id != client.pk or reply.role != "manager"
-                or reply.source != "human_reply" or reply.status != "done" or reply.send_state != "sent"
-                or reply.provider_namespace != command.provider_namespace or reply.text != command.text
-                or reply.delivery_provider_message_ids != command.provider_message_ids
-                or reply.provider_message_id != command.provider_message_ids[0]
-                or command.context_revision != str(source.pk)):
-                return 0
         tasks = list(unresolved_reply_debts().filter(
             client=client, event_payload__source_message_ids=[source.pk],
         ).order_by("pk"))
@@ -428,7 +639,8 @@ def settle_human_reply_obligation(command_id, *, now=None):
                 action="ig_reply_debt_manager_replied", entity_type="IgFollowUpTask", entity_id=str(task.pk),
                 after=resolution, reason="Confirmed human reply to the exact customer source.")
             settled += 1
-        return settled
+        from management.services.ig_revision_rate_handoff import settle_rate_handoff_source
+        return settled + settle_rate_handoff_source(command, source, now=now)
 
 
 def with_reply_debt(queryset):

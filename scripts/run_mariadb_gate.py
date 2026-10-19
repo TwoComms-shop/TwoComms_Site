@@ -46,6 +46,17 @@ SUITES = {
     "conversion-context": (
         "management.tests_ig_conversion_mariadb",
         "finance.tests_migration_storage",
+        "management.tests_ig_rate_handoff_qa_20261020",
+        "management.tests_ig_ingress_reply_liveness",
+        "management.tests_ig_unanswered_obligations",
+        "management.tests_ig_checkout_journey_qa_20261020",
+        "management.tests_ig_handoff_journey_qa_20261020",
+        "management.tests_ig_knowledge_journey_qa_20261020",
+        "management.tests_ig_policy_fault_ack",
+        "management.tests_ig_fulfillment_stock_api.FulfillmentStockApiTests."
+        "test_native_receipt_rewrite_and_delete_are_denied_and_privacy_purge_preserves_inventory",
+        "management.tests_ig_restock_delivery.NativeRestockDeliveryTests."
+        "test_ninety_day_subscription_expiry_cannot_be_extended_by_runtime_cache",
     ),
 }
 SAFE_ENV_NAMES = {

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 from django.db import connection, transaction
+from django.db.models import Max
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
@@ -45,10 +46,13 @@ class _RestockFixture:
         snapshot = {"schema_version": 1, "instructions": []}
         digest = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False,
             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        self.publication = BotPolicyPublication.objects.create(version=1, kind="publish", schema_version=1,
+        version = int(BotPolicyPublication.objects.aggregate(value=Max("version"))["value"] or 0) + 1
+        self.publication = BotPolicyPublication.objects.create(version=version, kind="publish", schema_version=1,
             snapshot=snapshot, snapshot_hash=digest, compiler_version="instruction-set-v1", instruction_count=0)
-        self.settings = InstagramBotSettings.objects.create(pk=1, is_enabled=True, ig_user_id="owner-restock",
-            reply_permission_epoch=4, active_instruction_publication=self.publication)
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(pk=1, defaults={
+            "is_enabled": True, "ig_user_id": "owner-restock", "reply_permission_epoch": 4,
+            "active_instruction_publication": self.publication,
+        })
         self.binding = PublicationBinding(self.publication.pk, self.publication.version, digest)
         self.client_row = IgClient.objects.create(igsid="restock-source-customer", language="uk",
             reply_permission_epoch=3, last_user_message_at=self.now)

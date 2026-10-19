@@ -75,6 +75,21 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertIn(revision.pk, due_recovery_revision_ids(now=revision.recovery_due_at))
         return revision.recovery_due_at
 
+    def _recover(self, revision_id, *, now):
+        """Model the serving worker's exact, already acquired client lease."""
+        from management.models import IgClient
+
+        client = IgClient.objects.get(pk=self.customer.pk)
+        previous = (client.automation_lease_token, client.automation_lease_until)
+        token = f"recovery-worker-{revision_id}"
+        IgClient.objects.filter(pk=client.pk).update(
+            automation_lease_token=token, automation_lease_until=now + timedelta(minutes=6))
+        try:
+            return prepare_outage_recovery(revision_id, now=now, automation_lease_token=token)
+        finally:
+            IgClient.objects.filter(pk=client.pk).update(
+                automation_lease_token=previous[0], automation_lease_until=previous[1])
+
     def test_admission_is_idempotent_and_source_bound(self):
         self._admit()
         stored = self.revision.action_receipts["generation_admission"]
@@ -116,7 +131,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         snapshot = self.revision.bundle_snapshot
         original_ids = list(self.revision.sources.values_list("message_id", flat=True))
         now = self._queue()
-        result = prepare_outage_recovery(self.revision.pk, now=now)
+        result = self._recover(self.revision.pk, now=now)
         self.assertEqual(result.state, "spawned", result.reason)
         child = IgCustomerTurnRevision.objects.get(pk=result.child_id)
         self.assertEqual(child.origin, "outage_recovery")
@@ -130,7 +145,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertEqual(self.revision.overall_deadline, deadline)
         self.assertEqual(self.source.status, InstagramBotMessage.Status.PENDING)
         self.assertEqual(InstagramBotMessage.objects.filter(role="user").count(), 1)
-        duplicate = prepare_outage_recovery(self.revision.pk, now=now)
+        duplicate = self._recover(self.revision.pk, now=now)
         self.assertEqual(duplicate.child_id, child.pk)
         self.assertEqual(IgCustomerTurnRevision.objects.count(), 2)
 
@@ -147,7 +162,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         )
         before = inspect_revision_provider_execution(self.revision, now=now)
         self.assertTrue(before.ready)
-        result = prepare_outage_recovery(self.revision.pk, now=now)
+        result = self._recover(self.revision.pk, now=now)
         self.assertEqual(result.state, "spawned", result.reason)
         child = IgCustomerTurnRevision.objects.get(pk=result.child_id)
         after = inspect_revision_provider_execution(child, now=now)
@@ -157,7 +172,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.assertEqual(after.repair_remaining, before.repair_remaining)
         self.assertEqual(IgCustomerTurnRevision.objects.count(), 2)
         self.assertEqual(GeminiRequest.objects.count(), 1)
-        self.assertEqual(prepare_outage_recovery(self.revision.pk, now=now).child_id, child.pk)
+        self.assertEqual(self._recover(self.revision.pk, now=now).child_id, child.pk)
         instagram_bot._provider_http.assert_not_called()
 
     @patch("management.services.ig_revision_recovery.RETRY_DELAYS", (45,))
@@ -167,7 +182,7 @@ class RevisionRecoveryTests(TransactionTestCase):
             self._admit(revision, token, now=clock)
             self._graph(revision)
             now = self._queue(revision)
-            result = prepare_outage_recovery(revision.pk, now=now)
+            result = self._recover(revision.pk, now=now)
             self.assertEqual(result.state, "spawned", result.reason)
             revision = IgCustomerTurnRevision.objects.get(pk=result.child_id)
             self.assertEqual(revision.action_receipts["recovery_lineage"]["round"], number)
@@ -178,7 +193,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         self._admit(revision, token, now=clock)
         self._graph(revision)
         now = self._queue(revision)
-        result = prepare_outage_recovery(revision.pk, now=now)
+        result = self._recover(revision.pk, now=now)
         self.assertEqual(result.state, "manual")
         self.assertEqual(result.reason, "recovery_generations_exhausted")
         self.assertEqual(IgCustomerTurnRevision.objects.count(), 9)
@@ -186,7 +201,7 @@ class RevisionRecoveryTests(TransactionTestCase):
     def test_success_graph_without_proposal_requires_reconciliation(self):
         self._admit()
         self._graph(outcome="succeeded")
-        result = prepare_outage_recovery(self.revision.pk, now=self._queue())
+        result = self._recover(self.revision.pk, now=self._queue())
         self.assertEqual(result.state, "manual")
         self.assertEqual(result.reason, "recovery_success_result_missing")
         self.assertEqual(IgCustomerTurnRevision.objects.count(), 1)
@@ -256,7 +271,8 @@ class RevisionRecoveryTests(TransactionTestCase):
         from management.services.gemini_accounting_runtime import _RevisionExecution, _revision_execution_valid
 
         now = self._successful_proposal()
-        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "execution")
+        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "waiting")
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "execution")
         self.revision.refresh_from_db()
         receipt = self.revision.action_receipts[EXECUTION_RESUME_KEY]
         self.assertEqual(self.revision.claim_token, "")
@@ -279,6 +295,7 @@ class RevisionRecoveryTests(TransactionTestCase):
 
         now = self._successful_proposal()
         schedule_revision_recovery(self.revision.pk, now=now)
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "execution")
         self.revision.refresh_from_db()
         receipt = self.revision.action_receipts[EXECUTION_RESUME_KEY]
         expires = timezone.datetime.fromisoformat(receipt["expires_at"])
@@ -305,7 +322,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.revision.refresh_from_db()
         self.assertNotIn(EXECUTION_RESUME_KEY, self.revision.action_receipts)
         due = self.revision.recovery_due_at
-        self.assertEqual(prepare_outage_recovery(self.revision.pk, now=due).state, "execution")
+        self.assertEqual(self._recover(self.revision.pk, now=due).state, "execution")
         self.revision.refresh_from_db()
         receipt = self.revision.action_receipts[EXECUTION_RESUME_KEY]
         self.assertEqual(timezone.datetime.fromisoformat(receipt["expires_at"]), due + timedelta(seconds=45))
@@ -332,7 +349,8 @@ class RevisionRecoveryTests(TransactionTestCase):
         self.token = prepared.execution_token
         self.revision.refresh_from_db()
         now = self._successful_proposal()
-        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "execution")
+        self.assertEqual(schedule_revision_recovery(self.revision.pk, now=now).state, "waiting")
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "execution")
         self.revision.refresh_from_db()
         self.assertEqual(self.revision.action_receipts[EXECUTION_RESUME_KEY]["root_revision_id"], root_id)
         self.assertTrue(execution_resume_is_current(self.revision, now=now))
@@ -348,6 +366,7 @@ class RevisionRecoveryTests(TransactionTestCase):
 
         now = self._successful_proposal()
         schedule_revision_recovery(self.revision.pk, now=now)
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "execution")
         with patch("management.services.ig_revision_live.timezone.now", return_value=now):
             _revision, token = _reclaim_execution(self.revision.pk)
         self.assertTrue(self._resume_readiness(token, now).ready)
@@ -377,12 +396,12 @@ class RevisionRecoveryTests(TransactionTestCase):
     def test_unresolved_graph_does_not_infer_failure(self):
         self._admit()
         self._graph(outcome="")
-        result = prepare_outage_recovery(self.revision.pk, now=self._queue())
+        result = self._recover(self.revision.pk, now=self._queue())
         self.assertEqual(result.reason, "recovery_generation_outcome_unknown")
 
     def test_missing_original_admission_is_manual(self):
         self._graph()
-        result = prepare_outage_recovery(self.revision.pk, now=self._queue())
+        result = self._recover(self.revision.pk, now=self._queue())
         self.assertEqual(result.reason, "recovery_generation_admission_missing")
 
     def test_purchase_selection_drift_is_not_reused_as_consent(self):
@@ -390,7 +409,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         self._graph()
         self.customer.current_size = "XL"
         self.customer.save(update_fields=["current_size"])
-        result = prepare_outage_recovery(self.revision.pk, now=self._queue())
+        result = self._recover(self.revision.pk, now=self._queue())
         self.assertEqual(result.state, "manual")
         self.assertEqual(result.reason, "recovery_financial_authority_stale")
 
@@ -399,27 +418,29 @@ class RevisionRecoveryTests(TransactionTestCase):
         now = self._queue()
         self.customer.bot_paused = True
         self.customer.save(update_fields=["bot_paused"])
-        self.assertEqual(prepare_outage_recovery(self.revision.pk, now=now).state, "cancelled")
+        self.assertEqual(self._recover(self.revision.pk, now=now).state, "cancelled")
         self.assertNotIn(self.revision.pk, due_recovery_revision_ids(now=now))
 
     def test_newer_inbound_invalidates_recovery_without_head_hook(self):
         self._admit()
         now = self._queue()
         self._message("Змінив думку", "newer")
-        result = prepare_outage_recovery(self.revision.pk, now=now)
+        result = self._recover(self.revision.pk, now=now)
         self.assertEqual(result.reason, "recovery_newer_inbound")
 
     def test_manager_message_invalidates_old_recovery(self):
         self._admit()
         now = self._queue()
-        InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid, role="manager", source="echo", text="Відповів менеджер", status="done")
-        result = prepare_outage_recovery(self.revision.pk, now=now)
+        InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            provider_namespace=self.source.provider_namespace, role="manager", source="echo",
+            text="Відповів менеджер", status="done")
+        result = self._recover(self.revision.pk, now=now)
         self.assertEqual(result.reason, "recovery_manager_answered")
 
     def test_source_window_is_not_extended_by_new_generation(self):
         self._admit()
         self._queue()
-        result = prepare_outage_recovery(self.revision.pk, now=timezone.now() + timedelta(hours=23))
+        result = self._recover(self.revision.pk, now=timezone.now() + timedelta(hours=23))
         self.assertEqual(result.reason, "recovery_source_window_closed")
 
     def test_never_schedule_before_original_deadline(self):
@@ -438,7 +459,7 @@ class RevisionRecoveryTests(TransactionTestCase):
         )
         self.settings.active_instruction_publication = publication
         self.settings.save(update_fields=["active_instruction_publication"])
-        result = prepare_outage_recovery(self.revision.pk, now=now)
+        result = self._recover(self.revision.pk, now=now)
         self.assertEqual(result.state, "spawned", result.reason)
         child = IgCustomerTurnRevision.objects.get(pk=result.child_id)
         self.assertNotIn("generation_admission", child.action_receipts)
@@ -463,7 +484,7 @@ class RevisionRecoveryTests(TransactionTestCase):
             with self.subTest(state=state):
                 IgRevisionDeliveryEffect.objects.filter(pk=effect.pk).update(state=state)
                 IgCustomerTurnRevision.objects.filter(pk=self.revision.pk).update(recovery_state="waiting", recovery_due_at=now)
-                result = prepare_outage_recovery(self.revision.pk, now=now)
+                result = self._recover(self.revision.pk, now=now)
                 self.assertEqual(result.state, "manual")
                 self.assertEqual(result.reason, "recovery_delivery_reconciliation")
                 effect.refresh_from_db()

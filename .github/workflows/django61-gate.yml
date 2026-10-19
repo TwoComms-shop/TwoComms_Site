@@ -60,6 +60,35 @@ jobs:
         working-directory: twocomms
         run: |
           python manage.py test storefront.tests.test_product_video --settings=test_settings_no_network_non_dtf --noinput --parallel 1
+      - name: Run Instagram reply and context regressions
+        working-directory: twocomms
+        run: |
+          python manage.py test \
+            management.tests_ig_business_cooperation \
+            management.tests_ig_fulfillment_prompt_budget \
+            management.tests_ig_policy_fault_ack \
+            management.tests_ig_revision_liveness \
+            management.tests_ig_ingress_reply_liveness \
+            management.tests_ig_unanswered_obligations \
+            management.tests_ig_captured_policy_inputs \
+            management.tests_ig_shopping_journey_qa_20261020 \
+            management.tests_ig_handoff_journey_qa_20261020 \
+            management.tests_ig_checkout_journey_qa_20261020 \
+            management.tests_ig_knowledge_journey_qa_20261020 \
+            management.tests_ig_rate_handoff_qa_20261020 \
+            management.tests_ig_referral_context \
+            management.tests_ig_webhook_extract \
+            management.tests_ig_webhook_inbox \
+            management.tests_ig_webhook_security \
+            management.tests_ig_conversion_ad_context \
+            management.tests_ig_conversion_memory \
+            management.tests_ig_untrusted_memory_and_language \
+            management.tests_ig_typed_memory_reader \
+            management.tests_ig_typed_memory_read_budget \
+            management.tests_ig_memory_timeline_consumers \
+            management.tests_ig_fulfillment_stock_api \
+            management.tests_ig_mariadb_runner \
+            --settings=test_settings_no_network_non_dtf --noinput --parallel 1
       - name: Exercise production-like static pipeline
         run: python scripts/run_static_gate.py --output static-gate.json
       - name: Build sanitized non-DTF coverage inventory

@@ -133,6 +133,6 @@ class BrandKnowledgeTests(TestCase):
         kb = get_brand_knowledge()
         self.assertIn("Пошт", kb)  # Нова Пошта / Новою Поштою
         self.assertNotIn("передоплата 200 грн", kb.casefold())
-        self.assertIn("погоджен", kb.casefold())
+        self.assertIn("команда перевірить деталі й погодить подальші кроки, строки та умови пересилання.", kb.casefold())
         self.assertIn("передопла", kb.lower())
         self.assertNotIn("TODO", kb)

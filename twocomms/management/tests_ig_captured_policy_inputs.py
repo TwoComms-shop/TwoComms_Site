@@ -72,6 +72,24 @@ class CapturedPolicyInputsTests(TestCase):
             publication_snapshot=self.publication(), turn_text=self.source.text)
         self.assertIn("instruction:4", selected.selected_ids)
 
+    def test_later_source_withdraws_cooperation_before_captured_routing(self):
+        self.text("Хочу відкрити магазин. Цікавить співпраця.")
+        later = InstagramBotMessage.objects.create(client=self.client_row,
+            sender_id=self.client_row.igsid, role="user", source="webhook", status="pending",
+            provider_namespace=self.source.provider_namespace, text="Більше не актуально.",
+            provider_created_at=self.at + timedelta(milliseconds=100))
+        self.sources.append(dict(message_id=later.pk, role="user", text=later.text,
+            source_namespace=later.provider_namespace, provider_created_at=later.provider_created_at.isoformat(),
+            source_digest="b" * 64))
+        self.boundary.update(source_ids=[row["message_id"] for row in self.sources],
+            source_digests={str(row["message_id"]): row["source_digest"] for row in self.sources},
+            sealed_sources_digest=capture_digest(self.sources),
+            watermark=dict(message_id=later.pk, event_at=later.provider_created_at.isoformat()))
+        self.assertNotIn("collaboration", self.capture().tags)
+        self.sources[-1]["text"] = "Повернімося до співпраці, хочу відкрити магазин."
+        self.boundary["sealed_sources_digest"] = capture_digest(self.sources)
+        self.assertIn("collaboration", self.capture().tags)
+
     def objection_publication(self):
         original = self.publication()
         snapshot = deepcopy(original.snapshot)

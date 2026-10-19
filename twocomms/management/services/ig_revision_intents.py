@@ -220,12 +220,17 @@ def _collaboration_route_present(revision):
 def collaboration_brief_for_revision(revision):
     """Build a source-bound operator brief without reading mutable client state."""
     from management.services.bot_sales_classifier import extract_collaboration_brief
+    from management.services.ig_business_cooperation import (
+        business_cooperation_for_sources, current_cooperation_sources,
+    )
 
     proposal = getattr(revision, "generation_proposal", None) or {}
     route = proposal.get("customer_routes") if isinstance(proposal, dict) else None
     route_intents = [item for item in (route or {}).get("intents", ()) if isinstance(item, dict)]
+    sources = current_cooperation_sources((getattr(revision, "bundle_snapshot", None) or {}).get("sources", ()))
+    business = business_cooperation_for_sources(sources)
     items = []
-    for source in (getattr(revision, "bundle_snapshot", None) or {}).get("sources", ()):
+    for source in sources:
         if source.get("role") != "user":
             continue
         brief = extract_collaboration_brief(str(source.get("text") or ""))
@@ -256,8 +261,67 @@ def collaboration_brief_for_revision(revision):
         "schema_version": 2,
         "source_snapshot_digest": str(getattr(revision, "snapshot_digest", "") or ""),
         "route_intents": route_intents,
+        "cooperation_kind": "business" if business else "creator_or_other",
+        "business_cooperation": business,
         "items": items[-64:],
     }
+
+
+def _ongoing_custom_case_requested(revision):
+    """A short answer may continue one exact open native custom request.
+
+    A profile intent or an unrelated old case is insufficient. Independent
+    intervening input, changed source proof, reset or permission changes end
+    this narrow continuity grant; it grants no price or checkout authority.
+    """
+    from management.services.bot_sales_classifier import custom_print_requested_for_sources
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_revision_holding import _sources_unchanged
+    from management.models import IgCustomerTurnRevision, IgFollowUpTask, InstagramBotMessage
+
+    short = re.compile(r"^(?:так|да|ага|yes|ок|окей|okay|ok)(?:[, ]+(?:одн[ау]|один|дві|две|one|two|[1-9]\d?)(?:\s+(?:шт\w*|pieces?))?)?$|"
+                       r"^(?:одн[ау]|один|дві|две|one|two|[1-9]\d?)(?:\s+(?:шт\w*|pieces?))?$", re.I)
+    current = [row for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
+    if (not current or any(not short.fullmatch(own_reply_text(str(row.get("text") or "")).strip(" .!")) for row in current)
+        or not getattr(revision, "client_id", None)):
+        return False
+    floor = conversation_route_reset_floor(revision.client_id)
+    candidates = list(IgFollowUpTask.objects.filter(client_id=revision.client_id, kind="manager_task",
+        reason="revision_case:custom_print").exclude(status__in=("completed", "cancelled")).order_by("pk")[:2])
+    if len(candidates) != 1:
+        return False
+    task = candidates[0]
+    context, pieces = task.manager_context or {}, str(task.event_key).split(":")
+    refs = context.get("sources") or []
+    if (context.get("schema_version") != 1 or context.get("case_kind") != "custom_print"
+        or len(pieces) != 4 or pieces[0] != "ig-revision-case" or pieces[1] != str(revision.client_id)
+        or pieces[3] != "custom_print" or not pieces[2].isdigit()
+        or not isinstance(refs, list) or not 1 <= len(refs) <= 64
+        or any(not isinstance(row, dict) or type(row.get("message_id")) is not int for row in refs)):
+        return False
+    ids = [row["message_id"] for row in refs]
+    current_ids = [row["message_id"] for row in current]
+    if min(ids) < floor or max(ids) >= min(current_ids):
+        return False
+    root = IgCustomerTurnRevision.objects.filter(pk=int(pieces[2]), client_id=revision.client_id,
+        permission_epoch=revision.permission_epoch).first()
+    latest = IgCustomerTurnRevision.objects.filter(pk=context.get("latest_revision_id"), client_id=revision.client_id,
+        permission_epoch=revision.permission_epoch).first()
+    if (root is None or latest is None or not root.snapshot_digest or _digest(root.bundle_snapshot) != root.snapshot_digest
+        or not _sources_unchanged(root) or not custom_print_requested_for_sources(root.bundle_snapshot.get("sources", ()))
+        or not latest.generation_proposal_digest or _digest(latest.generation_proposal) != latest.generation_proposal_digest
+        or latest.generation_proposal_digest != context.get("generation_proposal_digest")
+        or {row.get("source_namespace") for row in root.bundle_snapshot.get("sources", ())}
+           != {row.get("source_namespace") for row in current}):
+        return False
+    previous = list(InstagramBotMessage.objects.filter(pk__in=ids, client_id=revision.client_id, role="user"))
+    if (len(previous) != len(ids) or any(not (custom_print_requested_for_sources([{"role": "user", "text": row.text}])
+        or short.fullmatch(own_reply_text(row.text).strip(" .!"))) for row in previous)
+        or InstagramBotMessage.objects.filter(client_id=revision.client_id, role="user", pk__gt=max(ids))
+            .exclude(pk__in=current_ids).exists()):
+        return False
+    return True
 
 
 def manager_case_reason(revision, response=None):
@@ -268,7 +332,7 @@ def manager_case_reason(revision, response=None):
     from management.services.bot_sales_classifier import (
         SUPPORT_RE,
         extract_collaboration_brief,
-        is_explicit_custom_print_request,
+        custom_print_requested_for_sources,
     )
 
     texts = [str(row.get("text") or "") for row in revision.bundle_snapshot.get("sources", ()) if row.get("role") == "user"]
@@ -277,12 +341,14 @@ def manager_case_reason(revision, response=None):
     assisted = getattr(revision, "_assisted_commerce_context", None)
     current_assisted = (isinstance(assisted, AssistedCommerceContext) and assisted.revision_id == revision.pk
         and assisted.revision_digest == revision.snapshot_digest)
-    if not current_assisted and (any(is_explicit_custom_print_request(text) for text in texts) or (
-        (control.get("paylink") or control.get("payment"))
-        and "custom" in str(revision.client.intent or "").casefold()
-    )):
+    if not current_assisted and (custom_print_requested_for_sources(revision.bundle_snapshot.get("sources", ()))
+                                or _ongoing_custom_case_requested(revision)):
         return "custom_print"
-    if any(extract_collaboration_brief(text) for text in texts) or _collaboration_route_present(revision):
+    from management.services.ig_business_cooperation import business_cooperation_for_sources, current_cooperation_sources
+    cooperation_sources = current_cooperation_sources(revision.bundle_snapshot.get("sources", ()))
+    if (business_cooperation_for_sources(cooperation_sources)
+        or any(extract_collaboration_brief(str(row.get("text") or "")) for row in cooperation_sources)
+        or _collaboration_route_present(revision)):
         return "collaboration_review"
     if any(_MANAGER_REQUEST.search(text) for text in texts):
         return "customer_manager_request"
@@ -446,6 +512,8 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         response = ValidatedResponse(reply_text=stored.get("reply_text") or "", controls=tuple(ResponseControl(item["kind"], item["value"]) for item in stored.get("controls") or ()))
         revision.client = client
         reason = manager_case_reason(revision, response)
+        collaboration = collaboration_brief_for_revision(revision) if reason == "collaboration_review" else {}
+        business = collaboration.get("business_cooperation") or {}
         from management.services.ig_service_complaints import revision_service_complaint
         service_complaint = revision_service_complaint(revision)
         complaint_evidence = []
@@ -486,6 +554,8 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 message_text=(
                     "Клієнт просить власний принт: перевірити макет, можливість і вартість."
                     if reason == "custom_print" else
+                    "Клієнт питає про магазин, перепродаж або бізнес-співпрацю: розглянути його питання й погодити індивідуальні умови."
+                    if reason == "collaboration_review" and business else
                     "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."
                     if reason == "collaboration_review" else
                     "Клієнт повідомив про сервісну проблему: перевірити звернення та потребу в рішенні керівника; компенсацію не погоджено."
@@ -510,13 +580,20 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             "latest_revision_id": revision.pk, "generation_proposal_digest": revision.generation_proposal_digest,
             "required_decisions": (
                 ["design_feasibility", "quote_approval"] if reason == "custom_print" else
+                ["business_cooperation_review", "partnership_terms", "customer_questions"] if reason == "collaboration_review" and business else
                 ["portfolio_review", "collaboration_terms"] if reason == "collaboration_review" else
                 ["customer_request"]
             ),
             "authority": {"price_confirmed": False, "fulfillment_started": False},
         })
         if reason == "collaboration_review":
-            context["collaboration_brief"] = collaboration_brief_for_revision(revision)
+            context["collaboration_brief"] = collaboration
+            context["cooperation_kind"] = "business" if business else "creator_or_other"
+            context["business_cooperation"] = business
+            if business:
+                # A pre-existing creator case must not keep its old portfolio
+                # instructions when this current source opens a trade inquiry.
+                task.message_text = "Клієнт питає про магазин, перепродаж або бізнес-співпрацю: розглянути його питання й погодити індивідуальні умови."
         if service_complaint:
             context["service_complaint"] = service_complaint
             context["required_decisions"] = ["customer_service_review", "leadership_review"]
