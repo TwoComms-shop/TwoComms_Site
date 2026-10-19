@@ -208,9 +208,10 @@ class PolicyFaultAckTests(TransactionTestCase):
         self.assertFalse(IgFollowUpTask.objects.filter(event_key=f"ig-policy-fault-case:{self.customer.pk}:{self.revision.pk}").exists())
 
     def test_changed_publication_blocks_ack(self):
-        publication = BotPolicyPublication.objects.create(version=2, kind="publish", schema_version=1,
+        publication = BotPolicyPublication.objects.create(version=self.publication.version + 1, kind="publish", schema_version=1,
             snapshot=self.publication.snapshot, snapshot_hash=self.publication.snapshot_hash,
             compiler_version="instruction-set-v1", instruction_count=0)
+        self.assertGreater(publication.version, self.binding.version)
         self.settings.active_instruction_publication = publication
         self.settings.save(update_fields=["active_instruction_publication"])
         self.assertFalse(self._ack().ready)
@@ -254,9 +255,10 @@ class PolicyFaultAckTests(TransactionTestCase):
     def test_publication_change_after_admission_blocks_physical_send(self):
         ack = self._ack()
         self.assertTrue(ack.ready, ack.reason)
-        publication = BotPolicyPublication.objects.create(version=2, kind="publish", schema_version=1,
+        publication = BotPolicyPublication.objects.create(version=self.publication.version + 1, kind="publish", schema_version=1,
             snapshot=self.publication.snapshot, snapshot_hash=self.publication.snapshot_hash,
             compiler_version="instruction-set-v1", instruction_count=0)
+        self.assertGreater(publication.version, self.binding.version)
         self.settings.active_instruction_publication = publication
         self.settings.save(update_fields=["active_instruction_publication"])
         _, http = self._send(ack.receipt)

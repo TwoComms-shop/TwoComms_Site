@@ -1,6 +1,6 @@
 # Молчание на запрос о сотрудничестве · 20.10.2026
 
-Статус: исправления подготовлены; итоговая интеграционная проверка и выкладка ещё не подтверждены. Этот документ не меняет план90 и не выдаёт локальный тест за реальную доставку.
+Статус: исправления опубликованы в GitHub (`3921dc4d0`); Django CI прошёл, нативная приёмка повторяется после исправления фикстур. На production эта версия пока не выложена. Этот документ не меняет план90 и не выдаёт локальный тест за реальную доставку.
 
 ## Подтверждённый инцидент
 
@@ -79,6 +79,8 @@ Manager waiting — отдельное событие/состояние. Нал
 Дополнительная migrated MariaDB проверка выявила две проблемы инфраструктуры тестов, невидимые в syncdb SQLite. Fixtures создавали publication.version1 и settings.pk1 поверх настоящего migration bootstrap: исправлено выделением следующей версии и настройкой существующего singleton без удаления исходной публикации; два регрессионных теста сохраняют её точный snapshot. Затем стандартный Django TransactionTestCase teardown выполнял DELETE, который реальные append-only triggers правильно запрещали (`IgCommercialEpisodeEvent is append-only`), ломая очистку и следующие fixtures. Прежний dormant runner имел TRUNCATE helper, но не был подключён и использовал устаревший частичный migration graph. Теперь profile подключает runner со стандартным **полным** DiscoverRunner setup, строгой проверкой временного MariaDB/schema и TRUNCATE только для стандартного teardown. Собственные cleanup hooks конкурентных тестов сохранены; migration history и post_migrate сохраняются. Прямые запрещённые DELETE/UPDATE продолжают проверяться.321 related fixture tests прошёл с6 skips;19 runner/profile contracts прошли. Старые неуспешные native runs не названы успешными; повторная нативная приёмка обязательна перед deployment.
 
 ### Остаток приёмки
+
+CI для `3921dc4d0`: [Django gate](https://github.com/TwoComms-shop/TwoComms_Site/actions/runs/39337302567) — success, включая391 reply/context tests с2 skips. [MariaDB gate](https://github.com/TwoComms-shop/TwoComms_Site/actions/runs/39337302496) — четыре нативных набора прошли; conversion-context выполнил139 tests за456.049 секунды и завершился четырьмя1062 errors. Выкладка остановлена. Независимые проверки исходников указали на четыре checkout journey tests с общей фикстурой, повторно создающей settings.pk1 поверх migration0196; отдельное воспроизведение с seeded singleton подтвердило точный конфликт `management_instagrambotsettings.id`. Фикстура теперь переиспользует singleton, сохраняя исходную immutable publication и permission epoch; добавлен соответствующий regression. Две оставшиеся successor publication версии в policy-fault тестах вычисляются относительно captured publication. Ограничения приложения/триггеры не ослаблены. Требуется успешный повторный нативный CI на исправленной ревизии.
 
 - Проверить интеграцию и независимые замечания; включить migration0241 только для durable poll proof.
 - Подтвердить runtime/schema и новые health/debt показания на production. Сохранить старые источники/UNKNOWN и не обнулять очередь удалением истории.

@@ -175,3 +175,37 @@ class CheckoutJourneyQA20261020Tests(carts.CartFenceFixture, TestCase):
         self.assertEqual(rejected["reason"], "native_removal_source_changed")
         self.assertEqual(rejected["lines"], [])
         self.assertFalse(PaymentAttempt.objects.exists())
+
+
+@override_settings(GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class CheckoutBootstrapFixtureTests(carts.CartFenceFixture, TestCase):
+    def setUp(self):
+        from management.models import BotPolicyPublication, InstagramBotSettings
+        from management.tests_ig_policy_helpers import ensure_test_instruction_publication
+
+        ensure_test_instruction_publication()
+        self.seeded_settings = InstagramBotSettings.load()
+        self.bootstrap = self.seeded_settings.active_instruction_publication
+        self.bootstrap_state = BotPolicyPublication.objects.filter(pk=self.bootstrap.pk).values().get()
+        self.seeded_settings.ig_user_id = "bootstrap-owner"
+        self.seeded_settings.reply_permission_epoch = 9
+        self.seeded_settings.save(update_fields=["ig_user_id", "reply_permission_epoch"])
+        super().setUp()
+
+    def test_cart_fixture_reuses_bootstrap_singleton_and_keeps_publication_immutable(self):
+        from management.models import BotPolicyPublication, InstagramBotSettings
+
+        self.seeded_settings.refresh_from_db()
+        self.assertEqual(InstagramBotSettings.objects.count(), 1)
+        self.assertEqual(self.seeded_settings.ig_user_id, "cart-source-owner")
+        self.assertEqual(self.seeded_settings.reply_permission_epoch, 9)
+        self.assertEqual(self.seeded_settings.active_instruction_publication_id, self.bootstrap.pk)
+        self.assertEqual(self.namespace, "instagram_login:cart-source-owner")
+        self.assertEqual(BotPolicyPublication.objects.filter(pk=self.bootstrap.pk).values().get(), self.bootstrap_state)
+        with self.assertRaisesRegex(ValueError, "append-only"):
+            BotPolicyPublication.objects.filter(pk=self.bootstrap.pk).update(note="fixture rewrite")
+        self.bootstrap.refresh_from_db()
+        self.assertEqual(self.bootstrap.note, self.bootstrap_state["note"])
+        source, decision = self.reduce("додайте чорну футболку розмір M")
+        self.assertTrue(decision.accepted, decision.result_payload)
+        self.assertEqual(source.provider_namespace, self.namespace)

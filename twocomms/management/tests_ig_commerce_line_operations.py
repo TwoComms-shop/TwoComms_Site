@@ -65,7 +65,9 @@ class CommerceLineOperationsTests(TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         self.customer = IgClient.objects.create(igsid='line-ops-' + self._testMethodName[:45])
-        settings = InstagramBotSettings.objects.create(pk=1, ig_user_id='cart-source-owner')
+        settings, _ = InstagramBotSettings.objects.update_or_create(
+            pk=1, defaults={'ig_user_id': 'cart-source-owner'},
+        )
         self.namespace = ingress_provider_namespace(settings)
         self.now = timezone.now()
         self.ordinal = 0
