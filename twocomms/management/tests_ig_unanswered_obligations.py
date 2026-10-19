@@ -1,9 +1,10 @@
 """Exact source silence remains visible after internal ownership is parked."""
 from unittest.mock import patch
 from datetime import timedelta
+from copy import deepcopy
 
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import connection, transaction
 from django.test import TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -107,6 +108,69 @@ class UnansweredObligationTests(TransactionTestCase):
         self.assertEqual(_collect_response_obligations(timezone.now(), 100), [])
         source.refresh_from_db()
         self.assertEqual(source.status, "pending")
+
+    def _legacy_audited_review(self, source_count=1):
+        from management.models import AdminAuditLog
+        from management.services.ig_revision_execution import prepare_revision
+
+        sources = [self._source(f"legacy-reviewed-{source_count}", f"legacy-reviewed-{source_count}-{index}")
+                   for index in range(source_count)]
+        _turn, revision = self._collecting_revision(sources)
+        self.assertTrue(prepare_revision(revision.pk, lambda **kwargs: None).ready)
+        revision.refresh_from_db()
+        task = record_reply_debt(revision, "generation_outcome_unresolved")
+        actor = get_user_model().objects.create_user(username=f"legacy-review-actor-{source_count}")
+        self.assertTrue(review_reply_debt(revision.client_id, task.pk, actor=actor,
+            expected_revision_id=revision.pk)["ok"])
+        task.refresh_from_db()
+        task.manager_context = {key: value for key, value in task.manager_context.items()
+                                if key not in {"owner", "disposition"}}
+        task.save(update_fields=["manager_context", "updated_at"])
+        audit = AdminAuditLog.objects.get(action="ig_reply_debt_reviewed", entity_id=str(task.pk))
+        revision.refresh_from_db()
+        return sources, revision, task, audit
+
+    def test_legacy_single_and_burst_audited_reviews_without_owner_are_dispositions_only(self):
+        for count in (1, 2):
+            with self.subTest(source_count=count):
+                sources, revision, _task, _audit = self._legacy_audited_review(count)
+                with CaptureQueriesContext(connection) as queries:
+                    observed = response_obligation(revision)
+                self.assertEqual(observed["disposition"], "reviewed_no_reply")
+                self.assertFalse(observed["requires_attention"])
+                self.assertTrue(observed["customer_ack_owed"])
+                self.assertTrue(observed["substantive_owed"])
+                self.assertFalse(observed["manager_informed"])
+                self.assertFalse(observed["manager_notification_recorded"])
+                self.assertTrue(all(query["sql"].lstrip().upper().startswith("SELECT") for query in queries))
+                revision.refresh_from_db()
+                self.assertIsNone(revision.processed_at)
+                for source in sources:
+                    source.refresh_from_db()
+                    self.assertEqual(source.status, "pending")
+
+    def test_legacy_review_requires_matching_actor_audit_status_and_exact_source_scope(self):
+        from management.models import AdminAuditLog
+
+        _sources, revision, _task, audit = self._legacy_audited_review()
+        other = get_user_model().objects.create_user(username="wrong-legacy-review-actor")
+        for mutation in ("missing", "actor", "payload_actor", "source", "revision", "status", "outcome"):
+            with self.subTest(mutation=mutation), transaction.atomic():
+                if mutation == "missing":
+                    AdminAuditLog.objects.filter(pk=audit.pk).delete()
+                elif mutation == "actor":
+                    AdminAuditLog.objects.filter(pk=audit.pk).update(actor_id=other.pk)
+                else:
+                    after = deepcopy(audit.after)
+                    key, value = {"payload_actor": ("actor_id", other.pk),
+                                  "source": ("source_message_ids", [999999]),
+                                  "revision": ("revision_id", revision.pk + 1),
+                                  "status": ("status", "completed"),
+                                  "outcome": ("outcome", "manager_replied")}[mutation]
+                    after[key] = value
+                    AdminAuditLog.objects.filter(pk=audit.pk).update(after=after)
+                self.assertTrue(response_obligation(revision)["requires_attention"])
+                transaction.set_rollback(True)
 
     def test_physical_sent_does_not_cover_remaining_semantics(self):
         _source, revision, _token = self._delivered(remaining=["cooperation_terms"], disposition="manual")

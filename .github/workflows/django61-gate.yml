@@ -69,6 +69,7 @@ jobs:
             management.tests_ig_policy_fault_ack \
             management.tests_ig_revision_liveness \
             management.tests_ig_ingress_reply_liveness \
+            management.tests_ig_opaque_inbound \
             management.tests_ig_unanswered_obligations \
             management.tests_ig_captured_policy_inputs \
             management.tests_ig_shopping_journey_qa_20261020 \

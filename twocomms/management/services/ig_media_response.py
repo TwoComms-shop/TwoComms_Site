@@ -113,7 +113,14 @@ def _media_kinds(values):
 
 def media_limitation_reply(client, *, media_kinds=()):
     """Honest type-specific clarification, without claiming a future retry."""
+    opaque = bool(media_kinds)
     kinds = _media_kinds(media_kinds)
+    if opaque and not kinds:
+        return _localized(client, (
+            "Не можу прочитати вміст цього вкладення. Надішліть, будь ласка, звичайне фото, посилання або назву й напишіть, що потрібно уточнити.",
+            "Не могу прочитать содержимое этого вложения. Пришлите, пожалуйста, обычное фото, ссылку или название и напишите, что нужно уточнить.",
+            "I cannot read the contents of this attachment. Please send a regular photo, a link or a name, and tell us what you would like to clarify.",
+        ))
     if kinds == {"audio"}:
         values = ("Не вдалося розібрати голосове повідомлення. Напишіть, будь ласка, його основний зміст текстом.",
             "Не удалось разобрать голосовое сообщение. Напишите, пожалуйста, его основное содержание текстом.",

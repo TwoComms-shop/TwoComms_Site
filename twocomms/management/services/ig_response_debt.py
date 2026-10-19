@@ -317,21 +317,35 @@ def response_obligation(revision, *, task=None, effects=None, manager_notificati
             event_key=f"ig-revision-debt:{revision.pk}", kind="manager_task", reason=DEBT_REASON).first()
     payload = task.event_payload if task and isinstance(task.event_payload, dict) else {}
     context = task.manager_context if task and isinstance(task.manager_context, dict) else {}
-    exact_task = bool(task and payload.get("source_message_ids") == source_ids
-                      and payload.get("revision_id") == revision.pk and context.get("owner") == "manager"
-                      and context.get("revision_id") == revision.pk)
-    review = (context.get("operator_review") or {}) if exact_task else {}
+    source_task = bool(task and task.client_id == revision.client_id
+                       and task.kind == "manager_task" and task.reason == DEBT_REASON
+                       and task.event_key == f"ig-revision-debt:{revision.pk}"
+                       and payload.get("source_message_ids") == source_ids
+                       and payload.get("revision_id") == revision.pk
+                       and context.get("revision_id") == revision.pk)
+    exact_task = source_task and context.get("owner") == "manager"
+    # Older genuine review closures predate the optional owner projection.
+    # Their exact actor/audit/source proof is authority for disposition only;
+    # it must not become manager delivery or customer reply evidence.
+    review = (context.get("operator_review") or {}) if source_task else {}
     review = review if isinstance(review, dict) else {}
-    reviewed = bool(task and task.status == task.Status.CANCELLED
+    reviewed = bool(source_task and task.status == task.Status.CANCELLED
+                    and task.skip_reason == "operator_reviewed_no_reply"
+                    and context.get("owner") in (None, "", "manager")
+                    and review.get("version") == 1
+                    and type(review.get("actor_id")) is int and review["actor_id"] > 0
+                    and isinstance(review.get("at"), str) and bool(review["at"])
                     and review.get("outcome") == "reviewed_no_reply"
                     and review.get("revision_id") == revision.pk
                     and review.get("source_message_ids") == source_ids and review.get("reply_confirmed") is False)
     if reviewed:
         from management.models import AdminAuditLog
 
-        reviewed = AdminAuditLog.objects.filter(action="ig_reply_debt_reviewed", entity_type="IgFollowUpTask",
-            entity_id=str(task.pk), after__revision_id=revision.pk, after__source_message_ids=source_ids,
-            after__outcome="reviewed_no_reply", after__reply_confirmed=False).exists()
+        reviewed = AdminAuditLog.objects.filter(actor_id=review["actor_id"], action="ig_reply_debt_reviewed",
+            entity_type="IgFollowUpTask", entity_id=str(task.pk), after__version=1,
+            after__actor_id=review["actor_id"], after__at=review["at"],
+            after__revision_id=revision.pk, after__source_message_ids=source_ids,
+            after__status="cancelled", after__outcome="reviewed_no_reply", after__reply_confirmed=False).exists()
     settled = False
     if exact_task and task.status == task.Status.COMPLETED and task.skip_reason == "manager_reply_confirmed":
         from management.services.ig_lane_health import _manual_owner_tasks

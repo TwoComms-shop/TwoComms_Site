@@ -63,7 +63,9 @@ class SyntheticKeyIgnoresUrlSignatureTests(TestCase):
                 sender_id="991234567890",
                 text="ось фото",
                 mid="",
-                source="poll",
+                # Exercise the trusted webhook persistence adapter. Polling
+                # requires its separately authenticated native source proof.
+                source="webhook",
                 attachments=[f"https://cdn.example.com/m/1.jpg?sig={signature}"],
                 attachment_metadata=[{"provider_object_id": "obj-77"}],
                 received_at=self.received_at,

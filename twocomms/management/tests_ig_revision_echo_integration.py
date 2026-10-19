@@ -166,10 +166,10 @@ class RevisionEchoIntegrationTests(TransactionTestCase):
 
     def test_inbound_native_story_uses_same_normalization_without_ugc_proof(self):
         message = {"mid": "inbound-story", "attachments": [{"type": "ig_story", "payload": {
-            "story_media_id": "story-42", "story_media_url": "https://example.test/story.jpg",
+            "story_media_id": "story-42", "story_media_url": "https://scontent.cdninstagram.com/story.jpg",
             "target": {"username": "twocomms"},
         }}]}
-        self.assertEqual(bot._extract_media_urls(message), ["https://example.test/story.jpg"])
+        self.assertEqual(bot._extract_media_urls(message), ["https://scontent.cdninstagram.com/story.jpg"])
         media = bot._provider_attachment_metadata(message)[0]
         self.assertEqual(media["media_type"], "story")
         self.assertEqual(media["provider_attachment_type"], "ig_story")

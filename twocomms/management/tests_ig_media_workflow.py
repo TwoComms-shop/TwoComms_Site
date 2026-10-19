@@ -1,5 +1,4 @@
 """Pure contracts for image-aware Instagram workflow and payment safety."""
-from contextlib import nullcontext
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -317,12 +316,17 @@ class MediaSemanticsTests(SimpleTestCase):
     def test_old_payment_context_does_not_turn_later_generic_image_into_receipt(self):
         from management.services.ig_payment_review import extract_payment_review_evidence
 
-        result = extract_payment_review_evidence([
+        messages = [
             {"id": 1, "role": "user", "text": "Беру оверсайз XS"},
             {"id": 2, "role": "manager", "text": "Оплата на IBAN, сума 790 грн. Надішліть чек."},
-            {"id": 3, "role": "user", "text": "Дякую, ще подумаю"},
-            {"id": 4, "role": "user", "text": "", "attachments": '["https://cdn.example/unrelated.jpg"]'},
-        ])
+        ]
+        # Payment instructions remain recent within 24 transcript entries.
+        # Model actual older context rather than calling a two-row gap old.
+        messages.extend({"id": identity, "role": "user", "text": "Дякую, ще подумаю"}
+            for identity in range(3, 28))
+        messages.append({"id": 28, "role": "user", "text": "",
+            "attachments": '["https://cdn.example/unrelated.jpg"]'})
+        result = extract_payment_review_evidence(messages)
 
         self.assertFalse(result["needs_review"])
         self.assertEqual(result["media"][-1]["role"], "other")
@@ -356,6 +360,7 @@ class MediaSemanticsTests(SimpleTestCase):
             "storage_name": "ig_message_media/unknown.jpg",
             "mime": "image/jpeg",
             "role": "payment_candidate",
+            "inspection_eligible": True,
             "intent": "payment_evidence_candidate",
             "payment_evidence": True,
             "catalog_match_allowed": False,
@@ -429,6 +434,7 @@ class MediaSemanticsTests(SimpleTestCase):
             "storage_name": "ig_message_media/unknown.jpg",
             "mime": "image/jpeg",
             "role": "payment_candidate",
+            "inspection_eligible": True,
         }]
         resolved = _resolve_payment_media_candidates(media)
 
@@ -509,7 +515,10 @@ class PrivateMessageMediaStorageTests(TestCase):
         from django.core.exceptions import ImproperlyConfigured
         from management.services.instagram_bot import _capture_message_media
 
+        from management.models import IgClient
+        customer = IgClient.get_or_create_for_sender("missing-private-root")
         row = InstagramBotMessage.objects.create(
+            client=customer,
             sender_id="missing-private-root",
             role=InstagramBotMessage.Role.USER,
             source="webhook",
@@ -832,6 +841,7 @@ class PrivateMessageMediaStorageTests(TestCase):
                 sender_id="private-telegram-audio",
                 role=InstagramBotMessage.Role.USER,
                 private_media_state="active",
+                private_media_delete_after=timezone.now() + timedelta(hours=1),
             )
             _private_media_storage()
             name = "ig_message_media/voice.ogg"
@@ -874,6 +884,7 @@ class PrivateMessageMediaStorageTests(TestCase):
             row = InstagramBotMessage.objects.create(
                 sender_id="private-telegram-video", role=InstagramBotMessage.Role.USER,
                 private_media_state="active",
+                private_media_delete_after=timezone.now() + timedelta(hours=1),
             )
             storage = _private_media_storage()
             storage_name = "ig_message_media/clip.mp4"
@@ -1145,6 +1156,7 @@ class HistoricalAttachmentOwnershipTests(TestCase):
                 "mime": "image/jpeg",
                 "bytes": 5,
                 "content_hash": hashlib.sha256(b"first").hexdigest(),
+                "delete_after": (timezone.now() + timedelta(hours=1)).isoformat(),
             },
             use_token=first_use,
         )
@@ -1163,6 +1175,7 @@ class HistoricalAttachmentOwnershipTests(TestCase):
                 "mime": "image/jpeg",
                 "bytes": 6,
                 "content_hash": hashlib.sha256(b"second").hexdigest(),
+                "delete_after": (timezone.now() + timedelta(hours=1)).isoformat(),
             },
             use_token=second_use,
         )
@@ -2093,18 +2106,25 @@ class ReplyMediaRecoveryTests(SimpleTestCase):
         self.assertEqual(len(items), 2)
 
 
-class PaymentLinkGateTests(SimpleTestCase):
-    # F-DEBT-005: `finalize_paylink` читает БД (`services/instagram_bot.py`,
-    # поиск сделки по клиенту), поэтому `SimpleTestCase` падал с
-    # `DatabaseOperationForbidden`. Объявляем доступ к БД явно вместо
-    # смены базового класса — так тест остаётся без транзакционной обёртки,
-    # как и был задуман.
-    databases = {"default"}
+class PaymentLinkGateTests(TestCase):
+    # Invoice admission requires the exact current customer/episode owner.
+    # Native isolated rows exercise this fence without bypassing payment truth.
+
+    def current_customer(self, **values):
+        from management.models import IgClient
+        from management.services.ig_commercial_episodes import ensure_open_episode_for_locked_client
+
+        customer = IgClient.get_or_create_for_sender("payment-link-owned-customer")
+        ensure_open_episode_for_locked_client(customer, materialization_prefix="payment-link-test")
+        customer.refresh_from_db()
+        for key, value in values.items():
+            setattr(customer, key, value)
+        return customer
 
     def test_product_question_cannot_open_payment_link(self):
         from management.services.instagram_bot import payment_link_allowed
 
-        client = SimpleNamespace(
+        client = self.current_customer(
             current_product_id=111,
             intent="product",
             stage="product_matched",
@@ -2115,7 +2135,7 @@ class PaymentLinkGateTests(SimpleTestCase):
     def test_explicit_purchase_candidate_can_open_payment_link(self):
         from management.services.instagram_bot import payment_link_allowed
 
-        client = SimpleNamespace(
+        client = self.current_customer(
             current_product_id=111,
             intent="product",
             stage="product_matched",
@@ -2126,7 +2146,7 @@ class PaymentLinkGateTests(SimpleTestCase):
     def test_explicit_payment_question_with_complete_configuration_can_open_link(self):
         from management.services.instagram_bot import payment_link_allowed
 
-        client = SimpleNamespace(
+        client = self.current_customer(
             current_product_id=111,
             current_size="M",
             intent="payment",
@@ -2150,8 +2170,7 @@ class PaymentLinkGateTests(SimpleTestCase):
         """
         from management.services.instagram_bot import payment_link_allowed
 
-        client = SimpleNamespace(
-            pk=None,
+        client = self.current_customer(
             current_product_id=111,
             intent="payment",
             stage="paid",
@@ -2176,7 +2195,7 @@ class PaymentLinkGateTests(SimpleTestCase):
     def test_boolean_product_tag_is_not_a_product_id(self):
         from management.services.instagram_bot import payment_link_allowed
 
-        client = SimpleNamespace(
+        client = self.current_customer(
             current_product_id=None,
             intent="payment",
             stage="checkout",
@@ -2436,7 +2455,7 @@ class PaymentReviewDealBindingTests(SimpleTestCase):
         self.assertTrue(_is_review_deal_compatible(self._deal(), {111}))
 
 
-class TelegramPaymentReviewGateTests(SimpleTestCase):
+class TelegramPaymentReviewGateTests(TestCase):
     def _notification(self, **overrides):
         values = {
             "event_type": "payment_review",
@@ -2489,36 +2508,27 @@ class TelegramPaymentReviewGateTests(SimpleTestCase):
             "Докази ще не доставлені — відкрийте перевірку",
         )
 
-    @patch("management.services.ig_payment_review.transaction.atomic", return_value=nullcontext())
-    def test_losing_opposite_transition_cannot_overwrite_winner_audit(self, _atomic):
-        from management.ig_bot_models import IgPaymentConfirmationReview
+    def test_losing_opposite_transition_cannot_overwrite_winner_audit(self):
+        from management.ig_bot_models import IgClient, IgPaymentConfirmationReview, IgPaymentReviewDecision
         from management.services.ig_payment_review import cancel_review, confirm_review
 
-        locked = SimpleNamespace(
-            pk=42,
-            status=IgPaymentConfirmationReview.Status.PENDING,
-            evidence={},
-            save=Mock(),
-        )
-        query = Mock()
-        query.get.return_value = locked
-        with patch.object(IgPaymentConfirmationReview.objects, "select_for_update", return_value=query):
-            winner = confirm_review(
-                SimpleNamespace(pk=42),
-                actor=None,
-                telegram_decision={"action": "confirm", "telegram_user_id": "7"},
-            )
-            winner_applied = winner._transitioned
-            loser = cancel_review(
-                SimpleNamespace(pk=42),
-                actor=None,
-                telegram_decision={"action": "cancel", "telegram_user_id": "8"},
-            )
+        customer = IgClient.get_or_create_for_sender("payment-review-audit-customer")
+        locked = IgPaymentConfirmationReview.objects.create(client=customer,
+            dedupe_key="payment-review-audit-source", evidence={})
+        winner = confirm_review(locked, actor=None, verification_scope="full_payment",
+            confirmed_amount="790.00", order_total_amount="790.00",
+            telegram_decision={"action": "confirm", "telegram_user_id": "7"})
+        winner_applied = winner._transitioned
+        loser = cancel_review(locked, actor=None,
+            telegram_decision={"action": "cancel", "telegram_user_id": "8"})
 
         self.assertTrue(winner_applied)
         self.assertFalse(loser._transitioned)
+        locked.refresh_from_db()
         self.assertEqual(locked.status, IgPaymentConfirmationReview.Status.CONFIRMED)
         self.assertEqual(locked.evidence["telegram_decision"]["action"], "confirm")
+        self.assertEqual(IgPaymentReviewDecision.objects.filter(review=locked).count(), 1)
+        self.assertEqual(IgPaymentReviewDecision.objects.get(review=locked).actor_external_id, "7")
 
 
 class CatalogHydrationPriceTests(TestCase):

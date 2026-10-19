@@ -2587,6 +2587,53 @@ def _is_story_permalink(url: str) -> bool:
     return _is_instagram_permalink(url) and str(parsed.path or "").casefold().startswith("/stories/")
 
 
+def _attachment_context_only(media_type: str, url: str) -> bool:
+    """Opaque pages/descriptors are context, never a reason to fetch bytes."""
+    kind = str(media_type or "unknown").casefold()
+    if not url or _is_instagram_permalink(url) or kind not in MEDIA_ATTACH_TYPES or kind == "link":
+        return True
+    if kind in {"share", "ig_post", "ig_reel", "reel", "story", "story_mention", "media"}:
+        from management.services.ig_media_url_policy import META_MEDIA_HOST_SUFFIXES
+
+        try:
+            parsed = urlsplit(url)
+            host = str(parsed.hostname or "").casefold().rstrip(".")
+        except ValueError:
+            return True
+        direct_cdn = any(host == suffix or host.endswith("." + suffix) for suffix in META_MEDIA_HOST_SUFFIXES)
+        return not (parsed.scheme == "https" and direct_cdn)
+    return False
+
+
+def _provider_attachment_context(attachment: dict, media_type: str) -> dict:
+    """Bounded, untrusted candidate metadata; never customer intent or vision."""
+    if media_type == "ephemeral":
+        return {"kind": "ephemeral", "privacy_restricted": True}
+    payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
+    titles, links = [], []
+    title = str(payload.get("title") or "").strip()[:300]
+    if title:
+        titles.append(title)
+    if media_type == "template":
+        generic = payload.get("generic") if isinstance(payload.get("generic"), dict) else {}
+        elements = generic.get("elements") if isinstance(generic.get("elements"), list) else []
+        for element in elements[:3]:
+            if not isinstance(element, dict):
+                continue
+            title = str(element.get("title") or "").strip()[:300]
+            if title and title not in titles:
+                titles.append(title)
+            buttons = element.get("buttons") if isinstance(element.get("buttons"), list) else []
+            for button in buttons[:3]:
+                if not isinstance(button, dict):
+                    continue
+                url = str(button.get("url") or "").strip()[:1200]
+                if url.startswith(("https://", "http://")) and url not in links:
+                    links.append(url)
+        return {"kind": "template", "empty": not elements, "titles": titles[:3], "links": links[:3]}
+    return {"kind": media_type, "titles": titles[:3]} if titles else {}
+
+
 def _echo_media_items(msg: dict) -> list[dict]:
     """Keep bounded manager media metadata for the durable echo message."""
     result = []
@@ -2735,6 +2782,14 @@ def _media_fallback_text(metadata: list[dict] | None) -> str:
         return "(голосове повідомлення)"
     if kinds & {"video"}:
         return "(відео)"
+    if kinds & {"ephemeral"}:
+        return "(зникаюче вкладення)"
+    if kinds & {"template"}:
+        return "(картка у вкладенні)"
+    if kinds & {"file"}:
+        return "(файл у вкладенні)"
+    if kinds & {"unsupported", "unknown", "media", "link"} or any(kind not in MEDIA_ATTACH_TYPES for kind in kinds):
+        return "(непідтримуване вкладення)"
     return "(зображення)"
 
 
@@ -7321,6 +7376,9 @@ def _has_meaningful_media_caption(row: InstagramBotMessage) -> bool:
     return text not in {
         "", "(зображення)", "(медіа)", "(вкладення)", "(изображение)",
         "(вложение)", "(image)", "(media)", "(attachment)",
+        "(картка у вкладенні)", "(зникаюче вкладення)", "(непідтримуване вкладення)",
+        "(поширений допис)", "(сторіс)", "(відео)", "(голосове повідомлення)",
+        "(файл у вкладенні)",
     }
 
 
@@ -10751,7 +10809,9 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
     for attachment in _attachment_items(msg) or []:
         if not isinstance(attachment, dict):
             continue
-        media_type = _attachment_media_type(attachment)
+        native_type = _attachment_media_type(attachment)
+        media_type = native_type if native_type == "ephemeral" else (
+            "unsupported" if msg.get("is_unsupported") else native_type)
         payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
         candidates = _attachment_media_candidates(attachment)
         typed_post_id = str(
@@ -10818,16 +10878,15 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
             "ig_reel": "shared_reel",
             "reel": "shared_reel",
         }.get(media_type, media_type or "unknown")
-        if not candidates and (
-            media_type in MEDIA_ATTACH_TYPES
-            or provider_media_id
-            or object_id
-        ):
-            candidates = [(media_type or "image", "", "")]
-        if not candidates:
-            continue
+        # Every authenticated customer attachment has a durable descriptor,
+        # including opaque cards and disappearing/unsupported formats. Their
+        # existence is not evidence of readable bytes or a product selection.
+        if media_type == "ephemeral":
+            candidates = [(media_type, "", "")]
+        elif not candidates:
+            candidates = [(media_type or "unknown", "", "")]
         for _kind, url, _title in candidates:
-            context_only = _is_instagram_permalink(url) or not url
+            context_only = bool(msg.get("is_unsupported")) or _attachment_context_only(media_type, url)
             item = {
                 "url": url[:1200],
                 "provenance": (
@@ -10838,20 +10897,23 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
                     MEDIA_STATUS_METADATA_ONLY
                     if context_only else MEDIA_STATUS_PENDING
                 ),
-                "media_type": media_type or "image",
+                "media_type": media_type or "unknown",
                 "provider_object_key": (
                     f"{media_type}:{object_id}" if media_type and object_id else ""
                 ),
                 "provider_object_id": object_id,
                 "provider_media_id": provider_media_id,
                 "provider_event_id": message_id,
-                "provider_attachment_type": str(attachment.get("type") or media_type or "image").strip().lower()[:32],
-                "provider_attachment_types": [str(attachment.get("type") or media_type or "image").strip().lower()[:32]],
+                "provider_attachment_type": str(attachment.get("type") or media_type or "unknown").strip().lower()[:32],
+                "provider_attachment_types": [str(attachment.get("type") or media_type or "unknown").strip().lower()[:32]],
                 "provider_context_kind": provider_context_kind,
                 "provider_target_username": provider_target_username,
                 "target_username": target_username,
                 "provider_native_mention": provider_native,
             }
+            candidate_context = _provider_attachment_context(attachment, media_type)
+            if candidate_context:
+                item["provider_context"] = candidate_context
             if reply_context:
                 item["reply_context"] = reply_context
             if context_only:
@@ -10885,20 +10947,44 @@ def _provider_attachment_metadata(msg: dict) -> list[dict]:
         if media_type not in types:
             types.append(media_type)
         current["provider_attachment_types"] = types[:4]
-        if media_type == "ig_post" and current.get("media_type") == "share":
+        typed_upgrade = media_type == "ig_post" and current.get("media_type") == "share"
+        current_capture = bool(current.get("url")) and current.get("capture_eligible") is not False
+        item_capture = bool(item.get("url")) and item.get("capture_eligible") is not False
+        if (item_capture and not current_capture) or (item_capture == current_capture and typed_upgrade):
+            # A URL and its capture eligibility are one decision. Mixing an
+            # opaque typed URL with an earlier CDN part's flags would make a
+            # page fetchable; the reverse would hide readable provider bytes.
+            for field in ("url", "provenance", "status", "capture_eligible", "url_metadata_expired"):
+                if field in item:
+                    current[field] = item[field]
+                else:
+                    current.pop(field, None)
+        if typed_upgrade:
             for field in (
-                "url", "media_type", "provider_attachment_type",
+                "media_type", "provider_attachment_type",
                 "provider_context_kind", "provider_object_key",
             ):
                 if item.get(field):
                     current[field] = item[field]
     result = deduped
+    if msg.get("is_unsupported") and not msg.get("is_echo") and not result:
+        result.append({"url": "", "provenance": MEDIA_PROVENANCE_HISTORICAL,
+            "status": MEDIA_STATUS_METADATA_ONLY, "capture_eligible": False,
+            "capture_state": "metadata_only", "capture_terminal": True,
+            "url_metadata_expired": True,
+            "media_type": "unsupported", "provider_attachment_type": "unsupported",
+            "provider_context_kind": "unsupported", "provider_event_id": message_id,
+            "provider_context": {"kind": "unsupported"}})
     for index, item in enumerate(result):
         item["original_index"] = index
     if reply_story_id or reply_story_url or reply_story_media_id:
         story_id = reply_story_id
         story_url = reply_story_url
-        context_only = _is_instagram_permalink(story_url) or not story_url
+        context_only = (
+            bool(msg.get("is_unsupported"))
+            or any(part.get("media_type") == "ephemeral" for part in result)
+            or _attachment_context_only("story", story_url)
+        )
         result.append({
             "url": story_url[:1200],
             "provenance": (
@@ -17438,7 +17524,7 @@ def record_raw_event(payload: dict):
 # Webhook payload -> черга (швидко, без важкої логіки)
 # ---------------------------------------------------------------------------
 MEDIA_ATTACH_TYPES = {
-    "image", "share", "ig_post", "ig_reel", "reel", "story_mention", "story", "video", "audio", "file", "link",
+    "image", "share", "ig_post", "ig_reel", "reel", "story_mention", "story", "video", "audio", "file", "link", "media",
 }
 MEDIA_MAX = 3
 
@@ -17455,9 +17541,6 @@ def _reply_to_provider_message_id(msg: dict) -> str:
     ).strip()
     if direct:
         return direct[:255]
-    story = reply_to.get("story")
-    if isinstance(story, dict):
-        return str(story.get("id") or "").strip()[:255]
     return ""
 
 
@@ -17474,13 +17557,17 @@ def _extract_media_urls(msg: dict) -> list[str]:
 
     download_image() сам відсіє не-image (відео/файл), тож їх URL безпечні.
     """
+    if msg.get("is_unsupported"):
+        return []
     urls: list[str] = []
+    has_ephemeral = False
     for att in _attachment_items(msg) or []:
+        has_ephemeral = has_ephemeral or _attachment_media_type(att) == "ephemeral"
         for media_type, url, _title in _attachment_media_candidates(att):
-            if media_type.lower() in MEDIA_ATTACH_TYPES and not _is_instagram_permalink(url):
+            if media_type.lower() in MEDIA_ATTACH_TYPES and not _attachment_context_only(media_type, url):
                 urls.append(url)
     story = (msg.get("reply_to") or {}).get("story") or {}
-    if story.get("url") and not _is_instagram_permalink(story.get("url")):
+    if story.get("url") and not has_ephemeral and not _attachment_context_only("story", story.get("url")):
         urls.append(story["url"])
     out: list[str] = []
     for u in urls:
@@ -17791,7 +17878,7 @@ def handle_webhook_payload(
     for sender_id, recipient_id, msg, ref in _iter_events(payload):
         if not msg:
             continue
-        if msg.get("is_deleted") or msg.get("is_unsupported"):
+        if msg.get("is_deleted") or (msg.get("is_unsupported") and msg.get("is_echo")):
             continue
         # Echo (повідомлення сторінки/менеджера) → перехоплення менеджером.
         if msg.get("is_echo"):

@@ -523,7 +523,7 @@ def _mid_namespace_state(row, namespace: str, *, require_materialized: bool = Fa
         return "ignored"
     if not mid:
         return "ok"
-    if message.get("is_deleted") or message.get("is_unsupported"):
+    if message.get("is_deleted") or (message.get("is_unsupported") and is_echo):
         return "ignored"
     if is_echo:
         from management.services.ig_outgoing_registry import is_our_outgoing
@@ -578,7 +578,8 @@ def _mid_namespace_state(row, namespace: str, *, require_materialized: bool = Fa
         story_only = not message.get("text") and not message.get("attachments") and isinstance(
             message.get("reply_to"), dict
         ) and isinstance(message.get("reply_to", {}).get("story"), dict)
-        if story_only and (
+        opaque_empty = not message.get("text") and not bot._echo_media_items(message)
+        if (story_only or opaque_empty) and (
             sender != owner_id
             or not recipient
             or not IgClient.objects.filter(igsid=recipient).exists()

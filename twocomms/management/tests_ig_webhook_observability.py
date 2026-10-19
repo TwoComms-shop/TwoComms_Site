@@ -21,12 +21,17 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from management.models import InstagramBotLog
+from management.models import InstagramBotLog, InstagramBotSettings, IgWebhookInboxEvent
 
 
 @override_settings(ALLOWED_HOSTS=["management.twocomms.shop", "testserver"])
 class BadPayloadVisibilityTests(TestCase):
     SECRET = "test-secret"
+
+    def setUp(self):
+        self.settings = InstagramBotSettings.load()
+        self.settings.page_id = "diagnostic-owner"
+        self.settings.save(update_fields=["page_id"])
 
     def _post(self, body: bytes):
         digest = hmac.new(self.SECRET.encode(), body, hashlib.sha256).hexdigest()
@@ -40,18 +45,20 @@ class BadPayloadVisibilityTests(TestCase):
                 secure=True,
             )
 
-    def test_broken_json_still_returns_200(self):
-        """Ретрай битого payload не поможет — 200 остаётся осознанным."""
+    def test_broken_json_is_rejected_before_durable_acceptance(self):
+        """Only an accepted durable receipt authorizes a successful response."""
         response = self._post(b"not-json-at-all")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.content, b"invalid_json")
+        self.assertFalse(IgWebhookInboxEvent.objects.exists())
 
     def test_broken_json_leaves_exactly_one_error_record(self):
         self._post(b"not-json-at-all")
 
         errors = list(
             InstagramBotLog.objects.filter(
-                level="error", event="webhook_bad_payload"
+                level="error", event="webhook_rejected"
             )
         )
         self.assertEqual(
@@ -62,10 +69,18 @@ class BadPayloadVisibilityTests(TestCase):
         secret_text = "мій номер 0501234567"
         body = ('{"broken": "' + secret_text + '"').encode()
 
-        self._post(body)
+        with self.assertLogs("ig_bot", level="ERROR") as diagnostic:
+            self._post(body)
 
-        record = InstagramBotLog.objects.get(event="webhook_bad_payload")
-        self.assertIn(str(len(body)), record.detail, "длина тела нужна для диагностики")
+        record = InstagramBotLog.objects.get(event="webhook_rejected")
+        # The native diagnostic stream carries finite reason/body length;
+        # the DB log path separately normalizes legacy free text to typed data.
+        emitted = "\n".join(diagnostic.output)
+        self.assertIn("code=invalid_json", emitted)
+        self.assertIn(f"len={len(body)}", emitted)
+        self.assertEqual(json.loads(record.detail)["kind"], "error")
+        self.assertNotIn(secret_text, emitted)
+        self.assertNotIn("0501234567", emitted)
         self.assertNotIn(
             secret_text,
             record.detail,
@@ -82,7 +97,7 @@ class BadPayloadVisibilityTests(TestCase):
             self._post(body)
 
         self.assertFalse(
-            InstagramBotLog.objects.filter(event="webhook_bad_payload").exists()
+            InstagramBotLog.objects.filter(event="webhook_rejected").exists()
         )
 
     def test_handler_failure_is_visible_without_exception_or_message_text(self):
@@ -92,9 +107,11 @@ class BadPayloadVisibilityTests(TestCase):
                 "object": "instagram",
                 "entry": [
                     {
+                        "id": "diagnostic-owner",
                         "messaging": [
                             {
                                 "sender": {"id": "diagnostic-user"},
+                                "recipient": {"id": "diagnostic-owner"},
                                 "message": {
                                     "mid": "diagnostic-mid",
                                     "text": customer_text,
@@ -106,20 +123,23 @@ class BadPayloadVisibilityTests(TestCase):
             }
         ).encode()
 
+        from management.services.ig_webhook_inbox import drain_webhook_inbox
+
         with patch(
-            "management.bot_webhook.bot.record_raw_event"
-        ), patch(
             "management.bot_webhook.bot.handle_webhook_payload",
             side_effect=RuntimeError(customer_text),
         ):
             response = self._post(body)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(drain_webhook_inbox(self.settings, limit=1), 0)
 
-        self.assertEqual(response.status_code, 503)
-        record = InstagramBotLog.objects.get(event="webhook_handler_error")
-        self.assertEqual(record.level, "error")
-        self.assertIn("RuntimeError", record.detail)
-        self.assertNotIn(customer_text, record.detail)
-        self.assertNotIn("0501234567", record.detail)
+        receipt = IgWebhookInboxEvent.objects.get()
+        self.assertIsNone(receipt.processed_at)
+        self.assertEqual(receipt.attempts, 1)
+        self.assertIsNotNone(receipt.next_attempt_at)
+        self.assertEqual(receipt.last_error, "RuntimeError")
+        self.assertNotIn(customer_text, receipt.last_error)
+        self.assertNotIn("0501234567", str(list(InstagramBotLog.objects.values_list("detail", flat=True))))
 
 
 class IgBotLoggerWiringTests(TestCase):

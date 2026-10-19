@@ -15,24 +15,24 @@ from management.services import instagram_bot as bot
 
 class ExtractMediaUrlsTests(SimpleTestCase):
     def test_share_attachment(self):
-        msg = {"attachments": [{"type": "share", "payload": {"url": "https://cdn/p.jpg"}}]}
-        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/p.jpg"])
+        msg = {"attachments": [{"type": "share", "payload": {"url": "https://scontent.cdninstagram.com/p.jpg"}}]}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://scontent.cdninstagram.com/p.jpg"])
 
     def test_ig_reel(self):
-        msg = {"attachments": [{"type": "ig_reel", "payload": {"url": "https://cdn/r.jpg"}}]}
-        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/r.jpg"])
+        msg = {"attachments": [{"type": "ig_reel", "payload": {"url": "https://scontent.cdninstagram.com/r.jpg"}}]}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://scontent.cdninstagram.com/r.jpg"])
 
     def test_ig_post_repost_is_retained_as_media(self):
-        msg = {"attachments": [{"type": "ig_post", "payload": {"url": "https://cdn/post.jpg"}}]}
-        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/post.jpg"])
+        msg = {"attachments": [{"type": "ig_post", "payload": {"url": "https://scontent.cdninstagram.com/post.jpg"}}]}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://scontent.cdninstagram.com/post.jpg"])
 
     def test_story_mention(self):
-        msg = {"attachments": [{"type": "story_mention", "payload": {"url": "https://cdn/sm.jpg"}}]}
-        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/sm.jpg"])
+        msg = {"attachments": [{"type": "story_mention", "payload": {"url": "https://scontent.cdninstagram.com/sm.jpg"}}]}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://scontent.cdninstagram.com/sm.jpg"])
 
     def test_story_reply(self):
-        msg = {"reply_to": {"story": {"url": "https://cdn/s.jpg", "id": "1"}}}
-        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/s.jpg"])
+        msg = {"reply_to": {"story": {"url": "https://scontent.cdninstagram.com/s.jpg", "id": "1"}}}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://scontent.cdninstagram.com/s.jpg"])
 
     def test_story_permalink_is_review_context_not_capture_url(self):
         msg = {
@@ -73,22 +73,22 @@ class ExtractMediaUrlsTests(SimpleTestCase):
         self.assertEqual(bot._extract_media_urls(msg), [])
 
     def test_plain_image_still_works(self):
-        msg = {"attachments": [{"type": "image", "payload": {"url": "https://cdn/i.jpg"}}]}
-        self.assertEqual(bot._extract_media_urls(msg), ["https://cdn/i.jpg"])
+        msg = {"attachments": [{"type": "image", "payload": {"url": "https://scontent.cdninstagram.com/i.jpg"}}]}
+        self.assertEqual(bot._extract_media_urls(msg), ["https://scontent.cdninstagram.com/i.jpg"])
 
     def test_dedupe_and_cap_three(self):
         msg = {
             "attachments": [
-                {"type": "image", "payload": {"url": "https://cdn/u1"}},
-                {"type": "image", "payload": {"url": "https://cdn/u1"}},  # дубль
-                {"type": "image", "payload": {"url": "https://cdn/u2"}},
-                {"type": "image", "payload": {"url": "https://cdn/u3"}},
-                {"type": "image", "payload": {"url": "https://cdn/u4"}},  # понад ліміт
+                {"type": "image", "payload": {"url": "https://scontent.cdninstagram.com/u1"}},
+                {"type": "image", "payload": {"url": "https://scontent.cdninstagram.com/u1"}},  # дубль
+                {"type": "image", "payload": {"url": "https://scontent.cdninstagram.com/u2"}},
+                {"type": "image", "payload": {"url": "https://scontent.cdninstagram.com/u3"}},
+                {"type": "image", "payload": {"url": "https://scontent.cdninstagram.com/u4"}},  # понад ліміт
             ]
         }
         self.assertEqual(
             bot._extract_media_urls(msg),
-            ["https://cdn/u1", "https://cdn/u2", "https://cdn/u3"],
+            ["https://scontent.cdninstagram.com/u1", "https://scontent.cdninstagram.com/u2", "https://scontent.cdninstagram.com/u3"],
         )
 
     def test_empty_when_no_media(self):
@@ -101,7 +101,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                 "type": "story_mention",
                 "id": "story-object-1",
                 "payload": {
-                    "url": "https://cdn/story.jpg",
+                    "url": "https://scontent.cdninstagram.com/story.jpg",
                     "media_id": "media-1",
                     "target": {"username": "twocomms"},
                 },
@@ -123,7 +123,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                     "type": "story_mention",
                     "id": "story-object-1",
                     "payload": {
-                        "url": "https://cdn/story.jpg",
+                        "url": "https://scontent.cdninstagram.com/story.jpg",
                         "media_id": "media-1",
                         "target": {"username": "twocomms"},
                     },
@@ -135,7 +135,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                     "type": "story_mention",
                     "id": "arbitrary-object-id",
                     "payload": {
-                        "url": "https://cdn/story.jpg",
+                        "url": "https://scontent.cdninstagram.com/story.jpg",
                         "target": {"username": "twocomms"},
                     },
                 }],
@@ -145,7 +145,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                 "attachments": [{
                     "type": "story_mention",
                     "payload": {
-                        "url": "https://cdn/story.jpg",
+                        "url": "https://scontent.cdninstagram.com/story.jpg",
                         "id": "arbitrary-object-id",
                         "target": {"username": "twocomms"},
                     },
@@ -167,7 +167,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                 "type": "story_mention",
                 "id": "story-object-1",
                 "payload": {
-                    "url": "https://cdn/story.jpg",
+                    "url": "https://scontent.cdninstagram.com/story.jpg",
                     "media_id": "media-1",
                 },
             }],
@@ -208,7 +208,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                     "type": "story",
                     "id": "story-object-1",
                     "payload": {
-                        "url": "https://cdn/story.jpg",
+                        "url": "https://scontent.cdninstagram.com/story.jpg",
                         "media_id": "media-1",
                         "target": {"username": "twocomms"},
                     },
@@ -220,7 +220,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                     "type": "share",
                     "id": "shared-object-1",
                     "payload": {
-                        "url": "https://cdn/shared.jpg",
+                        "url": "https://scontent.cdninstagram.com/shared.jpg",
                         "media_id": "media-1",
                         "target": {"username": "twocomms"},
                     },
@@ -232,7 +232,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                     "story": {
                         "id": "story-object-1",
                         "media_id": "media-1",
-                        "url": "https://cdn/story.jpg",
+                        "url": "https://scontent.cdninstagram.com/story.jpg",
                         "target": {"username": "twocomms"},
                     }
                 },
@@ -254,7 +254,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                 "id": "shared-object-1",
                 "username": "twocomms",
                 "payload": {
-                    "url": "https://cdn/shared.jpg",
+                    "url": "https://scontent.cdninstagram.com/shared.jpg",
                     "target": {"username": "twocomms"},
                 },
             }],
@@ -272,7 +272,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
             "attachments": [{
                 "type": "share",
                 "payload": {
-                    "url": "https://cdn/shared.jpg",
+                    "url": "https://scontent.cdninstagram.com/shared.jpg",
                     "ig_post_media_id": "post-media-1",
                     "target": {"username": "@TwoComms"},
                 },
@@ -360,7 +360,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                 "type": "story_mention",
                 "id": "story-object-1",
                 "username": "attacker-controlled-name",
-                "payload": {"url": "https://cdn/story.jpg"},
+                "payload": {"url": "https://scontent.cdninstagram.com/story.jpg"},
             }],
         }
 
@@ -374,7 +374,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
             "attachments": [{
                 "type": "story_mention",
                 "id": "story-object-1",
-                "payload": {"url": "https://cdn/story.jpg"},
+                "payload": {"url": "https://scontent.cdninstagram.com/story.jpg"},
             }],
         }
 
@@ -394,7 +394,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
                 # substitute for an object id supplied by the provider.
                 "provider_object_key": "forged-object",
                 "payload": {
-                    "url": "https://cdn/story.jpg",
+                    "url": "https://scontent.cdninstagram.com/story.jpg",
                     "media_id": "media-1",
                     "target": {"username": "twocomms"},
                 },
@@ -412,7 +412,7 @@ class ExtractMediaUrlsTests(SimpleTestCase):
             "reply_to": {
                 "story": {
                     "id": "story-object-1",
-                    "url": "https://cdn/story.jpg",
+                    "url": "https://scontent.cdninstagram.com/story.jpg",
                 }
             },
         }
@@ -451,14 +451,14 @@ class ApplyReferralTests(TestCase):
     def test_referral_written_to_client(self):
         ref = {
             "ref": "summer", "ad_id": "999", "source": "ADS",
-            "ads_context_data": {"ad_title": "Hoodie Kharkiv", "photo_url": "https://cdn/ad.jpg"},
+            "ads_context_data": {"ad_title": "Hoodie Kharkiv", "photo_url": "https://scontent.cdninstagram.com/ad.jpg"},
         }
         bot._apply_referral("u1", ref)
         c = IgClient.objects.get(igsid="u1")
         self.assertEqual(c.ad_id, "999")
         self.assertEqual(c.ad_source, "ADS")
         self.assertEqual(c.ad_title, "Hoodie Kharkiv")
-        self.assertEqual(c.ad_creative_url, "https://cdn/ad.jpg")
+        self.assertEqual(c.ad_creative_url, "https://scontent.cdninstagram.com/ad.jpg")
         self.assertEqual(c.referral_payload.get("ref"), "summer")
 
 
@@ -474,13 +474,13 @@ class HandleWebhookPayloadTests(TestCase):
         payload = {"entry": [{"messaging": [{
             "sender": {"id": "u9"},
             "message": {"mid": "mm1", "attachments": [
-                {"type": "share", "payload": {"url": "https://cdn/post.jpg"}}
+                {"type": "share", "payload": {"url": "https://scontent.cdninstagram.com/post.jpg"}}
             ]},
         }]}]}
         n = bot.handle_webhook_payload(self.s, payload)
         self.assertEqual(n, 1)
         msg = InstagramBotMessage.objects.get(mid="mm1")
-        self.assertEqual(json.loads(msg.attachments), ["https://cdn/post.jpg"])
+        self.assertEqual(json.loads(msg.attachments), ["https://scontent.cdninstagram.com/post.jpg"])
 
     def test_enqueues_textless_ig_post_repost_with_media(self):
         payload = {"entry": [{"messaging": [{
@@ -488,7 +488,7 @@ class HandleWebhookPayloadTests(TestCase):
             "message": {"mid": "ig-post-mid", "attachments": [{
                 "type": "ig_post",
                 "payload": {
-                    "url": "https://cdn/repost.jpg",
+                    "url": "https://scontent.cdninstagram.com/repost.jpg",
                     "ig_post_media_id": "media-123",
                     "title": "Репост",
                 },
@@ -499,7 +499,7 @@ class HandleWebhookPayloadTests(TestCase):
         self.assertEqual(bot.handle_webhook_payload(self.s, payload), 0)
         msg = InstagramBotMessage.objects.get(mid="ig-post-mid")
         self.assertEqual(msg.text, "(поширений допис)")
-        self.assertEqual(json.loads(msg.attachments), ["https://cdn/repost.jpg"])
+        self.assertEqual(json.loads(msg.attachments), ["https://scontent.cdninstagram.com/repost.jpg"])
         self.assertEqual(msg.attachment_media[0]["media_type"], "ig_post")
         self.assertEqual(msg.attachment_media[0]["provider_media_id"], "media-123")
 
@@ -572,7 +572,7 @@ class HandleWebhookPayloadTests(TestCase):
                     "type": "story_mention",
                     "id": "story-object-1",
                     "payload": {
-                        "url": "https://cdn/story.jpg",
+                        "url": "https://scontent.cdninstagram.com/story.jpg",
                         "media_id": "media-1",
                         "target": {"username": "twocomms"},
                     },

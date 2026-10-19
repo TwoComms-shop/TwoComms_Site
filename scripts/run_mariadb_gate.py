@@ -48,6 +48,7 @@ SUITES = {
         "finance.tests_migration_storage",
         "management.tests_ig_rate_handoff_qa_20261020",
         "management.tests_ig_ingress_reply_liveness",
+        "management.tests_ig_opaque_inbound",
         "management.tests_ig_unanswered_obligations",
         "management.tests_ig_checkout_journey_qa_20261020",
         "management.tests_ig_handoff_journey_qa_20261020",

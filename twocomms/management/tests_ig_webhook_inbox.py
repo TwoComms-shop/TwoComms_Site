@@ -232,7 +232,9 @@ class WebhookInboxTests(TestCase):
         self.assertEqual(message.role, "manager")
         self.assertEqual(message.text, "(відповідь менеджера на сторіс)")
         self.assertIn("https://lookaside.fbsbx.com/story-reference", message.attachments)
-        self.assertEqual(message.reply_to_provider_message_id, "story-reference-id")
+        self.assertEqual(message.reply_to_provider_message_id, "")
+        self.assertTrue(any(part.get("provider_object_key") == "story:story-reference-id"
+            for part in message.attachment_media))
         receipt = IgWebhookInboxEvent.objects.get()
         self.assertEqual(receipt.decision, "accepted")
         self.assertIsNotNone(receipt.processed_at)
