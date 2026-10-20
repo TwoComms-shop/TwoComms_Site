@@ -1,0 +1,15 @@
+{
+  "twocomms/management/ig_restock_subscription_models.py": "a772a9d2af1b5c11b5fe22d250868ae378ff64b1706a4a5e5289df85c61f88db",
+  "twocomms/management/migrations/0242_restock_followup_receipts.py": "c90bffa6298859e2f8cd990ada106069fc5f092d9beafa84d22450f36ac7d184",
+  "twocomms/management/services/ig_fulfillment_delivery.py": "24108d7829588e5c5e8b73bbbfc0504e8e0ea0999668f5033ec189c8914e4a18",
+  "twocomms/management/services/ig_restock_context.py": "57afb110c364933c2337d5cc4efbdbea9b8cefaf0d1b3a61cbcf7291a22af368",
+  "twocomms/management/services/ig_restock_followup.py": "88e051ac3e4bf5321cb48346f9fb734e6401adcdeac8b6969ef4a33716ce4603",
+  "twocomms/management/services/ig_restock_subscriptions.py": "ddad8d5b796e3d4ce28d553d587777a2a7b20c8cc454a705ec23055659390edd",
+  "twocomms/management/services/ig_restock_waiting_list.py": "6e5a6a606b87b1b9139a9b0d7996e2856476219b3b93766998fbc1f184cee062",
+  "twocomms/management/services/ig_restock_waiting_list_review.py": "d307f2235e5ae519fb33ea061d8eff2ceb7ed69660bff9df30445954bbb56e8d",
+  "twocomms/management/tests_ig_restock_followup.py": "5f4ef252ae4cd3855307611779998f57b7ea3f44ea8841fc572806cb722acdce",
+  "twocomms/management/tests_ig_restock_followup_lifecycle.py": "19e682303dc27045d007cef9c50a647b40b745c402cf5cc84fb5b287863dbc18",
+  "twocomms/management/tests_ig_restock_receipt_migration.py": "ec805e29d1ac5fd75c3a928f41f5ca6c817fde0a80639153ffa0e7a817d0caf3",
+  "scripts/run_mariadb_gate.py": "d89804accbbbf43a8bce1fd7689eff0c8e51533c9f52a7d6700a2b8c5d99ab77",
+  "twocomms/management/tests_ig_fulfillment_delivery.py": "b2e282ba69cbce470ab9ed080ef0dcea8477d16cbed4ca6c63aeeb7a21c4477f"
+}

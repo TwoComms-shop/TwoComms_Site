@@ -1,0 +1,50 @@
+{
+  "observed_at": "2026-10-20T21:32:32.324822+00:00",
+  "sha": "98da94cc4c559e342df7a9e81a9512f0daee2c21",
+  "branch": "main",
+  "stock_rows": 81,
+  "stock_digest": "c84facc0c868919af3437b71db996ba21a3d615c1bd7cfd8be49684f9df6a30f",
+  "restock_enabled": true,
+  "manager_review_enabled": true,
+  "migration_0242": true,
+  "maintenance_active": false,
+  "provider_io": 0,
+  "provider_attempts": 0,
+  "receipt_columns": [
+    [
+      "effect_id",
+      "YES"
+    ],
+    [
+      "followup_task_id",
+      "YES"
+    ]
+  ],
+  "receipt_guards": [
+    "ig_ful_rec_delete",
+    "ig_ful_rec_insert",
+    "ig_ful_rec_update"
+  ],
+  "receipt_xor": true,
+  "select_queries": 7,
+  "sql_verbs": [
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "START"
+  ],
+  "baseline_sha": "d74157be9cc1582a7230bafd6af08f31a9d1c256",
+  "stock_unchanged": true,
+  "local_runtime": "CPython3.14.6 / Django6.1",
+  "production_runtime": "CPython3.14.8 / Django6.1",
+  "main_healthy": true,
+  "workers_healthy": true,
+  "supervisor_sha": "98da94cc4c559e342df7a9e81a9512f0daee2c21",
+  "child_sha": "98da94cc4c559e342df7a9e81a9512f0daee2c21",
+  "tests": 170,
+  "skips": 0,
+  "mariadb_version": "11.4.12",
+  "mariadb_gate": "passed; full migration graph/reverse/reapply/check; cleanup verified",
+  "manual_customer_sends": 0,
+  "production_fixtures": 0
+}
