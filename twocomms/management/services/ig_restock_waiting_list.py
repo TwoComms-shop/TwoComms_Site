@@ -316,7 +316,11 @@ def invitation_reason(inv, settings_obj, *, require_head=False, now=None, check_
     restock = _restock()
     try:
         validate_target(inv.target)
-        owned, reason = restock.owned_source(inv.revision, inv.request_source, settings_obj, require_head=require_head)
+        # A manager task follows its original genuine source after that turn
+        # completed. Its signed CART binding, not a fabricated new turn, owns
+        # the offer; fresh cart/manager admission is checked by its dispatcher.
+        followup = inv.envelope.get("producer") == "manager_followup.v1"
+        owned, reason = restock.owned_source(inv.revision, inv.request_source, settings_obj, require_head=False if followup else require_head)
         if not owned or owned[2] != inv.envelope.get("source"):
             return reason or "waiting_list_request_source_changed"
         client = owned[0].client
@@ -452,9 +456,9 @@ def _capture_projection(client_id, *, now, limit, include_manager_review, result
             # token configuration or dispatch eligibility. The read descriptor
             # still checks exact native ownership, reset, epochs and receipts.
             source_reason = invitation_reason(inv, settings_obj, now=now, check_dispatch_scope=False) if settings_obj else "settings_missing"
-            receipt = restock.Receipt.objects.select_related("effect").filter(invitation=inv).first()
+            receipt = restock.Receipt.objects.select_related("effect", "followup_task").filter(invitation=inv).first()
             receipt_valid = bool(receipt and restock._valid_receipt(inv, receipt))
-            answers = list(restock.Answer.objects.filter(invitation=inv).select_related("invitation", "receipt__effect", "source").order_by("pk"))
+            answers = list(restock.Answer.objects.filter(invitation=inv).select_related("invitation", "receipt__effect", "receipt__followup_task", "source").order_by("pk"))
             accepted = next((row for row in answers if row.kind == "accept"), None)
             revoked = next((row for row in answers if row.kind == "revoke"), None)
             accepted_valid = bool(accepted and settings_obj and restock._valid_answer(accepted, settings_obj))

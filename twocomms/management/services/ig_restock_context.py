@@ -45,6 +45,8 @@ def _binding(request, invitation, line):
 
 
 def _native_receipt(invitation, receipt):
+    if getattr(receipt, "followup_task_id", None):
+        return restock._valid_receipt(invitation, receipt)
     effect = receipt.effect
     return bool(restock._verified(receipt, "receipt") and receipt.invitation_id == invitation.pk
         and receipt.envelope.get("invitation_hmac") == invitation.envelope_hmac
@@ -158,6 +160,16 @@ def _read_fence(subscription):
     answer, invitation = subscription.accepted_answer, subscription.accepted_answer.invitation
     receipt, source = answer.receipt, answer.source
     effect = receipt.effect
+    if getattr(receipt, "followup_task_id", None):
+        task = receipt.followup_task
+        native = ("followup_task", task.pk, task.status, task.provider_message_id, task.sent_at,
+            task.event_payload, task.event_key, task.message_text, task.manager_context, task.attempt_count,
+            task.claim_token, task.claim_until, task.client_id)
+    else:
+        native = ("revision_effect", effect.state, effect.provider_message_id, effect.terminal_at,
+            effect.payload, effect.payload_digest, effect.plan_digest, effect.revision_snapshot_digest,
+            effect.revision_id, effect.source_message_id, effect.recipient_igsid, effect.provider_namespace,
+            effect.settings_id_snapshot, effect.settings_permission_epoch, effect.client_permission_epoch)
     event = getattr(subscription, "availability_event", None)
     delivery = (event.pk, event.envelope, event.envelope_hmac, event.task.status,
         event.task.provider_message_id, event.task.sent_at, event.task.event_payload,
@@ -169,10 +181,7 @@ def _read_fence(subscription):
         subscription.revoke_envelope, subscription.revoke_source_id, delivery,
         restock._columns(answer), answer.envelope, answer.envelope_hmac, restock._columns(invitation),
         invitation.envelope, invitation.envelope_hmac, restock._columns(receipt), receipt.envelope,
-        receipt.envelope_hmac, effect.state, effect.provider_message_id, effect.terminal_at,
-        effect.payload, effect.payload_digest, effect.plan_digest, effect.revision_snapshot_digest,
-        effect.revision_id, effect.source_message_id, effect.recipient_igsid, effect.provider_namespace,
-        effect.settings_id_snapshot, effect.settings_permission_epoch, effect.client_permission_epoch,
+        receipt.envelope_hmac, native,
         _source_payload(source, ordinal=0), source.role, source.source, source.status, source.client_id, source.sender_id))
 
 
@@ -239,7 +248,7 @@ def capture_restock_interest(request, settings_obj, cart, now, *, reviewed_decis
     revocations = IgRestockAnswer.objects.filter(invitation_id=OuterRef("accepted_answer__invitation_id"), kind="revoke")
     query = IgRestockSubscription.objects.filter(client_id=request.client_id,
         accepted_answer__invitation__envelope__manager_review__request_id=str(request.pk)).select_related(
-        "accepted_answer__source", "accepted_answer__invitation", "accepted_answer__receipt__effect",
+        "accepted_answer__source", "accepted_answer__invitation", "accepted_answer__receipt__effect", "accepted_answer__receipt__followup_task",
         "availability_event__task__sent_message").annotate(revoke_id=Subquery(revocations.values("pk")[:1]),
             revoke_hmac=Subquery(revocations.values("envelope_hmac")[:1]),
             revoke_envelope=Subquery(revocations.values("envelope")[:1]),

@@ -139,7 +139,7 @@ class FulfillmentNativeDeliveryTests(TestCase):
         coordination.start()
         self.addCleanup(coordination.stop)
         self.now = datetime(2026, 10, 12, 9, 0, tzinfo=datetime_timezone.utc)
-        self.settings = InstagramBotSettings.objects.create(pk=1, is_enabled=True, ig_user_id="owner-1")
+        self.settings, _created = InstagramBotSettings.objects.update_or_create(pk=1, defaults={"is_enabled": True, "ig_user_id": "owner-1"})
         self.client_row = IgClient.objects.create(igsid="fulfillment-delivery-client", reply_permission_epoch=3)
         self.source = InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid,
             role="user", source="webhook", status="done", text="Please check these items", mid="fulfillment-source",

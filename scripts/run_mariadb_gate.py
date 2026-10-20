@@ -43,6 +43,17 @@ SUITES = {
     "lease-concurrency": (
         "management.tests_ig_daemon_progress.MariaDbLeaseContractTests",
     ),
+    "restock-followup": (
+        "management.tests_ig_restock_followup",
+        "management.tests_ig_restock_followup_lifecycle",
+        "management.tests_ig_restock_receipt_migration",
+        "management.tests_ig_restock_subscriptions",
+        "management.tests_ig_restock_waiting_list",
+        "management.tests_ig_restock_context",
+        "management.tests_ig_restock_waiting_list_context",
+        "management.tests_ig_restock_delivery",
+        "management.tests_ig_fulfillment_delivery",
+    ),
     "conversion-context": (
         "management.tests_ig_conversion_mariadb",
         "finance.tests_migration_storage",

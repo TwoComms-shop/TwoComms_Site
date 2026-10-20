@@ -56,9 +56,17 @@ class IgRestockInvitation(_Evidence):
 
 class IgRestockReceipt(_Evidence):
     invitation = models.OneToOneField(IgRestockInvitation, on_delete=models.PROTECT, related_name="native_receipt", db_constraint=False)
-    effect = models.OneToOneField("management.IgRevisionDeliveryEffect", on_delete=models.PROTECT, related_name="restock_receipt", db_constraint=False)
+    effect = models.OneToOneField("management.IgRevisionDeliveryEffect", on_delete=models.PROTECT, related_name="restock_receipt", db_constraint=False, null=True, blank=True)
+    followup_task = models.OneToOneField("management.IgFollowUpTask", on_delete=models.PROTECT, related_name="restock_invitation_receipt", db_constraint=False, null=True, blank=True)
     provider_message_id = models.CharField(max_length=255)
     delivered_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=(models.Q(effect__isnull=False, followup_task__isnull=True)
+                | models.Q(effect__isnull=True, followup_task__isnull=False)),
+            name="ig_restock_receipt_one_origin",
+        )]
 
 
 class IgRestockAnswer(_Evidence):

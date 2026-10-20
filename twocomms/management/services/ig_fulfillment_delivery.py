@@ -17,6 +17,7 @@ from django.utils.dateparse import parse_datetime
 
 from management.services.ig_payment_reminder_time import quiet_time_allowed
 from management.services.ig_purpose_sources import latest_customer_source
+from management.services import ig_restock_followup as restock_followup
 
 ORIGIN = "fulfillment_manager_update"
 CHECK_INTERVAL = timedelta(minutes=15)
@@ -222,6 +223,10 @@ def _guard(task, settings_obj, *, now):
         or task.status != "pending" or task.attempt_count else render_manager_update(projection, copy_version=2))
     if not text:
         return None, "summary_requires_manager_clarification"
+    if restock_followup.TASK_KEY in (task.manager_context or {}):
+        offer = restock_followup.task_offer(task, projection, settings_obj, text=text, now=now)
+        if not offer["ready"]:
+            return None, offer["reason"]
     return (projection, text), ""
 
 
@@ -234,7 +239,7 @@ def _defer(task, reason, now):
 
 
 @contextmanager
-def _physical_boundary(task_id, token, settings_obj, text, proof, *, now=None, admission=None, **delivery):
+def _physical_boundary(task_id, token, settings_obj, text, proof, *, quick_replies=(), now=None, admission=None, **delivery):
     from management.models import IgFollowUpTask
     from management.services.instagram_bot import ProviderRequestBoundaryResult
     clock = now or timezone.now()
@@ -247,6 +252,12 @@ def _physical_boundary(task_id, token, settings_obj, text, proof, *, now=None, a
         if not reason and (guard[1] != text or task.message_text != text or guard[0]["proof"] != proof
                 or delivery.get("delivered_chunk_count", 0) != 0 or delivery.get("planned_chunk_count", 1) != 1):
             reason = "physical_message_changed"
+        if not reason:
+            from management.services.instagram_bot import _provider_quick_replies_payload
+            offer = restock_followup.task_offer(task, guard[0], settings_obj, text=text, now=clock)
+            expected = offer["quick_replies"] if offer["ready"] else ()
+            if _provider_quick_replies_payload(quick_replies) != _provider_quick_replies_payload(expected):
+                reason = "physical_buttons_changed"
         if reason and task and task.status == "processing" and task.claim_token == token and not task.provider_message_id:
             _defer(task, reason, clock)
     if admission is not None and not reason:
@@ -327,6 +338,7 @@ def _finish(task_id, token, receipt, *, admitted, now=None):
             ok = False
     if ok:
         _history(task_id)
+        restock_followup.record_task_delivery(task_id, now=now)
     return ok
 
 
@@ -340,8 +352,18 @@ def process_due_fulfillment_updates(settings_obj, now=None, limit=20):
     settings_obj = settings_obj or InstagramBotSettings.load()
     fixed_clock, clock = now, now or timezone.now()
     bound = max(0, min(int(limit), 20))
-    for identity in IgFollowUpTask.objects.filter(reason=ORIGIN, status="sent", sent_message__isnull=True).exclude(provider_message_id="").values_list("pk", flat=True)[:bound]:
-        _history(identity)
+    repair = Q(sent_message__isnull=True) | Q(**{
+        "manager_context__has_key": restock_followup.TASK_KEY, "restock_invitation_receipt__isnull": True})
+    repairs = IgFollowUpTask.objects.filter(repair, reason=ORIGIN, status="sent").exclude(provider_message_id="").filter(
+        Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=clock))
+    for identity in repairs.order_by("next_attempt_at", "pk").values_list("pk", flat=True)[:bound]:
+        history_ok = _history(identity)
+        receipt_ok = restock_followup.record_task_delivery(identity, now=clock)
+        # Unrepairable historic evidence must not starve newer checkpoints.
+        # This is a projection retry only: SENT tasks can never be dispatched.
+        task = IgFollowUpTask.objects.filter(pk=identity, status="sent").first()
+        if task and (not history_ok or restock_followup.TASK_KEY in (task.manager_context or {}) and not receipt_ok):
+            IgFollowUpTask.objects.filter(pk=identity, status="sent").update(next_attempt_at=clock + CHECK_INTERVAL)
     IgFollowUpTask.objects.filter(pk__in=list(IgFollowUpTask.objects.filter(reason=ORIGIN, status="processing", claim_until__lte=clock,
         provider_message_id="").values_list("pk", flat=True)[:bound]), status="processing", provider_message_id="").update(
         status="ambiguous", skip_reason="processing_crash_no_retry", claim_token="", claim_until=None)
@@ -366,6 +388,14 @@ def process_due_fulfillment_updates(settings_obj, now=None, limit=20):
                     _defer(task, reason, fixed_clock or timezone.now())
                     continue
                 projection, text = guard
+                quick_replies = ()
+                # A prior known-not-dispatched attempt owns its frozen copy.
+                # Add a new offer only before that immutable copy is sealed.
+                if CUSTOMER_COPY_KEY not in (task.manager_context or {}) or restock_followup.TASK_KEY in (task.manager_context or {}):
+                    offer = restock_followup.prepare_task_offer(task, projection, settings_obj, text=text,
+                        now=fixed_clock or timezone.now())
+                    if offer["ready"]:
+                        text, quick_replies = offer["body"], offer["quick_replies"]
                 # Copy only the finite signed admission proof into this attempt.
                 proof = json.loads(json.dumps(projection["proof"]))
                 if CUSTOMER_COPY_KEY not in (task.manager_context or {}):
@@ -377,11 +407,11 @@ def process_due_fulfillment_updates(settings_obj, now=None, limit=20):
             admission, receipt = {"admitted": False}, None
             if bot.renew_client_automation_lease(client.pk, lease):
                 try:
-                    receipt = bot.send_text(settings_obj, client.igsid, text, return_receipt=True, allow_url_fallback=False,
+                    receipt = bot.send_text(settings_obj, client.igsid, text, quick_replies=quick_replies, return_receipt=True, allow_url_fallback=False,
                         provider_message_callback=lambda mid: admission["admitted"] and _checkpoint(identity, token, mid, text, now=fixed_clock),
                         permission_boundary_factory=lambda: customer_send_boundary(settings_obj.pk, client.pk, permission),
                         provider_request_boundary_factory=lambda **state: _physical_boundary(identity, token, settings_obj, text, proof,
-                            now=fixed_clock, admission=admission, **state))
+                            quick_replies=quick_replies, now=fixed_clock, admission=admission, **state))
                 except Exception:
                     pass
             sent += int(_finish(identity, token, receipt, admitted=admission["admitted"], now=fixed_clock))

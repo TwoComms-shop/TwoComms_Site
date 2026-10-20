@@ -75,6 +75,9 @@ def _columns(row):
         if field.name in {"envelope", "envelope_hmac", "created_at"} or (field.name == "id" and not isinstance(row.pk, uuid.UUID)):
             continue
         value = getattr(row, field.attname)
+        # The added alternative provenance must not change historical HMACs.
+        if field.name == "followup_task" and value is None:
+            continue
         result[field.attname] = value.isoformat() if hasattr(value, "isoformat") else str(value) if isinstance(value, uuid.UUID) else value
     return result
 
@@ -155,6 +158,9 @@ def _label(inv):
 
 def _copy_for(inv, kind):
     from management.services import ig_restock_waiting_list as waiting
+    if kind == "accepted" and inv.envelope.get("producer") == "manager_followup.v1":
+        from management.services.ig_restock_followup import accepted_copy
+        return accepted_copy(inv.locale, inv.target)
     return (waiting.copy_for(inv.locale, kind, _label(inv)) if waiting.is_list(inv.target)
         else _copy(inv.locale, kind, _label(inv)))
 
@@ -488,7 +494,11 @@ def _effect_matches(inv, effect, *, body=None, action="accept", source_id=None, 
 
 
 def _valid_receipt(inv, receipt):
+    if receipt and getattr(receipt, "followup_task_id", None):
+        from management.services.ig_restock_followup import valid_task_receipt
+        return bool(_verified(inv, "invitation") and valid_task_receipt(inv, receipt))
     return bool(_verified(inv, "invitation") and _verified(receipt, "receipt")
+        and receipt.effect_id
         and _invitation_manager_case(inv)
         and receipt.invitation_id == inv.pk and receipt.envelope.get("invitation_hmac") == inv.envelope_hmac
         and _effect_matches(inv, receipt.effect) and receipt.effect.provider_message_id == receipt.provider_message_id
@@ -507,7 +517,7 @@ def record_delivery(revision_id, *, now=None):
         settings_obj = InstagramBotSettings.objects.filter(pk=inv.envelope.get("settings_id")).first()
         if not settings_obj or _invitation_source(inv, settings_obj):
             return False
-        existing = Receipt.objects.select_related("effect").filter(invitation_id=inv.pk).first()
+        existing = Receipt.objects.select_related("effect", "followup_task").filter(invitation_id=inv.pk).first()
         if existing:
             return _valid_receipt(inv, existing)
         effects = list(IgRevisionDeliveryEffect.objects.filter(revision_id=revision_id))
@@ -570,7 +580,7 @@ def _valid_answer(answer, settings_obj):
     if not owned or owned[2] != answer.envelope.get("source") or owned[1].quick_reply_payload != answer.envelope.get("payload"):
         return False
     if answer.kind == "revoke":
-        accepted = Answer.objects.select_related("invitation", "receipt__effect", "source").filter(invitation_id=answer.invitation_id, kind="accept").first()
+        accepted = Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=answer.invitation_id, kind="accept").first()
         proof = answer.envelope.get("ack_card")
         return bool(accepted and _valid_answer(accepted, settings_obj) and proof
             and _ack_card(answer.invitation, accepted, reply_to=proof.get("provider_message_id", "")) == proof)
@@ -610,13 +620,13 @@ def handle_reply(row, revision=None, settings_obj=None, now=None):
         if not revision:
             return invalid
         owned, _ = owned_source(revision, row, settings_obj)
-        receipt = Receipt.objects.select_related("effect").filter(invitation_id=inv.pk).first()
+        receipt = Receipt.objects.select_related("effect", "followup_task").filter(invitation_id=inv.pk).first()
         if (not owned or owned[1].quick_reply_payload != payload or owned[1].attachments or owned[1].attachment_media
             or not _valid_receipt(inv, receipt) or row.provider_created_at < receipt.delivered_at
             or row.provider_created_at > now + timedelta(minutes=1) or row.status == "ignored"):
             return invalid
         revision, row, proof = owned
-        previous = Answer.objects.select_related("invitation", "receipt__effect", "source").filter(invitation_id=inv.pk, kind=action).first()
+        previous = Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=inv.pk, kind=action).first()
         if previous:
             if not _valid_answer(previous, settings_obj):
                 return invalid
@@ -634,7 +644,7 @@ def handle_reply(row, revision=None, settings_obj=None, now=None):
             if Answer.objects.filter(invitation_id=inv.pk, kind="revoke").exists():
                 return invalid
         else:
-            accepted = Answer.objects.select_related("invitation", "receipt__effect", "source").filter(invitation_id=inv.pk, kind="accept").first()
+            accepted = Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=inv.pk, kind="accept").first()
             if not accepted or not _valid_answer(accepted, settings_obj):
                 return invalid
             ack = _ack_card(inv, accepted, reply_to=row.reply_to_provider_message_id)
@@ -659,7 +669,7 @@ def _subscription_reason(subscription, settings_obj, *, now):
         return "subscription_binding_changed"
     if now >= inv.expires_at:
         return "expired"
-    revoked = Answer.objects.select_related("invitation", "receipt__effect", "source").filter(invitation_id=inv.pk, kind="revoke").first()
+    revoked = Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=inv.pk, kind="revoke").first()
     if revoked:
         return "customer_revoked" if _valid_answer(revoked, settings_obj) else "revocation_evidence_invalid"
     if subscription.state != "active":
@@ -716,7 +726,7 @@ def reconcile_subscriptions(limit=50, now=None):
     for identity in candidates:
         with transaction.atomic():
             subscription = Subscription.objects.select_for_update().select_related("accepted_answer__invitation__client",
-                "accepted_answer__invitation__request_source", "accepted_answer__invitation__revision", "accepted_answer__receipt__effect", "accepted_answer__source").filter(pk=identity, state="active", next_check_at__lte=now).first()
+                "accepted_answer__invitation__request_source", "accepted_answer__invitation__revision", "accepted_answer__receipt__effect", "accepted_answer__receipt__followup_task", "accepted_answer__source").filter(pk=identity, state="active", next_check_at__lte=now).first()
             if not subscription:
                 continue
             inv = subscription.accepted_answer.invitation
@@ -794,7 +804,7 @@ def restock_projection(client_id, now=None):
     result = []
     rows = Subscription.objects.filter(client_id=client_id).select_related("accepted_answer__invitation__client",
         "accepted_answer__invitation__revision", "accepted_answer__invitation__request_source",
-        "accepted_answer__receipt__effect", "accepted_answer__source").order_by("-created_at")[:16]
+        "accepted_answer__receipt__effect", "accepted_answer__receipt__followup_task", "accepted_answer__source").order_by("-created_at")[:16]
     for subscription in rows:
         answer, inv = subscription.accepted_answer, subscription.accepted_answer.invitation
         settings_obj = InstagramBotSettings.objects.filter(pk=inv.envelope.get("settings_id")).first()
@@ -804,7 +814,8 @@ def restock_projection(client_id, now=None):
             "reason": reason, "label": _label(inv) if valid else "", "target": deepcopy(inv.target) if valid else {},
             "expires_at": inv.expires_at.isoformat() if valid else None, "accepted_at": answer.answered_at.isoformat() if valid else None,
             "last_checked_at": subscription.last_checked_at.isoformat() if subscription.last_checked_at else None,
-            "source_refs": {"request": inv.request_source_id, "card": answer.receipt.effect_id, "answer": answer.source_id} if valid else {},
+            "source_refs": {"request": inv.request_source_id, "card": answer.receipt.effect_id, "answer": answer.source_id,
+                **({"card_task": answer.receipt.followup_task_id} if answer.receipt.followup_task_id else {})} if valid else {},
             "native_future_capability": "unverified"})
     return {"version": 1, "client_id": client_id, "captured_at": now.isoformat(), "subscriptions": result,
         "coverage_complete": len(result) < 16, "native_future_capability": "unverified"}

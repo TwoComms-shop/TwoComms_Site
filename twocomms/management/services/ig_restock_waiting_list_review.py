@@ -60,6 +60,10 @@ def create_invitation_review(revision, source, proof, target, settings_obj, *, n
 
 
 def _invitation_review(inv):
+    if inv.envelope.get("producer") == "manager_followup.v1":
+        from management.services.ig_restock_followup import invitation_case
+        case = invitation_case(inv)
+        return case[0] if case else None
     try:
         frozen = inv.envelope.get("manager_review") or {}
         request = reviews.Request.objects.select_related("task").filter(pk=frozen.get("request_id"), client_id=inv.client_id).first()
@@ -93,6 +97,9 @@ def invitation_review_valid(inv):
 
 
 def _original_baseline(inv):
+    if inv.envelope.get("producer") == "manager_followup.v1":
+        from management.services.ig_restock_followup import original_baseline
+        return original_baseline(inv)
     restock = waiting._restock()
     original = _invitation_review(inv) if restock._verified(inv, "invitation") and waiting._digest(inv.target) == inv.target_digest else None
     if original is None:
@@ -154,10 +161,10 @@ def _subscription_for_review(request):
     restock = waiting._restock()
     if request.envelope["scope"] == "restock_list":
         subscription = restock.Subscription.objects.filter(pk=request.envelope.get("subscription_id")).select_related(
-            "accepted_answer__invitation", "accepted_answer__receipt__effect", "accepted_answer__source").first()
+            "accepted_answer__invitation", "accepted_answer__receipt__effect", "accepted_answer__receipt__followup_task", "accepted_answer__source").first()
     else:
         subscription = restock.Subscription.objects.filter(accepted_answer__invitation__envelope__manager_review__request_id=str(request.pk)).select_related(
-            "accepted_answer__invitation", "accepted_answer__receipt__effect", "accepted_answer__source").first()
+            "accepted_answer__invitation", "accepted_answer__receipt__effect", "accepted_answer__receipt__followup_task", "accepted_answer__source").first()
     return subscription
 
 
