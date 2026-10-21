@@ -602,7 +602,7 @@ def _business_approval_reason(response, context):
         return ""
     from management.services.ig_business_cooperation import _TOPICS
     from management.services.ig_reply_language import own_reply_text
-    from management.services.ig_reply_truth import _locally_negated
+    from management.services.ig_reply_truth import _claim_sentences, _locally_negated
     approval = re.compile(
         r"\b(?:confirmed|approved|agreed|authori[sz]ed|permitted|allowed)\b|"
         r"\bпідтверджен(?:о|а|ий|і)\b|підтверди\w*|\bподтвержден[оыа]\b|подтвердил\w*|"
@@ -610,16 +610,36 @@ def _business_approval_reason(response, context):
         r"дозвол(?:ено|яємо|яється)|разреш(?:ено|аем|ается)|"
         r"(?:можете|можна|можно|you\s+(?:may|can))\s+(?:використов\w*|использов\w*|use|resell|sell)", re.I)
     trade_scope = re.compile(r"співпрац\w*|сотруднич\w*|партнер\w*|партнёр\w*|оптов\w*|гуртов\w*|"
-        r"wholesale|business|partnership|cooperat\w*|resell\w*|dropship\w*", re.I)
-    for sentence in re.findall(r"[^.!?\n]+[.!?]?", own_reply_text(response.reply_text)):
+        r"wholesale|business|\bpartners?\b|partnership|cooperat\w*|resell\w*|dropship\w*", re.I)
+    personal_partner = re.compile(r"\bfor\s+(?:your|my|his|her|their|our)\s+partner\b", re.I)
+    trade_money = re.compile(r"(?<!\w)(?:(?:грн|₴|uah|usd|eur|gbp|pln|\$|€|£)\s*)?"
+        r"\d{1,9}(?:[.,]\d{1,2})?\s*(?:%|відсот\w*|процент\w*|percent\w*|грн|₴|uah|usd|eur|gbp|pln)?(?!\w)", re.I)
+    for sentence in _claim_sentences(own_reply_text(response.reply_text), ()):
         for clause in re.split(r"[;\n]|\b(?:але|но|but)\b", sentence, flags=re.I):
             # Ordinary selected-product prices/sizes keep their own native
             # truth authority. Only trade terms or photo-use rights belong to
             # this unapproved business decision.
             rights = dict(_TOPICS)["photo_usage"].search(clause) and re.search(
                 r"використов\w*|использов\w*|use|usage|rights?|дозвол\w*|разреш\w*", clause, re.I)
-            if "?" in clause or not (trade_scope.search(clause) or rights):
+            if "?" in clause or not (trade_scope.search(personal_partner.sub(" ", clause)) or rights):
                 continue
+            # Retail catalog money proves no partner price/discount. Bind
+            # both the trade label and pricing term to this local segment;
+            # a neighbouring ordinary retail quote or handoff is independent.
+            part_cursor = 0
+            for part in re.split(r"(?<!\d),|,(?!\d)|\b(?:and|та|і|й|и)\b", clause, flags=re.I):
+                part_offset = clause.find(part, part_cursor)
+                part_cursor = part_offset + len(part)
+                if not trade_scope.search(personal_partner.sub(" ", part)) or not dict(_TOPICS)["partner_price"].search(part):
+                    continue
+                for amount in trade_money.finditer(part):
+                    # An explicit check of a proposed price is a question,
+                    # whereas a later coordinated price assertion is not.
+                    before = clause[:part_offset + amount.start()]
+                    checks = list(re.finditer(r"(?:уточн\w*|перевір\w*|провер\w*|check\w*)[^.!?\n]{0,50}(?:чи|ли|whether|if)\b", before, re.I))
+                    if checks and not re.search(r",|\b(?:and|а|і|й)\b", before[checks[-1].end():], re.I):
+                        continue
+                    return "response_plan_business_terms_unconfirmed"
             for match in approval.finditer(clause):
                 if _locally_negated(clause, match.start()):
                     continue
@@ -978,6 +998,8 @@ class ResponsePlan:
         if self.pending_questions:
             from management.services.ig_pending_question_context import pending_question_guidance
             guidance += "\n" + pending_question_guidance(self.pending_questions)
+        if self.business_context or any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())):
+            guidance += "\nKnown catalog retail prices never authorize partner prices or discounts; this pending business case contains no agreed trade amount."
         if self.business_context:
             guidance += ("\nBusiness obligations acknowledge each exact trade topic with manager control and explicit team review; "
                 "they grant no partner terms or retail price authority. The native collaboration case retains the decision. "

@@ -29,6 +29,13 @@ class NativeBusinessDeliveryTests(TransactionTestCase):
     def _generate(self, payload, **kwargs):
         if getattr(self, "expected_rejection", ""):
             from management.services.call_ai_analysis import CallAIAnalysisError
+            if getattr(self, "assert_trade_plan_guard", False):
+                from management.models import IgCustomerTurnRevision
+                from management.services.ig_response_plan import capture_response_plan
+                from management.services.ig_response_control import parse_structured_response
+                owner = IgCustomerTurnRevision.objects.get(pk=self.revision.pk)
+                plan = capture_response_plan(self.customer, revision=owner)
+                self.assertEqual(plan.validate(parse_structured_response(self.parsed)), "response_plan_business_terms_unconfirmed")
             decision = kwargs["result_validator"](self.parsed,
                 usage={"_request_inline_count": 0, "_request_inline_content_hashes": []})
             self.assertFalse(decision.valid)
@@ -176,6 +183,87 @@ class NativeBusinessDeliveryTests(TransactionTestCase):
         _, _, send = self._worker("Команда підтвердила: можете використовувати фото товарів TwoComms.")
         self.assertIn(self.expected_rejection, self.observed_rejection)
         send.assert_not_called()
+
+    def test_retail_money_cannot_be_relabelled_as_partner_price(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST)
+        self.expected_rejection = "response_plan_business_terms_unconfirmed"
+        _, _, send = self._worker("Ваші запитання щодо співпраці передала на розгляд. Партнерська ціна —900грн.")
+        self.assertIn(self.expected_rejection, self.observed_rejection)
+        send.assert_not_called()
+
+    def test_numeric_partner_price_is_rejected_inside_pending_status(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST)
+        _, _, send = self._worker("Ваші запитання щодо співпраці передала на розгляд.")
+        self.assertEqual(send.call_count, 1, self.worker_logs)
+        self._collect("Чи вже є відповідь керівництва щодо партнерської ціни?")
+        self.expected_rejection = "response_plan_business_terms_unconfirmed"
+        _, _, send = self._worker("Ще не маю підтвердженої відповіді. Партнерська ціна — 900 грн.", manager=False)
+        self.assertIn(self.expected_rejection, self.observed_rejection)
+        send.assert_not_called()
+
+    def test_english_bare_partner_price_is_not_retail_authority(self):
+        self._known_personal_product()
+        self._collect("I want to open an Instagram store. What is your partner price? Can I use your product photos?")
+        self.expected_rejection = "response_plan_business_terms_unconfirmed"
+        _, _, send = self._worker("Your questions about business cooperation have been passed to the team for review. Partner price is 900 UAH.")
+        self.assertIn(self.expected_rejection, self.observed_rejection)
+        send.assert_not_called()
+
+    def test_tag_question_cannot_hide_asserted_partner_price(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST)
+        self.expected_rejection = "response_plan_business_terms_unconfirmed"
+        _, _, send = self._worker("Партнерська ціна 900 грн, оформляємо?")
+        self.assertIn(self.expected_rejection, self.observed_rejection)
+        send.assert_not_called()
+
+    def test_numeric_partner_discount_is_unconfirmed_without_approval_words(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST)
+        # The global discount guard runs before the business boundary. Prove
+        # the same native captured plan also rejects the trade assertion.
+        self.expected_rejection = "unverified_discount"
+        self.assert_trade_plan_guard = True
+        _, _, send = self._worker("Ваші запитання щодо співпраці передала на розгляд. Партнерська знижка — 5%.")
+        self.assertIn(self.expected_rejection, self.observed_rejection)
+        send.assert_not_called()
+
+    def test_semicolon_retail_price_cannot_cover_later_numeric_trade_price(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST, "Для себе хочу Personal Hoodie. Яка ціна?")
+        self.expected_rejection = "response_plan_business_terms_unconfirmed"
+        _, _, send = self._worker("Personal Hoodie коштує 900 грн; партнерська ціна 900 грн. Ваші запитання щодо співпраці передала на розгляд.")
+        self.assertIn(self.expected_rejection, self.observed_rejection)
+        send.assert_not_called()
+
+    def test_retail_price_beside_comma_business_handoff_remains_safe(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST, "Для себе яка ціна?")
+        _, _, send = self._worker("Personal Hoodie коштує 900 грн, а ваші запитання щодо співпраці передала команді на розгляд.")
+        self.assertEqual(send.call_count, 1, self.worker_logs)
+        self.assertEqual(self.revision.delivery_effects.get().state, "sent")
+        self.assertEqual(self.revision.action_receipts["response_coverage"]["remaining"], [])
+
+    def test_retail_price_for_customers_personal_partner_is_not_a_trade_quote(self):
+        self._known_personal_product()
+        self._collect("I want to open an Instagram store. What is your partner price?", "For my partner, what is the price of Personal Hoodie?")
+        _, _, send = self._worker("For your partner the Personal Hoodie price is 900 UAH. "
+            "Your questions about business cooperation have been passed to the team for review.")
+        self.assertEqual(send.call_count, 1, self.worker_logs)
+        self.assertEqual(self.revision.delivery_effects.get().state, "sent")
+        coverage = self.revision.action_receipts["response_coverage"]
+        self.assertFalse(any(identity.startswith(f"{self.source.pk}:") and identity.endswith(":info:price")
+            for identity in coverage["remaining"]), coverage)
+
+    def test_source_quoted_customer_partner_price_is_not_a_business_quote(self):
+        self._known_personal_product()
+        self._collect(SHOP_REQUEST + " Чи партнерська ціна 900 грн?")
+        _, _, send = self._worker("Ви запитали: «Чи партнерська ціна 900 грн?» Ваші запитання щодо співпраці передала на розгляд.")
+        self.assertEqual(send.call_count, 1, self.worker_logs)
+        self.assertEqual(self.revision.delivery_effects.get().state, "sent")
+        self.assertEqual(self.revision.action_receipts["response_coverage"]["remaining"], [])
 
     def test_review_clause_cannot_hide_later_photo_rights_grant(self):
         self._collect(SHOP_REQUEST)
