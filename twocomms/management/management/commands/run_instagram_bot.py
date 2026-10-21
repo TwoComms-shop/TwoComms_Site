@@ -100,6 +100,7 @@ DAEMON_START_WAIT_SECONDS = 15
 DAEMON_READY_WAIT_SECONDS = 8
 DAEMON_START_PENDING_SECONDS = 120
 TASK_HEALTH_CHECK_EVERY = 60
+_CUSTOMER_EXECUTION_POOL = None
 
 # Cron may invoke manage.py from an arbitrary working directory. Resolve the
 # entry point from this command module and keep the child in the Django root.
@@ -1451,6 +1452,51 @@ def _customer_lane(settings_obj, last_poll: float) -> tuple[bool, float, bool]:
     """
     enabled = bool(settings_obj.is_enabled)
     interval = max(2, settings_obj.poll_interval_seconds or 3)
+    if _CUSTOMER_EXECUTION_POOL is not None:
+        # Admit already durable webhook work before the bounded poll slice.
+        # Polling can take up to its own 20s I/O budget; it must not delay
+        # starting the two independently executing customer slots.
+        with operation_pulse(CUSTOMER_LANE) as pulse:
+            if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                return enabled, last_poll, True
+            from management.services.ig_revision_live import revision_execution_enabled
+            canonical = revision_execution_enabled()
+            snapshot = _CUSTOMER_EXECUTION_POOL.tick(admit=enabled and canonical)
+            pulse.beat()
+            now = time.time()
+            if settings_obj.receive_via_poll and now - last_poll >= interval:
+                poll_result = (bot.poll_ingest(settings_obj, max_seconds=2)
+                    if enabled and canonical else bot.poll_ingest(settings_obj))
+                pulse.beat()
+                if isinstance(poll_result, dict) and settings_obj.pk:
+                    poll_ok = bool(poll_result.get("ok")) and not bool(
+                        poll_result.get("degraded") or poll_result.get("refresh_pending"))
+                    if poll_ok:
+                        settings_obj.last_poll_at = timezone.now()
+                        if settings_obj.last_error.startswith("polling:"):
+                            settings_obj.last_error = ""
+                    else:
+                        reason = poll_result.get("error") or poll_result.get("reason") or "provider_unavailable"
+                        settings_obj.last_error = f"polling:{reason}"[:2000]
+                    settings_obj.save(update_fields=["last_poll_at", "last_error", "updated_at"])
+                last_poll = now
+            if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                return enabled, last_poll, True
+            # Reap/refill after newly polled input without waiting for either
+            # outstanding customer. The pool still owns at most two futures.
+            snapshot = _CUSTOMER_EXECUTION_POOL.tick(admit=enabled and canonical)
+            pulse.beat()
+            if enabled and not canonical and not snapshot["in_flight"]:
+                # Rollback waits for real pool work to finish before resuming
+                # the old synchronous consumer. No running future is cancelled.
+                bot.process_pending(settings_obj)
+                pulse.beat()
+            if maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                return enabled, last_poll, True
+            if enabled:
+                _drain_customer_followups(settings_obj)
+                pulse.beat()
+        return enabled, last_poll, False
     with operation_pulse(CUSTOMER_LANE) as pulse:
         if enabled:
             bot.process_pending(settings_obj)
@@ -1490,6 +1536,58 @@ def _customer_lane(settings_obj, last_poll: float) -> tuple[bool, float, bool]:
                 pulse.beat()
             last_poll = now
     return enabled, last_poll, False
+
+
+def _drain_customer_execution(pool, *, owner, start_sentinel, cycle):
+    """Never let advisory reporting release a live customer's process owner."""
+    from management.services.ig_customer_execution_pool import customer_job_budget_seconds
+
+    pool.close_admission()
+    started = time.monotonic()
+    warned = False
+    while not pool.drain(timeout=0.5):
+        if time.monotonic() - started > customer_job_budget_seconds() and not warned:
+            warned = True
+            try:
+                bot.log("error", "customer_execution_drain_stalled",
+                    f"in_flight={pool.snapshot()['in_flight']} code=customer_execution_drain_stalled")
+            except Exception:
+                pass
+        try:
+            _publish_process_pulse(owner=owner, start_sentinel=start_sentinel, state="draining")
+            _publish_main_progress(owner=owner, start_sentinel=start_sentinel,
+                cycle=cycle, state="drain_stalled" if warned else "draining")
+        except Exception:
+            pass
+
+
+def _drain_background_workers(workers, *, owner, start_sentinel, cycle):
+    """Retain the singleton until all already-started daemon work returns."""
+    from management.services.ig_worker_progress import WORKER_LIMITS
+
+    pending = [worker for worker in workers if worker is not threading.current_thread()]
+    started = time.monotonic()
+    warned = False
+    while pending:
+        # One bounded wait per pass keeps reporting prompt regardless of how
+        # many workers remain. A timed join never grants release authority.
+        pending[0].join(timeout=0.5)
+        pending = [worker for worker in pending if worker.is_alive()]
+        if not pending:
+            return
+        if time.monotonic() - started > max(WORKER_LIMITS.values()) and not warned:
+            warned = True
+            try:
+                bot.log("error", "background_execution_drain_stalled",
+                    f"in_flight={len(pending)} code=background_execution_drain_stalled")
+            except Exception:
+                pass
+        try:
+            _publish_process_pulse(owner=owner, start_sentinel=start_sentinel, state="draining")
+            _publish_main_progress(owner=owner, start_sentinel=start_sentinel,
+                cycle=cycle, state="drain_stalled" if warned else "draining")
+        except Exception:
+            pass
 
 
 def _run_service_lanes(settings_obj) -> None:
@@ -1969,6 +2067,7 @@ class Command(BaseCommand):
             return self._forever_locked()
 
     def _forever_locked(self):
+        global _CUSTOMER_EXECUTION_POOL
         if maintenance_status(path=MAINTENANCE_FILE)["active"]:
             self.stdout.write("maintenance active — daemon exit")
             return
@@ -2029,7 +2128,8 @@ class Command(BaseCommand):
                 reconcile_pulse.beat()
         except BaseException:
             stop_event.set()
-            progress_pulse.join(timeout=1)
+            _drain_background_workers((progress_pulse,), owner=owner,
+                start_sentinel=start_sentinel, cycle=0)
             raise
         _clear_starting_child(expected_pid=os.getpid())
         bot.log("success", "daemon_start", f"Демон онлайн (pid {os.getpid()}).")
@@ -2115,6 +2215,10 @@ class Command(BaseCommand):
             follow_intelligence_worker,
             progress_pulse,
         )
+        from management.services.ig_customer_execution_pool import CustomerExecutionPool, customer_job_budget_seconds
+        customer_pool = CustomerExecutionPool(stop_event, operation=lambda slot: operation_pulse(
+            f"customer_execution_{slot}", lease_seconds=customer_job_budget_seconds()))
+        _CUSTOMER_EXECUTION_POOL = customer_pool
         cycle = 0
         with _daemon_runtime_hooks(stop_event) as shutdown:
             try:
@@ -2194,9 +2298,14 @@ class Command(BaseCommand):
                     stop_event.wait(1.5 if enabled else 5)
             finally:
                 stop_event.set()
-                for worker in workers:
-                    if worker is not threading.current_thread():
-                        worker.join(timeout=1)
+                # Keep the enclosing daemon OS lock and process pulse until
+                # every real customer future has completed. A timed wait is
+                # an observation, never proof of cancellation or safe restart.
+                _drain_customer_execution(customer_pool, owner=owner,
+                    start_sentinel=start_sentinel, cycle=cycle)
+                _CUSTOMER_EXECUTION_POOL = None
+                _drain_background_workers(workers, owner=owner,
+                    start_sentinel=start_sentinel, cycle=cycle)
                 try:
                     release_owner(owner_token=lane_token, generation=lane_generation)
                 except Exception:

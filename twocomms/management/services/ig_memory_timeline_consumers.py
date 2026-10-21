@@ -14,7 +14,7 @@ VERSION = "useful-historical-memory.v1"
 _FIT = re.compile(r"\b(?:fit|loose|oversize|oversized|tight)\b|посадк\w*|оверсайз|вільн\w*\s+кр|свободн\w*\s+кр", re.I)
 _MEASUREMENT = re.compile(r"\b(?:height|weight|width|length|chest|cm|kg)\b|зріст|рост|вага|вес|ширин\w*|довжин\w*|длин\w*|обхват|\d\s*(?:см|кг)\b", re.I)
 _SIZE = re.compile(r"\b(?:size|розмір\w*|размер\w*)\b", re.I)
-_RECIPIENT = re.compile(r"\b(?:gift|myself|sister|brother|wife|husband|daughter|son)\b|подар\w*|для\s+(?:себе|сестр\w*|брат\w*|дружин\w*|жен\w*|чоловік\w*|муж\w*|донь\w*|доч\w*|син\w*|сын\w*)", re.I)
+_RECIPIENT = re.compile(r"\b(?:gift|myself|boyfriend|girlfriend|friend|mother|father|sister|brother|wife|husband|daughter|son)\b|подар\w*|для\s+(?:себе|сестр\w*|брат\w*|дружин\w*|жен\w*|чоловік\w*|муж\w*|донь\w*|доч\w*|син\w*|сын\w*)", re.I)
 _REPORTED = re.compile(r"\b(?:said|says|told|asked|wrote|manager)\b|менеджер\w*|сказа\w*|каже|говорит|просила|просив", re.I)
 
 

@@ -31,6 +31,7 @@ from management.services.ig_turn_revisions import (
 
 
 MAX_DUE_SCAN = 50
+_FINALIZATION_FAULT_CURSOR = 0
 
 
 def available_client_automation_q(*, now):
@@ -657,7 +658,22 @@ def _whole_sent_proof(revision, effects):
     completed, _debt, reason = _completion_decision(effects)
     if not effects or not any(row.state == row.State.SENT for row in effects):
         return False, reason
-    source_ids = {row["message_id"] for row in revision.bundle_snapshot.get("sources", ())}
+    bundle = revision.bundle_snapshot
+    sources = bundle.get("sources") if isinstance(bundle, dict) else None
+    if (not isinstance(sources, list) or len(sources) != revision.source_count
+        or not sources or any(not isinstance(row, dict) or type(row.get("message_id")) is not int
+            for row in sources)):
+        return False, "delivery_plan_proof_invalid"
+    source_ids = {row["message_id"] for row in sources}
+    actual_sources = list(revision.sources.order_by("ordinal", "id").values(
+        "message_id", "source_namespace", "role", "message__client_id"))
+    if (len(source_ids) != len(sources) or len(actual_sources) != len(sources)
+        or any(actual["message_id"] != captured["message_id"]
+            or actual["source_namespace"] != captured.get("source_namespace")
+            or actual["role"] != captured.get("role")
+            or actual["message__client_id"] != revision.client_id
+            for actual, captured in zip(actual_sources, sources, strict=True))):
+        return False, "delivery_receipt_scope_invalid"
     plans = {row.plan_digest for row in effects}
     if len(plans) != 1 or "" in plans or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         return False, "delivery_plan_proof_invalid"
@@ -691,7 +707,9 @@ def _whole_sent_proof(revision, effects):
 
 def finalization_due_ids(*, now=None, limit=25):
     """Conclusive receipts have their own queue, independent of active head/deadline."""
+    global _FINALIZATION_FAULT_CURSOR
     now = now or timezone.now()
+    bounded = max(1, min(int(limit), MAX_DUE_SCAN))
     from django.db.models import Exists, OuterRef
     from management.services.ig_revision_reply_projection import VERSION as PROJECTION_VERSION
 
@@ -725,8 +743,42 @@ def finalization_due_ids(*, now=None, limit=25):
         | (~Q(action_receipts__has_key="sent_reply_projection") & Q(owed_parts=False)
            & Q(action_receipts__reply_projection_admission__version=PROJECTION_VERSION))
         | (~Q(action_receipts__has_key="normal_followups") & (Q(generation_proposal_digest__gt="") | Q(action_receipts__input_decision__origin="static_reply")))
-    ).order_by("id").values_list("id", flat=True).distinct()
-    return list(candidates[:max(1, min(int(limit), MAX_DUE_SCAN))])
+    ).order_by("id").distinct()
+    from management.services.ig_revision_finalization_faults import FAULT_KEY, finalization_fault_disposition
+    from management.services.ig_response_debt import DEBT_REASON
+    from django.db.models import CharField, Value
+    from django.db.models.functions import Cast, Collate, Concat
+
+    event_key = Concat(Value("ig-revision-debt:"), Cast(OuterRef("pk"), CharField()))
+    if connection.vendor == "mysql":
+        event_key = Collate(event_key, "utf8mb4_unicode_ci")
+    fault_cases = IgFollowUpTask.objects.filter(client_id=OuterRef("client_id"),
+        event_key=event_key, kind="manager_task", reason=DEBT_REASON,
+        manager_context__has_key=FAULT_KEY)
+    candidates = candidates.annotate(quarantined_fault=Exists(fault_cases))
+
+    # Unchanged poison receipts never consume the ordinary bounded queue.
+    ordinary = list(candidates.filter(quarantined_fault=False)
+        .values_list("id", flat=True)[:bounded])
+    quarantined = candidates.filter(quarantined_fault=True)
+    # A bounded rotating read detects changed proofs without a DB/cache write
+    # on idle passes. Restarting the process resets only scan order, never debt.
+    scan = list(quarantined.filter(pk__gt=_FINALIZATION_FAULT_CURSOR)
+        .select_related("client").prefetch_related("delivery_effects")[:MAX_DUE_SCAN])
+    if not scan:
+        _FINALIZATION_FAULT_CURSOR = 0
+        scan = list(quarantined.select_related("client").prefetch_related("delivery_effects")[:MAX_DUE_SCAN])
+    changed = []
+    for row in scan:
+        _FINALIZATION_FAULT_CURSOR = row.pk
+        effects = sorted(row.delivery_effects.all(), key=lambda effect: (effect.order_index, effect.pk))
+        if not finalization_fault_disposition(row, effects=effects):
+            changed.append(row.pk)
+    # Reserve one revalidation slot when material changed, while preserving
+    # ordinary receipt progress even beyond a full slice of quarantined rows.
+    if changed:
+        return (ordinary[:max(0, bounded - 1)] + changed[:max(1, bounded - len(ordinary))])[:bounded]
+    return ordinary
 
 
 def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None):
@@ -747,9 +799,15 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
             if client.privacy_erasure_started_at is not None:
                 return RevisionFinalizationResult(revision_id, reason="erasure_private_projection_suppressed")
             revision.client = client
+            owned = bool(execution_token and revision.claim_token == execution_token)
+            if revision.lease_until and revision.lease_until > now and not owned:
+                return RevisionFinalizationResult(revision_id, retryable=True, reason="finalization_lease_active")
             effects = list(revision.delivery_effects.select_for_update().order_by("order_index", "id"))
             proof, reason = _whole_sent_proof(revision, effects)
             if not proof:
+                from management.services.ig_revision_finalization_faults import record_finalization_proof_fault
+
+                record_finalization_proof_fault(revision, effects, code=reason, now=now)
                 return RevisionFinalizationResult(revision_id, reason=reason)
             if revision.state not in {revision.State.CLAIMED, revision.State.PROCESSED}:
                 return RevisionFinalizationResult(revision_id, reason="revision_not_finalizable")
@@ -765,9 +823,6 @@ def finalize_sent_revision_effects(revision_id, *, execution_token="", now=None)
                                 else "semantic_reply_incomplete"),
                         sent_parts=sum(row.state == row.State.SENT for row in effects),
                     )
-            owned = bool(execution_token and revision.claim_token == execution_token)
-            if revision.lease_until and revision.lease_until > now and not owned:
-                return RevisionFinalizationResult(revision_id, retryable=True, reason="finalization_lease_active")
             finalization_token = FINALIZATION_PREFIX + secrets.token_hex(16)
             revision.claim_token = finalization_token
             revision.claimed_at = now
@@ -981,7 +1036,12 @@ def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id, overall_deadline__lte=now).first()
         if client is None or revision is None or client.privacy_erasure_started_at is not None:
             return "debt_not_applicable"
-        effects = list(revision.delivery_effects.order_by("order_index", "id"))
+        from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+
+        if finalization_fault_blocks_execution(revision):
+            return "finalization_proof_quarantined"
+        revision.client = client
+        effects = list(revision.delivery_effects.select_for_update().order_by("order_index", "id"))
         owned = bool(
             revision.media_prepare_deadline
             or revision.sealed_at
@@ -1030,6 +1090,11 @@ def record_expired_revision_debt(revision_id, *, now=None, cutover_at=None):
             ):
                 return "legacy_shadow_not_owed"
         if effects:
+            from management.services.ig_revision_finalization_faults import record_finalization_proof_fault
+
+            proof, proof_reason = _whole_sent_proof(revision, effects)
+            if not proof and record_finalization_proof_fault(revision, effects, code=proof_reason, now=now):
+                return proof_reason
             complete, _debt, reason = _completion_decision(effects)
             if complete and reason == "delivered":
                 return "receipt_finalization_pending"

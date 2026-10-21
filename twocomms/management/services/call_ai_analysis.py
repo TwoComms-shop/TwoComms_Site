@@ -2812,7 +2812,8 @@ def gemini_generate_json(system_instruction: str, user_text: str, *,
                          timeout: tuple[float, float] | None = None,
                          deadline_seconds: float | None = None,
                          images: list[tuple[str, bytes]] | None = None,
-                         image_labels: list[dict] | None = None) -> dict:
+                         image_labels: list[dict] | None = None,
+                         pre_dispatch_guard=None) -> dict:
     """Текстовий JSON-запит до Gemini. Пул ключів ролі + цепочка моделей."""
     parts = [{"text": user_text}]
     labels = image_labels if isinstance(image_labels, list) else []
@@ -2856,6 +2857,7 @@ def gemini_generate_json(system_instruction: str, user_text: str, *,
         reasoning_task=reasoning_task or (
             "customer_intelligence" if role in {"management", "checker"} else "customer_chat"
         ),
+        pre_dispatch_guard=pre_dispatch_guard,
     )
 
 

@@ -5,14 +5,19 @@ from management.services.ig_turn_revisions import _digest, _source_payload
 def owned_source(revision, source, settings_obj, *, require_head=True):
     from management.models import IgCustomerTurnRevision, InstagramBotMessage
     from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_ingress_source_proof import is_current_customer_source
     from management.services.instagram_bot import ingress_provider_namespace
     revision = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision.pk).first()
     if not revision or not revision.snapshot_digest or _digest(revision.bundle_snapshot) != revision.snapshot_digest:
         return None, "revision_unsealed"
     if require_head and (revision.active_slot != 1 or revision.state not in {"sealed", "claimed", "processed"} or revision.origin != "inbound"):
         return None, "revision_not_current"
-    row = InstagramBotMessage.objects.filter(pk=getattr(source, "message_id", None) or source.pk).first()
-    if not row or row.role != "user" or row.source != "webhook" or row.status == "failed" or row.client_id != revision.client_id:
+    row = InstagramBotMessage.objects.select_related("client").filter(pk=getattr(source, "message_id", None) or source.pk).first()
+    # A current authenticated poll is the same customer ingress as a webhook.
+    # Its label alone cannot establish ownership: validate the signed provider
+    # identity/content proof before checking the sealed revision below.
+    if (not row or not is_current_customer_source(row, namespace=ingress_provider_namespace(settings_obj))
+        or row.status == "failed" or row.client_id != revision.client_id):
         return None, "source_not_owned"
     client = revision.client
     floor = conversation_route_reset_floor(client.pk)

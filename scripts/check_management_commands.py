@@ -13,11 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ROOT = ROOT / "twocomms"
-# The reviewed pre-release inventory contains 174 non-DTF commands. This
-# release adds `publish_ig_conversion_knowledge` and `align_current_hoodie_fits`.
+# The reviewed inventory contained 176 non-DTF commands. This release adds
+# `prepare_ig_operator_reply_draft` for explicit private Gemini generation.
 # Keep the exact-count guard current so additions remain intentional and
 # reviewable.
-EXPECTED_COMMAND_COUNT = 176
+EXPECTED_COMMAND_COUNT = 177
 
 
 def validate_command_count(command_count: int) -> list[dict[str, object]]:

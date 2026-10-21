@@ -239,7 +239,8 @@ class FulfillmentTruthTests(SimpleTestCase):
     def test_ordinary_and_legacy_authority_remain_valid_outside_review(self):
         context = ReplyTruthContext(explicitly_qualified_standard_dispatch_days=(1, 3))
         self.check("Зазвичай підготовка до відправлення займає 1–3 дні після оплати.", context, valid=True)
-        self.check("Usually we dispatch in 1–3 days after payment.", context, valid=True)
+        self.check("Usually preparation takes 1–3 days after payment.", context, valid=True)
+        self.check("Usually we dispatch in 1–3 days after payment.", context, valid=False)
         legacy = ReplyTruthContext(approved_timing_claims=("2 дні", "завтра"))
         self.check("Доставка 2 дні. Відправимо завтра.", legacy, valid=True)
         self.check("Отримаєте завтра.", legacy, valid=False)
@@ -351,7 +352,8 @@ class FulfillmentTruthTests(SimpleTestCase):
             "fulfillment.review": {"status": "unknown", "value": projection()}}}
         unaffected = apply_fulfillment_timing_context(context, frame)
         self.assertIs(unaffected, context)
-        self.check("Usually we dispatch in 1–3 days after payment.", unaffected, valid=True)
+        self.check("Usually preparation takes 1–3 days after payment.", unaffected, valid=True)
+        self.check("Usually we dispatch in 1–3 days after payment.", unaffected, valid=False)
 
 
 def availability_projection(*, second=False, second_status="wait", supply_basis="accessible_unrecorded", quantity=1, checked=1):

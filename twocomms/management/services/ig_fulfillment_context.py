@@ -14,6 +14,8 @@ GUIDANCE = (
     "Manager free-text notes are context, not action authority; only the typed availability, checked quantity and timing fields authorize these claims. "
     "Manager preparation and dispatch windows are distinct from carrier arrival. Never guarantee arrival or infer same-day delivery from city names. "
     "For an important customer deadline explain carrier variability and ask the manager; clarify incomplete dates. "
+    "A hard departure cutoff remains a condition of purchase. A typed impossible deadline outcome means we cannot meet it, including expedited service; do not weaken that to merely checking or no guarantee. "
+    "Keep the selected print, fit and size. Typed later receiving options are proposals until the customer explicitly chooses later receipt; international requires feasibility and quote review, never an invented ETA. "
     "Split delivery is an offer until customer agreement and delivery charges are confirmed; do not silently split orders. "
     "Only the signed shipping component proves a chosen option and maximum customer fee for each parcel. "
     "A pending/UNKNOWN card is not consent. Carrier fees are separate from merchandise/COD; never charge a parcel above the accepted cap. "
@@ -23,6 +25,7 @@ PROMPT_GUIDANCE = (
     "Only typed manager availability, checked quantity and timing authorize claims; free text grants no action authority. "
     "Preparation/dispatch differ from carrier arrival: never guarantee arrival or infer same-day delivery from cities. "
     "For important deadlines explain carrier variability, ask the manager and clarify incomplete dates. "
+    "An impossible typed departure outcome means we cannot meet that cutoff even expedited. Preserve selection; offer only typed later receiving options, and international feasibility/quote review without ETA. Explicit customer later-receipt consent is required before charging that item. "
     "Splitting needs customer agreement and confirmed charges; only signed shipping proves the chosen option and per-parcel fee cap. "
     "Carrier fees are separate from merchandise/COD; never exceed accepted caps. Shipping choice grants no goods, payment or dispatch authority. "
     "Complete receipt requires every original parcel.")

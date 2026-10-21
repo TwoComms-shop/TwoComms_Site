@@ -19,7 +19,7 @@ import secrets
 
 from django.conf import settings as django_settings
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.models import Q, Subquery
 from django.utils import timezone
 
@@ -573,6 +573,10 @@ class RevisionGenerationBoundary:
         return _captured_reply_truth(self.response_plan, response, self.truth_context(context), revision=self.revision)
 
     def check(self, authority=None):
+        if self.response_plan.plan_gap:
+            from management.services.ig_revision_outbox import OutboxReadiness
+
+            return OutboxReadiness(False, (self.response_plan.plan_gap,))
         authority = authority or self.baseline
         if not authority.ready:
             from management.services.ig_revision_outbox import OutboxReadiness
@@ -599,6 +603,12 @@ class RevisionGenerationBoundary:
                     "public_policy_inputs_stale" if reason == "fact_binding_unavailable" else reason
                     for reason in result.reasons
                 ))
+        if result.ready and self.response_plan.pending_questions:
+            from management.services.ig_pending_question_context import pending_question_context_current
+            from management.services.ig_revision_outbox import OutboxReadiness
+
+            if not pending_question_context_current(self.revision, self.response_plan.pending_questions):
+                return OutboxReadiness(False, ("pending_question_context_changed",))
         return result
 
     def response_authority(self, response):
@@ -701,8 +711,10 @@ class RevisionGenerationBoundary:
             return coverage
 
         client = IgClient.objects.get(pk=self.revision.client_id)
-        from management.services.ig_reply_language import resolve_own_source_reply_language
-        language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+        from management.services.ig_revision_holding import resolve_revision_reply_language
+        language = resolve_revision_reply_language(self.revision,
+            captured_context=getattr(self, "reply_language_context", None),
+            response_plan=getattr(self, "response_plan", None),
             profile_language=client.language).template_family
         chart_text, chart_proof = _local_catalog_chart_candidate(self.revision, language)
         if chart_text:
@@ -722,8 +734,9 @@ class RevisionGenerationBoundary:
             from management.services.ig_response_plan import capture_response_plan
             self.response_plan = capture_response_plan(IgClient.objects.get(pk=self.revision.client_id), revision=self.revision)
         client = IgClient.objects.get(pk=self.revision.client_id)
-        from management.services.ig_reply_language import resolve_own_source_reply_language
-        language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+        language = resolve_revision_reply_language(self.revision,
+            captured_context=getattr(self, "reply_language_context", None),
+            response_plan=self.response_plan,
             profile_language=client.language).template_family
         selection_text = _focused_selection_clarification(self.response_plan, language)
         if selection_text:
@@ -738,9 +751,9 @@ class RevisionGenerationBoundary:
         fit_context = self.response_plan.fit_consultation
         if fit_context and fit_context.get("focus"):
             from management.services.ig_fit_consultation import deterministic_fit_reply
-            from management.services.ig_reply_language import resolve_own_source_reply_language
-
-            language = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
+            language = resolve_revision_reply_language(self.revision,
+                captured_context=getattr(self, "reply_language_context", None),
+                response_plan=self.response_plan,
                 profile_language=client.language).template_family
             text = deterministic_fit_reply(fit_context, language=language)
             presentation_id = (fit_context["focus"]["product_id"] if fit_context.get("photos_requested")
@@ -869,9 +882,10 @@ class RevisionGenerationBoundary:
             commerce_evidence_refs=intent["commerce_evidence_refs"])
         analysis = {**analysis, "source_service": context["source_service"]}
         from types import SimpleNamespace
-        from management.services.ig_reply_language import resolve_own_source_reply_language
-        locale = resolve_own_source_reply_language(sources=self.revision.bundle_snapshot.get("sources") or [],
-            profile_language=self.revision.client.language)
+        from management.services.ig_revision_holding import resolve_revision_reply_language
+        locale = resolve_revision_reply_language(self.revision,
+            captured_context=getattr(self, "reply_language_context", None),
+            response_plan=getattr(self, "response_plan", None))
         template_client = SimpleNamespace(language=_authored_reply_locale(locale))
         return self.normalize_response(replace(response, reply_text=normalize_media_reply(template_client,
             response.reply_text, media_analysis=analysis, social_only=context["social_only"]),
@@ -913,6 +927,11 @@ class RevisionGenerationBoundary:
         plan_reason = validation_plan.validate(response) if not intent.get("service_complaint") else ""
         if plan_reason:
             self.last_reasons = (plan_reason,)
+            return ValidationDecision(False, self.last_reasons)
+        from management.services.ig_business_cooperation import recruitment_response_reason
+        recruitment_reason = recruitment_response_reason(self.revision.bundle_snapshot.get("sources") or [], response)
+        if recruitment_reason:
+            self.last_reasons = (recruitment_reason,)
             return ValidationDecision(False, self.last_reasons)
         case_reason = manager_case_reason(self.revision, response)
         from management.services.ig_product_inquiries import validate_inquiry_response
@@ -1036,6 +1055,9 @@ def _reclaim_execution(revision_id, *, settings_id=1):
             lease_until__lte=now, snapshot_digest__gt="",
         ).first()
         if revision is None:
+            return None, ""
+        from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+        if finalization_fault_blocks_execution(revision):
             return None, ""
         lease_deadline = now + timedelta(seconds=EXECUTION_LEASE_SECONDS)
         if revision.overall_deadline <= now and revision.recovery_code != "provider_dispatch_budget":
@@ -1222,6 +1244,12 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         except TurnContextError as exc:
             context_reason = exc.reason
             if context_mode == "unified" and exc.reason != "legacy_sealed_time_unavailable":
+                if exc.reason == "required_context_budget_exceeded":
+                    # Capture failed before the compiler/request graph. Keep
+                    # this exact zero-dispatch fault on the existing local
+                    # readiness path instead of losing it as a missing
+                    # provider manifest when the claim later expires.
+                    boundary.policy_readiness_failure = {"code": exc.reason, "details": {}}
                 return None, boundary, (exc.reason,)
         if captured_context is not None:
             if context_mode == "unified":
@@ -1289,17 +1317,10 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         coverage_note += "\n" + conversation_timing_guidance(revision)
         coverage_note += "\n" + boundary.response_plan.prompt_guidance()
     from management.services.gemini_accounting_runtime import revision_request_execution
-    from management.services.ig_reply_language import resolve_own_source_reply_language
-    from management.services.ig_turn_capture import detached_payload
-    language_boundary = detached_payload(prepared_context.context.boundary) if prepared_context is not None else {}
-    reply_language = resolve_own_source_reply_language(
-        sources=sources,
-        history=detached_payload(prepared_context.context.captured_history) if prepared_context is not None else (),
-        profile_language=revision.client.language,
-        reset_floor=language_boundary.get("reset_floor", 1),
-        watermark_message_id=language_boundary.get("watermark", {}).get("message_id", source_id),
-        watermark_event_at=language_boundary.get("watermark", {}).get("event_at"),
-    )
+    from management.services.ig_revision_holding import resolve_revision_reply_language
+    boundary.reply_language_context = prepared_context.context if prepared_context is not None else None
+    reply_language = resolve_revision_reply_language(revision, sources=sources,
+        captured_context=boundary.reply_language_context, response_plan=boundary.response_plan)
 
     with revision_request_execution(
         revision.pk, token, settings_id=settings_row.pk,
@@ -1699,7 +1720,7 @@ def _prepare_visible_content(revision, response, settings_row, *, response_plan=
             return (), reply, (reason,) if reason else ()
         if choice:
             factory = prepare_catalog_chart_effect if choice["action"]["kind"] == "chart" else prepare_catalog_choice_page
-            prepared = factory(revision, response, settings_row, choice=choice)
+            prepared = factory(revision, response, settings_row, choice=choice, response_plan=response_plan)
             if prepared.handled:
                 if choice["action"]["kind"] == "chart":
                     return _combined_chart_and_fit_content(revision, response, settings_row, prepared,
@@ -1710,7 +1731,7 @@ def _prepare_visible_content(revision, response, settings_row, *, response_plan=
             reason = _catalog_unavailable_chart_reason(reply) if choice["action"]["kind"] == "chart" else "catalog_choice_page_unavailable"
             return (), reply, (reason,) if reason else ()
         if _catalog_plain_chart_requested(revision):
-            prepared = prepare_catalog_chart_effect(revision, response, settings_row)
+            prepared = prepare_catalog_chart_effect(revision, response, settings_row, response_plan=response_plan)
             if prepared.handled:
                 return _combined_chart_and_fit_content(revision, response, settings_row, prepared,
                     response_plan=response_plan)
@@ -1722,12 +1743,13 @@ def _prepare_visible_content(revision, response, settings_row, *, response_plan=
             context=response_plan.fit_consultation if response_plan is not None else None)
         if illustrated.handled:
             return illustrated.effects, _catalog_prepared_reply(reply, illustrated), illustrated.reasons
-        prepared = prepare_catalog_choice_presentations(revision, response, settings_row)
+        prepared = prepare_catalog_choice_presentations(revision, response, settings_row, response_plan=response_plan)
         if prepared.handled:
             return prepared.effects, _catalog_prepared_reply(reply, prepared), prepared.reasons
         kind = _catalog_configuration_selector(revision, response)
         if kind:
-            prepared = prepare_catalog_configuration_choices(revision, response, settings_row, kind=kind)
+            prepared = prepare_catalog_configuration_choices(revision, response, settings_row,
+                kind=kind, response_plan=response_plan)
             if prepared.handled:
                 return prepared.effects, reply, prepared.reasons
     selection = bot._catalog_media_selection_for_control(response.control, revision.client)
@@ -2134,6 +2156,16 @@ def execute_claimed_revision(revision_id, token, settings_row, *, presence_scope
         if outcome.sent_parts > 0:
             _stop_revision_presence(scope, sent=True)
         return outcome
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        from management.services.ig_revision_recovery import record_local_preprovider_fault
+
+        recorded = record_local_preprovider_fault(revision_id, token,
+            stage="revision_execution", exception_type=type(exc).__name__)
+        if not recorded.ready:
+            raise
+        return RevisionLiveResult(revision_id, "blocked", (recorded.reason,))
     finally:
         _stop_revision_presence(scope)
         _PRESENCE_SCOPE.reset(context_token)
@@ -2168,6 +2200,9 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
     revision = IgCustomerTurnRevision.objects.select_related("client").filter(pk=revision_id).first()
     if revision is None:
         return RevisionLiveResult(revision_id, "blocked", ("revision_missing",))
+    from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+    if finalization_fault_blocks_execution(revision):
+        return RevisionLiveResult(revision_id, "blocked", ("finalization_proof_quarantined",))
     if bot.ingress_provider_namespace(settings_row) != revision.bundle_snapshot.get("sources", [{}])[0].get("source_namespace"):
         return RevisionLiveResult(revision_id, "blocked", ("provider_namespace_changed",))
     if revision.delivery_effects.exists():
@@ -2693,6 +2728,8 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                     )
                     _log_revision_blocked(revision_id, identity["client_id"], outcome,
                         event="revision_collaboration_recovery")
+            except DatabaseError:
+                raise
             except Exception as exc:
                 bot.log("error", "revision_collaboration_recovery", f"revision={revision_id} error={type(exc).__name__}")
             finally:
@@ -2703,25 +2740,44 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
         owned_only=not create_new,
         cutover_at=rollout.cutover_at if create_new else None,
     ):
-        recovery = None
-        if recover_new and not IgRevisionDeliveryEffect.objects.filter(revision_id=revision_id, state__in=("sent", "provider_started", "unknown", "definite_failed")).exists():
-            from management.services.ig_revision_recovery import schedule_revision_recovery
+        try:
+            from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
 
-            recovery = schedule_revision_recovery(revision_id)
-        if recovery is None or recovery.state not in {"waiting", "spawned", "cancelled", "execution"}:
-            record_expired_revision_debt(
-                revision_id,
-                cutover_at=rollout.cutover_at if create_new else None,
-            )
+            expired_revision = IgCustomerTurnRevision.objects.filter(pk=revision_id).first()
+            if expired_revision is not None and finalization_fault_blocks_execution(expired_revision):
+                continue
+            recovery = None
+            if recover_new and not IgRevisionDeliveryEffect.objects.filter(revision_id=revision_id, state__in=("sent", "provider_started", "unknown", "definite_failed")).exists():
+                from management.services.ig_revision_recovery import schedule_revision_recovery
+
+                recovery = schedule_revision_recovery(revision_id)
+            if recovery is not None and recovery.reason == "finalization_proof_quarantined":
+                continue
+            if recovery is None or recovery.state not in {"waiting", "spawned", "cancelled", "execution"}:
+                record_expired_revision_debt(
+                    revision_id,
+                    cutover_at=rollout.cutover_at if create_new else None,
+                )
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            bot.log("error", "revision_expiry_classification",
+                f"revision={revision_id} stage=expiry_classification code=local_bookkeeping_fault error={type(exc).__name__}")
     if recover_new:
         from management.services.ig_revision_recovery import due_recovery_revision_ids, prepare_outage_recovery
 
         # Permission-invalid jobs must settle even when client lease admission
         # refuses them. This producer can cancel/park, never mint a new lifetime.
         for revision_id in due_recovery_revision_ids(limit=limit):
-            recovery = prepare_outage_recovery(revision_id, classify_only=True)
-            if recovery.state == "manual":
-                record_expired_revision_debt(revision_id, cutover_at=rollout.cutover_at)
+            try:
+                recovery = prepare_outage_recovery(revision_id, classify_only=True)
+                if recovery.state == "manual" and recovery.reason != "finalization_proof_quarantined":
+                    record_expired_revision_debt(revision_id, cutover_at=rollout.cutover_at)
+            except DatabaseError:
+                raise
+            except Exception as exc:
+                bot.log("error", "revision_recovery_classification",
+                    f"revision={revision_id} stage=recovery_classification code=local_bookkeeping_fault error={type(exc).__name__}")
     from management.services.ig_revision_commerce import source_producer_owned_q
 
     candidate_now = timezone.now()
@@ -2773,7 +2829,7 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
                 elif recovery.state == "execution":
                     identity = {**identity, "state": IgCustomerTurnRevision.State.CLAIMED}
                 else:
-                    if recovery.state == "manual":
+                    if recovery.state == "manual" and recovery.reason != "finalization_proof_quarantined":
                         record_expired_revision_debt(revision_id, cutover_at=rollout.cutover_at)
                     continue
             # An unstarted job receives its one fresh preparation window only
@@ -2844,6 +2900,8 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
 
                         create_refresh_successor(revision_id, token, reason=successor_reason)
                 _log_revision_blocked(revision_id, identity["client_id"], outcome)
+        except DatabaseError:
+            raise
         except Exception as exc:
             # A durable lease/proposal/effect remains the recovery authority.
             # No source attempts, transcript, or legacy send key are reset.

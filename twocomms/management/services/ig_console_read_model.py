@@ -79,6 +79,13 @@ KIND_CATEGORIES = {
     "memory_updated": "decision", "error": "errors", "cron": "routine", "health": "routine",
     "worker_state": "routine", "legacy_event": "unknown",
 }
+LOCAL_EXECUTION_FAULT_REASONS = frozenset({
+    "required_context_budget_exceeded", "captured_state_exceeds_budget",
+    "local_preprovider_fault", "finalization_proof_quarantined",
+    "delivery_plan_proof_invalid", "delivery_receipt_scope_invalid",
+    "delivery_provider_receipt_duplicate", "delivery_receipt_proof_invalid",
+    "delivery_parts_proof_invalid",
+})
 REASONS = frozenset({
     "unknown", "accepted", "completed", "pending", "processing", "failed", "cancelled", "no_reply",
     "sent", "delivery_unknown", "partial_delivery", "provider_unavailable", "provider_timeout",
@@ -90,9 +97,9 @@ REASONS = frozenset({
     "current_purpose_disallows_sales", "generation_reconciliation_required",
     "provider_dispatch_budget", "provider_candidates_exhausted", "provider_horizon_exhausted",
     "revision_deadline_exhausted", "proposal_not_dispatched",
-})
+}) | LOCAL_EXECUTION_FAULT_REASONS
 ACTIONABLE_REASONS = frozenset({"failed", "delivery_unknown", "partial_delivery", "provider_unavailable",
-    "provider_timeout", "provider_error", "quota_denied", "quota_exhausted", "stalled", "observation_unavailable"})
+    "provider_timeout", "provider_error", "quota_denied", "quota_exhausted", "stalled", "observation_unavailable"}) | LOCAL_EXECUTION_FAULT_REASONS
 TASK_KEYS = frozenset({
     "analysis", "reply_recovery", "conversation_refresh", "journey_trace_refresh", "permission_transition",
     "inbox_refresh", "checkout_lifecycle", "follow_intelligence", "typed_memory", "memory_summary",

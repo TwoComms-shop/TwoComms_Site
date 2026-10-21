@@ -573,6 +573,9 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
         if canonical_cart else _selection(plan, scope)),
         signals=optional("signals", lambda: _signals(client, boundary, captured_at)))
     components["source_cart"] = dict(scope=scope, capture=source_cart)
+    from management.services.ig_reply_language import response_plan_language_names
+    components["language_catalog_names"] = dict(scope=scope,
+        names=list(response_plan_language_names(plan)), response_plan_digest=plan.digest)
     components["ad_context"] = deepcopy(referral)
     readiness = getattr(plan, "readiness_snapshot", None)
     if isinstance(readiness, dict) and readiness:

@@ -42,6 +42,7 @@ TRANSPORT_TAIL_KEY = "proposal_transport_tail"
 POLICY_READINESS_FAILURE_KEY = "policy_readiness_failure"
 LOCAL_POLICY_READINESS_CODES = frozenset({
     "mandatory_policy_exceeds_budget", "required_policy_exceeds_budget",
+    "required_context_budget_exceeded",
     "captured_state_exceeds_budget", "invalid_policy_budget",
     "invalid_required_policy_module", "required_scenario_module_missing",
     "invalid_mandatory_policy", "duplicate_mandatory_policy_id",
@@ -245,6 +246,67 @@ def _set_state(revision, state, code, *, due_at=None, child_id=0):
 
         park_manual_revision(revision, code)
     return RecoveryResult(revision.pk, state, code, child_id)
+
+
+def record_local_preprovider_fault(revision_id, token, *, stage, exception_type, now=None):
+    """Record a local crash only while this exact zero-graph source is owned.
+
+    This creates operator debt, never acknowledgement or retry authority. Raw
+    exception strings, prompts and provider/customer payloads are not retained.
+    Any existing graph/proposal/effect keeps its own reconciliation owner.
+    """
+    if stage not in {"revision_execution", "generation_preparation"}:
+        return RecoveryAdmissionResult(reason="local_fault_stage_invalid")
+    category = exception_type if exception_type in {
+        "ValueError", "TypeError", "AttributeError", "KeyError", "IndexError",
+        "ImportError", "ModuleNotFoundError", "RuntimeError", "AssertionError",
+    } else "unexpected_exception"
+    now = now or timezone.now()
+    identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+    if identity is None:
+        return RecoveryAdmissionResult(reason="revision_missing")
+    with transaction.atomic():
+        client = IgClient.objects.select_for_update().filter(pk=identity["client_id"]).first()
+        revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
+        if (client is None or revision is None or revision.state != "claimed"
+            or revision.active_slot != 1 or not token or revision.claim_token != token
+            or client.reply_permission_epoch != revision.permission_epoch
+            or client.privacy_erasure_started_at or revision.erasure_started_at_snapshot
+            or revision.generation_proposal or revision.generation_proposal_digest
+            or revision.delivery_effects.exists()
+            or GeminiRequest.objects.filter(Q(logical_turn_id=f"ig-revision:{revision.pk}")
+                | Q(source_execution_key=f"ig-revision:{revision.pk}")).exists()):
+            return RecoveryAdmissionResult(reason="local_fault_not_zero_graph_owner")
+        from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+        from management.services.ig_revision_holding import _sources_unchanged
+
+        if finalization_fault_blocks_execution(revision) or not _sources_unchanged(revision):
+            return RecoveryAdmissionResult(reason="local_fault_source_changed")
+        receipt = {"schema": "revision-local-preprovider-fault.v1", "revision_id": revision.pk,
+            "snapshot_digest": revision.snapshot_digest,
+            "source_message_ids": [row["message_id"] for row in revision.bundle_snapshot["sources"]],
+            "stage": stage, "code": "local_preprovider_fault", "exception_type": category,
+            "provider_graph_present": False, "provider_graph_scope": "current_revision",
+            "automatic_http_retry": False,
+            "observed_at": now.isoformat()}
+        receipt["digest"] = _digest(receipt)
+        from management.models import IgFollowUpTask
+        from management.services.ig_response_debt import park_manual_revision
+
+        previous_task = IgFollowUpTask.objects.filter(client_id=client.pk,
+            event_key=f"ig-revision-debt:{revision.pk}").first()
+        if previous_task is not None and previous_task.status in {"completed", "cancelled"}:
+            return RecoveryAdmissionResult(reason="local_fault_case_already_closed")
+        task = park_manual_revision(revision, "local_preprovider_fault", now=now)
+        if task is None:
+            return RecoveryAdmissionResult(reason="local_fault_case_unavailable")
+        context = task.manager_context if isinstance(task.manager_context, dict) else {}
+        if "local_preprovider_fault" not in context:
+            # Fault diagnostics belong to the mutable exact operator case;
+            # revision.response_debt keeps its immutable source/task link.
+            task.manager_context = {**context, "local_preprovider_fault": receipt}
+            task.save(update_fields=["manager_context"])
+        return RecoveryAdmissionResult(True, "local_preprovider_fault")
 
 
 def _lineage(head, *, lock=True):
@@ -623,6 +685,10 @@ def _authorize_proposal_execution(revision, client, settings_row, *, now, transp
     from management.services.ig_revision_provider_execution import _manifest, REFERENCE_KEY
     from management.services.ig_revision_burst_budget import economic_root
     from management.services.ig_revision_outbox import PublicationBinding
+    from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+
+    if finalization_fault_blocks_execution(revision):
+        return RecoveryResult(revision.pk, "manual", "finalization_proof_quarantined")
 
     upgrade_from = None
     existing = effective_execution_receipt(revision)
@@ -962,6 +1028,9 @@ def schedule_revision_recovery(revision_id, *, now=None):
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
         if revision is None:
             return RecoveryResult(reason="revision_missing")
+        from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+        if finalization_fault_blocks_execution(revision):
+            return RecoveryResult(revision.pk, "manual", "finalization_proof_quarantined")
         if revision.recovery_state == "execution" and not execution_resume_is_current(revision, now=now):
             return _set_state(revision, "manual", "proposal_execution_resume_expired")
         if (client is not None and revision.active_slot == 1 and revision.state in {"sealed", "claimed"}
@@ -1039,6 +1108,9 @@ def prepare_outage_recovery(revision_id, *, now=None, automation_lease_token="",
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
         if revision is None or client is None:
             return RecoveryResult(reason="revision_missing")
+        from management.services.ig_revision_finalization_faults import finalization_fault_blocks_execution
+        if finalization_fault_blocks_execution(revision):
+            return RecoveryResult(revision.pk, "manual", "finalization_proof_quarantined")
         if revision.recovery_state == "spawned":
             child = IgCustomerTurnRevision.objects.filter(parent=revision, origin=RECOVERY_ORIGIN).first()
             return RecoveryResult(revision.pk, "spawned", "recovery_existing_child", child.pk if child else 0)

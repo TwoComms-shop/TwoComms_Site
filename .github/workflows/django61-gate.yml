@@ -62,8 +62,30 @@ jobs:
           python manage.py test storefront.tests.test_product_video --settings=test_settings_no_network_non_dtf --noinput --parallel 1
       - name: Run Instagram reply and context regressions
         working-directory: twocomms
+        env:
+          GOOGLE_INDEXING_ENABLED: "0"
+          INDEXNOW_ENABLED: "0"
         run: |
           python manage.py test \
+            management.tests_ig_manu_context_budget_20261021 \
+            management.tests_ig_manu_deadline_20261021 \
+            management.tests_ig_manu_deadline_policy_20261021 \
+            management.tests_ig_manu_finalization_faults_20261021 \
+            management.tests_ig_manu_language_20261021 \
+            management.tests_ig_manu_liveness_20261021 \
+            management.tests_ig_manu_manager_wait_20261021 \
+            management.tests_ig_manu_recipient_20261021 \
+            management.tests_ig_manu_timing_authority_20261021 \
+            management.tests_ig_manu_console_faults_20261021 \
+            management.tests_ig_manu_customer_pool_20261021 \
+            management.tests_ig_manu_deadline_successor_20261021 \
+            management.tests_ig_manu_queue_fairness_20261021 \
+            management.tests_ig_manu_recruitment_20261021 \
+            management.tests_ig_operator_reply_drafts \
+            management.tests_ig_manu_catalog_locale_20261021 \
+            management.tests_ig_manu_catalog_poll_20261021 \
+            management.tests_ig_manu_customer_pool_mariadb_20261021 \
+            management.tests_ig_manu_purpose_poll_20261021 \
             management.tests_ig_business_cooperation \
             management.tests_ig_fulfillment_prompt_budget \
             management.tests_ig_policy_fault_ack \

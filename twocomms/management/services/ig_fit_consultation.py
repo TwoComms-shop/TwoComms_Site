@@ -38,10 +38,12 @@ def contextual_fit_choice(client, source):
     from management.models import InstagramBotMessage
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     from management.services.ig_revision_outbox import _digest
+    from management.services.ig_ingress_source_proof import is_current_customer_source
 
     if (not getattr(source, "pk", None) or source.client_id != client.pk or source.sender_id != client.igsid
-        or source.role != "user" or source.source != "webhook" or not source.provider_namespace
-        or source.quick_reply_payload or source.status == "failed"):
+        or source.role != "user" or not source.provider_namespace
+        or source.quick_reply_payload or source.status == "failed"
+        or not is_current_customer_source(source, namespace=source.provider_namespace)):
         return {}
     answer = str(source.text or "").strip().casefold().strip(".! ")
     fit = ({"звична": "classic", "звичайна": "classic", "обычная": "classic", "привычная": "classic",

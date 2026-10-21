@@ -29,12 +29,18 @@ def _mac(value):
 
 
 def _source(source):
-    return {"message_id": source.pk, "client_id": source.client_id,
+    result = {"message_id": source.pk, "client_id": source.client_id,
         "text": str(source.text or ""), "quick_reply_payload": str(source.quick_reply_payload or ""),
         "mid": str(source.mid or ""), "provider_message_id": str(source.provider_message_id or ""),
         "namespace": str(source.provider_namespace or ""),
         "reply_to": str(source.reply_to_provider_message_id or ""),
         "event_at": (source.provider_created_at or source.created_at).isoformat()}
+    if getattr(source, "source", "") == "poll":
+        # Poll admissions did not exist in the original webhook-only contract.
+        # Preserve that immutable shape while binding every new poll admission
+        # to its exact signed ingress witness, including replay/read fences.
+        result.update(source="poll", ingress_proof_digest=_digest(source.ingress_proof))
+    return result
 
 
 def _delivery(client, source, *, fresh):
@@ -138,10 +144,13 @@ def _bootstrap_before(proof, before):
 
 
 def _verified(proof, client, source, *, fresh=False, before=None):
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+
     if (not isinstance(proof, dict) or proof.get("schema") != SCHEMA
         or proof.get("source") != _source(source) or source.client_id != client.pk
-        or source.sender_id != client.igsid or source.role != "user" or source.source != "webhook"
+        or source.sender_id != client.igsid or source.role != "user"
         or source.status == "failed" or not (source.mid or source.provider_message_id) or not source.provider_namespace
+        or not is_current_customer_source(source, namespace=source.provider_namespace)
         or not str(source.quick_reply_payload or "").startswith(PREFIX)):
         return False
     signed = {key: value for key, value in proof.items() if key != "hmac"}
@@ -382,20 +391,34 @@ def consume_catalog_choice(client, source, *, revision_id=None):
     if not connection.in_atomic_block:
         return {"handled": True, "ready": False, "reason": "catalog_choice_transaction_required"}
     from management.models import IgClient, InstagramBotMessage, IgCommerceTurnDecision, IgSourceActionReceipt
+    from management.services.ig_ingress_source_proof import is_current_customer_source
     current = IgClient.objects.select_for_update().filter(pk=client.pk).first()
     owned = InstagramBotMessage.objects.select_for_update().filter(pk=source.pk,
-        client_id=client.pk, sender_id=client.igsid, role="user", source="webhook").first()
+        client_id=client.pk, sender_id=client.igsid, role="user", source__in=("webhook", "poll")).first()
     if current is None or owned is None or current.privacy_erasure_started_at:
         return {"handled": True, "ready": False, "reason": "catalog_choice_owner_changed"}
+    owned.client = current
+    if not is_current_customer_source(owned, namespace=owned.provider_namespace) or _source(source) != _source(owned):
+        return {"handled": True, "ready": False, "reason": "catalog_choice_source_scope_changed"}
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     if owned.pk < conversation_route_reset_floor(current.pk) or len(str(owned.text or "")) > 8000:
         return {"handled": True, "ready": False, "reason": "catalog_choice_source_scope_changed"}
+
+    def current_poll_proof():
+        if owned.source != "poll":
+            return True
+        fresh = InstagramBotMessage.objects.filter(pk=owned.pk).first()
+        if fresh is not None:
+            fresh.client = current
+        return bool(fresh is not None and _source(fresh) == _source(owned)
+            and is_current_customer_source(fresh, namespace=owned.provider_namespace))
+
     previous = IgSourceActionReceipt.objects.select_for_update().filter(source_message_id=owned.pk, kind="postback").first()
     if previous is not None:
         proof = (previous.outcome or {}).get("proof")
         if (previous.client_id != current.pk or previous.outcome_digest != _digest(previous.outcome)
             or previous.source_digest != _digest(_source(owned)) or previous.payload_digest != _digest(owned.quick_reply_payload)
-            or not _verified(proof, current, owned)):
+            or not _verified(proof, current, owned) or not current_poll_proof()):
             return {"handled": True, "ready": False, "reason": "catalog_choice_receipt_changed"}
         return {**deepcopy(previous.outcome), "handled": True, "ready": True, "replayed": True}
     existing = IgCommerceTurnDecision.objects.filter(source_message_id=owned.pk).first()
@@ -405,6 +428,8 @@ def consume_catalog_choice(client, source, *, revision_id=None):
     delivered = _delivery(current, owned, fresh=historical is None)
     if not delivered.get("ready"):
         return {"handled": True, "ready": False, "reason": delivered.get("reason") or "catalog_choice_stale"}
+    if not current_poll_proof():
+        return {"handled": True, "ready": False, "reason": "catalog_choice_source_scope_changed"}
     kind = (delivered.get("action") or {}).get("kind")
     decision = None
     if kind in {"product", "color", "size"}:

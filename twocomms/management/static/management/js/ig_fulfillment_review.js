@@ -50,6 +50,9 @@
         result.deadline_date=withdrawal?null:item.deadline_date==null?null:item.deadline_date;
         result.date_status=withdrawal?'none':item.date_status==='none'&&item.supersession_hint==='changed'?'needs_clarification':item.date_status;
         result.deadline_withdrawn=withdrawal;
+        ['deadline_at','deadline_hard','deadline_kind','requirement_digest'].forEach(key=>{
+          if(!withdrawal&&Object.prototype.hasOwnProperty.call(item,key))result[key]=item[key];else delete result[key];
+        });
       }
     });
     return result;
@@ -57,7 +60,7 @@
   function deadlineLabel(requirements) {
     if(requirements.deadline_withdrawn||requirements.supersession_hint==='withdrawn')return 'Клієнт відкликав строк';
     const suffix={resolved:'',past:' · цей строк уже минув',needs_clarification:' · дату потрібно уточнити',none:''};
-    return (requirements.deadline_raw||requirements.deadline_date||'Не вказано')+(suffix[requirements.date_status]||'');
+    return (requirements.deadline_at?kyivDate(requirements.deadline_at):requirements.deadline_raw||requirements.deadline_date||'Не вказано')+(requirements.deadline_hard?' · обов’язковий строк':'')+(suffix[requirements.date_status]||'');
   }
   function textInput(label,maxLength) {
     const input=el('textarea');input.rows=2;input.maxLength=maxLength;input.setAttribute('aria-label',label);return input;
@@ -70,9 +73,10 @@
   function timingLabel(value) {
     if(!value||!Number.isInteger(value.min_days)||!Number.isInteger(value.max_days))return 'Не визначено';
     const anchor=new Date(value.anchor_at);
-    if(value.min_days===0&&value.max_days===0)return 'У день перевірки'+(value.anchor_at&&!Number.isNaN(anchor.valueOf())?' · '+anchor.toLocaleDateString('uk-UA',{timeZone:'Europe/Kyiv'}):' · дату не підтверджено');
+    if(value.min_days===0&&value.max_days===0&&value.anchor!=='after_payment_confirmation')return 'У день перевірки'+(value.anchor_at&&!Number.isNaN(anchor.valueOf())?' · '+anchor.toLocaleDateString('uk-UA',{timeZone:'Europe/Kyiv'}):' · дату не підтверджено');
     const range=value.min_days===value.max_days?String(value.min_days):value.min_days+'–'+value.max_days;
     let text=range+' '+(value.unit==='business'?'робочих днів':'календарних днів');
+    if(value.anchor==='after_payment_confirmation')return text+' · після підтвердження оплати';
     if(value.anchor_at&&!Number.isNaN(anchor.valueOf()))text+=' · від '+anchor.toLocaleString('uk-UA',{timeZone:'Europe/Kyiv'});
     return text;
   }
@@ -98,22 +102,82 @@
     const grid=el('div','ig-fr-timing-grid');
     const preset=select([['','Не визначено'],['0','У день перевірки'],['1-3','1–3 дні'],['3','3 дні'],['7','7 днів'],['custom','Свій проміжок']],title+' — термін');
     const unit=select([['calendar','Календарні дні'],['business','Робочі дні']],title+' — одиниця');
+    const anchor=select([['check','Від збереження перевірки'],['after_payment_confirmation','Після підтвердження оплати']],title+' — початок відліку');
+    unit.value='calendar';anchor.value='check';
     const range=el('div','ig-fr-range');const min=numeric(title+' — від днів'),max=numeric(title+' — до днів');min.max='90';max.max='90';
     range.append(field('Від, днів',min),field('До, днів',max));range.hidden=true;
-    grid.append(field('Термін',preset),field('Рахуємо',unit),range);root.appendChild(grid);
-    root.appendChild(el('p','ig-fr-muted','Відлік — від моменту збереження перевірки.'));
+    grid.append(field('Термін',preset),field('Рахуємо',unit),field('Початок відліку',anchor),range);root.appendChild(grid);
+    root.appendChild(el('p','ig-fr-muted','Підготовка та відправка — окремі строки. Перевезення не входить у цей проміжок.'));
     preset.addEventListener('change',()=>{range.hidden=preset.value!=='custom';});
     if(saved&&Number.isInteger(saved.min_days)&&Number.isInteger(saved.max_days)){
       preset.value=saved.min_days===1&&saved.max_days===3?'1-3':saved.min_days===saved.max_days&&[0,3,7].includes(saved.min_days)?String(saved.min_days):'custom';
       min.value=saved.min_days;max.value=saved.max_days;range.hidden=preset.value!=='custom';unit.value=saved.unit||'calendar';
+      anchor.value=saved.anchor==='after_payment_confirmation'?'after_payment_confirmation':'check';
       if(saved.anchor_at){const date=new Date(saved.anchor_at);if(!Number.isNaN(date.valueOf()))root.appendChild(el('p','ig-fr-muted','Попередній відлік: '+date.toLocaleString('uk-UA')));}
     }
     return {root, read(){
       if(!preset.value)return null;
       let lower,upper;if(preset.value==='custom'){lower=Number(min.value);upper=Number(max.value);if(!min.value||!max.value||!Number.isInteger(lower)||!Number.isInteger(upper)||lower<0||upper<lower||upper>90){min.focus();throw new Error(title+': вкажіть проміжок від 0 до 90 днів.');}}
       else {const values=preset.value.split('-').map(Number);lower=values[0];upper=values[1]||values[0];}
-      return {min_days:lower,max_days:upper,unit:unit.value};
+      if(anchor.value==='after_payment_confirmation'&&lower===0&&upper===0){preset.focus();throw new Error(title+': для відліку після оплати вкажіть проміжок днів; «у день перевірки» має іншу підставу.');}
+      return Object.assign({min_days:lower,max_days:upper,unit:unit.value},anchor.value==='after_payment_confirmation'?{anchor:anchor.value}:{});
     }};
+  }
+  const deadlineOptions={later_domestic_contact:'Отримання пізніше хлопцем або іншою контактною особою в Україні',later_domestic_destination:'Отримання пізніше Новою поштою там, де клієнт перебуватиме в Україні',international_review_required:'Міжнародна доставка: окремо перевірити можливість і вартість'};
+  function activeHardRequirement(current) {
+    const projection=current.current_request;
+    if(projection&&Object.prototype.hasOwnProperty.call(projection,'active_hard_requirement_digest')){
+      const digest=projection.active_hard_requirement_digest;
+      return typeof digest==='string'&&/^[a-f0-9]{64}$/.test(digest)
+        ?(current.requirement_sources||[]).find(item=>item&&item.requirement_digest===digest&&item.deadline_hard===true)||null:null;
+    }
+    let active=null;
+    (current.requirement_sources||[]).forEach(item=>{
+      if(!item||typeof item!=='object')return;
+      if(['changed','withdrawn'].includes(item.supersession_hint))active=null;
+      if(item.deadline_hard===true&&item.supersession_hint!=='withdrawn')active=item;
+    });
+    return active&&typeof active.requirement_digest==='string'&&/^[a-f0-9]{64}$/.test(active.requirement_digest)?active:null;
+  }
+  function canResolveDeadline(current) {
+    const hard=activeHardRequirement(current),saved=current.decision&&current.decision.deadline_review;
+    return Boolean(current.status==='reviewed'&&current.decision&&current.decision.request_digest===current.request_digest&&hard&&saved&&saved.outcome==='review_pending'&&saved.requirement_digest===hard.requirement_digest&&Array.isArray(saved.line_ids)&&saved.line_ids.length&&saved.line_ids.every(id=>(current.lines||[]).some(line=>line.line_id===id)));
+  }
+  function deadlineEditor(current,editable) {
+    const hard=activeHardRequirement(current);if(!hard)return null;
+    const saved=(current.decision||{}).deadline_review||{},resolving=canResolveDeadline(current);
+    const root=el('fieldset','ig-fr-deadline');root.appendChild(el('legend','','Обов’язковий строк клієнта'));
+    root.append(el('p','',deadlineLabel(hard)),el('p','ig-fr-muted','Висновок стосується тільки обраних позицій. Готова річ, підготовка, відправка й прибуття — різні факти.'));
+    if(!editable){
+      root.appendChild(el('p','',saved.outcome==='impossible'?'Не встигаємо до від’їзду, навіть терміново':saved.outcome==='review_pending'?'Можливість ще перевіряється':'Висновок щодо обов’язкового строку ще потрібен'));
+      (saved.options||[]).forEach(option=>{if(deadlineOptions[option])root.appendChild(el('p','ig-fr-muted',deadlineOptions[option]));});
+      return {root,read(){return null;}};
+    }
+    const outcome=select(resolving?[['','Оберіть остаточний висновок'],['impossible','Не встигаємо, навіть терміново']]:[['','Оберіть висновок'],['review_pending','Ще перевіряємо можливість'],['impossible','Не встигаємо, навіть терміново']],'Висновок щодо обов’язкового строку');
+    root.appendChild(field('Висновок перевірки',outcome));
+    const selected=[];(current.lines||[]).forEach(line=>{
+      const check=el('input');check.type='checkbox';check.value=line.line_id;check.setAttribute('aria-label','Строк стосується — '+displayLabel(line,line.line_id));
+      check.checked=resolving?(saved.line_ids||[]).includes(line.line_id):(current.lines||[]).length===1;
+      if(resolving){check.disabled=true;check.dataset.frDisabled='true';}
+      const wrapper=field(displayLabel(line,line.line_id),check);root.appendChild(wrapper);selected.push({check,line});
+    });
+    const options=[];Object.entries(deadlineOptions).forEach(([value,label])=>{const check=el('input');check.type='checkbox';check.value=value;check.setAttribute('aria-label',label);check.checked=(saved.options||[]).includes(value);root.appendChild(field(label,check));options.push({check,value});});
+    root.appendChild(el('p','ig-fr-muted','Це пропозиції до погодження. Отримання пізніше потребує явної згоди клієнта; міжнародна доставка — перевірки можливості та вартості. Дату прибуття не обіцяємо.'));
+    if(resolving)root.appendChild(el('p','ig-fr-muted','Зберігається нова версія висновку. Попередні факти про позиції та їхні строки не змінюються.'));
+    return {root,read(){
+      if(!['impossible','review_pending'].includes(outcome.value)){outcome.focus();throw new Error('Оберіть висновок щодо обов’язкового строку клієнта.');}
+      const lineIds=selected.filter(item=>item.check.checked).map(item=>item.line.line_id);
+      if(!lineIds.length){selected[0]?.check.focus();throw new Error('Оберіть позиції, яких стосується обов’язковий строк.');}
+      return {requirement_digest:hard.requirement_digest,outcome:outcome.value,line_ids:lineIds,options:options.filter(item=>item.check.checked).map(item=>item.value)};
+    }};
+  }
+  function savedDecisionInputs(current) {
+    const allowed=['line_id','availability','checked_quantity','supply_basis','source_location','alternative','clarification'];
+    return ((current.decision||{}).lines||[]).map(line=>{
+      const result={};allowed.forEach(key=>{if(Object.prototype.hasOwnProperty.call(line,key))result[key]=line[key];});
+      ['preparation','dispatch'].forEach(key=>{const timing=line[key];if(timing){result[key]={min_days:timing.min_days,max_days:timing.max_days,unit:timing.unit};if(timing.anchor==='after_payment_confirmation')result[key].anchor=timing.anchor;}});
+      return result;
+    });
   }
   function create(root, options) {
     const canOperate=options.canOperate===true;
@@ -295,10 +359,16 @@
       const unavailable=!current||current.unavailable;
       if(unavailable){if(current&&current.stock_sync&&current.stock_sync.sync_id||stockUnknown&&stockPending)root.appendChild(stockSyncSection(Object.assign({},current||{},{request_id:current&&current.stock_sync&&current.stock_sync.request_id||stockPending&&stockPending.request_id})));root.append(el('p','ig-fr-muted',current&&current.status==='none'?'Активної перевірки наявності чи строків поки немає.':'Поточна перевірка недоступна. Оновіть картку після уточнення вибору.'),feedback);return;}
       const validDecision=current.status==='reviewed'&&current.decision&&current.decision.request_digest===current.request_digest;
-      const finalized=current.status==='reviewed',readOnly=finalized||!canOperate;
+      const finalized=current.status==='reviewed',readOnly=finalized||!canOperate,resolvingDeadline=canResolveDeadline(current);
       root.appendChild(el('span','ig-fr-status',validDecision?'Перевірено менеджером':current.status==='stale'?'Попередня перевірка втратила актуальність':'Очікує перевірки'));
+      const history=current.current_request&&current.current_request.deadline_history;
+      if(history&&history.status==='incomplete'&&history.needs_customer_clarification===true){
+        const notice=el('p','ig-fr-history-clarification','Потрібно уточнити поточний критичний строк у клієнта. Оформлення призупинене до підтвердження строку або його явного відкликання; перевірка наявності не знімає це обмеження.');
+        notice.setAttribute('role','status');root.appendChild(notice);
+      }
       if(current.current_request&&current.current_request.scope==='restock')root.appendChild(el('p','ig-fr-muted','Сповіщення про поповнення наявності. Нижче — точні позиції з цього запиту.'));
-      const requirements=current.customer_requirements||{};
+      const activeRequirement=activeHardRequirement(current);
+      const requirements=activeRequirement?Object.assign({},current.customer_requirements||{},activeRequirement,{deadline_withdrawn:false}):current.customer_requirements||{};
       const update=current.customer_update||{};
       const deliveryConfirmed=update.state==='sent'&&update.native_receipt_confirmed===true;
       const deliveryCopy=deliveryConfirmed?'Надсилання підтверджено Instagram':({pending:'Відповідь очікує надсилання',unknown:'Результат надсилання невідомий · потрібна звірка',cancelled:'Надсилання скасовано',absent:'Підтвердження надсилання відсутнє'})[update.state]||'Підтвердження надсилання відсутнє';
@@ -358,12 +428,13 @@
         });
         editors.push({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch});lines.appendChild(box);
       });form.appendChild(lines);
-      const actions=el('div','ig-fr-actions');const submit=el('button','ig-fr-button primary','Зберегти перевірку');submit.type='submit';if(!readOnly)actions.appendChild(submit);form.appendChild(actions);
+      const deadline=deadlineEditor(current,canOperate&&(!finalized||resolvingDeadline));if(deadline)form.appendChild(deadline.root);
+      const actions=el('div','ig-fr-actions');const submit=el('button','ig-fr-button primary',resolvingDeadline?'Зберегти остаточний висновок':'Зберегти перевірку');submit.type='submit';if(!readOnly||canOperate&&resolvingDeadline)actions.appendChild(submit);form.appendChild(actions);
       form.addEventListener('input',()=>{dirty=true;pendingOperation=null;});form.addEventListener('change',()=>{dirty=true;pendingOperation=null;});
-      form.addEventListener('submit',event=>{event.preventDefault();save(editors);});
-      if(!editors.length||!current.request_id||!current.request_digest)submit.disabled=true;
+      form.addEventListener('submit',event=>{event.preventDefault();save(editors,deadline);});
+      if(!editors.length&&!resolvingDeadline||!current.request_id||!current.request_digest)submit.disabled=true;
       root.append(form,feedback);
-      if(finalized)root.appendChild(el('p','ig-fr-muted','Фінальне рішення для цього запиту збережено. Нові факти потребують нового запиту на перевірку.'));
+      if(finalized&&!resolvingDeadline)root.appendChild(el('p','ig-fr-muted','Фінальне рішення для цього запиту збережено. Нові факти потребують нового запиту на перевірку.'));
       if(validDecision&&(current.stock_sync||{}).eligible===true||current.stock_sync&&current.stock_sync.sync_id||stockUnknown&&stockPending)root.appendChild(stockSyncSection(current));
       else if(!canOperate)root.appendChild(el('p','ig-fr-muted','Доступний перегляд стану. Зберегти перевірку може менеджер із правом керування ботом.'));
       const stock=el('p','ig-fr-stock','Рішення про наявність саме по собі не змінює залишки. Облік оновлюється окремою підтвердженою звіркою.');
@@ -385,9 +456,9 @@
       }catch(error){if(version===generation&&error.name!=='AbortError')say(error.message||'Не вдалося прочитати перевірку.',true);}
       finally{if(version===generation){abort=null;lock(false);const submit=root.querySelector('[type="submit"]');if(submit&&(!review||!review.request_id||!review.request_digest||!review.lines||!review.lines.length))submit.disabled=true;}}
     }
-    async function save(editors) {
-      if(!canOperate||busy||!review||review.status==='reviewed')return;let decisions;
-      try{decisions=editors.map(({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch})=>{
+    async function save(editors,deadline) {
+      if(!canOperate||busy||!review||review.status==='reviewed'&&!canResolveDeadline(review))return;let decisions;
+      try{decisions=canResolveDeadline(review)?savedDecisionInputs(review):editors.map(({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch})=>{
         if(!availability.value){availability.focus();throw new Error('Перевірте наявність кожної позиції окремо.');}
         const result={line_id:line.line_id,availability:availability.value};
         if(availability.value==='available'){
@@ -402,7 +473,8 @@
         if(alternative.value.trim())result.alternative=alternative.value.trim().replace(/\s+/g,' ');
         if(['available','wait'].includes(availability.value)){result.preparation=preparation.read();result.dispatch=dispatch.read();}
         return result;
-      });if(!pendingOperation)pendingOperation=operationId();}catch(error){say(error.message,true);return;}
+      });if(deadline){const outcome=deadline.read();if(outcome){decisions={lines:decisions,deadline_review:outcome};if((review.decision||{}).split_offer)decisions.split_offer=review.decision.split_offer;}}
+      if(!pendingOperation)pendingOperation=operationId();}catch(error){say(error.message,true);return;}
       const version=generation;const id=clientId;const payload={request_id:review.request_id,expected_request_digest:review.request_digest,operation_id:pendingOperation,decisions_by_line:decisions};lock(true);say('Зберігаємо перевірку…');
       try{const response=await fetch(options.url(id),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':options.csrfToken,'X-Requested-With':'XMLHttpRequest'},body:JSON.stringify(payload)});const data=await response.json().catch(()=>({}));if(version!==generation)return;
         if(response.status===409){dirty=false;pendingOperation=null;review=null;draw(null);say('Запит клієнта змінився або перевірку вже оновив інший менеджер. Натисніть «Оновити» й звірте всі позиції перед новим збереженням.',true);return;}

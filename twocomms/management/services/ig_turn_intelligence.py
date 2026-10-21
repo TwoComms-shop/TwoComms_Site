@@ -308,6 +308,38 @@ def source_cart_current_facts(capture):
         "lines": lines, **({"removed": deepcopy(capture["removed"])} if capture.get("removed") else {})}
 
 
+def consultation_measurements_prompt_projection(capture):
+    """Lossless presentation of shared guide contents across configurations.
+
+    A catalogue can bind the same measured garment grid to many colours. The
+    immutable capture keeps each guide, including its exact grid/version and
+    variant/option ownership. The prompt states identical measured contents
+    once and retains every configuration binding in the original guide order.
+    Distinct cells, units, semantics, notes and caveats never merge or truncate.
+    """
+    capture = _plain(capture)
+    guides = capture.get("guides")
+    if not isinstance(guides, list) or len(guides) < 2 or any(not isinstance(row, dict) for row in guides):
+        return capture
+    binding_fields = frozenset({"product_id", "variant_id", "option_key", "grid_id", "guide_version"})
+    contents, indexes, bindings = [], {}, []
+    for guide in guides:
+        content = {key: value for key, value in guide.items() if key not in binding_fields}
+        identity = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if identity not in indexes:
+            indexes[identity] = len(contents)
+            contents.append(content)
+        bindings.append({**{key: value for key, value in guide.items() if key in binding_fields},
+            "content_ref": indexes[identity]})
+    projected = {**{key: value for key, value in capture.items() if key != "guides"},
+        "guide_contents": contents, "guide_bindings": bindings,
+        "guide_binding_semantics": "Each guide is its guide_contents[content_ref] merged with its binding; "
+            "content_ref is zero-based and binding order is original guide order. Bindings prove no selection or stock."}
+    # Projection is useful only when exact sharing saves space. Unique guides
+    # remain complete and the existing required-context budget may reject them.
+    return projected if len(json.dumps(projected, ensure_ascii=False)) < len(json.dumps(capture, ensure_ascii=False)) else capture
+
+
 def _freeze(value):
     if isinstance(value, dict):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})

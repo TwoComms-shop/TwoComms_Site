@@ -141,12 +141,13 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
         or client.current_commercial_episode_id != boundary["episode_id"]):
         raise TurnContextError("policy_capture_owner_changed")
     scope = {key: boundary.get(key) for key in (*SCOPE_KEYS, "order_id")}
-    from management.services.ig_reply_language import resolve_own_source_reply_language
+    from management.services.ig_reply_language import resolve_own_source_reply_language, response_plan_language_names
 
     decision = resolve_own_source_reply_language(sources=sources, history=history,
         profile_language=client.language, reset_floor=boundary["reset_floor"],
         watermark_message_id=boundary["watermark"]["message_id"],
-        watermark_event_at=boundary["watermark"]["event_at"])
+        watermark_event_at=boundary["watermark"]["event_at"],
+        non_language_names=response_plan_language_names(response_plan))
     language = decision.reply_language
     evidence = next((row for row in (*sources, *history)
         if row.get("message_id") == decision.source_message_id), None)

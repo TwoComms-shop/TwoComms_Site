@@ -14,7 +14,7 @@ import re
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
 
 
-APPROVED_PUBLIC_FACTS_VERSION = "2026-10-18.owner-scoped.1"
+APPROVED_PUBLIC_FACTS_VERSION = "2026-10-21.owner-scoped.2"
 SUPPORTED_PUBLIC_FACT_LANGUAGES = ("uk", "ru", "en")
 
 
@@ -39,7 +39,7 @@ class ApprovedPublicFact:
 
 
 def _dispatch_days() -> str:
-    """Render the one canonical ordinary-dispatch range for all languages."""
+    """Render the shared approximate preparation range for all languages."""
     start, end = ORDINARY_DISPATCH_WINDOW_DAYS
     return f"{start}–{end}"
 
@@ -95,10 +95,17 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
         ),
         ApprovedPublicFact(
             "dispatch",
-            "Зазвичай готуємо та відправляємо замовлення протягом {dispatch_days} днів "
-            "після підтвердження оплати. Це не гарантія і не строк перевезення: "
-            "доставка після відправлення залежить від Нової Пошти та маршруту.",
-            "ordinary_dispatch_after_confirmed_payment",
+            "Поточні футболки та худі TwoComms друкуємо під замовлення після підтвердження оплати; "
+            "готові надруковані вироби не зберігаємо в наявності. Зазвичай підготовка займає "
+            "{dispatch_days} днів після підтвердження оплати; це приблизний орієнтир, який залежить від сезону. "
+            "Це не гарантія відправлення чи отримання до певної дати і не строк перевезення: "
+            "доставка після відправлення залежить від перевізника та маршруту.",
+            "current_tshirts_and_hoodies_preparation_after_confirmed_payment",
+            "Застосовуй лише до поточних футболок і худі, не до всього каталогу чи майбутньої партії. "
+            "Наявність основи не означає готовий надрукований виріб. Точний термін і можливість встигнути "
+            "до дедлайну потребують рішення менеджера для цього звернення; не обіцяй прискорення.",
+            source_ref="owner:2026-10-21:made-to-order", review_status="reviewed:owner-brief:2026-10-21",
+            version="2026-10-21.owner-made-to-order.1",
         ),
         ApprovedPublicFact(
             "service_request",
@@ -160,10 +167,17 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
         ),
         ApprovedPublicFact(
             "dispatch",
-            "Обычно готовим и отправляем заказы в течение {dispatch_days} дней после "
-            "подтверждения оплаты. Это не гарантия и не срок перевозки: доставка "
-            "после отправки зависит от Новой Почты и маршрута.",
-            "ordinary_dispatch_after_confirmed_payment",
+            "Текущие футболки и худи TwoComms печатаем под заказ после подтверждения оплаты; "
+            "готовые напечатанные изделия не храним в наличии. Обычно подготовка занимает "
+            "{dispatch_days} дней после подтверждения оплаты; это приблизительный ориентир, зависящий от сезона. "
+            "Это не гарантия отправки или получения к определённой дате и не срок перевозки: "
+            "доставка после отправки зависит от перевозчика и маршрута.",
+            "current_tshirts_and_hoodies_preparation_after_confirmed_payment",
+            "Применяй только к текущим футболкам и худи, не ко всему каталогу или будущей партии. "
+            "Наличие основы не означает готовое напечатанное изделие. Точный срок и возможность успеть "
+            "к дедлайну требуют решения менеджера для этого обращения; не обещай ускорение.",
+            source_ref="owner:2026-10-21:made-to-order", review_status="reviewed:owner-brief:2026-10-21",
+            version="2026-10-21.owner-made-to-order.1",
         ),
         ApprovedPublicFact(
             "service_request",
@@ -226,10 +240,17 @@ _FACTS: dict[str, tuple[ApprovedPublicFact, ...]] = {
         ),
         ApprovedPublicFact(
             "dispatch",
-            "We usually prepare and dispatch orders within {dispatch_days} days after "
-            "payment is confirmed. This is not a guarantee or a transit time: "
-            "delivery after dispatch depends on Nova Poshta and the route.",
-            "ordinary_dispatch_after_confirmed_payment",
+            "We print current TwoComms T-shirts and hoodies to order after payment is confirmed; "
+            "we do not keep finished printed garments ready in stock. Preparation usually takes "
+            "{dispatch_days} days after payment confirmation; this is an approximate estimate that varies with the season. "
+            "It does not guarantee dispatch or receipt by a particular date and is not carrier transit time: "
+            "delivery after dispatch depends on the carrier and route.",
+            "current_tshirts_and_hoodies_preparation_after_confirmed_payment",
+            "Apply only to current T-shirts and hoodies, not the whole catalogue or a future batch. "
+            "An available blank does not mean a finished printed garment is ready. Exact timing and deadline "
+            "feasibility need a manager decision for this case; do not promise priority production.",
+            source_ref="owner:2026-10-21:made-to-order", review_status="reviewed:owner-brief:2026-10-21",
+            version="2026-10-21.owner-made-to-order.1",
         ),
         ApprovedPublicFact(
             "service_request",
@@ -354,7 +375,7 @@ _TOPICS = {
     "identity": re.compile(r"ти\s+бот|ви\s+бот|ты\s+бот|вы\s+бот|are\s+you\s+(?:a\s+)?bot|хто\s+ти|кто\s+ты|who\s+are\s+you", re.I),
     "fit": re.compile(r"посадк\w*|крій|крою|крой|фасон\w*|ун[іи]секс|unisex|\bfit\b|oversize|regular|жіноч\w*|женск\w*|чоловіч\w*|мужск\w*", re.I),
     "payment": re.compile(r"оплат\w*|передоплат\w*|предоплат\w*|післяплат\w*|налож\w*|payment|deposit|cash\s+on\s+delivery", re.I),
-    "dispatch": re.compile(r"відправ\w*|отправ\w*|достав\w*|dispatch|shipping|delivery", re.I),
+    "dispatch": re.compile(r"відправ\w*|отправ\w*|достав\w*|dispatch|shipping|delivery|prepar\w*|production|manufactur\w*|підготов\w*|подготов\w*|виготов\w*|изготов\w*|made[- ]to[- ]order|print(?:ed)?\s+to\s+order|під\s+замовлення|под\s+заказ|deadline|tomorrow|leav(?:e|ing)|depart\w*|від['’]?їзд\w*|отъезд\w*", re.I),
     "service": re.compile(r"обмін\w*|обмен\w*|повернен\w*|возврат\w*|брак\w*|дефект\w*|exchange|return|defect", re.I),
 }
 _UNSCOPED = re.compile(r"майбут\w*|будущ\w*|наступн\w*\s+парт\w*|нов\w*\s+парт\w*|future|next\s+batch|coming\s+collection", re.I)

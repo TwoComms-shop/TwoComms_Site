@@ -34,6 +34,68 @@ PARKED_COLLABORATION_CODE = "provider_dispatch_budget"
 PARKED_DISPOSITION_KEY = "parked_holding_disposition"
 
 
+def resolve_revision_reply_language(revision, *, sources=None, captured_context=None,
+        profile_language=None, response_plan=None):
+    """Resolve locale from the owned seal and its bounded, fenced history.
+
+    Early local renderers have no provider capture yet. Reuse its existing
+    history reader, including native ownership/namespace/reset/time checks,
+    rather than consulting a newest message or treating profile as evidence.
+    A prepared context is already frozen and requires no database reads.
+    """
+    from management.services.ig_reply_language import resolve_own_source_reply_language, response_plan_language_names
+    from management.services.ig_turn_capture import detached_payload, _capture_sources, _history
+    from management.services.ig_turn_intelligence import SCOPE_KEYS, TurnContextError
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+
+    profile = getattr(revision.client, "language", "") if profile_language is None else profile_language
+    current = sources if sources is not None else (revision.bundle_snapshot or {}).get("sources") or []
+    history, floor, watermark, names = (), 1, {}, ()
+    if captured_context is not None:
+        boundary = detached_payload(captured_context.boundary)
+        current = sources if sources is not None else current
+        history = detached_payload(captured_context.captured_history)
+        floor, watermark = boundary["reset_floor"], boundary["watermark"]
+        component = detached_payload(captured_context.components).get("language_catalog_names") or {}
+        scope = component.get("scope") or {}
+        if (component and all(scope.get(key) == boundary.get(key) for key in SCOPE_KEYS)
+            and boundary.get("client_id") == revision.client_id
+            and component.get("response_plan_digest")):
+            names = tuple(component.get("names") or ())
+        elif not component:
+            names = response_plan_language_names(response_plan)
+    else:
+        floor = conversation_route_reset_floor(revision.client.pk)
+        try:
+            admitted, namespace, watermark = _capture_sources(revision, revision.client)
+            # The caller may mask native button titles, but cannot replace the
+            # owned source identities/text with unrelated authored messages.
+            if sources is not None and (len(sources) != len(admitted) or any(
+                    {**row, "text": native["text"]} != native
+                    or (row.get("text") != native.get("text") and not (
+                        row.get("text") == "" and str(native.get("quick_reply_payload") or "").startswith("CC1:")))
+                    for row, native in zip(sources, admitted))):
+                raise TurnContextError("sealed_source_window_changed")
+            boundary = dict.fromkeys(SCOPE_KEYS)
+            boundary.update(client_id=revision.client.pk, source_namespace=namespace,
+                reset_id=None, reset_floor=floor, erasure_epoch="",
+                episode_id=getattr(revision.client, "current_commercial_episode_id", None),
+                order_id=None, line_id="", recipient_id="self", watermark=watermark,
+                source_ids=[row["message_id"] for row in admitted])
+            history, _ = _history(revision.client, boundary, admitted, None)
+        except (TurnContextError, AttributeError, TypeError, ValueError):
+            # A source-only compatibility call can still make its own current
+            # decision. It gains no historical proof if the native seal fails.
+            history = ()
+        if response_plan is not None:
+            names = response_plan_language_names(response_plan)
+    return resolve_own_source_reply_language(sources=current, history=history,
+        profile_language=profile, reset_floor=floor,
+        watermark_message_id=watermark.get("message_id", max(
+            (row["message_id"] for row in current if type(row.get("message_id")) is int), default=None)),
+        watermark_event_at=watermark.get("event_at"), non_language_names=names)
+
+
 def parked_collaboration_revision_ids(*, limit=25):
     """Return parked creator offers that still owe their first reply.
 
@@ -218,8 +280,16 @@ def _positive_current_request(client, revision):
 def _collaboration_holding_reply(
     language: str, *, evidence_present: bool = False,
     results_present: bool = False, contact_present: bool = False, business_cooperation=None,
+    recruitment_service=None,
 ) -> str:
     """Acknowledge the handoff and ask only for missing review inputs."""
+    if recruitment_service:
+        return {
+            "uk": "Дякую за пропозицію допомоги з підтримкою клієнтів. Зафіксувала її для розгляду адміністрацією щодо потреби та умов. Наявність вакансії й умови роботи поки не підтверджені.",
+            "ru": "Спасибо за предложение помощи с поддержкой клиентов. Зафиксировала его для рассмотрения администрацией потребности и условий. Наличие вакансии и условия работы пока не подтверждены.",
+            "en": "Thank you for offering to help with customer support. I have recorded your proposal for management to review the need and conditions. I do not have confirmed hiring or work-condition information.",
+            "hi": "ग्राहक सहायता में मदद के आपके प्रस्ताव के लिए धन्यवाद। मैंने इसे टीम की समीक्षा के लिए दर्ज कर लिया है। भर्ती या काम की शर्तों की अभी पुष्टि नहीं हुई है।",
+        }.get(language, "Thank you for offering customer support. Your proposal is recorded for management review; hiring and work conditions are unconfirmed.")
     if business_cooperation:
         from management.services.ig_policy_fault_ack import business_acknowledgement
         return business_acknowledgement(language, business_cooperation=business_cooperation)
@@ -301,9 +371,10 @@ def _ensure_collaboration_review_case(revision, client):
     """Create an open collaboration decision case from the sealed snapshot."""
     from management.services.instagram_bot import notify_manager
     from management.services.ig_revision_intents import collaboration_brief_for_revision
-    from management.services.ig_business_cooperation import business_cooperation_for_sources
+    from management.services.ig_business_cooperation import business_cooperation_for_sources, recruitment_service_for_sources
 
     business = business_cooperation_for_sources(revision.bundle_snapshot.get("sources", ()))
+    recruitment = recruitment_service_for_sources(revision.bundle_snapshot.get("sources", ()))
 
     task = IgFollowUpTask.objects.select_for_update().filter(
         client=client, kind=IgFollowUpTask.Kind.MANAGER_TASK,
@@ -321,7 +392,8 @@ def _ensure_collaboration_review_case(revision, client):
             kind=IgFollowUpTask.Kind.MANAGER_TASK, reason="revision_case:collaboration_review",
             manager_approval_status=IgFollowUpTask.ManagerApprovalStatus.PENDING,
             manager_approval_requested_at=now,
-            message_text=("Клієнт питає про бізнес-співпрацю: перевірити партнерські умови та запитання; умови не погоджено."
+            message_text=("Клієнт пропонує допомогу з Instagram Direct / підтримкою клієнтів: розглянути потребу та умови; вакансію не підтверджено."
+                if recruitment else "Клієнт питає про бізнес-співпрацю: перевірити партнерські умови та запитання; умови не погоджено."
                 if business else "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."),
             event_key=f"ig-revision-case:{client.pk}:{revision.pk}:collaboration_review"[:180],
             trigger=IgFollowUpTask.Trigger.EVENT, event_occurred_at=now,
@@ -334,17 +406,27 @@ def _ensure_collaboration_review_case(revision, client):
     context.update({
         "schema_version": 1, "case_kind": "collaboration_review",
         "latest_revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
-        "required_decisions": (["business_cooperation_review", "partnership_terms", "customer_questions"]
+        "required_decisions": (["employment_service_review", "customer_support_scope", "work_conditions"]
+            if recruitment else ["business_cooperation_review", "partnership_terms", "customer_questions"]
             if business else ["portfolio_review", "collaboration_terms"]),
         "authority": {"price_confirmed": False, "fulfillment_started": False},
     })
     context["collaboration_brief"] = collaboration_brief_for_revision(revision)
-    if business:
-        context.update(cooperation_kind="business", business_cooperation=business)
+    context.update(cooperation_kind="recruitment_service" if recruitment else "business" if business else "creator_or_other",
+        recruitment_service=recruitment, business_cooperation=business)
+    if recruitment:
+        if recruitment.get("creator_work_also_offered"):
+            context["required_decisions"] += ["portfolio_review", "collaboration_terms"]
+        task.message_text = "Клієнт пропонує допомогу з Instagram Direct / підтримкою клієнтів: розглянути потребу та умови; вакансію не підтверджено."
+    elif business:
+        task.message_text = "Клієнт питає про бізнес-співпрацю: перевірити партнерські умови та запитання; умови не погоджено."
+    else:
+        task.message_text = "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."
     task.manager_context = context
-    task.save(update_fields=["manager_context", "updated_at"])
+    task.save(update_fields=["manager_context", "message_text", "updated_at"])
     key = f"ig-revision-collaboration-case:{task.pk}"
     notify_manager(
+        "Розгляньте пропозицію клієнта щодо роботи або послуг з підтримки Direct." if recruitment else
         "Перевірте запит клієнта про бізнес-співпрацю." if business else "Перевірте пропозицію creator/фото-відео співпраці клієнта.",
         dedupe_key=key, event_type="escalation", client=client,
         metadata={"revision_id": revision.pk, "manager_task_id": task.pk, "case_kind": "collaboration_review"},
@@ -487,6 +569,7 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
             if not _sources_unchanged(revision):
                 return RevisionInputDecision(reason="holding_sources_changed")
             from management.services.ig_product_inquiries import ProductInquiryCapture, product_inquiries_for_revision
+            recovery_plan = None
             if product_inquiry_capture is None and not (revision.action_receipts or {}).get(RECEIPT_KEY):
                 # Failed-graph restart has no request-local capture. Reuse the
                 # native current response-plan reader, then the existing cart
@@ -562,16 +645,11 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                     existing,
                     True,
                 )
-            from management.services.ig_reply_language import resolve_own_source_reply_language
-            from management.services.ig_conversation_routes import conversation_route_reset_floor
-
             # Existing receipts were checked/replayed above. New replies use
             # this exact frozen current source set, never a newer DB message or
             # stale cached profile language. Business handoff proof is unchanged.
-            reply_language = resolve_own_source_reply_language(
-                sources=revision.bundle_snapshot.get("sources") or [], profile_language=client.language,
-                reset_floor=conversation_route_reset_floor(client.pk),
-                watermark_message_id=max((row["message_id"] for row in revision.bundle_snapshot.get("sources", ())), default=0))
+            reply_language = resolve_revision_reply_language(revision, profile_language=client.language,
+                response_plan=recovery_plan)
             language = reply_language.template_family
             if not language:
                 return RevisionInputDecision(reason="holding_language_template_unavailable")
@@ -593,12 +671,13 @@ def record_technical_holding(revision_id, token, *, settings_id, allow_neutral=F
                 if row.get("role") == "user"
             )
             if collaboration_request:
-                from management.services.ig_business_cooperation import business_cooperation_for_sources
+                from management.services.ig_business_cooperation import business_cooperation_for_sources, recruitment_service_for_sources
                 evidence_present, results_present, contact_present = _collaboration_holding_inputs(revision)
                 text = _collaboration_holding_reply(
                     language, evidence_present=evidence_present,
                     results_present=results_present, contact_present=contact_present,
                     business_cooperation=business_cooperation_for_sources(revision.bundle_snapshot.get("sources", ())),
+                    recruitment_service=recruitment_service_for_sources(revision.bundle_snapshot.get("sources", ())),
                 )
                 collaboration_task, collaboration_notification = _ensure_collaboration_review_case(revision, client)
             else:

@@ -21,7 +21,7 @@ REVISION_PROVIDER_CONTROL_KINDS = frozenset({
 })
 _SELECTOR_WORDS = {
     "product": r"товар|модель|принт|product|model|print|посилання|ссылк|link",
-    "size": r"розмір|размер|size",
+    "size": r"розмір|размер|\bsizes?\b",
     "fit": r"посадк|крій|крой|фасон|fit",
     "color": r"колір|кольор|цвет|color|colour",
     "quantity": r"кільк|колич|quantity|how many",
@@ -58,6 +58,10 @@ _RECEIPT_ACK = re.compile(r"(?:отрим\w*|одерж\w*|получ\w*|бач\
 _REPORTED_PAYMENT_ACK = re.compile(r"(?:повідом\w*|сообщ\w*|заяв\w*|reported|say|said)[^.!?\n]{0,60}(?:оплат\w*|сплат\w*|paid|payment)|(?:заяв\w*|reported)\s+(?:оплат\w*|payment)", re.I)
 _REPORTED_RECEIPT_ACK = re.compile(r"(?:повідом\w*|сообщ\w*|заяв\w*|reported|say|said)[^.!?\n]{0,60}(?:чек\w*|квитанц\w*|receipt\w*)", re.I)
 _PAYMENT_FORWARDED = re.compile(r"(?:передал\w*|передав\w*|передан\w*|передано|сповіст\w*|уведомил\w*|уведомлен\w*|forwarded|notified)[^.!?\n]{0,70}(?:менедж\w*|команд\w*|manager|team)|(?:менедж\w*|manager|team)[^.!?\n]{0,45}(?:уведомлен\w*|notified|сповіщ\w*)", re.I)
+_REPLY_LANGUAGE_REQUEST = re.compile(
+    r"\b(?:do\s+you|can\s+you|please|could\s+you)\s+(?:speak|reply|answer|write|use|continue)[^.!?\n]{0,30}(?:english|language)"
+    r"|\b(?:i\s+)?(?:don['’]?t|do\s+not|can['’]?t|cannot)\s+(?:speak|understand|read)[^.!?\n]{0,35}(?:language|ukrainian|russian)"
+    r"|(?:не\s+(?:розумію|понимаю)|відповідайте|отвечайте)[^.!?\n]{0,25}(?:мов|язык|англ)", re.I)
 
 
 def _payment_requests(text):
@@ -413,6 +417,13 @@ def _requested_topics(text, parsed_topics=()):
     topics = {"info:" + ("size_chart" if str(topic).split(":", 1)[0] == "size_guide"
         else str(topic).split(":", 1)[0]) for topic in parsed_topics}
     for clause in re.findall(r"[^.!?\n]+[?]?", _unquoted_text(text)):
+        from management.services.ig_pending_question_context import status_request_source_ids
+        status_request = bool(status_request_source_ids([{"message_id": 1, "role": "user", "text": clause}]))
+        language_request = bool(_REPLY_LANGUAGE_REQUEST.search(clause))
+        if status_request:
+            topics.add("info:manager_status")
+        if language_request:
+            topics.add("info:reply_language")
         from management.services.ig_fit_consultation import fit_consultation_request
 
         fit_request = fit_consultation_request([{"role": "user", "text": clause}])
@@ -443,7 +454,7 @@ def _requested_topics(text, parsed_topics=()):
             for marker in markers)
         if not asking:
             continue
-        matched = presentation or bool(fit_request) or chart_request
+        matched = presentation or bool(fit_request) or chart_request or status_request or language_request
         for topic, pattern in (
             ("material", r"матеріал|материал|material|склад\b|состав|composition|cotton|бавов|хлоп"),
             ("density", r"щільн|плотност|density|gsm|г/м"),
@@ -479,7 +490,7 @@ def _expand_chart_obligations(rows, source, *, supported_fits=()):
     return result
 
 
-def _topic_covered(kind, response, plan):
+def _topic_covered(kind, response, plan, *, source_message_id=None):
     """Require a protected, canonical answer assertion or an admitted handoff.
 
     The full candidate has already passed truth/scope/action validation. This
@@ -500,7 +511,14 @@ def _topic_covered(kind, response, plan):
     if kind in {"info:fit", "info:fit_presentation", "info:audience"}:
         from management.services.ig_fit_consultation import fit_topic_covered
 
-        return fit_topic_covered(kind, response, plan.fit_consultation) or bool(response.control.get("manager"))
+        return fit_topic_covered(kind, response, plan.fit_consultation)
+    if kind == "info:manager_status":
+        from management.services.ig_pending_question_context import pending_status_answer_covered
+        return pending_status_answer_covered(plan.pending_questions, response.reply_text,
+            source_message_id=source_message_id)
+    if kind == "info:reply_language":
+        return bool(re.search(r"\b(?:i|we)\s+(?:can|will|shall|(?:am|are)\s+happy\s+to)\s+(?:reply|answer|speak|write|continue)[^.!?\n]{0,25}\benglish\b"
+            r"|\b(?:let['’]s|let\s+us)\s+(?:continue|speak|write)[^.!?\n]{0,15}\benglish\b", _unquoted_text(response.reply_text), re.I))
     if kind == "info:presentation" and response.control.get("show_products"):
         return True
     prices = tuple(Decimal(value) for value in authority["prices"])
@@ -533,7 +551,9 @@ def _topic_covered(kind, response, plan):
                 return True
             if context.recruitment_status == "unknown" and _RECRUITMENT_UNCERTAINTY_RE.search(clause):
                 return True
-    return bool(kind.startswith("info:") and response.control.get("manager"))
+    from management.services.ig_product_inquiries import inquiry_handoff_topic_covered
+    return inquiry_handoff_topic_covered(kind, response, plan.product_information,
+        source_message_id=source_message_id)
 
 
 @dataclass(frozen=True)
@@ -545,6 +565,7 @@ class ResponsePlan:
     next_selector: str
     authority: dict
     obligations: tuple[dict, ...]
+    pending_questions: dict = field(default_factory=dict)
     source_selection: dict = field(default_factory=dict)
     readiness_snapshot: dict = field(default_factory=dict)
     payment_observation: dict = field(default_factory=dict)
@@ -575,6 +596,8 @@ class ResponsePlan:
                 "scope": self.scope, "configuration": self.configuration,
                 "next_selector": self.next_selector, "authority": self.authority,
                 "obligations": list(self.obligations)}
+        if self.pending_questions:
+            payload["pending_questions"] = deepcopy(self.pending_questions)
         if self.payment_observation or self.payment_claim_source_ids:
             payload.update(payment_observation=self.payment_observation,
                 payment_claim_source_ids=list(self.payment_claim_source_ids))
@@ -758,11 +781,18 @@ class ResponsePlan:
         if self.configuration.get("focus_selection_candidate"):
             payload["focused_selection_candidate"] = deepcopy(self.configuration["focus_selection_candidate"])
         if self.configuration.get("consultation_measurements"):
-            payload["consultation_measurements"] = deepcopy(self.configuration["consultation_measurements"])
+            from management.services.ig_turn_intelligence import consultation_measurements_prompt_projection
+            payload["consultation_measurements"] = consultation_measurements_prompt_projection(
+                self.configuration["consultation_measurements"])
         if self.configuration.get("source_clarifications"):
             payload["pending_source_clarifications"] = deepcopy(self.configuration["source_clarifications"])
         if self.configuration.get("reorder_observations"):
             payload["reorder_resolution"] = self.configuration["reorder_observations"]
+        # These named projections already retain their full semantics above.
+        # The no-line configuration must not duplicate the same large grids.
+        if "configuration" in payload:
+            for key in ("consultation_measurements", "source_clarifications", "reorder_observations"):
+                payload["configuration"].pop(key, None)
         return payload
 
     def prompt_guidance(self):
@@ -774,9 +804,13 @@ class ResponsePlan:
             "Each obligation_kinds entry retains full kind and full ID=id_prefix+kind; other groups keep full [id,kind] pairs. "
             "unknown applicability authorizes no availability claim. Empty catalog_authority permits no catalog claim. "
             "Cover every obligation independently; size acknowledgement alone completes neither purchase nor payment support. "
+            "A manager flag covers only its exact unknown product question, never other factual questions. "
             "Do not repeat confirmed choices/questions/controls. Ask only the named next selector. "
             "Selection controls product/size/fit/option/qty require no payment; item/objhandle and unsupported effects are forbidden. "
         )
+        if self.pending_questions:
+            from management.services.ig_pending_question_context import pending_question_guidance
+            guidance += "\n" + pending_question_guidance(self.pending_questions)
         if self.configuration.get("source_clarifications"):
             guidance += "\nThe current ad reference is ambiguous. Ask one short product clarification without selection/payment controls; retained cart choices do not answer that reference."
         if (not self.line_plans or self.payment_observation or self.payment_claim_source_ids
@@ -934,7 +968,7 @@ class ResponsePlan:
                         or (kind == "garment_type" and obligation["source_message_id"] in inquiry_ids)
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
-                        or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self))
+                        or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"]))
                         or (kind.startswith("withdrawal:") and asks_next_selector(text, kind.split(":", 1)[1])))
             if not done and kind in {"unresolved_line_operation", "info:question"}:
                 from management.services.ig_source_clarification import source_clarifier_covered
@@ -983,7 +1017,7 @@ class ResponsePlan:
                 from management.services.ig_source_clarification import source_clarifier_covered
                 done = source_clarifier_covered(self.configuration, obligation["source_message_id"], response)
                 if not done and kind == "info:question":
-                    done = _topic_covered(kind, response, self)
+                    done = _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"])
             elif kind.startswith(("payment:", "info:payment")):
                 done = _payment_covered(kind, response, self, obligation["source_message_id"])
             elif line_id in rows:
@@ -991,6 +1025,7 @@ class ResponsePlan:
                 text = ". ".join(clauses[line_id])
                 plan = ResponsePlan(row["choices"], row["evidence"], row["scope"], row["configuration"],
                     row["next_selector"], row["authority"], tuple(row["obligations"]),
+                    pending_questions=self.pending_questions,
                     product_information={"resolved_information": [item for item in self.product_information.get("resolved_information", ())
                         if item.get("line_id") == line_id],
                         "base_context_assertions": [item for item in self.product_information.get("base_context_assertions", ())
@@ -1003,11 +1038,12 @@ class ResponsePlan:
                 elif kind.startswith("withdrawal:"):
                     done = question and selector.get("line_id") == line_id and selector.get("field") == kind.split(":", 1)[1]
                 elif kind.startswith("info:"):
-                    done = _topic_covered(kind, SimpleNamespace(reply_text=text, control=response.control), plan)
+                    done = _topic_covered(kind, SimpleNamespace(reply_text=text, control=response.control), plan,
+                        source_message_id=obligation["source_message_id"])
                 elif kind == "purchase_requested":
                     done = (line_id, obligation.get("recipient_id")) in admitted
             elif kind.startswith("info:") and kind != "info:price":
-                done = _topic_covered(kind, response, self)
+                done = _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"])
             (covered if done else remaining).append(obligation["id"])
         dependent = {"purchase_requested", "model_query", "info:price"}
         if selector:
@@ -1123,7 +1159,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             if "payment:claim" in payment_kinds:
                 payment_claim_ids.add(source["message_id"])
         if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience", "info:size_chart",
-                "info:material", "info:density", "info:care", "info:quality")):
+                "info:material", "info:density", "info:care", "info:quality", "info:reply_language", "info:manager_status")):
             commerce_present = True
         if topics:
             kinds.extend(topics)
@@ -1295,6 +1331,8 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
     plan = _capture_response_plan_inputs(client, revision=revision, source_cart_capture=source_cart_capture)
     if revision is None:
         return plan
+    from management.services.ig_pending_question_context import capture_pending_question_context
+    plan = replace(plan, pending_questions=capture_pending_question_context(revision))
     if revision is not None:
         from management.services.ig_fit_consultation import capture_fit_consultation
         from management.services.ig_product_focus import capture_product_focus, focus_selection_candidate
@@ -1359,6 +1397,9 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
             "catalogue_digest": capture_digest({"categories": categories, "witness_ids": witnesses}),
             "snapshot_digest": revision.snapshot_digest}, "information_subject": subject})
     information = product_inquiries_for_revision(revision, response_plan=plan)
+    if information.get("gap") or information.get("status") == "blocked":
+        return replace(plan, product_information=information,
+            plan_gap=information.get("gap") or "product_inquiry_capture_invalid")
     measurements = capture_consultation_measurements(revision, product_focus=plan.product_focus,
         source_cart_capture=plan.source_cart_capture)
     configuration = dict(plan.configuration)

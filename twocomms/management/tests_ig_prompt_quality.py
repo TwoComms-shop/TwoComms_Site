@@ -154,6 +154,8 @@ class PromptPropertyTests(TestCase):
         InstagramBotSettings.objects.update_or_create(
             pk=1, defaults={"is_enabled": True}
         )
+        from management.tests_ig_policy_helpers import ensure_test_instruction_publication
+        ensure_test_instruction_publication()
         self.client_row = IgClient.get_or_create_for_sender("prompt-property-client")
 
     def _prompt(self, client):
@@ -266,7 +268,15 @@ class PromptPropertyTests(TestCase):
 
     def test_prompt_does_not_offer_discounts_during_a_service_case(self):
         from management.ig_bot_models import IgPostSaleCase
+        from management.tests_ig_policy_helpers import publish_current_instructions
         from orders.models import Order
+
+        rescue_marker = "SERVICE-RESCUE-DISCOUNT-OFFER"
+        BotInstruction.objects.create(title="Rescue offer fixture", is_active=True,
+            intent_tags="sales, price, discount",
+            body=f"{rescue_marker}: запропонуй rescue-знижку 5% або 10%.")
+        publish_current_instructions()
+        self.assertIn(rescue_marker, self._prompt(self.client_row))
 
         order = Order.objects.create(
             order_number="TWC-PROMPT-NO-DISCOUNT",
@@ -290,8 +300,13 @@ class PromptPropertyTests(TestCase):
 
         prompt = self._prompt(self.client_row)
 
-        self.assertNotIn("5%", prompt)
-        self.assertNotIn("10%", prompt)
+        self.assertIn("[POST-SALE SERVICE MODE", prompt)
+        self.assertIn("Зараз це не продаж. Не пропонуй знижок", prompt)
+        self.assertNotIn(rescue_marker, prompt)
+        self.assertNotIn("запропонуй rescue-знижку 5% або 10%", prompt)
+        # Fabric percentages are legitimate facts, not discount offers.
+        self.assertIn("95% бавовни / 5% еластану", prompt)
+        self.assertIn("90% бавовни / 10% поліестеру", prompt)
 
     def test_buyer_is_named_in_the_prompt(self):
         IgClient.objects.filter(pk=self.client_row.pk).update(purchases_count=2)
@@ -305,6 +320,9 @@ class CanonicalPromptPolicyTests(TestCase):
         self.settings_row = InstagramBotSettings.load()
         self.settings_row.system_prompt = "Стара стилістика згадує лише українську та російську."
         self.settings_row.save(update_fields=["system_prompt"])
+        from management.tests_ig_policy_helpers import ensure_test_instruction_publication
+        ensure_test_instruction_publication()
+        self.settings_row.refresh_from_db()
         self.client_row = IgClient.get_or_create_for_sender("canonical-prompt-policy")
 
     def test_runtime_policy_resolves_price_discount_language_and_reply_conflicts(self):

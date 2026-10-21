@@ -382,6 +382,13 @@ def _checkout_configuration_binding(client, control, episode):
     persisted, reason = _persisted_configuration_projection(client)
     if reason:
         return None, reason
+    # Legacy item selectors must reproduce the same source-bound deadline
+    # gate as compact cart references, including at the physical send recheck.
+    from management.services.ig_commerce_projection import capture_current_selection_lines
+    from management.services.ig_fulfillment_checkout import fulfillment_deadline_checkout_reason
+    deadline_reason = fulfillment_deadline_checkout_reason(client, capture_current_selection_lines(client.pk))
+    if deadline_reason:
+        return None, deadline_reason
     return _base_binding(
         CLAIM_CATALOG_CONFIGURATION, client, episode, selector,
         {"items": [item.digest_payload() for item in quote.items],

@@ -13,6 +13,7 @@ import json
 from django.db import IntegrityError, transaction
 
 from management.ig_bot_models import IgCommerceSelectionSession
+from management.services.ig_ingress_source_proof import is_current_customer_source
 
 
 _pending_action_projection = ContextVar("ig_pending_selection_action_projection", default=None)
@@ -142,7 +143,7 @@ def _validated_copy_projection(client, scope, capture):
                 cache[key] = {}
                 return {}
         elif (row.source_message.client_id != client.pk or row.source_message.sender_id != capture["current"]["igsid"]
-                or row.source_message.role != "user" or row.source_message.source != "webhook"
+                or not is_current_customer_source(row.source_message, namespace=capture["namespace"])
                 or row.source_message.status == "failed" or row.source_message.provider_namespace != capture["namespace"]):
             cache[key] = {}
             return {}
@@ -227,7 +228,7 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
     transitions = _capture["transitions"] if _capture is not None else list(IgCommerceSelectionTransition.objects.filter(
         Q(source_message__pk__gte=reset_floor) | Q(checkout_amendment__isnull=False),
         session=session, to_revision__lte=session.revision,
-    ).select_related("session", "source_message__commerce_turn_decision", "checkout_amendment").order_by("-to_revision")[:64])
+    ).select_related("session", "source_message__client", "source_message__commerce_turn_decision", "checkout_amendment").order_by("-to_revision")[:64])
     if "garment_type" not in values and index == 0 and not line.get("garment_type"):
         # A legacy category lived in shared constraints while this was the
         # only position. Keep its exact last single-position value when a
@@ -291,7 +292,7 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             # selectors; it neither invents a webhook nor consults old wishes.
             break
         owned = (source is not None and source.client_id == client.pk and source.sender_id == current["igsid"]
-                 and source.role == "user" and source.source == "webhook")
+                 and is_current_customer_source(source))
         if transition.action == "assisted_residual_adoption":
             from management.services.ig_assisted_continuation_sources import verify_assisted_adoption_transition
             cached = _capture.setdefault("assisted_adoption_cache", {}) if _capture is not None else {}
@@ -591,11 +592,11 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
     from management.models import InstagramBotMessage
     proof_sources = {evidence[key]["source_message_id"]: evidence[key]["source_digest"] for key in confirmed
         if evidence[key].get("source_kind") != "ig-checkout-cart-amendment.v1"}
-    final_sources = {row["pk"]: hashlib.sha256(row["text"].encode()).hexdigest()
+    final_sources = {row.pk: hashlib.sha256(row.text.encode()).hexdigest()
                      for row in InstagramBotMessage.objects.filter(
                          pk__in=proof_sources, client_id=client.pk, sender_id=current["igsid"],
-                         role="user", source="webhook", pk__gte=reset_floor,
-                     ).values("pk", "text")}
+                         role="user", source__in=["webhook", "poll"], pk__gte=reset_floor,
+                     ).select_related("client") if is_current_customer_source(row)}
     if final_sources != proof_sources:
         return {}
     if correction_namespace is not None:
@@ -605,10 +606,10 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             or IgFunnelResetAudit.objects.filter(client_id=client.pk).order_by("-pk").values_list("pk", flat=True).first() != correction_reset_id
             or IgCommercialEpisode.objects.filter(pk=current_episode, client_id=client.pk).values_list("intended_order_id", flat=True).first() != correction_order_id):
             return {}
-        clear_sources = {row["pk"]: hashlib.sha256(row["text"].encode()).hexdigest()
+        clear_sources = {row.pk: hashlib.sha256(row.text.encode()).hexdigest()
             for row in InstagramBotMessage.objects.filter(pk__in={row["source_message_id"] for row in cleared.values()},
-                client_id=client.pk, sender_id=current["igsid"], role="user", source="webhook", pk__gte=reset_floor
-            ).values("pk", "text")}
+                client_id=client.pk, sender_id=current["igsid"], role="user", source__in=["webhook", "poll"], pk__gte=reset_floor
+            ).select_related("client") if is_current_customer_source(row, namespace=correction_namespace)}
         if clear_sources != {row["source_message_id"]: row["source_digest"] for row in cleared.values()}:
             return {}
     return {"session_id": session.pk, "generation": session.generation,
@@ -767,6 +768,9 @@ def _source_fence_row(source, *, legacy_raw_media=False):
         "created_at": source.created_at.isoformat(), "mid": source.mid,
         "reply_to": source.reply_to_provider_message_id, "quick_reply": source.quick_reply_payload,
         "attachments": source.attachments,
+        **({"ingress_proof_digest": hashlib.sha256(json.dumps(source.ingress_proof,
+            ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+            if source.source == "poll" else {}),
         "attachment_media": (source.attachment_media if legacy_raw_media else
             _source_fence_media(source.attachment_media, message_scope=source.pk))}
 
@@ -973,13 +977,13 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
     transitions = list(IgCommerceSelectionTransition.objects.filter(
         Q(source_message_id__gte=reset_floor) | Q(checkout_amendment__isnull=False), session=session,
         to_revision__lte=session.revision)
-        .select_related("session", "source_message__commerce_turn_decision", "checkout_amendment").order_by("-to_revision")[:64])
+        .select_related("session", "source_message__client", "source_message__commerce_turn_decision", "checkout_amendment").order_by("-to_revision")[:64])
     needs_copy = any(any(fact.get("copy_scope") for fact in ((getattr(row.source_message,
         "commerce_turn_decision", None).result_payload or {}).get("line_source_facts") or {}).get("lines", []))
         for row in transitions if getattr(row.source_message, "commerce_turn_decision", None))
     extra = list(IgCommerceSelectionTransition.objects.filter(session__client_id=client_id,
         source_message_id__gte=reset_floor).exclude(session=session)
-        .select_related("session", "source_message__commerce_turn_decision").order_by("-id")[:64-len(transitions)]) if needs_copy else []
+        .select_related("session", "source_message__client", "source_message__commerce_turn_decision").order_by("-id")[:64-len(transitions)]) if needs_copy else []
     rows = [*transitions, *extra]
     product_ids = _captured_product_ids(rows)
     if product_ids is None:
@@ -1003,13 +1007,13 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         return unavailable("selection_dependency_bound_exceeded")
     if dependency_ids - sources.keys():
         dependencies = {source.pk: source for source in InstagramBotMessage.objects.filter(
-            pk__in=dependency_ids - sources.keys())}
+            pk__in=dependency_ids - sources.keys()).select_related("client")}
         if set(dependencies) != dependency_ids - sources.keys():
             return unavailable("selection_dependency_source_missing")
         sources.update(dependencies)
     for source in sources.values():
         if (source.client_id != client_id or source.sender_id != owner["igsid"] or source.role != "user"
-            or source.source != "webhook" or source.status == "failed" or source.provider_namespace != namespace
+            or not is_current_customer_source(source, namespace=namespace) or source.status == "failed" or source.provider_namespace != namespace
             or (source.provider_created_at or source.created_at) > now):
             return unavailable("choice_source_scope_unknown")
     capture = {"current": {key: owner[key] for key in ("current_commercial_episode_id", "privacy_erasure_started_at", "igsid")},
@@ -1037,12 +1041,15 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
             "defaults": {"quantity": {"value": 1 if line.get("quantity", 1) == 1 else None,
                 "authority": "existing_cart_default", "source_confirmed": False}},
             "unsupported_selectors": ["color_variant_id", "option_values"]})
-    final_sources = {source.pk: _source_fence_row(source) for source in InstagramBotMessage.objects.filter(pk__in=sources)}
+    final_source_rows = list(InstagramBotMessage.objects.filter(pk__in=sources).select_related("client"))
+    final_sources = {source.pk: _source_fence_row(source) for source in final_source_rows}
     initial_sources = {key: _source_fence_row(source) for key, source in sources.items()}
     final_session = IgCommerceSelectionSession.objects.filter(pk=session.pk, client_id=client_id, open_slot=1, state="open").first()
     if (first != _owner_fence(client_id) or namespace != _namespace()
         or _source_watermark(scope, namespace, owner["igsid"], now, customer_only=True) != watermark
-        or final_sources != initial_sources or final_session is None or final_session.snapshot() != snapshot):
+        or final_sources != initial_sources
+        or any(not is_current_customer_source(source, namespace=namespace) for source in final_source_rows)
+        or final_session is None or final_session.snapshot() != snapshot):
         return unavailable("selection_capture_changed", "conflict")
     fence = {"owner_digest": hashlib.sha256(json.dumps(first, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), default=str).encode()).hexdigest(), "namespace": namespace, "source_watermark": watermark,

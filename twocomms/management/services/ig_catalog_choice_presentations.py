@@ -84,13 +84,17 @@ def _admitted_source_locale(revision, *, reset_floor):
     if manager is None:
         return ""
     snapshots = {row["message_id"]: row for row in (revision.bundle_snapshot or {}).get("sources", ())}
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+
     locales = set()
-    for source in manager.select_related("message").order_by("ordinal", "id"):
+    for source in manager.select_related("message", "message__client").order_by("ordinal", "id"):
         row, snapshot = source.message, snapshots.get(source.message_id)
         if (snapshot is None or not str(row.quick_reply_payload or "").startswith(PREFIX)
             or row.pk < reset_floor or row.client_id != revision.client.pk
-            or row.sender_id != revision.client.igsid or row.role != "user" or row.source != "webhook"
+            or row.sender_id != revision.client.igsid or row.role != "user"
             or row.status == "failed" or row.provider_namespace != source.source_namespace
+            or (row.source != "webhook" and not (row.source == "poll"
+                and is_current_customer_source(row, namespace=source.source_namespace)))
             or snapshot.get("source_namespace") != row.provider_namespace
             or snapshot.get("source_digest") != source.source_digest
             or snapshot.get("text") != row.text or snapshot.get("quick_reply_payload") != row.quick_reply_payload
@@ -109,11 +113,10 @@ def _admitted_source_locale(revision, *, reset_floor):
     return next(iter(locales)) if len(locales) == 1 else ""
 
 
-def _presentation_locale(revision, response, *, choice=None):
+def _presentation_locale(revision, response, *, choice=None, response_plan=None):
     """Own authored sealed text wins; opaque native clicks retain invitation locale."""
-    from django.utils.dateparse import parse_datetime
     from management.services.ig_conversation_routes import conversation_route_reset_floor
-    from management.services.ig_reply_language import resolve_own_source_reply_language
+    from management.services.ig_revision_holding import resolve_revision_reply_language
 
     sources = deepcopy((revision.bundle_snapshot or {}).get("sources") or [])
     for source in sources:
@@ -126,23 +129,8 @@ def _presentation_locale(revision, response, *, choice=None):
         frozen = _admitted_source_locale(revision, reset_floor=floor)
     profile = frozen if frozen in _LABELS else getattr(revision.client, "language", "uk")
     profile = "uk" if profile == "ua" else profile
-    times = []
-    for source in sources:
-        if source.get("role") != "user" or type(source.get("message_id")) is not int:
-            continue
-        stamp = source.get("provider_created_at") or source.get("observed_created_at")
-        try:
-            parsed = parse_datetime(stamp) if isinstance(stamp, str) and stamp else None
-        except ValueError:
-            parsed = None
-        if parsed is not None and parsed.tzinfo is not None:
-            times.append((parsed, source["message_id"]))
-    watermark = max(times) if times else None
-    decision = resolve_own_source_reply_language(sources=sources, profile_language=profile,
-        reset_floor=floor,
-        watermark_message_id=watermark[1] if watermark else max(
-            (row["message_id"] for row in sources if type(row.get("message_id")) is int), default=None),
-        watermark_event_at=watermark[0] if watermark else None)
+    decision = resolve_revision_reply_language(revision, sources=sources, profile_language=profile,
+        response_plan=response_plan)
     return decision.template_family if decision.template_family in _LABELS else "en"
 
 
@@ -329,7 +317,8 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
         shortlist_copy(discovery_categories, locale) if discovery_categories else "", (), manifest)
 
 
-def prepare_catalog_choice_presentations(revision, response, settings_row, *, configured_choices_capture=None, choice=None):
+def prepare_catalog_choice_presentations(revision, response, settings_row, *, configured_choices_capture=None, choice=None,
+        response_plan=None):
     """Replace SHOW_PRODUCTS only for ordinary presentation, preserving checkout."""
     from management.services.ig_catalog_media import parse_product_ids
 
@@ -344,7 +333,7 @@ def prepare_catalog_choice_presentations(revision, response, settings_row, *, co
         # a later page must be a separately sealed presentation revision.
         page = tuple(dict.fromkeys(ids))[:MAX_CARDS]
         captures = configured_choices_capture or {}
-        locale = _presentation_locale(revision, response, choice=choice)
+        locale = _presentation_locale(revision, response, choice=choice, response_plan=response_plan)
         scope = _scope(revision, settings_row, locale)
         scope["ordered_product_ids"] = list(dict.fromkeys(ids))
         scope["page"] = 0
@@ -358,7 +347,8 @@ def prepare_catalog_choice_presentations(revision, response, settings_row, *, co
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
 
-def prepare_catalog_configuration_choices(revision, response, settings_row, *, kind, capture=None, choice=None):
+def prepare_catalog_configuration_choices(revision, response, settings_row, *, kind, capture=None, choice=None,
+        response_plan=None):
     """Caller owns when to ask. Expose enabled configured rules without stock claims."""
     from management.services.ig_catalog_configured_choices import capture_configured_choices
     from management.services import ig_revision_catalog_assets as assets
@@ -375,7 +365,7 @@ def prepare_catalog_configuration_choices(revision, response, settings_row, *, k
         rows = captured.get("colors") if kind == "color" else captured.get("sizes")
         if not rows or len(rows) > 13:
             return CatalogChoicePreparation()
-        locale = _presentation_locale(revision, response, choice=choice)
+        locale = _presentation_locale(revision, response, choice=choice, response_plan=response_plan)
         scope = _scope(revision, settings_row, locale)
         actions = []
         for row in rows:
@@ -395,7 +385,8 @@ def prepare_catalog_configuration_choices(revision, response, settings_row, *, k
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
 
-def prepare_catalog_choice_page(revision, response, settings_row, *, choice, configured_choices_capture=None):
+def prepare_catalog_choice_page(revision, response, settings_row, *, choice, configured_choices_capture=None,
+        response_plan=None):
     """More uses its delivered ordered remainder, never a new model ranking."""
     try:
         original = choice["manifest"]
@@ -407,7 +398,8 @@ def prepare_catalog_choice_page(revision, response, settings_row, *, choice, con
         window = ordered[page * MAX_CARDS:(page + 1) * MAX_CARDS]
         if not window:
             raise ValueError("catalog_choice_page_exhausted")
-        scope = _scope(revision, settings_row, _presentation_locale(revision, response, choice=choice))
+        scope = _scope(revision, settings_row, _presentation_locale(revision, response, choice=choice,
+            response_plan=response_plan))
         scope.update(ordered_product_ids=list(ordered), page=page,
             origin_manifest_digest=choice["manifest_digest"], origin_invitation_id=choice["invitation_id"],
             origin_effect_id=choice["effect_id"])
@@ -423,7 +415,8 @@ def prepare_catalog_choice_page(revision, response, settings_row, *, choice, con
 
 
 def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=None, choice=None,
-    presentation_context=None, native_part_index=0, metadata_only=False, _single=False, unavailable_requested_fits=()):
+    presentation_context=None, native_part_index=0, metadata_only=False, _single=False, unavailable_requested_fits=(),
+    response_plan=None):
     """A genuine exact-configuration chart image, with no product-photo projection."""
     from management.services.ig_catalog_configured_choices import capture_configured_choices
     from management.services import ig_revision_catalog_assets as assets
@@ -452,7 +445,8 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
                     for fit in fits[:2]:
                         context = capture_fit_chart_comparison(revision, fit)
                         chart = prepare_catalog_chart_effect(revision, response, settings_row, presentation_context=context,
-                            native_part_index=native_part_index + len(ready), metadata_only=metadata_only, _single=True) if context else CatalogChoicePreparation()
+                            native_part_index=native_part_index + len(ready), metadata_only=metadata_only, _single=True,
+                            response_plan=response_plan) if context else CatalogChoicePreparation()
                         if chart.ready:
                             ready.append((fit, context))
                         else:
@@ -461,10 +455,10 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
                     for fit, context in ready:
                         chart = prepare_catalog_chart_effect(revision, response, settings_row, presentation_context=context,
                             native_part_index=native_part_index + len(effects), metadata_only=metadata_only,
-                            _single=True, unavailable_requested_fits=missing)
+                            _single=True, unavailable_requested_fits=missing, response_plan=response_plan)
                         effects.extend(chart.effects)
                         reasons.extend(chart.reasons)
-                    locale = _presentation_locale(revision, response)
+                    locale = _presentation_locale(revision, response, response_plan=response_plan)
                     missing_copy = {"uk": "Немає підтвердженого зображення точної розмірної сітки для крою: ",
                         "ru": "Нет подтверждённого изображения точной размерной сетки для кроя: ",
                         "en": "No confirmed exact size chart image is provided for the cut: "}[locale] + ", ".join(missing) + "." if missing else ""
@@ -502,7 +496,7 @@ def prepare_catalog_chart_effect(revision, response, settings_row, *, capture=No
             return CatalogChoicePreparation()
         if row is None or str(row.image.name or "") != grid.get("image_name") or assets._url(row.image) != photo["url"]:
             raise ValueError("catalog_choice_chart_changed")
-        locale = _presentation_locale(revision, response, choice=choice)
+        locale = _presentation_locale(revision, response, choice=choice, response_plan=response_plan)
         scope = _scope(revision, settings_row, locale)
         if choice:
             scope.update(origin_manifest_digest=choice["manifest_digest"],
@@ -740,8 +734,11 @@ def delivered_catalog_choice(client, source, *, fresh=True):
     if not match:
         return refused("catalog_choice_payload_invalid")
     invitation_id, index, signature = int(match[1]), int(match[2]), match[3]
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+
     if (source.client_id != client.pk or source.sender_id != client.igsid or source.role != "user"
-        or source.source != "webhook" or source.status == "failed"
+        or source.status == "failed" or (source.source != "webhook" and not (source.source == "poll"
+            and is_current_customer_source(source, namespace=source.provider_namespace)))
         or not (getattr(source, "provider_message_id", "") or getattr(source, "mid", ""))):
         return refused("catalog_choice_source_unverified")
     effects = list(IgRevisionDeliveryEffect.objects.filter(revision_id=invitation_id,

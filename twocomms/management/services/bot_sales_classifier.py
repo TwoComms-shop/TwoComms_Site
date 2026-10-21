@@ -646,7 +646,7 @@ NON_CURRENT_COLLAB_RE = re.compile(
 def extract_collaboration_brief(text: str) -> dict:
     """Return bounded, evidence-only collaboration facts for CRM/funnel use."""
     from management.services.ig_business_cooperation import (
-        current_cooperation_sources, extract_business_cooperation,
+        current_cooperation_sources, extract_business_cooperation, recruitment_service_for_sources,
     )
     from management.services.ig_reply_language import own_reply_text
 
@@ -654,9 +654,10 @@ def extract_collaboration_brief(text: str) -> dict:
     if NON_CURRENT_COLLAB_RE.search(value):
         return {}
     business = extract_business_cooperation(value)
+    recruitment = recruitment_service_for_sources([{"role": "user", "text": value}])
     routing_value = own_reply_text(value)
     creator_offer = is_creator_collaboration_offer(value)
-    if not business and not COLLAB_RE.search(routing_value) and not any(pattern.search(routing_value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS) and not creator_offer:
+    if not business and not recruitment and not COLLAB_RE.search(routing_value) and not any(pattern.search(routing_value) for _, pattern in COLLABORATION_SUBTYPE_PATTERNS) and not creator_offer:
         return {}
     subtypes = [name for name, pattern in COLLABORATION_SUBTYPE_PATTERNS if pattern.search(routing_value)]
     if business:
@@ -668,10 +669,12 @@ def extract_collaboration_brief(text: str) -> dict:
         subtypes.remove("designer")
     if "wholesale_store" in subtypes and not (business or WHOLESALE_RE.search(value) or "dropship" in subtypes or COLLAB_RE.search(value)):
         subtypes.remove("wholesale_store")
+    if recruitment:
+        subtypes = ["customer_support_service", *[item for item in subtypes if item != "creator"]]
     if not subtypes and not creator_offer:
         return {}
     if creator_offer and "creator" not in subtypes:
-        subtypes.insert(0, "creator")
+        subtypes.insert(1 if recruitment else 0, "creator")
     if not subtypes:
         subtypes = ["other"]
     assets = [name for name, pattern in COLLAB_ASSET_PATTERNS.items() if pattern.search(value)]
@@ -705,6 +708,8 @@ def extract_collaboration_brief(text: str) -> dict:
     }
     if business:
         brief.update({key: business[key] for key in ("business_cooperation", "shop_launch", "requested_topics")})
+    if recruitment:
+        brief["recruitment_service"] = recruitment
     return brief
 
 
@@ -721,6 +726,10 @@ def is_creator_collaboration_offer(text: str) -> bool:
         row["text"] for row in current_cooperation_sources([{"text": str(text or "")}])
     ))
     if NON_CURRENT_COLLAB_RE.search(value):
+        return False
+    from management.services.ig_business_cooperation import recruitment_service_for_sources
+    recruitment = recruitment_service_for_sources([{"role": "user", "text": value}])
+    if recruitment and not recruitment.get("creator_work_also_offered"):
         return False
     return bool(
         CREATOR_ROLE_RE.search(value)
@@ -1272,7 +1281,7 @@ def _interaction_type(client: IgClient, result: dict, text: str, role: str) -> s
     business = extract_business_cooperation(cooperation_text)
     if WHOLESALE_RE.search(cooperation_text) or (business and set(business["subtypes"]) & {"wholesale_store", "dropship"}):
         return types.WHOLESALE_B2B
-    if is_creator_collaboration_offer(text or "") or (
+    if extract_collaboration_brief(text or "") or (
         COLLAB_RE.search(cooperation_text) and not NON_CURRENT_COLLAB_RE.search(cooperation_text)
     ):
         return types.COLLABORATION

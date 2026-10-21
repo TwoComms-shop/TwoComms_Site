@@ -778,3 +778,10 @@ Timeout для ответственности оператора не созда
 На основном выпуске обнаружены ещё две доказанные причины неверного поведения: неполученные ответы на корректные template/ephemeral вложения без текста и повторная тревога по уже рассмотренным revisions10/11 с точным старым audit. Исправление `27590766c` материализует первый случай и даёт честное уточнение через native outbox без Gemini; второй учитывает как reviewed disposition, сохраняя факт отсутствия клиентского ответа.
 
 Соседние границы проверены вместе: story identity отдельно от message MID; share/ig_post alias dedup переносит URL и capture/provenance решение вместе; произвольная страница не получает право скачивания из-за расширения.jpg; unsupported/ephemeral+story reference не запускает capture; неизвестное пустое own echo не создаёт клиента/перехват. Точные gates и deployment evidence — в [журнале20.10](2026-10-20_COOPERATION_SILENCE_REMEDIATION.md). Это дополнение не объявляет старые сообщения доставленными и не заменяет живую контрольную переписку.
+
+
+## Повторный инцидент и QA ·21.10.2026
+
+Подтверждён новый pre-provider overflow:11609 символов plan guidance плюс2052 корзины против12000; после lossless projection9827. Выявлены отдельные потери английского текста в historicalJSON wrapper, неверная эквивалентность2XL/XXL, size/oversize substring, blanket manager coverage и скрытый16-source предел. Дополнительный QA выявил стирание harddeadline после нового expanded-cart review, принятие отказа как later-receipt consent и синхронную блокировку других клиентов одним provider call. Факты, кодовые контракты и независимые gates находятся в [журнале21.10](2026-10-21_RESPONSE_RELIABILITY_RELEASE.md). Не переносить статус «локально исправлено» в «выложено» до его release checkpoint.
+
+Предложение услуг поддержки Direct нужно отличать от creator/портфолио и B2B. Исторические B2B/recruitment сообщения вне messaging window не получают фиктивного нового окна; Gemini-only private draft не являетсяSENT и не закрывает debt. План90 не редактировался.

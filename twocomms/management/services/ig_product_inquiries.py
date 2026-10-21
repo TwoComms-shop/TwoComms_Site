@@ -18,7 +18,7 @@ _WISH = re.compile(r"\b(?:want|need|choose|хочу|хотів|хотел|пот
 _CORRECTION = re.compile(r"\b(?:actually|instead|rather|better|краще|лучше)\b|\b(?:не|not)\s+[^.!?;]{0,40}[,]\s*(?:а|but)\b", re.I)
 _HISTORY = re.compile(r"\b(?:раніше|раньше|ранее|вчера|учора|previously|earlier|formerly|yesterday|used\s+to)\b|(?:минул\w*|прошл\w*|previous|old)\s+(?:замовлен\w*|заказ\w*|order)", re.I)
 _REJECT = re.compile(r"\b(?:не|not|no)\s+(?:цікав\w*|интерес\w*|хочу|потріб\w*|нуж\w*|want|need|interested)|(?:не\s+(?:треба|потрібно|нужно)|don't\s+need)", re.I)
-_SPEC = re.compile(r"фурн[іи]тур\w*|люверс\w*|резинк\w*|манжет\w*|заст[іе]б\w*|блискавк\w*|молни\w*|ґудзик\w*|пуговиц\w*|заклеп\w*|матер[іи]ал\w*|тканин\w*|состав\w*|склад\s+(?:тканин\w*|матер[іи]ал\w*)|щільн\w*|плотност\w*|догляд\w*|прати|стират\w*|якіст\w*|качеств\w*|\b(?:eyelets?|grommets?|rib(?:bing)?|cuffs?|zipper\w*|hardware|buttons?|composition|density|gsm|care|wash|quality|fabric(?:\s+content)?)\b", re.I)
+_SPEC = re.compile(r"фурн[іи]тур\w*|люверс\w*|резинк\w*|манжет\w*|заст[іе]б\w*|блискавк\w*|молни\w*|ґудзик\w*|пуговиц\w*|заклеп\w*|матер[іи]ал\w*|тканин\w*|состав\w*|склад\s+(?:тканин\w*|матер[іи]ал\w*)|щільн\w*|плотност\w*|догляд\w*|прати|стират\w*|якіст\w*|качеств\w*|\b(?:eyelets?|grommets?|rib(?:bing)?|cuffs?|zipper\w*|hardware|buttons?|material|composition|density|gsm|care|wash|quality|fabric(?:\s+content)?)\b", re.I)
 _NEGATED = re.compile(r"\b(?:не|ні|not|no|без|without)(?:\s+(?:хочу|want|need|потріб\w*|нуж\w*|цвет|колір|color)){0,2}\s*$|\binstead\s+of\s*$", re.I)
 _SPEC_ASSERTION = re.compile(r"метал\w*|\bmetal\w*\b|пластик\w*|\bplastic\b|хлоп\w*|бавовн\w*|\bcotton\b|поліестер\w*|полиэстер\w*|\bpolyester\b|\b\d{1,3}\s*%|^\s*(?:так|да|yes)\b|^\s*(?:it|they|this|that)\s+(?:does|do|is|are|has|have|can)\b", re.I)
 _PRODUCTION = re.compile(r"зробимо|сделаем|виготов\w*|изготов\w*|відправ\w*|отправ\w*|\b(?:make|manufactur\w*|produce|ship|dispatch)\b", re.I)
@@ -65,12 +65,13 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
     from management.services.ig_reply_language import own_reply_text, resolve_own_source_reply_language
 
     rows = list(sources or [])
-    empty = {"schema": VERSION, "status": "none", "reason": "", "inquiries": [], "resolved_information": [], "base_context_assertions": [], "source_refs": [],
+    empty = {"schema": VERSION, "status": "blocked", "reason": "", "inquiries": [], "resolved_information": [], "base_context_assertions": [], "source_refs": [],
              "cart_identity": cart_identity(cart_capture), "locale": ""}
-    if (not rows or len(rows) > 16 or any(not isinstance(row, dict) for row in rows)
+    if (not rows or len(rows) > 32 or any(not isinstance(row, dict) for row in rows)
         or any(type(row.get("message_id")) is not int or not isinstance(row.get("text", ""), str)
                or len(row.get("text", "")) > 64000 for row in rows)
-        or len({row.get("message_id") for row in rows}) != len(rows)):
+        or len({row.get("message_id") for row in rows}) != len(rows)
+        or sum(len(row.get("text", "")) for row in rows) > 64000):
         return {**empty, "gap": "product_inquiry_source_bound"}
     owned = [row for row in rows if row.get("role") == "user"]
     watermark = max((row["message_id"] for row in owned), default=0)
@@ -179,8 +180,10 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                            (item["source_message_id"], axis, wanted) for row in inquiries):
                     inquiries.append(item)
     language = resolve_own_source_reply_language(sources=owned, profile_language=profile_language)
-    result = {**empty, "status": "manager_required" if inquiries else "none", "inquiries": inquiries[:32],
-              "resolved_information": resolved[:32],
+    if len(inquiries) + len(resolved) > 256:
+        return {**empty, "source_refs": source_refs(owned), "gap": "product_inquiry_question_bound"}
+    result = {**empty, "status": "manager_required" if inquiries else "none", "inquiries": inquiries,
+              "resolved_information": resolved,
               "source_refs": source_refs(owned), "locale": language.template_family,
               "reason": ("product_configuration_review" if any(item["axis"] != "information" for item in inquiries)
                          else "product_information_review" if inquiries else "")}
@@ -298,7 +301,7 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
             json.dumps(capture, sort_keys=True), json.dumps(readiness, sort_keys=True), revision.client.language,
             json.dumps(response_plan.configuration["current_category_catalogue"], sort_keys=True)
                 if response_plan.configuration.get("current_category_catalogue") else "")
-        result = capability.recompute(revision) or {"status": "none", "reason": "", "gap": "product_inquiry_capture_invalid"}
+        result = capability.recompute(revision) or {"status": "blocked", "reason": "", "gap": "product_inquiry_capture_invalid"}
         revision._product_inquiries = result
         revision._product_inquiry_capture = capability
         return _resolved_assisted_inquiries(revision, result)
@@ -365,6 +368,11 @@ def inquiry_reply(disposition):
 def validate_inquiry_response(disposition, response):
     """A deterministic handoff disposition, not a blanket keyword exception."""
     from management.services.ig_reply_truth import validate_approved_product_claims
+
+    if disposition.get("gap"):
+        return disposition["gap"]
+    if disposition.get("status") == "blocked":
+        return "product_inquiry_capture_invalid"
 
     assertions = tuple(row["assertion"] for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row))
     from management.services.approved_public_facts import approved_assertion_valid
@@ -444,6 +452,33 @@ def approved_product_topic_covered(topic, reply_text, disposition):
                  or wanted == "material" and row.get("resolved_topic", row["assertion"]["topic"]) == "composition")]
     return bool(rows and all(approved_product_assertion_covered(reply_text, row["assertion"],
         topic=row.get("resolved_topic")) for row in rows))
+
+
+def inquiry_handoff_topic_covered(topic, response, disposition, *, source_message_id=None):
+    """A check commitment covers only the exact captured unknown question.
+
+    A manager flag never answers a known price, fit or unrelated source. This
+    is acknowledgement coverage; the native manager case keeps decision debt.
+    """
+    from management.services.approved_public_facts import requested_product_topics
+    from management.services.ig_reply_language import own_reply_text
+
+    if disposition.get("status") != "manager_required" or not response.control.get("manager"):
+        return False
+    wanted = str(topic).removeprefix("info:")
+    wanted = {"fabric": "material"}.get(wanted, wanted)
+    rows = [row for row in disposition.get("inquiries", ()) if row.get("axis") == "information"
+        and (source_message_id is None or row.get("source_message_id") == source_message_id)
+        and (row.get("requested_topic") == wanted
+             or wanted in requested_product_topics(str(row.get("question") or "")))]
+    if not rows or wanted == "question":
+        return False
+    for clause in re.split(r"[.!?;\n]+", own_reply_text(response.reply_text)):
+        if wanted not in requested_product_topics(clause):
+            continue
+        if re.search(r"уточн\w*|перевір\w*|провер\w*|(?:will\s+)?check|clarif\w*|confirm\w*", clause, re.I):
+            return True
+    return False
 
 
 def apply_approved_category_context(disposition, category_assertions):

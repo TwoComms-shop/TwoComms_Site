@@ -133,13 +133,15 @@ def _source_projection(client, selection, capture):
 def _projection(client, source, request, *, item, selection, proof, capture):
     from management.services.ig_conversation_routes import conversation_route_reset_floor
     from management.services.ig_admin_state_capture import _namespace
+    from management.services.ig_ingress_source_proof import is_current_customer_source
     floor = capture["reset_floor"] if capture is not None else conversation_route_reset_floor(client.pk)
     namespace = capture["namespace"] if capture is not None else _namespace()
     current = capture["current"] if capture is not None else {"privacy_erasure_started_at": client.privacy_erasure_started_at,
         "igsid": client.igsid}
     if (current["privacy_erasure_started_at"] or source.client_id != client.pk or source.sender_id != current["igsid"]
-        or source.role != "user" or source.source != "webhook" or source.status == "failed"
-        or source.pk < floor or source.provider_namespace != namespace):
+        or source.role != "user" or source.status == "failed"
+        or source.pk < floor or source.provider_namespace != namespace
+        or not is_current_customer_source(source, namespace=namespace)):
         raise ReorderUnavailable("reorder_source_unverified")
     capture_is_local = capture is None
     if capture_is_local:

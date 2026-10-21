@@ -346,7 +346,10 @@ def _parse_model_payload(payload) -> dict:
     return result
 
 
-_RECIPIENT_WORDS = {"себя": "self", "себе": "self", "myself": "self", "друга": "friend", "другу": "friend", "friend": "friend", "подруги": "friend_female", "подругу": "friend_female", "мами": "mother", "мамы": "mother", "mother": "mother", "тата": "father", "папы": "father", "father": "father"}
+_RECIPIENT_WORDS = {"себя": "self", "себе": "self", "myself": "self", "друга": "friend", "другу": "friend", "friend": "friend", "подруги": "friend_female", "подругу": "friend_female", "мами": "mother", "мамы": "mother", "mother": "mother", "тата": "father", "папы": "father", "father": "father",
+    # Voluntary beneficiary roles scope the customer's draft line. They do
+    # not establish a third party's identity or gift/packaging instructions.
+    "boyfriend": "boyfriend", "girlfriend": "girlfriend"}
 _ADD_ACTION = r"\b(?:добав(?:ьте|ь|ить)|додай(?:те)?|додати|add)\b"
 _REMOVE_ACTION = r"\b(?:убер(?:ите|и)|удал(?:ите|и|ить)|прибери|видали|remove|delete)\b"
 _REPLACE_ACTION = r"\b(?:замен(?:ите|и|ить)|замін(?:іть|и|ити)|replace|вместо|замість|instead\s+of)\b"

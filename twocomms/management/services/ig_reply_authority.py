@@ -21,7 +21,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
-from management.services.ig_reply_truth import (AvailabilityAuthority, CheckoutLineAuthority,
+from management.services.ig_reply_truth import (AvailabilityAuthority, CheckoutLineAuthority, FulfillmentDeadlineAuthority,
     CheckoutOrderAuthority, ReplyTruthContext, ShippingAuthority, TimingAuthority)
 
 
@@ -934,27 +934,82 @@ def fulfillment_timing_authorities(projection: Mapping[str, object]) -> tuple[st
             raw_unit = timing.get("unit")
             unit = {"calendar": "calendar_days", "business": "business_days"}.get(raw_unit) if isinstance(raw_unit, str) else None
             anchor_at = timing.get("anchor_at")
+            anchor = timing.get("anchor", "")
+            payment_anchor = anchor == "after_payment_confirmation" and anchor_at in (None, "")
             if (type(low) is not int or type(high) is not int or not 0 <= low <= high <= 365
-                    or not unit or not isinstance(anchor_at, str) or not anchor_at):
+                    or not unit or anchor not in ("", "after_payment_confirmation")
+                    or not payment_anchor and (anchor or not isinstance(anchor_at, str) or not anchor_at)):
                 continue
             domain_facts.append(TimingAuthority(
                 domain=domain, min_days=low, max_days=high, unit=unit,
-                anchor_at=anchor_at, line_id=line_id,
+                anchor=anchor, anchor_at=anchor_at or "", line_id=line_id,
                 line_label=str(requested[line_id].get("label") or "").strip()[:240],
                 source_ref=digest, review_line_labels=line_labels,
             ))
         result.extend(domain_facts)
         # A fact about one item does not authorize a whole-order promise. Only
         # a uniform full set can be spoken without an exact item label.
-        windows = {(fact.min_days, fact.max_days, fact.unit, fact.anchor_at) for fact in domain_facts}
+        windows = {(fact.min_days, fact.max_days, fact.unit, fact.anchor, fact.anchor_at) for fact in domain_facts}
         if len(domain_facts) == len(requested) and len(windows) == 1:
             fact = domain_facts[0]
             result.append(TimingAuthority(
                 domain=domain, min_days=fact.min_days, max_days=fact.max_days,
-                unit=fact.unit, anchor_at=fact.anchor_at, source_ref=digest,
+                unit=fact.unit, anchor=fact.anchor, anchor_at=fact.anchor_at, source_ref=digest,
                 review_line_labels=line_labels,
             ))
     return "reviewed", tuple(result)
+
+
+def fulfillment_deadline_authorities(projection) -> tuple[FulfillmentDeadlineAuthority, ...]:
+    """Read only the frozen, verified review and its exact customer requirement.
+
+    The adapter does not query live state or bless notes/model controls. The
+    capture producer owns signature, epoch, cart and source revalidation.
+    """
+    status, _ = fulfillment_timing_authorities(projection)
+    if status != "reviewed":
+        return ()
+    from management.services.ig_fulfillment_requirements import active_hard_requirements, requirement_digest
+    request = projection.get("current_request", projection)
+    decision = projection["decision"]
+    review = decision.get("deadline_review")
+    if (not isinstance(review, Mapping)
+            or set(review) != {"requirement_digest", "outcome", "line_ids", "options"}
+            or review.get("outcome") not in {"impossible", "review_pending"}):
+        return ()
+    line_ids, options = review.get("line_ids"), review.get("options")
+    requested = {row["line_id"] for row in request["lines"]}
+    if (not isinstance(line_ids, list) or not line_ids
+            or any(not isinstance(value, str) for value in line_ids)
+            or len(set(line_ids)) != len(line_ids) or not set(line_ids).issubset(requested)
+            or not isinstance(options, list) or any(not isinstance(value, str) or value not in {
+                "later_domestic_contact", "later_domestic_destination", "international_review_required",
+            } for value in options) or len(set(options)) != len(options)):
+        return ()
+    requirements = request.get("customer_requirements")
+    if not isinstance(requirements, list):
+        return ()
+    matches = [row for row in active_hard_requirements(requirements)
+        if row.get("requirement_digest") == review.get("requirement_digest")
+        and requirement_digest(row) == review.get("requirement_digest")]
+    if len(matches) != 1:
+        return ()
+    requirement = matches[0]
+    source_id, kind, deadline = requirement.get("source_id"), requirement.get("deadline_kind"), requirement.get("deadline_at")
+    if (type(source_id) is not int or source_id < 1 or kind not in {"departure", "arrival", "dispatch"}
+            or not isinstance(deadline, str)):
+        return ()
+    try:
+        clock = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+        if timezone.is_naive(clock):
+            return ()
+    except (ValueError, TypeError, OverflowError):
+        return ()
+    return (FulfillmentDeadlineAuthority(
+        requirement_digest=review["requirement_digest"], deadline_at=deadline, deadline_kind=kind,
+        outcome=review["outcome"], line_ids=tuple(line_ids), source_message_id=source_id,
+        source_ref=projection.get("request_digest", projection.get("digest")), options=tuple(options),
+    ),)
 
 
 def fulfillment_availability_authorities(projection) -> tuple[AvailabilityAuthority, ...]:
@@ -1031,6 +1086,7 @@ def apply_fulfillment_timing_context(context: ReplyTruthContext, captured_client
     independent = tuple(fact for fact in context.timing_authorities
         if isinstance(fact, TimingAuthority) and fact.domain in {"carrier_estimate", "arrival_feasibility"})
     return replace(context, timing_authorities=(*independent, *facts),
+        fulfillment_deadline_authorities=fulfillment_deadline_authorities(_captured_fulfillment_projection(captured_client_state)),
         availability_authorities=fulfillment_availability_authorities(_captured_fulfillment_projection(captured_client_state)),
         fulfillment_review_status=status, explicitly_qualified_standard_dispatch_days=None)
 
@@ -1251,6 +1307,11 @@ def build_reply_truth_context(
     payment_policy = tuple((language, fact.version, hashlib.sha256(fact.public_text.encode()).hexdigest())
         for language in SUPPORTED_PUBLIC_FACT_LANGUAGES for fact in approved_public_facts(language)
         if fact.key == "payment_boundary" and fact.review_status.startswith("reviewed:"))
+    fulfillment_policy = tuple((language, fact.version, hashlib.sha256(fact.public_text.encode()).hexdigest())
+        for language in SUPPORTED_PUBLIC_FACT_LANGUAGES for fact in approved_public_facts(language)
+        if fact.key == "dispatch" and fact.source_ref == "owner:2026-10-21:made-to-order"
+        and fact.scope == "current_tshirts_and_hoodies_preparation_after_confirmed_payment"
+        and fact.review_status == "reviewed:owner-brief:2026-10-21")
 
     return AuthorityReplyTruthContext(
         authorized_prices=tuple(prices),
@@ -1267,10 +1328,11 @@ def build_reply_truth_context(
         known_tracking_refs=tracking_refs,
         approved_timing_claims=tuple(timing),
         timing_authorities=timing_authorities,
+        fulfillment_deadline_authorities=fulfillment_deadline_authorities(_captured_fulfillment_projection(captured_client_state)),
         availability_authorities=fulfillment_availability_authorities(_captured_fulfillment_projection(captured_client_state)),
         fulfillment_review_status=fulfillment_status,
         explicitly_qualified_standard_dispatch_days=(
-            ORDINARY_DISPATCH_WINDOW_DAYS if not fulfillment_status else None
+            ORDINARY_DISPATCH_WINDOW_DAYS if not fulfillment_status and fulfillment_policy else None
         ),
         allowed_sizes=tuple(sizes),
         allowed_fits=tuple(fits),
@@ -1279,6 +1341,7 @@ def build_reply_truth_context(
         conversation_amounts=conversation_amounts,
         agreement_choices=agreement_choices,
         approved_payment_policy=payment_policy,
+        approved_fulfillment_policy=fulfillment_policy,
         readiness_gaps=tuple(gaps),
         evidence_codes=tuple(evidence),
     )
@@ -1290,6 +1353,7 @@ __all__ = [
     "READINESS_GAP_CODES",
     "build_reply_truth_context",
     "fulfillment_timing_authorities",
+    "fulfillment_deadline_authorities",
     "fulfillment_availability_authorities",
     "apply_fulfillment_timing_context",
     "CheckoutOrderAuthority",

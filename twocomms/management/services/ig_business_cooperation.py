@@ -14,6 +14,22 @@ _WHOLESALE = re.compile(r"\b(?:опт(?:ом|ов\w*)?|гурт\w*|wholesale|b2b
 _DROPSHIP = re.compile(r"\b(?:дропшип\w*|дроп[- ]?шип\w*|dropship\w*|drop[- ]shipping)\b", re.I)
 _PARTNERSHIP = re.compile(r"\b(?:партнерств\w*|партнёрств\w*|співпрац\w*|сотруднич\w*|collab\w*|cooperat\w*|partnership\w*)\b", re.I)
 _CREATOR = re.compile(r"\b(?:дизайнер\w*|designer\w*|artist|художник\w*|фотограф\w*|photographer\w*|відеограф\w*|видеограф\w*|videographer\w*|creator|креатор|ugc|блогер\w*|influencer\w*|інфлюенсер\w*|инфлюенсер\w*|модел\w*|models?|стиліст\w*|стилист\w*|stylist\w*)\b", re.I)
+_SUPPORT_WORK = re.compile(
+    r"(?:допомог\w*|помощ\w*|help|support)[^.!?\n]{0,55}\b(?:instagram\s+)?direct\b"
+    r"|(?:менеджер\w*|оператор\w*|customer\s+support)[^.!?\n]{0,35}\bdirect\b"
+    r"|\bdirect\b[^.!?\n]{0,35}(?:менеджер\w*|оператор\w*|customer\s+support)"
+    r"|(?:відповід\w*|отвеч\w*|answer\w*|reply\w*|respond\w*|консульт\w*)"
+    r"[^.!?\n]{0,60}(?:повідомлен\w*|сообщени\w*|messages?|customers?|clients?|клієнт\w*|клиент\w*)"
+    r"|\bcustomer\s+(?:support|service)\b", re.I)
+_WORK_OFFER = re.compile(
+    r"\b(?:(?:за)?пропон\w*|предлага\w*|запропон\w*|можу|можемо|могу|можем|готов\w*|"
+    r"(?:хочу|хотів|хотіла|хотел)\s+(?:би\s+|бы\s+)?(?:працювати|работать)|"
+    r"(?:i|we)\s+(?:can|offer|(?:want|would\s+like)\s+to\s+(?:work|help))|i['’]m\s+interested\s+in\s+working)\b", re.I)
+_WORK_WITHDRAWAL = re.compile(
+    r"\b(?:не\s+(?:хочу|буду|пропон\w*|предлага\w*|можу|могу)|(?:do\s+not|don['’]t)\s+"
+    r"(?:want|offer)|no\s+longer\s+(?:want|offer|interested)|not\s+(?:offering|interested))"
+    r"[^.!?\n]{0,65}(?:direct|допомог\w*|помощ\w*|прац\w*|работ\w*|work|help|support|answer)"
+    r"|(?:direct|customer\s+support)[^.!?\n]{0,35}(?:не\s+актуальн\w*|no\s+longer)", re.I)
 _RESELL = re.compile(r"\b(?:перепродаж\w*|перепродав\w*|resell\w*|прода(?:вати|вать)\s+ваш\w*|sell(?:ing)?\s+your)\b", re.I)
 _LAUNCH = re.compile(
     r"\b(?:(?:хочу|хочемо|планую|плануємо|планирую|планируем|збираюся|собираюсь|"
@@ -104,7 +120,7 @@ def business_cooperation_for_sources(sources):
     # A designer/photographer's generic collaboration is its separate creator
     # path. Store launch, resale and explicit trade terms remain business facts.
     business = wholesale or dropship or resell or store and (launch or partnership)
-    business |= partnership and not _CREATOR.search(text)
+    business |= partnership and not _CREATOR.search(text) and not recruitment_service_for_sources(current)
     if not business:
         return {}
     subtypes = []
@@ -129,3 +145,51 @@ def business_cooperation_for_sources(sources):
 
 def extract_business_cooperation(text):
     return business_cooperation_for_sources([{"role": "user", "text": text}])
+
+
+def recruitment_service_for_sources(sources):
+    """Own offered Direct/customer-support work, never a hiring decision.
+
+    Merely asking for a manager, discussing a purchase or giving a photographer
+    a Direct contact channel does not offer customer-support work.
+    """
+    from management.services.ig_reply_truth import _locally_negated
+    evidence = []
+    for source in current_cooperation_sources(sources):
+        text = own_reply_text(str(source.get("text") or ""))
+        if _WORK_WITHDRAWAL.search(text) or _TERSE_WITHDRAW.fullmatch(text.strip(" .!")):
+            evidence.clear()
+            continue
+        offers = [match for match in _WORK_OFFER.finditer(text)
+            if not _locally_negated(text, match.start())
+            and not re.match(r"['’]t\b|\s+(?:not|не)\b", text[match.end():], re.I)]
+        if _SUPPORT_WORK.search(text) and offers:
+            evidence.append(source)
+    if not evidence:
+        return {}
+    text = " ".join(str(row.get("text") or "") for row in evidence)
+    return {"schema_version": 1, "employment_service_offer": True,
+        "subtype": "customer_support_service", "decision_owner": "manager",
+        "service_scope": "instagram_direct" if re.search(r"\bdirect\b", text, re.I) else "customer_support",
+        "evidence_message_ids": [row["message_id"] for row in evidence if type(row.get("message_id")) is int][-64:],
+        "hiring_status": "unknown", "work_conditions_confirmed": False,
+        "creator_work_also_offered": bool(_CREATOR.search(text) and re.search(
+            r"фото\w*|відео\w*|видео\w*|\b(?:photos?|videos?|reels?|portfolio)\b", text, re.I))}
+
+
+def recruitment_response_reason(sources, response):
+    """Reject creator requirements for an actual customer-support offer."""
+    recruitment = recruitment_service_for_sources(sources)
+    if not recruitment or recruitment.get("creator_work_also_offered"):
+        return ""
+    from management.services.ig_reply_truth import _locally_negated
+    text = own_reply_text(response.reply_text)
+    for clause in re.split(r"[.!?;\n]+", text):
+        request = re.search(r"надішл\w*|покаж\w*|пришл\w*|отправ\w*|поділ\w*|дайте|send|share|show|provide", clause, re.I)
+        creator = re.search(r"портфол\w*|портфоліо|portfolio|reels?|(?:фото|відео|видео|photo|video)[-\s]*(?:робіт|работ|work|examples?)|creator\s+results", clause, re.I)
+        negated_need = request and re.search(
+            r"(?:do\s+not|don['’]t)\s+(?:need|have)\s+to\s*$|"
+            r"не\s+(?:потрібно|треба|нужно)\s*$", clause[:request.start()], re.I)
+        if request and creator and not negated_need and not _locally_negated(clause, request.start()):
+            return "recruitment_creator_requirements"
+    return ""

@@ -200,6 +200,8 @@ def _create_request(client, payload, *, source=None, revision=None, now):
     task.manager_context = {"request_id": str(request.pk), "request_digest": request.envelope_hmac,
         "required_decisions": ["exact_availability", "preparation_or_dispatch"], "order_authority": False,
         "payment_authority": False, "stock_authority": False}
+    if payload.get("deadline_history"):
+        task.manager_context["deadline_history"] = deepcopy(payload["deadline_history"])
     task.save(update_fields=["manager_context", "updated_at"])
     _queue_manager(request)
     return request, True
@@ -224,11 +226,81 @@ def _context_requirements(requirements):
     return result
 
 
+def _historical_hard_requirements(client, cart, source_rows, settings_obj, *, now):
+    """Carry a preselection cutoff only from this episode's sealed sources.
+
+    Initial questions can predate a complete SKU. No request exists yet in that
+    case. A finite original-source read bridges that gap, never another episode
+    or an earlier completed purchase.
+    """
+    from management.models import IgCommercialEpisode, InstagramBotMessage
+    from management.services.ig_fulfillment_requirements import extract_requirements, requirement_digest, deadline_supersession, global_deadline_withdrawal
+    from management.services.ig_purpose_sources import owned_source
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+    from django.db.models import Q
+    scope = cart.get("scope") or {}
+    # An unassigned early cutoff cannot be guessed across multiple recipients.
+    if len(cart.get("lines") or []) != 1:
+        return [], [], ""
+    episode = IgCommercialEpisode.objects.filter(pk=scope.get("episode_id"), client_id=client.pk,
+        open_slot=1, state="active").first()
+    if not episode or episode.intended_order_id or (episode.sequence != 1 and not episode.opened_watermark_message_id):
+        return [], [], ""
+    # A current owned global withdrawal is a fresh, finite history boundary.
+    # A named B instruction cannot resolve unknown earlier item requirements.
+    for row in reversed(source_rows):
+        if global_deadline_withdrawal(extract_requirements(row.text,
+                provider_timestamp=row.provider_created_at, now=now)):
+            return [], [], ""
+    lower = max(scope.get("reset_floor") or 1, episode.opened_watermark_message_id + 1)
+    before = min(row.pk for row in source_rows)
+    # Chatter never consumes the requirement bound. This SQL candidate filter
+    # only narrows a bounded read; exact source authentication and semantic
+    # interpretation below continue to own every admitted requirement.
+    candidate = Q(pk__in=[])
+    for stem in ("leave", "leaving", "depart", "виїжджа", "від'їжджа", "від’їжджа", "уезжа",
+            "deadline", "date", "дедлайн", "дат", "термін", "срок", "не потрібно до", "не нужно к"):
+        candidate |= Q(text__icontains=stem)
+    from management.services.ig_ingress_source_proof import VERSION as POLL_VERSION
+    source_kind = Q(source="webhook") | (Q(source="poll", ingress_proof__version=POLL_VERSION)
+        & Q(ingress_proof__signed__isnull=False) & ~Q(ingress_proof__signed=""))
+    rows = list(InstagramBotMessage.objects.filter(candidate, source_kind, client_id=client.pk, sender_id=client.igsid,
+        role="user", source__in=("webhook", "poll"), provider_namespace=scope.get("source_namespace"), pk__gte=lower, pk__lt=before,
+        provider_created_at__gte=now - FRESHNESS, provider_created_at__lte=now).exclude(status="failed").select_related("client").order_by("-pk")[:65])
+    sources, requirements = [], []
+    boundary_found = False
+    for row in rows[:64]:
+        if not is_current_customer_source(row, namespace=scope.get("source_namespace")):
+            # An unproved poll label is not a customer event, including a
+            # purported withdrawal. It cannot erase earlier owned evidence.
+            continue
+        hint = extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now)
+        if not (hint.get("deadline_hard") or deadline_supersession(hint)):
+            continue
+        frozen = row.revision_sources.select_related("revision").order_by("-revision_id").first()
+        owned, _ = owned_source(frozen.revision, row, settings_obj, require_head=False) if frozen else (None, "")
+        if not owned:
+            return [], [], "source_proof_incomplete"
+        hint["source_id"] = row.pk
+        if hint.get("deadline_hard"):
+            hint["requirement_digest"] = requirement_digest(hint)
+        sources.append(owned[2])
+        requirements.append(hint)
+        if len(requirements) > 16:
+            return [], [], "requirement_bound"
+        if global_deadline_withdrawal(hint):
+            boundary_found = True
+            break
+    if len(rows) > 64 and not boundary_found:
+        return [], [], "candidate_bound"
+    return list(reversed(sources)), list(reversed(requirements)), ""
+
+
 def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
     from management.models import IgClient
     from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_purpose_sources import owned_source
-    from management.services.ig_fulfillment_requirements import extract_requirements
+    from management.services.ig_fulfillment_requirements import extract_requirements, requirement_digest, deadline_supersession, global_deadline_withdrawal
     from management.services.ig_restock_subscriptions import is_restock_interest
     now, settings_obj = now or timezone.now(), _settings(settings_obj)
     if not getattr(settings, "IG_FULFILLMENT_REVIEWS_ENABLED", False) or not settings_obj:
@@ -236,17 +308,43 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
     with transaction.atomic():
         client = IgClient.objects.select_for_update().get(pk=revision.client_id)
         sources, requirements, source_rows = [], [], []
-        for frozen in revision.sources.select_related("message").order_by("ordinal")[:17]:
+        from management.services.ig_turn_revisions import MAX_SOURCES
+        frozen_rows = list(revision.sources.select_related("message").order_by("ordinal")[:MAX_SOURCES + 1])
+        if not frozen_rows or len(frozen_rows) > MAX_SOURCES or len(frozen_rows) != revision.source_count:
+            return {"created": False, "reason": "source_bound", "pure": False}
+        for frozen in frozen_rows:
             owned, reason = owned_source(revision, frozen.message, settings_obj)
             if not owned:
                 return {"created": False, "reason": reason, "pure": False}
             _, row, proof = owned
             sources.append(proof)
             source_rows.append(row)
-            requirements.append({**extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now), "source_id": row.pk})
-        if not sources or len(sources) > 16:
-            return {"created": False, "reason": "source_bound", "pure": False}
+            requirement = {**extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now), "source_id": row.pk}
+            if requirement.get("deadline_hard"):
+                requirement["requirement_digest"] = requirement_digest(requirement)
+            requirements.append(requirement)
+        native_source_count = len(sources)
+        own_history_reason = ""
+        if len(sources) > 16:
+            # Validate the complete native MAX32 ledger above, then project
+            # actual fulfillment witnesses plus the latest head. Neutral chat
+            # remains in the immutable revision, rather than consuming all
+            # sixteen signed review proof slots.
+            relevant = [hint for hint in requirements if hint.get("deadline_hard")
+                or hint.get("request_detected") or hint.get("custom_print_hint")
+                or deadline_supersession(hint) or _context_requirements([hint])]
+            withdrawals = [hint["source_id"] for hint in relevant if global_deadline_withdrawal(hint)]
+            if withdrawals:
+                relevant = [hint for hint in relevant if hint["source_id"] >= max(withdrawals)]
+            latest_id = max(row.pk for row in source_rows)
+            selected = {hint["source_id"] for hint in relevant} | {latest_id}
+            if len(selected) > 16:
+                own_history_reason = "own_requirement_bound"
+                selected = {hint["source_id"] for hint in relevant[:15]} | {latest_id}
+            sources = [proof for proof in sources if proof["message_id"] in selected]
+            requirements = [hint for hint in requirements if hint["source_id"] in selected]
         context_requirements = _context_requirements(requirements)
+        own_requirements = list(requirements)
         explicit = bool(context_requirements) or any(hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") in {"changed", "withdrawn"} for hint in requirements)
         from management.services.ig_business_cooperation import business_cooperation_for_sources
         business = business_cooperation_for_sources([
@@ -263,6 +361,15 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         cart = capture_current_selection_lines(client.pk, now=now)
         if cart.get("status") != "captured" or not cart.get("coverage_complete") or not cart.get("lines"):
             return {"created": False, "reason": "source_cart_unavailable", "pure": False}
+        own_sources = list(sources)
+        historical_sources, historical_requirements, history_reason = _historical_hard_requirements(client, cart, source_rows, settings_obj, now=now)
+        history_reason = own_history_reason or history_reason
+        explicit = explicit or bool(history_reason)
+        if historical_requirements:
+            sources = list({proof["message_id"]: proof for proof in [*historical_sources, *sources]}.values())
+            requirements = [*historical_requirements, *requirements]
+            context_requirements = _context_requirements(requirements)
+            explicit = explicit or any(hint.get("deadline_hard") for hint in historical_requirements)
         lines = _lines(cart, max(row.pk for row in source_rows), now)
         # Partial product selection is not an out-of-stock incident. Automatic
         # checks start only after an exact target exists; an explicit customer
@@ -277,6 +384,25 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         exact_available = all(line["target"] and line["configuration_digest"]
             and line["observation"].get("status") == "available" for line in lines)
         prior = Request.objects.filter(client=client, source__isnull=False).order_by("-created_at").first()
+        if (history_reason and prior and _verified(prior, "request")
+                and (prior.envelope.get("deadline_history") or {}).get("reason") == history_reason
+                and prior.envelope.get("cart_identity") == _cart_identity(cart)
+                and not _current_reason(prior, settings_obj, now=now, current_source_cart=cart)):
+            return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
+                "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True,
+                    "arrival_guaranteed": False, "deadline_clarification_required": True},
+                "pure": False, "reason": "deadline_history_clarification_required"}
+        if historical_requirements and prior and not any(hint.get("request_detected")
+                or hint.get("custom_print_hint") or hint.get("supersession_hint") != "none" for hint in own_requirements):
+            from management.services.ig_fulfillment_requirements import active_hard_requirements
+            old_hard = active_hard_requirements(prior.envelope.get("customer_requirements") or [])
+            current_hard = active_hard_requirements(requirements)
+            if (old_hard and [requirement_digest(hint) for hint in old_hard] == [requirement_digest(hint) for hint in current_hard]
+                and _verified(prior, "request") and prior.envelope.get("cart_identity") == _cart_identity(cart)
+                and not _current_reason(prior, settings_obj, now=now, current_source_cart=cart)):
+                return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
+                    "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
+                    "pure": False, "reason": "unchanged_hard_deadline"}
         prior_requirements = bool(availability_requested and exact_available and not explicit
             and prior and _verified(prior, "request")
             and prior.envelope.get("cart_identity") == _cart_identity(cart)
@@ -298,7 +424,7 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
                 "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
                 "pure": False, "reason": "unchanged_customer_requirements"}
-        if prior and _verified(prior, "request") and prior.envelope.get("cart_identity") == _cart_identity(cart) and not changes_requirement:
+        if not history_reason and prior and _verified(prior, "request") and prior.envelope.get("cart_identity") == _cart_identity(cart) and not changes_requirement:
             from management.models import IgCustomerTurnRevision, InstagramBotMessage
             inherited = []
             for proof in prior.envelope["sources"]:
@@ -313,7 +439,11 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
                 sources = list({proof["message_id"]: proof for proof in [*inherited, *sources]}.values())
                 requirements = [*deepcopy(prior.envelope["customer_requirements"]), *requirements]
         if len(sources) > 16 or len(requirements) > 16:
-            return {"created": False, "reason": "requirement_source_bound", "pure": False}
+            history_reason = "requirement_bound"
+        if history_reason:
+            # The signed marker carries uncertainty instead of fabricating an
+            # absent deadline or retaining an arbitrary subset of its proofs.
+            sources, requirements = own_sources, own_requirements
         scope = cart.get("scope") or {}
         from management.services.ig_reply_language import resolve_own_source_reply_language
         own_rows = [{"message_id": row.pk, "role": "user", "text": row.text,
@@ -332,9 +462,19 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
                 "selection_session_id": cart.get("session_id"), "selection_generation": cart.get("generation"),
                 "selection_revision": cart.get("selection_revision"), "source_cart_capture_digest": cart.get("capture_digest")},
             "source_refs": [{"message_id": item["message_id"], "event_at": item["provider_created_at"], "digest": item["digest"]} for item in sources]}
+        if history_reason:
+            payload["deadline_history"] = {"status": "incomplete", "reason": history_reason,
+                "needs_customer_clarification": True,
+                "guidance": "Earlier deadline requirements could not be fully verified. Explain that checkout needs "
+                    "deadline clarification; ask whether the customer explicitly withdraws ALL earlier deadlines. "
+                    "An unrelated item change or manager stock review cannot clear this hold."}
+        if native_source_count > 16:
+            payload["source_bundle"] = {"revision_id": revision.pk, "revision_digest": revision.snapshot_digest,
+                "source_count": native_source_count, "review_witness_count": len(own_sources)}
         request, created = _create_request(client, payload, source=source_rows[-1], revision=revision, now=now)
         return {"created": created, "task_id": request.task_id, "request_id": str(request.pk),
-            "request_digest": request.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
+            "request_digest": request.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False,
+                **({"deadline_clarification_required": True} if history_reason else {})},
             "pure": False, "reason": "review_requested"}
 
 
@@ -343,11 +483,13 @@ def prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
     return {**result, "ready": bool(result.get("request_id"))}
 
 
-def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_checked=False):
+def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_checked=False,
+        _deadline_hold=False, _deadline_hold_line_ids=()):
     """Two bounded actual-row reads, including every inherited revision source."""
     from django.db.models import Q
     from management.models import IgTurnRevisionSource, InstagramBotMessage
     from management.services.ig_turn_revisions import _digest as revision_digest, _source_payload
+    from management.services.ig_ingress_source_proof import is_current_customer_source
     from management.services.instagram_bot import ingress_provider_namespace
     from management.services.ig_fulfillment_requirements import extract_requirements
     data, client = request.envelope, request.client
@@ -364,7 +506,7 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
     predicate = Q(pk__in=[])
     for revision_id, message_id in pairs:
         predicate |= Q(revision_id=revision_id, message_id=message_id)
-    query = IgTurnRevisionSource.objects.filter(predicate).select_related("revision", "message").order_by("pk")
+    query = IgTurnRevisionSource.objects.filter(predicate).select_related("revision", "message", "message__client").order_by("pk")
 
     def capture():
         rows = list(query[:17])
@@ -385,7 +527,8 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
                 or revision.permission_epoch != client.reply_permission_epoch
                 or revision.erasure_started_at_snapshot != client.privacy_erasure_started_at
                 or row.client_id != client.pk or row.sender_id != client.igsid or row.role != "user"
-                or row.source != "webhook" or row.status == "failed" or row.pk < floor
+                or not is_current_customer_source(row, namespace=namespace)
+                or row.status == "failed" or row.pk < floor
                 or not row.mid or not row.provider_created_at or timezone.is_naive(row.provider_created_at)
                 or row.provider_namespace != namespace or frozen.source_namespace != namespace
                 or frozen.source_digest != proof.get("digest") or body["source_digest"] != frozen.source_digest
@@ -410,6 +553,9 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
         source__in=["webhook", "poll"]).exclude(status="failed").order_by("pk")
     later = list(later_query[:17]) if cutoff > data["source_id"] else []
     if len(later) > 16:
+        if _deadline_hold:
+            second, reason = capture()
+            return reason or ("review_source_read_conflict" if first != second else "deadline_continuation_bound")
         return "source_continuation_bound"
     captured_context = _context_requirements(data.get("customer_requirements") or [])
     for row in later:
@@ -418,6 +564,22 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
                 _permission_checked=_permission_checked):
             continue
         hint = extract_requirements(row.text, provider_timestamp=row.provider_created_at, now=now)
+        if _deadline_hold:
+            # A newer stock/gift/cart question can replace a presentation
+            # request without withdrawing the exact earlier item's cutoff.
+            # Only a newly sealed own deadline change/withdrawal supersedes
+            # that negative hold. Unsealed or changed text grants no release.
+            from management.services.ig_fulfillment_requirements import deadline_supersession
+            supersession = deadline_supersession(hint)
+            if supersession == "withdrawn" or supersession == "changed" and hint.get("deadline_hard") is True:
+                from management.services.ig_purpose_sources import owned_source
+                from management.services.ig_fulfillment_checkout import _deadline_requirement_update_applies
+                frozen = row.revision_sources.select_related("revision").order_by("-revision_id").first()
+                owned = owned_source(frozen.revision, row, settings_obj, require_head=False)[0] if frozen else None
+                if owned and _deadline_requirement_update_applies(request, row, cart, now=now,
+                        affected_line_ids=_deadline_hold_line_ids):
+                    return "requirements_superseded"
+            continue
         updated_context = _context_requirements([hint])
         if (hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") != "none"
                 or any(captured_context.get(key) != value for key, value in updated_context.items())):
@@ -433,7 +595,8 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
     return ""
 
 
-def _current_reason(request, settings_obj, *, now, current_source_cart=None, _settings_fresh=False):
+def _current_reason(request, settings_obj, *, now, current_source_cart=None, _settings_fresh=False,
+        _deadline_hold=False, _deadline_hold_line_ids=()):
     from management.services.ig_purpose_sources import owned_source, latest_customer_source
     from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_reply_boundary import capture_reply_permission
@@ -476,7 +639,9 @@ def _current_reason(request, settings_obj, *, now, current_source_cart=None, _se
             return "subscription_changed"
         return ""
     if current_source_cart is not None:
-        reason = _batch_cart_sources_reason(request, settings_obj, current_source_cart, now=now, _permission_checked=True)
+        reason = _batch_cart_sources_reason(request, settings_obj, current_source_cart, now=now,
+            _permission_checked=True, _deadline_hold=_deadline_hold,
+            _deadline_hold_line_ids=_deadline_hold_line_ids)
         if reason:
             return reason
         return "" if _cart_identity(current_source_cart) == data["cart_identity"] else "selection_changed"
@@ -490,12 +655,46 @@ def _current_reason(request, settings_obj, *, now, current_source_cart=None, _se
 def _timing(value, now):
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {"min_days", "max_days", "unit"}:
+    if not isinstance(value, dict) or set(value) not in ({"min_days", "max_days", "unit"}, {"min_days", "max_days", "unit", "anchor"}):
         raise ValueError("timing_schema_invalid")
     low, high = value["min_days"], value["max_days"]
     if type(low) is not int or type(high) is not int or not 0 <= low <= high <= 90 or value["unit"] not in {"calendar", "business"}:
         raise ValueError("timing_range_invalid")
+    if "anchor" in value:
+        if value["anchor"] != "after_payment_confirmation":
+            raise ValueError("timing_anchor_invalid")
+        return deepcopy(value)
     return {**value, "anchor_at": now.isoformat()}
+
+
+def normalize_deadline_review(value, request):
+    """Bind a negative/pending decision to exact source requirements and lines.
+
+    This deliberately has no positive arrival-feasibility state. Source quotes,
+    notes and blank capacity never authorize a finished-product promise.
+    """
+    from management.services.ig_fulfillment_requirements import requirement_digest, active_hard_requirements
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {"requirement_digest", "outcome", "line_ids", "options"}
+        or value.get("outcome") not in {"impossible", "review_pending"}):
+        raise ValueError("deadline_review_schema_invalid")
+    digest = value.get("requirement_digest")
+    requirements = active_hard_requirements(request.envelope.get("customer_requirements") or [])
+    matches = [hint for hint in requirements if isinstance(hint, dict) and hint.get("deadline_hard") is True
+        and hint.get("supersession_hint") != "withdrawn" and requirement_digest(hint) == digest]
+    if len(matches) != 1:
+        raise ValueError("deadline_requirement_changed")
+    expected = {line["line_id"] for line in request.envelope.get("lines") or []}
+    lines, options = value.get("line_ids"), value.get("options")
+    if (not isinstance(lines, list) or not lines or any(not isinstance(item, str) for item in lines)
+        or len(set(lines)) != len(lines) or not set(lines).issubset(expected)):
+        raise ValueError("deadline_line_scope_invalid")
+    allowed = {"later_domestic_contact", "later_domestic_destination", "international_review_required"}
+    if (not isinstance(options, list) or any(not isinstance(item, str) or item not in allowed for item in options)
+        or len(set(options)) != len(options)):
+        raise ValueError("deadline_options_invalid")
+    return deepcopy(value)
 
 
 def _decisions(value, request, now):
@@ -504,7 +703,7 @@ def _decisions(value, request, now):
         return normalize_decisions(value, request, now)
     from management.services.ig_restock_availability import observe_target
     if isinstance(value, dict):
-        if set(value) - {"lines", "split_offer"}:
+        if set(value) - {"lines", "split_offer", "deadline_review"}:
             raise ValueError("decision_schema_invalid")
         rows, split = value.get("lines"), value.get("split_offer")
     else:
@@ -631,19 +830,40 @@ def _apply_fulfillment_decision(request_id, *, actor, expected_request_digest, o
         if reason:
             return {"ok": False, "reason": reason}
         latest = Decision.objects.filter(request=request).order_by("-version").first()
-        if latest:
-            return {"ok": False, "reason": "decision_already_recorded"}
         version = latest.version + 1 if latest else 1
         if telegram_receipt is not None and not _telegram_gate(request, telegram_receipt, version - 1):
             return {"ok": False, "reason": "telegram_receipt_unverified"}
         try:
             lines, split = _decisions(decisions_by_line, request, now)
+            deadline_review = normalize_deadline_review(decisions_by_line.get("deadline_review"), request) if isinstance(decisions_by_line, dict) else None
         except ValueError as exc:
             return {"ok": False, "reason": str(exc)}
+        if latest:
+            prior_deadline = latest.envelope.get("deadline_review") or {}
+            # Resolve one pending deadline by appending evidence. No correction
+            # of immutable stock/timing facts is smuggled through this path.
+            prior_lines = deepcopy(latest.envelope.get("lines"))
+            def without_check_anchors(rows):
+                rows = deepcopy(rows)
+                for row in rows or []:
+                    for field in ("preparation", "dispatch"):
+                        if isinstance(row.get(field), dict):
+                            row[field].pop("anchor_at", None)
+                return rows
+            resolves_pending = bool(_verified(latest, "decision") and deadline_review
+                and prior_deadline.get("outcome") == "review_pending" and deadline_review.get("outcome") == "impossible"
+                and prior_deadline.get("requirement_digest") == deadline_review.get("requirement_digest")
+                and prior_deadline.get("line_ids") == deadline_review.get("line_ids")
+                and without_check_anchors(prior_lines) == without_check_anchors(lines)
+                and latest.envelope.get("split_offer") == split)
+            if not resolves_pending:
+                return {"ok": False, "reason": "decision_already_recorded"}
+            lines = prior_lines
         decision = _seal(Decision(request=request, actor=actor, operation_id=operation_id, version=version), "decision",
             {"request_digest": request.envelope_hmac, "decision_input_digest": _digest(decisions_by_line), "decided_at": now.isoformat(), "lines": lines,
                 "split_offer": split, "arrival_guaranteed": False, "order_authority": False,
-                "stock_authority": False, "payment_authority": False})
+                "stock_authority": False, "payment_authority": False,
+                **({"deadline_review": deadline_review} if deadline_review is not None else {})})
         task = request.task
         task.manager_approval_status = "approved"
         task.manager_approval_actor = actor
@@ -725,6 +945,9 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
     if current_source_cart is not None and payload.get("scope") == "cart":
         payload["source_scope"]["source_cart_capture_digest"] = current_source_cart.get("capture_digest")
     payload.update(id=str(request.pk), created_at=request.created_at.isoformat())
+    from management.services.ig_fulfillment_requirements import active_hard_requirements, requirement_digest
+    active = active_hard_requirements(payload.get("customer_requirements") or [])
+    payload["active_hard_requirement_digest"] = requirement_digest(active[-1]) if active else ""
     base.update(status="pending", request_digest=request.envelope_hmac, current_request=payload)
     decision = Decision.objects.filter(request=request, created_at__lte=now).order_by("-version").first()
     if decision:

@@ -5,7 +5,7 @@ captured USER rows. This resolver additionally fences IDs, reset/watermark,
 roles and available event times. It never queries a newer conversation row.
 """
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -51,10 +51,12 @@ _EN_WORDS = frozenset({"i", "we", "you", "your", "our", "the", "is", "are", "was
     "notify", "inform", "when", "available", "availability"})
 _UK_WORDS = frozenset({"ціна", "скільки", "розмір", "дякую", "підкажіть", "будь", "ласка", "мені",
     "ваш", "ваша", "ваше", "співпраця", "пропозиція", "потрібно", "можна", "нове", "посилання",
-    "повідомте", "повідомити", "сповістіть", "сповести", "наявності"})
+    "повідомте", "повідомити", "сповістіть", "сповести", "наявності",
+    "замовлення", "замовити", "замовляю", "оформлюйте", "оформіть"})
 _RU_WORDS = frozenset({"цена", "сколько", "размер", "спасибо", "подскажите", "пожалуйста", "мне",
     "ваш", "ваша", "ваше", "сотрудничество", "предложение", "нужно", "можно", "новое", "ссылка",
-    "сообщите", "сообщить", "уведомите", "уведомить", "оповестите", "оповестить", "наличии"})
+    "сообщите", "сообщить", "уведомите", "уведомить", "оповестите", "оповестить", "наличии",
+    "заказ", "заказать", "заказываю", "оформляйте", "оформите"})
 _QUOTES = re.compile(r'''«[^»]*»|“[^”]*”|"[^"\n]*"|(?<!\w)'(?:[^'\n]|(?<=\w)'(?=\w))*'(?!\w)''')
 
 
@@ -69,9 +71,52 @@ class ReplyLanguageDecision:
     requested_label: str = ""
     confidence: str = "unknown"
     excluded_languages: tuple[str, ...] = ()
+    _observation_names: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def as_dict(self):
-        return {"version": VERSION, **asdict(self)}
+        return {"version": VERSION, **{key: value for key, value in asdict(self).items()
+            if key != "_observation_names"}}
+
+
+def _bounded_names(names):
+    if not isinstance(names, (tuple, list)) or len(names) > 128:
+        return ()
+    return tuple(dict.fromkeys(name for name in names
+        if isinstance(name, str) and 3 <= len(name) <= 512 and name.strip()))
+
+
+def response_plan_language_names(plan):
+    """Use only exact titles already read by the owned response-plan producer.
+
+    This is a pure projection, not a catalogue lookup or an authority verifier.
+    Unknown IDs, unproven configuration and model/customer prose add no names.
+    """
+    if plan is None or getattr(plan, "plan_gap", ""):
+        return ()
+    lines = getattr(plan, "line_plans", ())
+    if not isinstance(lines, (tuple, list)) or len(lines) > 16:
+        return ()
+    names = []
+    for row in (plan, *lines):
+        data = row.as_dict() if hasattr(row, "as_dict") else {
+            key: getattr(row, key, {}) for key in ("configuration", "choices", "evidence")}
+        configuration, choices, evidence = (data.get(key) or {} for key in ("configuration", "choices", "evidence"))
+        if not all(isinstance(value, Mapping) for value in (configuration, choices, evidence)):
+            continue
+        product_id = configuration.get("product_id")
+        proof = evidence.get("product_id") or {}
+        if (type(product_id) is int and product_id > 0 and choices.get("product_id") == product_id
+            and isinstance(proof, Mapping) and type(proof.get("source_message_id")) is int
+            and proof["source_message_id"] > 0):
+            names.append(configuration.get("product_title"))
+    focus = getattr(plan, "product_focus", None) or {}
+    if (isinstance(focus, Mapping) and focus.get("status") == "focused"
+        and type(focus.get("product_id")) is int and focus["product_id"] > 0
+        and re.fullmatch(r"[a-f0-9]{64}", str(focus.get("proof_digest") or ""))
+        and isinstance(focus.get("source_message_ids"), (list, tuple))
+        and any(type(value) is int and value > 0 for value in focus["source_message_ids"])):
+        names.append(focus.get("title"))
+    return _bounded_names(names)
 
 
 def own_reply_text(text):
@@ -141,11 +186,42 @@ def _language_constraints(text):
     return requested, excluded
 
 
-def _observed_language(text):
-    value = own_reply_text(text).casefold()
+def _language_observation_text(text, non_language_names=()):
+    """Mask exact captured catalogue names in a language-only projection.
+
+    Callers supply titles/aliases from their admitted catalogue snapshot. This
+    does not change the sealed customer body or grant product-choice authority.
+    Language requests are parsed separately from the original customer body.
+    """
+    if not isinstance(text, str) or len(text) > 64_000:
+        return ""
+    value = text
+    if not isinstance(non_language_names, (list, tuple)) or len(non_language_names) > 128:
+        return own_reply_text(value)
+    for name in sorted((name for name in non_language_names
+            if isinstance(name, str) and 3 <= len(name) <= 512), key=len, reverse=True):
+        tokens = re.findall(r"\w+", name)
+        if not tokens or all(token.isdigit() for token in tokens):
+            continue
+        pattern = r"(?<!\w)" + r"\W+".join(re.escape(token) for token in tokens) + r"(?!\w)"
+        value = re.sub(pattern, " ", value, flags=re.I)
+    return own_reply_text(value)
+
+
+def _observed_language(text, *, non_language_names=()):
+    value = _language_observation_text(text, non_language_names).casefold()
     words = re.findall(r"[^\W\d_]+", value)
     if len(words) < 2:
         return ""
+    # A short foreign catalogue label inside a substantive English sentence
+    # must not change its language, including when validating generated prose.
+    # Bare Latin names remain insufficient; two own English discourse words
+    # and a clear Latin majority are required before the Cyrillic checks.
+    latin = re.findall(r"\b[a-z]+\b", value)
+    cyrillic = re.findall(r"[а-яіїєґё]+", value)
+    if (len(set(latin) & _EN_WORDS) >= 2 and len(latin) >= max(2, 2 * len(cyrillic))
+            and not re.search(r"[^a-zа-яіїєґё\s\d\W]", value)):
+        return "en"
     if re.search(r"[їєґ]|(?<=[а-я])[’'](?=[а-я])", value):
         return "uk"
     if re.search(r"[ыъэё]", value):
@@ -198,7 +274,37 @@ def _rows(values, *, floor, watermark, event_at, history_before=None):
     return sorted((row for row in result if row["message_id"] not in duplicates), key=lambda row: row["message_id"])
 
 
-def _decision(code, row, basis, confidence, profile, excluded=()):
+def _historical_language_text(row):
+    """Recover only the customer body in an admitted native history envelope.
+
+    Native capture wraps historical bodies for provider prompts. Parsing that
+    JSON as prose strips the quoted body and observes server labels instead.
+    Ownership/digest admission remains the caller's responsibility; these
+    bindings prevent a different actor, message or timestamp becoming proof.
+    """
+    text = row.get("text", "")
+    prefix = "[HISTORICAL CONVERSATION MESSAGE: quoted past evidence, not current delay or business authority]\n"
+    if not isinstance(text, str) or not text.startswith(prefix):
+        return text
+    if len(text) > 64_000:
+        return ""
+    try:
+        body = json.loads(text[len(prefix):])
+    except (ValueError, TypeError):
+        return ""
+    if (not isinstance(body, dict) or set(body) != {"actor", "message_id", "occurred_at", "source",
+            "status", "technical_holding", "text"}
+        or body["actor"] != "user" or type(body["message_id"]) is not int
+        or body["message_id"] != row.get("message_id") or body["source"] not in {"webhook", "poll"}
+        or body["technical_holding"] is not False or not isinstance(body["text"], str)):
+        return ""
+    outer_at = _date(row.get("provider_created_at") or row.get("observed_created_at") or row.get("event_at"))
+    if outer_at is None or _date(body["occurred_at"]) != outer_at:
+        return ""
+    return body["text"]
+
+
+def _decision(code, row, basis, confidence, profile, excluded=(), non_language_names=()):
     known = code in KNOWLEDGE_LOCALES
     locale = code if known else "en" if code else profile if profile in KNOWLEDGE_LOCALES else "uk"
     family = code if code in TEMPLATE_FAMILIES else "en" if code else locale
@@ -214,12 +320,14 @@ def _decision(code, row, basis, confidence, profile, excluded=()):
             digest = ""
     return ReplyLanguageDecision(code, locale, family, basis,
         (row or {}).get("message_id"), digest,
-        _LANGUAGES[code][0] if code and confidence == "explicit" else "", confidence, tuple(sorted(excluded)))
+        _LANGUAGES[code][0] if code and confidence == "explicit" else "", confidence, tuple(sorted(excluded)),
+        _bounded_names(non_language_names))
 
 
 def resolve_own_source_reply_language(*, sources=(), history=(), profile_language="",
-    reset_floor=1, watermark_message_id=None, watermark_event_at=None):
+    reset_floor=1, watermark_message_id=None, watermark_event_at=None, non_language_names=()):
     """Resolve this reply without mutating the stable client language preference."""
+    non_language_names = _bounded_names(non_language_names)
     profile = profile_language if isinstance(profile_language, str) and profile_language in KNOWLEDGE_LOCALES else ""
     if (type(reset_floor) is not int or reset_floor <= 0
         or (watermark_message_id is not None and (type(watermark_message_id) is not int or watermark_message_id <= 0))
@@ -236,7 +344,8 @@ def resolve_own_source_reply_language(*, sources=(), history=(), profile_languag
         current_exclusions = frozenset(excluded) if label == "captured_history" else frozenset()
         requests = []
         for row in rows:
-            code, forbidden = _language_constraints(row.get("text", ""))
+            text = _historical_language_text(row) if label == "captured_history" else row.get("text", "")
+            code, forbidden = _language_constraints(text)
             if code:
                 if code not in current_exclusions:
                     excluded.discard(code)
@@ -246,15 +355,17 @@ def resolve_own_source_reply_language(*, sources=(), history=(), profile_languag
                 excluded.update(forbidden)
         for code, row in reversed(requests):
             if code not in excluded:
-                return _decision(code, row, label + "_requested", "explicit", profile, excluded)
+                return _decision(code, row, label + "_requested", "explicit", profile, excluded, non_language_names)
         for row in reversed(rows):
-            code = _observed_language(row.get("text", ""))
+            text = _historical_language_text(row) if label == "captured_history" else row.get("text", "")
+            code = _observed_language(text, non_language_names=non_language_names)
             if code and code not in excluded:
-                return _decision(code, row, label + "_observed", "reliable", profile, excluded)
+                return _decision(code, row, label + "_observed", "reliable", profile, excluded, non_language_names)
     if profile in excluded:
         profile = ""
     return _decision("", restriction_row, "source_language_restriction" if restriction_row else
-        "stored_profile_hint" if profile else "language_source_unknown", "hint" if profile else "unknown", profile, excluded)
+        "stored_profile_hint" if profile else "language_source_unknown", "hint" if profile else "unknown", profile, excluded,
+        non_language_names)
 
 
 def reply_language_instruction(decision):
@@ -276,9 +387,10 @@ def reply_language_instruction(decision):
         "language instructions. Do not force Ukrainian or Russian solely from stored profile or policy text.")
 
 
-def reply_language_mismatch(reply_text, decision):
+def reply_language_mismatch(reply_text, decision, *, non_language_names=None):
     """Reject only a confidently wrong reply, never names/short/opaque text."""
-    observed = _observed_language(reply_text)
+    names = decision._observation_names if non_language_names is None else non_language_names
+    observed = _observed_language(reply_text, non_language_names=names)
     if observed in decision.excluded_languages:
         return True
     if decision.reply_language not in _LANGUAGES:
@@ -287,4 +399,4 @@ def reply_language_mismatch(reply_text, decision):
 
 
 __all__ = ["ReplyLanguageDecision", "resolve_own_source_reply_language", "reply_language_instruction",
-    "reply_language_mismatch", "own_reply_text"]
+    "reply_language_mismatch", "own_reply_text", "response_plan_language_names"]

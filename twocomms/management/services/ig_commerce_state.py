@@ -30,6 +30,7 @@ from management.services.ig_commerce_types import CommerceTurnRequest
 from management.services.ig_delivery_receipts import (
     normalize_provider_message_id as _normalize_provider_message_id,
 )
+from management.services.ig_ingress_source_proof import is_current_customer_source
 
 
 class CommerceRevisionConflict(RuntimeError):
@@ -50,7 +51,7 @@ def _non_mutation(client, source, reason, *, classification):
     from management.services.ig_admin_state_capture import _namespace
     floor = conversation_route_reset_floor(client.pk)
     if (client.privacy_erasure_started_at or source.sender_id != client.igsid or source.role != "user"
-        or source.source != "webhook" or source.status == "failed" or source.pk < floor
+        or not is_current_customer_source(source) or source.status == "failed" or source.pk < floor
         or not source.provider_namespace or source.provider_namespace != _namespace()):
         raise CommerceRevisionConflict("commerce_source_scope_mismatch")
     raise CommerceNonMutation(reason, observation={"schema": "commerce-source-observation.v1",
@@ -72,7 +73,7 @@ def _line_source_request(source, client, request, *, original=None):
     """Generated selectors cannot substitute for the customer's exact source."""
     from management.services.ig_commerce_turns import parse_turn
     if (source.client_id != client.pk or source.sender_id != client.igsid or source.role != "user"
-        or source.source != "webhook" or source.status == "failed" or client.privacy_erasure_started_at):
+        or not is_current_customer_source(source) or source.status == "failed" or client.privacy_erasure_started_at):
         return None
     if request.source_binding.get("producer") == "catalog-choice-source-v1":
         from management.services.ig_catalog_choice_actions import validate_native_choice_request
@@ -492,7 +493,7 @@ def _apply_preference_withdrawals(snapshot, request, source, client) -> dict:
 
     if not request.preference_withdrawals or not (
         source.client_id == client.pk and source.sender_id == client.igsid
-        and source.role == "user" and source.source == "webhook"
+        and is_current_customer_source(source)
     ):
         return {}
     original = parse_turn(source.text).preference_withdrawals
@@ -682,7 +683,7 @@ def apply_turn(
     # Native website choices have their own actual observation time. A delayed
     # older Instagram event remains transcript evidence but cannot overwrite a
     # later website basket. Never fabricate a provider timestamp or permission.
-    if (source.role == "user" and source.source == "webhook"
+    if (is_current_customer_source(source)
             and source.sender_id == locked_client.igsid and source.status != "failed"):
         from management.services.ig_checkout_cart_amendments import verify_native_transition, CheckoutAmendmentError
         native = (IgCommerceSelectionTransition.objects.filter(session__client=locked_client,
@@ -727,7 +728,7 @@ def apply_turn(
         binding = dict(request.source_binding)
         supplied.pop("source_binding", None)
         original.pop("source_binding", None)
-        owned_full_source = (source.role == "user" and source.source == "webhook"
+        owned_full_source = (is_current_customer_source(source)
             and source.sender_id == locked_client.igsid and source.status != "failed"
             and not locked_client.privacy_erasure_started_at and bool(source.provider_namespace))
         if supplied.get("pending_clarification") == "which_product" and not original.get("pending_clarification"):
@@ -863,7 +864,7 @@ def apply_turn(
         last_at = session.last_provider_event_at
         event_is_new = last_at is None or (event_at, event_id) > (last_at, str(session.last_provider_message_id or ""))
         if (event_is_new and source.client_id == locked_client.pk and source.sender_id == locked_client.igsid
-            and source.role == "user" and source.source == "webhook"
+            and is_current_customer_source(source)
             and (parse_turn(source.text).new_purchase_requested or terminal_new_purchase)):
             episode = start_repeat_episode(locked_client, repeat_kind="explicit_more",
                 evidence_message_ids=[source.pk], confidence=1,
@@ -1407,7 +1408,7 @@ def append_assisted_adoption_transition(client, source, session, lines, *, expec
         or value.get("to_revision") != 1 or value.get("previous_digest") != commerce._digest(session.snapshot())
         or value.get("next_digest") != commerce._digest(next_snapshot) or next_snapshot.get("lines") != lines
         or source.client_id != client.pk or source.sender_id != client.igsid or source.role != "user"
-        or source.source != "webhook" or source.status == "failed" or not source.quick_reply_payload.startswith("AC1:")):
+        or not is_current_customer_source(source) or source.status == "failed" or not source.quick_reply_payload.startswith("AC1:")):
         raise AssistedAdoptionError("adoption_native_transition_input_invalid")
     event_at, event_id = _event_key(source)
     transition = IgCommerceSelectionTransition.objects.create(session=session, source_message=source,

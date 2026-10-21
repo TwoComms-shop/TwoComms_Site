@@ -70,6 +70,20 @@ class TimingAuthority:
 
 
 @dataclass(frozen=True)
+class FulfillmentDeadlineAuthority:
+    """One reviewed customer cutoff; never positive arrival or stock authority."""
+
+    requirement_digest: str
+    deadline_at: str
+    deadline_kind: Literal["departure", "arrival", "dispatch"]
+    outcome: Literal["impossible", "review_pending"]
+    line_ids: tuple[str, ...]
+    source_message_id: int
+    source_ref: str
+    options: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CheckoutLineAuthority:
     line_id: str
     title: str
@@ -181,6 +195,7 @@ class ReplyTruthContext:
     # authority. Missing policy, customer text and model controls leave unknown.
     recruitment_status: Literal["unknown", "open", "closed"] = "unknown"
     timing_authorities: tuple[TimingAuthority, ...] = ()
+    fulfillment_deadline_authorities: tuple[FulfillmentDeadlineAuthority, ...] = ()
     fulfillment_review_status: Literal["", "pending", "reviewed"] = ""
     availability_authorities: tuple[AvailabilityAuthority, ...] = ()
     checkout_authority: CheckoutOrderAuthority | None = None
@@ -189,6 +204,8 @@ class ReplyTruthContext:
     approved_product_assertions: tuple[dict, ...] = ()
     # Public policy explanation is not a SKU price, payment mode or refund.
     approved_payment_policy: tuple[tuple[str, str, str], ...] = ()
+    # Exact reviewed general made-to-order prose; no order/payment/stock truth.
+    approved_fulfillment_policy: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -778,6 +795,15 @@ def _positive_configuration_value(sentence: str, match: re.Match) -> str:
     return claimed
 
 
+def _configuration_axis_value(axis: str, value) -> str:
+    if axis == "size":
+        from product_catalog.size_grid_services import normalize_size_value
+        # Unknown/numeric values retain their literal identity. They never
+        # collapse to an empty token that could match an unrelated size.
+        return _normalize(normalize_size_value(value))
+    return _normalize(value)
+
+
 def _is_qualified_standard_dispatch_timing(
     sentence: str,
     timing: str,
@@ -798,7 +824,7 @@ def _is_qualified_standard_dispatch_timing(
         return False
     if (
         not _USUAL_QUALIFIER_RE.search(sentence)
-        or not _PREPARATION_OR_DISPATCH_RE.search(sentence)
+        or _timing_domain(sentence) != "preparation"
         or _TIMING_GUARANTEE_RE.search(sentence)
         or _CARRIER_DELIVERY_RE.search(sentence)
     ):
@@ -910,12 +936,17 @@ def _typed_timing_allowed(
             if any(not any(
                 isinstance(other, TimingAuthority) and other.line_id == line_id
                 and other.domain == domain
-                and (other.min_days, other.max_days, other.unit, other.anchor_at)
-                    == (authority.min_days, authority.max_days, authority.unit, authority.anchor_at)
+                and (other.min_days, other.max_days, other.unit, other.anchor, other.anchor_at)
+                    == (authority.min_days, authority.max_days, authority.unit, authority.anchor, authority.anchor_at)
                 for other in context.timing_authorities
             ) for line_id in named_lines):
                 continue
         if not _timing_start_matches(sentence, authority):
+            continue
+        if (authority.anchor == "after_payment_confirmation" and not context.payment_confirmed
+                and not _AFTER_PAYMENT_RE.search(sentence)):
+            # A conditional preparation estimate cannot silently start now.
+            # Payment settlement remains independently verified by the context.
             continue
         if authority.claim:
             # Feasibility requires the actual source-backed assertion. A bare
@@ -1014,7 +1045,9 @@ def _availability_scope_matches(sentence: str, fact: AvailabilityAuthority) -> b
         fact.product_label and fact.color_label
         and _subject_token(sentence, fact.product_label)
         and color_matches
-        and _subject_token(sentence, fact.size)
+        and (_subject_token(sentence, fact.size)
+            or given.get("size") is not None and _configuration_axis_value("size", given["size"])
+                == _configuration_axis_value("size", fact.size))
     )
 
 
@@ -1370,6 +1403,32 @@ def _approved_payment_policy_sentences(context):
     return frozenset(sentences)
 
 
+def _approved_fulfillment_policy_sentences(context):
+    """Recognize exact captured public policy, never a rewritten client claim."""
+    import hashlib
+    from management.services.approved_public_facts import approved_public_facts
+
+    proofs = context.approved_fulfillment_policy
+    if not isinstance(proofs, (tuple, list)) or len(proofs) > 3:
+        return frozenset()
+    sentences = set()
+    for proof in proofs:
+        if (not isinstance(proof, (tuple, list)) or len(proof) != 3
+                or not all(isinstance(value, str) for value in proof)):
+            continue
+        language, version, digest = proof
+        if language not in {"uk", "ru", "en"}:
+            continue
+        fact = next((row for row in approved_public_facts(language) if row.key == "dispatch"), None)
+        if (fact is None or fact.scope != "current_tshirts_and_hoodies_preparation_after_confirmed_payment"
+                or fact.source_ref != "owner:2026-10-21:made-to-order"
+                or fact.review_status != "reviewed:owner-brief:2026-10-21" or fact.version != version
+                or hashlib.sha256(fact.public_text.encode()).hexdigest() != digest):
+            continue
+        sentences.update(_normalize(sentence) for sentence in _claim_sentences(fact.public_text, ()))
+    return frozenset(sentences)
+
+
 def _unverified_deposit_refund(sentence, reply_text):
     """Ordinary refusal cannot turn the retained deposit into a refund claim."""
     deposit = re.search(r"передоплат\w*|предоплат\w*|\b(?:deposit|prepayment)\b", reply_text, re.I)
@@ -1427,7 +1486,7 @@ def validate_reply_truth(
     discount_percents = {_decimal(value) for value in context.authorized_discount_percents}
     discount_amounts = {_decimal(value) for value in context.authorized_discount_amounts}
 
-    policy_sentences = _approved_payment_policy_sentences(context)
+    policy_sentences = _approved_payment_policy_sentences(context) | _approved_fulfillment_policy_sentences(context)
     for sentence in _claim_sentences(reply_text, context.quoted_data):
         if _normalize(sentence) in policy_sentences:
             continue
@@ -1593,7 +1652,7 @@ def validate_reply_truth(
             ("fit", _FIT_RE, context.allowed_fits, context.source_chosen_fits, ()),
             ("color", _COLOR_RE, context.allowed_colors, context.source_chosen_colors, ()),
         ):
-            allowed_values = {_normalize(value) for value in allowed}
+            allowed_values = {_configuration_axis_value(axis, value) for value in allowed}
             for match in pattern.finditer(sentence):
                 if _locally_negated(sentence, match.start()):
                     continue
@@ -1620,20 +1679,20 @@ def validate_reply_truth(
                         expected = {"size": fact.size, "fit": fact.fit_code, "color": fact.color_label}[axis]
                         wanted, _ = _configuration(expected)
                         if given.get(axis, _normalize(claimed)) == wanted.get(axis, _normalize(expected)):
-                            effective.add(_normalize(claimed))
+                            effective.add(_configuration_axis_value(axis, claimed))
                 if (not _has_positive_claim(_AVAILABILITY_RE, clause)
                     and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
                     and _AGREEMENT_ATTRIBUTION_RE.search(sentence)):
-                    effective.update(_normalize(row[1]) for row in context.agreement_choices[:80]
+                    effective.update(_configuration_axis_value(axis, row[1]) for row in context.agreement_choices[:80]
                         if isinstance(row, (tuple, list)) and len(row) == 3 and row[0] == axis
                         and isinstance(row[1], str) and type(row[2]) is int and row[2] > 0)
                 if not _has_positive_claim(_AVAILABILITY_RE, clause) and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause) and _CUSTOMER_CHOICE_RE.search(clause):
-                    effective.update(_normalize(value) for value in source_choices)
+                    effective.update(_configuration_axis_value(axis, value) for value in source_choices)
                 if (not _has_positive_claim(_AVAILABILITY_RE, clause)
                     and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
                     and CORRECTED_REQUIREMENT_RE.search(clause)):
-                    effective.update(_normalize(value) for value in audited_choices)
-                if _normalize(claimed) not in effective:
+                    effective.update(_configuration_axis_value(axis, value) for value in audited_choices)
+                if _configuration_axis_value(axis, claimed) not in effective:
                     _add(reasons, "configuration_mismatch")
 
     return ReplyTruthResult(valid=not reasons, reasons=tuple(reasons))
@@ -1647,6 +1706,7 @@ __all__ = [
     "ReplyTruthContext",
     "ReplyTruthResult",
     "TimingAuthority",
+    "FulfillmentDeadlineAuthority",
     "CheckoutLineAuthority",
     "CheckoutOrderAuthority",
     "ShippingAuthority",

@@ -1929,11 +1929,11 @@ body.bot-drawer-open{overflow:hidden;}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-confirmed-purchases-v17"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-confirmed-purchases-v17"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=commerce-scope-v1"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=19d27b08a180"></script>{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=274e711a8760"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=3d87bf7c76b1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
-{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=f6a2e97dcc5d"></script><script src="{% static 'management/js/ig_restock_waiting_list.js' %}?v=0b0a6641df1c"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=f336cbcc83fe"></script><script src="{% static 'management/js/ig_restock_waiting_list.js' %}?v=0b0a6641df1c"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'js/management-ig-split-shipping.js' %}?v=e749772c9099"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=0a2aee9a669c"></script><script src="{% static 'management/js/ig_assisted_partial.js' %}?v=369002f1ad35"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}

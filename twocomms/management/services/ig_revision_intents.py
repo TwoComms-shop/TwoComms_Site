@@ -221,7 +221,7 @@ def collaboration_brief_for_revision(revision):
     """Build a source-bound operator brief without reading mutable client state."""
     from management.services.bot_sales_classifier import extract_collaboration_brief
     from management.services.ig_business_cooperation import (
-        business_cooperation_for_sources, current_cooperation_sources,
+        business_cooperation_for_sources, current_cooperation_sources, recruitment_service_for_sources,
     )
 
     proposal = getattr(revision, "generation_proposal", None) or {}
@@ -229,6 +229,7 @@ def collaboration_brief_for_revision(revision):
     route_intents = [item for item in (route or {}).get("intents", ()) if isinstance(item, dict)]
     sources = current_cooperation_sources((getattr(revision, "bundle_snapshot", None) or {}).get("sources", ()))
     business = business_cooperation_for_sources(sources)
+    recruitment = recruitment_service_for_sources(sources)
     items = []
     for source in sources:
         if source.get("role") != "user":
@@ -261,8 +262,9 @@ def collaboration_brief_for_revision(revision):
         "schema_version": 2,
         "source_snapshot_digest": str(getattr(revision, "snapshot_digest", "") or ""),
         "route_intents": route_intents,
-        "cooperation_kind": "business" if business else "creator_or_other",
+        "cooperation_kind": "recruitment_service" if recruitment else "business" if business else "creator_or_other",
         "business_cooperation": business,
+        "recruitment_service": recruitment,
         "items": items[-64:],
     }
 
@@ -514,6 +516,7 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         reason = manager_case_reason(revision, response)
         collaboration = collaboration_brief_for_revision(revision) if reason == "collaboration_review" else {}
         business = collaboration.get("business_cooperation") or {}
+        recruitment = collaboration.get("recruitment_service") or {}
         from management.services.ig_service_complaints import revision_service_complaint
         service_complaint = revision_service_complaint(revision)
         complaint_evidence = []
@@ -554,6 +557,8 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 message_text=(
                     "Клієнт просить власний принт: перевірити макет, можливість і вартість."
                     if reason == "custom_print" else
+                    "Клієнт пропонує допомогу з Instagram Direct / підтримкою клієнтів: передати пропозицію адміністрації для розгляду потреби й умов. Вакансію не підтверджено."
+                    if reason == "collaboration_review" and recruitment else
                     "Клієнт питає про магазин, перепродаж або бізнес-співпрацю: розглянути його питання й погодити індивідуальні умови."
                     if reason == "collaboration_review" and business else
                     "Клієнт пропонує creator/фото-відео співпрацю: перевірити портфоліо, результати, умови та контакт."
@@ -580,6 +585,7 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             "latest_revision_id": revision.pk, "generation_proposal_digest": revision.generation_proposal_digest,
             "required_decisions": (
                 ["design_feasibility", "quote_approval"] if reason == "custom_print" else
+                ["employment_service_review", "customer_support_scope", "work_conditions"] if reason == "collaboration_review" and recruitment else
                 ["business_cooperation_review", "partnership_terms", "customer_questions"] if reason == "collaboration_review" and business else
                 ["portfolio_review", "collaboration_terms"] if reason == "collaboration_review" else
                 ["customer_request"]
@@ -588,9 +594,14 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         })
         if reason == "collaboration_review":
             context["collaboration_brief"] = collaboration
-            context["cooperation_kind"] = "business" if business else "creator_or_other"
+            context["cooperation_kind"] = "recruitment_service" if recruitment else "business" if business else "creator_or_other"
             context["business_cooperation"] = business
-            if business:
+            context["recruitment_service"] = recruitment
+            if recruitment.get("creator_work_also_offered"):
+                context["required_decisions"] += ["portfolio_review", "collaboration_terms"]
+            if recruitment:
+                task.message_text = "Клієнт пропонує допомогу з Instagram Direct / підтримкою клієнтів: передати пропозицію адміністрації для розгляду потреби й умов. Вакансію не підтверджено."
+            elif business:
                 # A pre-existing creator case must not keep its old portfolio
                 # instructions when this current source opens a trade inquiry.
                 task.message_text = "Клієнт питає про магазин, перепродаж або бізнес-співпрацю: розглянути його питання й погодити індивідуальні умови."

@@ -327,8 +327,9 @@ def resolve_source_product_request(client, source, request, *, catalog_graph=Non
             request = replace(request, field_updates={**request.field_updates, "fit": fit_choice["fit"]})
             binding["contextual_fit_choice"] = fit_choice
     if request.line_operations or request.pending_line_clarification:
+        from management.services.ig_ingress_source_proof import is_current_customer_source
         if (source.client_id != client.pk or source.sender_id != client.igsid
-            or source.role != "user" or source.source != "webhook" or source.status == "failed"
+            or not is_current_customer_source(source) or source.status == "failed"
             or not source.provider_namespace or client.privacy_erasure_started_at is not None):
             return replace(request, line_operations=(), pending_line_clarification="line_source_unverified",
                 source_binding={**binding, "product_resolution": "unresolved"})

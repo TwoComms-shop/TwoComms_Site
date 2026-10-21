@@ -251,6 +251,7 @@ def _quantity_basis(preferences, line):
 def _selection_sources(preferences, client, namespace):
     """Freeze original source and immutable reducer records, independent of UI head."""
     from management.models import InstagramBotMessage, IgCommerceTurnDecision, IgCommerceSelectionTransition
+    from management.services.ig_ingress_source_proof import is_current_customer_source
     from management.services.ig_turn_revisions import _source_payload
     evidence = list(preferences.get("evidence", {}).values())
     source_ids = {item["source_message_id"] for item in evidence if isinstance(item, dict) and item.get("source_message_id")}
@@ -258,9 +259,9 @@ def _selection_sources(preferences, client, namespace):
     transition_ids = {item["transition_id"] for item in evidence if isinstance(item, dict) and item.get("transition_id")}
     if not source_ids or max(len(source_ids), len(decision_ids), len(transition_ids)) > 16:
         return None
-    rows = list(InstagramBotMessage.objects.filter(pk__in=source_ids).order_by("pk"))
+    rows = list(InstagramBotMessage.objects.filter(pk__in=source_ids).select_related("client").order_by("pk"))
     if len(rows) != len(source_ids) or any(row.client_id != client.pk or row.sender_id != client.igsid
-        or row.role != "user" or row.source != "webhook" or row.status in {"failed", "ignored"}
+        or not is_current_customer_source(row, namespace=namespace) or row.status in {"failed", "ignored"}
         or not row.mid or not row.provider_created_at or row.provider_namespace != namespace
         or row.pk < preferences["reset_floor"] for row in rows):
         return None

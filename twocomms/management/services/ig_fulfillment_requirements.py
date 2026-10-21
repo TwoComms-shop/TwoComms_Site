@@ -4,7 +4,9 @@ Dates describe requested calendar days, never arrival guarantees or shipment
 cutoffs. Relative days use the actual provider clock under the explicit Kyiv
 policy. Neither ingestion time nor narrative/model output supplies that clock.
 """
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
+import hashlib
+import json
 import re
 from zoneinfo import ZoneInfo
 
@@ -26,6 +28,8 @@ _TOGETHER = re.compile(r"\b(?:все\s+разом|усе\s+разом|всё\s+�
 _SPLIT = re.compile(r"\b(?:окрем\w*|отдель\w*|розділ\w*|раздел\w*|split|separately|separate\s+(?:parcels?|shipments?))\b", re.I)
 _CUSTOM = re.compile(r"\b(?:кастом\w*|custom\s+print|свій\s+принт|свой\s+принт|my\s+own\s+print|індивідуальн\w*\s+принт)\b", re.I)
 _RELATIVE = re.compile(r"\b(?:післязавтра|послезавтра|day\s+after\s+tomorrow|завтра|tomorrow)\b", re.I)
+_DEPARTURE = re.compile(r"\b(?:I\s+(?:have\s+to\s+)?leave|I['’]m\s+leaving|we\s+(?:have\s+to\s+)?leave|depart\w*|виїжджа\w*|від['’]їжджа\w*|уезжа\w*)\b", re.I)
+_CLOCK = re.compile(r"\b(?:at|before|by|о|об|до|в)\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!\w)", re.I)
 _NUMERIC = re.compile(r"(?<![\w\d])(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}(?:[./-]\d{4})?)(?![\w\d])")
 _MONTHS = {}
 for _number, _names in enumerate((
@@ -44,7 +48,102 @@ _RECIPIENTS = {
     "подруги": "friend_female", "подругу": "friend_female",
     "мами": "mother", "мамы": "mother", "mother": "mother", "mom": "mother",
     "тата": "father", "папы": "father", "father": "father", "dad": "father",
+    "boyfriend": "boyfriend", "хлопця": "boyfriend", "парня": "boyfriend",
 }
+
+
+def requirement_digest(requirement):
+    """Stable identity of a detached requirement, including its source when known."""
+    payload = {key: value for key, value in requirement.items() if key != "requirement_digest"}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+
+
+def active_hard_requirements(requirements):
+    """Keep the latest explicit cutoff; withdrawals do not leave an old hold."""
+    active = []
+    for hint in requirements:
+        if not isinstance(hint, dict):
+            continue
+        supersession = deadline_supersession(hint)
+        if supersession == "withdrawn" or supersession == "changed" and hint.get("deadline_hard") is True:
+            active = []
+        if hint.get("deadline_hard") is True and hint.get("supersession_hint") != "withdrawn":
+            active = [hint]
+    return active
+
+
+def deadline_supersession(hint):
+    """Validate old sealed hints without rewriting their immutable contents.
+
+    Earlier producers classified any 'change/now' as a deadline change. A
+    size or recipient edit cannot withdraw a previously stated departure.
+    """
+    if not isinstance(hint, dict):
+        return ""
+    kind = hint.get("supersession_hint")
+    value, _ = _customer_text(hint.get("raw_quote") or "")
+    if kind == "withdrawn" and _affirmative_deadline_withdrawal(hint.get("raw_quote") or ""):
+        return kind
+    if kind == "changed" and _CHANGED.search(value) and (
+            hint.get("deadline_hard") is True or hint.get("deadline_raw")
+            or re.search(r"\b(?:deadline|дедлайн|дат[ауиы]|термін\w*|срок\w*)\b", value, re.I)):
+        return kind
+    return ""
+
+
+def _affirmative_deadline_withdrawal(raw):
+    value, hypothetical = _customer_text(raw)
+    if hypothetical or re.search(r'[?？"«»“”‘]|(?<!\w)[\x27’]|[\x27’](?!\w)', raw):
+        return False
+    if re.search(r"\b(?:said|says|told|wrote|asked|according|maybe|might|may|perhaps|possibly|could|"
+            r"можливо|возможно|мабуть|напевно|наверно\w*|ймовір\w*|вероят\w*|"
+            r"сказ\w*|каже|казав\w*|говор\w*|напис\w*|попрос\w*)\b", raw, re.I):
+        return False
+    if re.search(r"\b(?:refus\w*|declin\w*|reject\w*|against|відмов\w*|відхил\w*|отказ\w*|отклон\w*|проти|против)\b", raw, re.I):
+        return False
+    if re.search(r"\b(?:not|no|never|cannot|не|ні|нет|"
+            r"(?:can|don|doesn|didn|couldn|wouldn|shouldn|won|wasn|weren|isn|aren|haven|hasn|hadn|mustn|needn)[\W_]*t)\b[\W_]*"
+            r"(?:\w+[\W_]+){0,3}(?:cancel\w*|withdraw\w*|remove\w*|скасу\w*|скасов\w*|отмен\w*)\b"
+            r"|\b(?:нескасу\w*|нескасов\w*|неотмен\w*)\b", raw, re.I):
+        return False
+    return bool(_WITHDRAW.search(value))
+
+
+def global_deadline_withdrawal(hint):
+    """An explicit unqualified all-deadlines instruction resolves unknown scope."""
+    raw = (hint or {}).get("raw_quote") or ""
+    value, hypothetical = _customer_text(raw)
+    return bool(deadline_supersession(hint) == "withdrawn" and not hypothetical
+        and not re.search(r'["«»“”‘]|(?<!\w)[\x27’]|[\x27’](?!\w)', raw)
+        and not re.search(r"[?？]|\b(?:not|never|don[\W_]*t|не|ні)\W+(?:\w+\W+){0,2}"
+            r"(?:cancel|withdraw|remove|скасу\w*|отмен\w*)\b", value, re.I)
+        and re.search(r"\b(?:all|every|всіх|усіх|всі|усі|всех|все)\b", value, re.I)
+        and not re.search(r"\b(?:for|для|щодо|каса\w*|стосовно|item|line|позици\w*|позиці\w*)\b", value, re.I))
+
+
+def _departure_requirement(result, value):
+    departure = any(_affirmed(value, match) for match in _DEPARTURE.finditer(value))
+    if not departure:
+        return result
+    result.update(deadline_kind="departure", deadline_hard=True)
+    clocks = list(_CLOCK.finditer(value))
+    # An hour without AM/PM or a 24-hour minute is ambiguous. Do not guess it.
+    parsed = []
+    for match in clocks:
+        hour, minute, meridiem = int(match[1]), int(match[2] or 0), (match[3] or "").lower().replace(".", "")
+        if minute > 59 or (meridiem and not 1 <= hour <= 12) or (not meridiem and (match[2] is None or hour > 23)):
+            continue
+        if meridiem:
+            hour = hour % 12 + (12 if meridiem == "pm" else 0)
+        parsed.append((time(hour, minute), match.group()))
+    if len(parsed) == 1 and result.get("deadline_date"):
+        clock, raw = parsed[0]
+        result.update(deadline_at=datetime.combine(date.fromisoformat(result["deadline_date"]), clock, KYIV).isoformat(),
+            deadline_time_raw=raw, deadline_timezone_basis="explicit_kyiv_policy", timezone=KYIV.key)
+    else:
+        result["reasons"].append("departure_time_needs_clarification")
+    return result
 
 
 def _aware(value):
@@ -64,8 +163,9 @@ def _customer_text(text):
     excluded = False
     for clause in clauses:
         polite_request = bool("?" in clause and re.search(r"\bwould\s+(?:you|it|this|that|we)\b", clause, re.I))
+        polite_intent = bool(re.search(r"\bI\s+would\s+like\b", clause, re.I))
         if (re.search(r"\b(?:якщо|если|if|hypothetical|might|цитат\w*)\b|(?:він|он|she|he)\s+(?:сказав|сказал|said|wrote)", clause, re.I)
-                or re.search(r"\bwould\b", clause, re.I) and not polite_request):
+                or re.search(r"\bwould\b", clause, re.I) and not (polite_request or polite_intent)):
             excluded = True
         elif re.search(r"\b(?:не\s+(?:потріб\w*|нуж\w*|достав\w*|відправ\w*|отправ\w*)|(?:don't|don’t|do\s+not)\s+(?:need|want|require))\b", clause, re.I):
             # A withdrawn/negated request does not affirm the date later in it.
@@ -150,12 +250,11 @@ def extract_requirements(text, *, provider_timestamp=None, now=None):
         result["delivery_preference"] = "unknown"
         if "delivery_preference_ambiguous" not in result["reasons"]:
             result["reasons"].append("delivery_preference_ambiguous")
-    if _WITHDRAW.search(value):
+    if _affirmative_deadline_withdrawal(raw):
         result["supersession_hint"] = "withdrawn"
         result["reasons"].append("deadline_withdrawal")
         return result
-    if _CHANGED.search(value) or re.search(r"\bне\s+\d[^;\n]{0,40}\b(?:а|але)\b", value, re.I):
-        result["supersession_hint"] = "changed"
+    changed = bool(_CHANGED.search(value) or re.search(r"\bне\s+\d[^;\n]{0,40}\b(?:а|але)\b", value, re.I))
     candidates = []
     covered = []
     for match in _NUMERIC.finditer(value):
@@ -191,7 +290,8 @@ def extract_requirements(text, *, provider_timestamp=None, now=None):
     # A date alone can answer an already open manager clarification; the caller
     # still owns the exact purchase and source. Dates embedded in unrelated text
     # never become a delivery requirement merely because they resemble a date.
-    relevant = bool(arrival or dispatch or result["gift"] is True or _DATE_CUE.search(value)
+    departure = any(_affirmed(value, match) for match in _DEPARTURE.finditer(value))
+    relevant = bool(arrival or dispatch or departure or result["gift"] is True or _DATE_CUE.search(value)
         or (len(candidates) == 1 and value.strip(" .,!?;:") == candidates[0][0]))
     result["request_detected"] = bool(result["urgency"] is True or ((arrival or dispatch) and "?" in value) or (candidates and relevant))
     if candidates and relevant:
@@ -211,4 +311,8 @@ def extract_requirements(text, *, provider_timestamp=None, now=None):
         result["request_detected"] = True
         result["date_status"] = "needs_clarification"
         result["reasons"].append("deadline_missing")
+    result = _departure_requirement(result, value)
+    if changed and (result.get("deadline_hard") or result.get("deadline_raw")
+            or re.search(r"\b(?:deadline|дедлайн|дат[ауиы]|термін\w*|срок\w*)\b", value, re.I)):
+        result["supersession_hint"] = "changed"
     return result

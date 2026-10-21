@@ -136,10 +136,12 @@ def turn_triggers(text: str) -> set[str]:
                    for match in _TURN_TRIGGERS[name].finditer(clause)):
                 result.add(name)
                 break
-    from management.services.ig_business_cooperation import current_cooperation_sources, extract_business_cooperation
+    from management.services.ig_business_cooperation import (
+        current_cooperation_sources, extract_business_cooperation, recruitment_service_for_sources,
+    )
 
     cooperation_sources = current_cooperation_sources([{"text": value}])
-    if (extract_business_cooperation(value) or any(
+    if (extract_business_cooperation(value) or recruitment_service_for_sources(cooperation_sources) or any(
         _TURN_TRIGGERS["collaboration"].search(own_reply_text(row["text"])) for row in cooperation_sources
     )):
         result.add("collaboration")

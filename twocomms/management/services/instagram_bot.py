@@ -18248,8 +18248,21 @@ def _fetch_polled_conversation(
     }
 
 
-def poll_ingest(s: InstagramBotSettings) -> dict:
+def poll_ingest(s: InstagramBotSettings, *, max_seconds=None) -> dict:
     """Читає інбокс IG і кладе нові вхідні в чергу. Лише коли receive_via_poll."""
+    import math
+
+    budget = POLL_MAX_SECONDS
+    if max_seconds is not None:
+        if isinstance(max_seconds, bool):
+            raise ValueError("invalid poll time budget")
+        try:
+            budget = float(max_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("invalid poll time budget") from exc
+        if not math.isfinite(budget) or budget <= 0:
+            raise ValueError("invalid poll time budget")
+        budget = min(budget, POLL_MAX_SECONDS)
     if not s.receive_via_poll:
         return {"ok": True, "enqueued": 0, "skipped": True}
     if not _provider_account_id(s):
@@ -18304,7 +18317,7 @@ def poll_ingest(s: InstagramBotSettings) -> dict:
             continue
         due_conv_ids.append(cid)
     ordered_conv_ids, start_offset = _poll_conversation_order(s, due_conv_ids)
-    deadline = time.monotonic() + POLL_MAX_SECONDS
+    deadline = time.monotonic() + budget
     requests_used = 0
     conversations_checked = 0
     budget_exhausted = False

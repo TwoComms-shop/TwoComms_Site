@@ -51,7 +51,7 @@ HEADER = (
     "fulfillment.review stores customer deadlines and an exact manager review. Pending is not confirmed availability. "
     "Preparation, dispatch and carrier arrival are separate: never convert preparation days into an arrival guarantee. "
     "Clarify incomplete dates, discuss carrier variability for important deadlines, and ask before any split shipment. "
-    "Existing mandatory server blocks and execution guards govern actions.\n"
+    "Mandatory server blocks and guards govern actions.\n"
 )
 
 
@@ -762,6 +762,17 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
             if key == "fulfillment.review":
                 from management.services.ig_fulfillment_context import fulfillment_prompt_value
                 projected["value"] = fulfillment_prompt_value(slot["value"])
+                # These are capture authentication/audit bookkeeping, not
+                # customer deadlines or manager preparation/availability.
+                # The immutable state and dispatch guards retain them all;
+                # observed_at and the decision's decided_at remain explicit.
+                projected["value"].pop("request_digest", None)
+                projected["value"].pop("captured_at", None)
+                if isinstance(projected["value"].get("current_request"), dict):
+                    projected["value"]["current_request"].pop("active_hard_requirement_digest", None)
+                for record in ("current_request", "decision"):
+                    if isinstance(projected["value"].get(record), dict):
+                        projected["value"][record].pop("created_at", None)
         block = _json(projected)
         (mandatory if slot["mandatory"] else optional).append((key, block))
     if cart.get("status") == "captured":

@@ -172,6 +172,10 @@ def _source_cart_control(client, control, captured):
     current = capture_current_selection_lines(client.pk)
     if not same_checkout_source_capture(captured, current):
         return {}, ("checkout_cart_source_changed",)
+    from management.services.ig_fulfillment_checkout import fulfillment_deadline_checkout_reason
+    deadline_reason = fulfillment_deadline_checkout_reason(client, current)
+    if deadline_reason:
+        return {}, (deadline_reason,)
     from management.models import IgCommerceSelectionSession
     from management.services.ig_commerce_projection import _choice_digest
     session = IgCommerceSelectionSession.objects.filter(pk=current["session_id"], client_id=client.pk,
@@ -403,6 +407,13 @@ def checkout_authority_control(client, control, *, source_cart_capture=None, sou
         quote = validate_checkout_items(client=client, item_specs=specs, negotiated_total=None)
     except CheckoutConfigurationError as exc:
         return {}, ("checkout:" + exc.code,)
+    # The legacy single-item entrance still uses native current sources for a
+    # cutoff hold. Model item dictionaries and client cache cannot clear it.
+    from management.services.ig_commerce_projection import capture_current_selection_lines
+    from management.services.ig_fulfillment_checkout import fulfillment_deadline_checkout_reason
+    deadline_reason = fulfillment_deadline_checkout_reason(client, capture_current_selection_lines(client.pk))
+    if deadline_reason:
+        return {}, (deadline_reason,)
     return {"items": _quote_items(quote)}, ()
 
 

@@ -22,9 +22,15 @@ WORKER_LIMITS = {
     "inbox_refresh": 600.0,
     "checkout_lifecycle": 300.0,
     "follow_intelligence": 600.0,
+    # Native generation (45s) plus all 16 bounded Meta parts (16*12s+5s)
+    # and heartbeat margin fit within this observation window. This does
+    # not enlarge any revision, quota, transport or automation lease.
+    "customer_execution_0": 300.0,
+    "customer_execution_1": 300.0,
 }
 PROCESS_PULSE_KEY = "ig_bot_daemon_hb"
 DAEMON_OWNER = "instagram_daemon"
+OPTIONAL_WORKERS = frozenset({"customer_execution_0", "customer_execution_1"})
 
 
 class WorkerProgressRegistry:
@@ -42,8 +48,24 @@ class WorkerProgressRegistry:
                 name: {"state": "starting", "progress_at": now,
                        "started_at": None, "completed_at": None,
                        "deadline_at": now + limit, "error_kind": ""}
-                for name, limit in WORKER_LIMITS.items()
+                for name, limit in WORKER_LIMITS.items() if name not in OPTIONAL_WORKERS
             }
+
+    def activate_optional(self, names):
+        now = self.clock()
+        with self.lock:
+            for name in names:
+                if name not in OPTIONAL_WORKERS:
+                    raise ValueError("unknown optional worker")
+                self.rows[name] = {"state": "idle", "progress_at": now,
+                    "started_at": None, "completed_at": now,
+                    "deadline_at": now + WORKER_LIMITS[name], "error_kind": ""}
+
+    def deactivate_optional(self, names):
+        with self.lock:
+            for name in names:
+                if name in OPTIONAL_WORKERS:
+                    self.rows.pop(name, None)
 
     def begin(self, name):
         limit = WORKER_LIMITS[name]
@@ -184,6 +206,8 @@ def worker_health_snapshot(payload, *, now):
     payload = payload if isinstance(payload, dict) else {}
     lanes = {}
     for name, limit in WORKER_LIMITS.items():
+        if name in OPTIONAL_WORKERS and name not in payload:
+            continue
         row = payload.get(name)
         row = row if isinstance(row, dict) else {}
         progress = _moment(row.get("progress_at"))

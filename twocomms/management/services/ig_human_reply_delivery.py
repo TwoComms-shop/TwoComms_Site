@@ -449,7 +449,7 @@ def _private_text(text):
     return text
 
 
-def _document_owner(client, context, namespace, kind, now):
+def _document_owner(client, context, namespace, kind, now, *, operator_generation_receipt=None):
     if client is None or client.hidden_at or client.privacy_erasure_started_at:
         raise HumanReplyRejected("client_unavailable")
     if context is None or context.client_id != client.pk or context.sender_id != client.igsid or context.role != "user" or context.status == "failed":
@@ -467,12 +467,16 @@ def _document_owner(client, context, namespace, kind, now):
             raise HumanReplyRejected("newer_inbound")
         deadline = _window_deadline(context)
         if deadline is None or deadline <= now:
-            raise HumanReplyRejected("reply_window_closed")
+            if operator_generation_receipt is None:
+                raise HumanReplyRejected("reply_window_closed")
+            from management.services.ig_operator_reply_drafts import validate_operator_generation_receipt
+            validate_operator_generation_receipt(operator_generation_receipt, client=client, source=context)
     return floor
 
 
 def create_private_document(client_id, *, actor, kind, text, context_message_id, provider_namespace,
-                            expected_permission_epoch=None, document_id=None, now=None):
+                            expected_permission_epoch=None, document_id=None, now=None,
+                            operator_generation_receipt=None):
     """Private save causes no takeover, transcript, command, or provider effect."""
     actor = _private_actor(actor)
     text = _private_text(text)
@@ -488,7 +492,14 @@ def create_private_document(client_id, *, actor, kind, text, context_message_id,
             raise HumanReplyRejected("client_unavailable")
         actor = _private_actor(actor)
         context = InstagramBotMessage.objects.filter(pk=context_message_id, client_id=client_id).first()
-        floor = _document_owner(client, context, provider_namespace, kind, now or timezone.now())
+        if operator_generation_receipt is not None:
+            if kind != HumanReplyPrivateDocument.Kind.REPLY_DRAFT:
+                raise HumanReplyRejected("private_kind_invalid")
+            from management.services.ig_operator_reply_drafts import validate_operator_generation_receipt
+            validate_operator_generation_receipt(operator_generation_receipt, client=client, source=context,
+                actor=actor, text=text, document_id=identity)
+        floor = _document_owner(client, context, provider_namespace, kind, now or timezone.now(),
+            operator_generation_receipt=operator_generation_receipt)
         if expected_permission_epoch is not None and client.reply_permission_epoch != expected_permission_epoch:
             raise HumanReplyRejected("permission_epoch_changed")
         existing = HumanReplyPrivateDocument.objects.select_for_update().filter(document_id=identity).first()

@@ -108,9 +108,14 @@ def _timing(value, phase, copy):
         raise ValueError("invalid_timing")
     low, high, unit = value.get("min_days"), value.get("max_days"), value.get("unit")
     anchor = parse_datetime(str(value.get("anchor_at") or ""))
+    after_payment = value.get("anchor") == "after_payment_confirmation"
     if (type(low) is not int or type(high) is not int or not 0 <= low <= high <= 365
-            or unit not in {"calendar", "business"} or not anchor or timezone.is_naive(anchor)):
+            or unit not in {"calendar", "business"} or (not after_payment and (not anchor or timezone.is_naive(anchor)))):
         raise ValueError("invalid_timing")
+    if after_payment:
+        days = str(low) if low == high else f"{low}–{high}"
+        phrase = {"from": "after payment is confirmed", "від": "після підтвердження оплати", "от": "после подтверждения оплаты"}[copy["from"]]
+        return f"{copy[phase]} {days} {copy[unit]} {phrase}"
     if low == high == 0:
         return f"{copy[phase]} {copy['same_day']} ({anchor.astimezone(KYIV):%d.%m.%Y})"
     days = str(low) if low == high else f"{low}–{high}"
@@ -159,7 +164,27 @@ def render_manager_update(projection, *, copy_version=1):
                 and hint.get("supersession_hint") != "withdrawn" for hint in requirements)
         if has_timing or has_deadline:
             suffix.append(copy["arrival"])
-        if has_deadline:
+        deadline_review = decision.get("deadline_review") or {}
+        outcome = deadline_review.get("outcome")
+        if outcome == "impossible":
+            suffix.append({"en": "We cannot meet your departure deadline, including with expedited service.",
+                "uk": "Не встигнемо до вашого від’їзду, навіть із терміновим виконанням.",
+                "ru": "Не успеем до вашего отъезда, даже при срочном выполнении."}.get(locale, "We cannot meet your departure deadline, including with expedited service."))
+            option_copy = {
+                "en": {"later_domestic_contact": "Would you like your boyfriend or another contact in Ukraine to receive it later?",
+                    "later_domestic_destination": "We can discuss later delivery by Nova Poshta to where you will be staying in Ukraine; carrier transit is separate from preparation.",
+                    "international_review_required": "For international delivery, the team must first check feasibility and a shipping quote."},
+                "uk": {"later_domestic_contact": "Можемо обговорити отримання пізніше вашим хлопцем або іншою контактною особою в Україні.",
+                    "later_domestic_destination": "Можемо обговорити пізніше отримання Новою поштою там, де ви перебуватимете в Україні; перевезення окреме від підготовки.",
+                    "international_review_required": "Міжнародну доставку спочатку перевіримо щодо можливості та вартості."},
+                "ru": {"later_domestic_contact": "Можем обсудить получение позже вашим парнем или другим контактным лицом в Украине.",
+                    "later_domestic_destination": "Можем обсудить получение позже Новой почтой там, где вы будете в Украине; перевозка отдельно от подготовки.",
+                    "international_review_required": "Международную доставку сначала проверим на возможность и стоимость."}}
+            for option in deadline_review.get("options") or []:
+                if option not in option_copy.get(locale, option_copy["en"]):
+                    return ""
+                suffix.append(option_copy.get(locale, option_copy["en"])[option])
+        elif has_deadline:
             suffix.append(copy["deadline"])
         if any(isinstance(hint, dict) and hint.get("date_status") == "needs_clarification"
                 and hint.get("supersession_hint") != "withdrawn" for hint in requirements):
