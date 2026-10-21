@@ -19,7 +19,7 @@ from management.models import (
 )
 from management.ig_human_reply_models import HumanReplyPrivateDocument
 from management.services.ig_human_reply import HumanReplyRejected, create_human_reply_command_from_draft
-from management.services.ig_human_reply_delivery import create_private_document
+from management.services.ig_human_reply_delivery import create_private_document, update_private_document
 from management.services.ig_operator_reply_drafts import ACTION, prepare_operator_reply_draft
 from management.tests_gemini_accounting_shadow import SHADOW, _Response, seed_shadow_profiles
 from management.tests_ig_policy_helpers import ensure_test_instruction_publication
@@ -65,6 +65,20 @@ class OperatorReplyDraftTests(TestCase):
             parsed if parsed is not None else {"reply_text": self.text, "evidence_message_ids": [self.source.pk]},
             ensure_ascii=False)}]}}], "usageMetadata": {"promptTokenCount": 100,
             "candidatesTokenCount": 40, "totalTokenCount": 140}})
+
+    def pending_review(self):
+        from management.models import IgCustomerTurn, IgTurnMessage
+        from management.services.ig_response_debt import record_reply_debt
+        from management.services.ig_turn_revisions import create_collecting_revision, claim_revision_preparation, seal_revision
+        now = timezone.now()
+        turn = IgCustomerTurn.objects.create(client=self.customer, primary_source_message=self.source,
+            window_started_at=now, window_deadline=now)
+        IgTurnMessage.objects.create(turn=turn, message=self.source, ordinal=1, role="user")
+        revision = create_collecting_revision(turn, [self.source], now=now, bypass_quiet=True).revision
+        preparing = claim_revision_preparation(revision.pk, now=now)
+        self.assertTrue(seal_revision(revision.pk, preparing.token, now=now).sealed)
+        revision.refresh_from_db()
+        return record_reply_debt(revision, "required_context_budget_exceeded", now=now)
 
     def test_default_command_dry_run_has_zero_database_or_provider_access(self):
         output = StringIO()
@@ -299,3 +313,136 @@ class OperatorReplyDraftTests(TestCase):
         terminal = AdminAuditLog.objects.filter(action=ACTION).order_by("-pk").first()
         self.assertEqual(terminal.after["state"], "failed")
         self.assertFalse(HumanReplyPrivateDocument.objects.exists())
+
+    def test_verified_old_wait_requires_apology_and_current_review_in_private_output(self):
+        task = self.pending_review()
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            missing = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(missing.get("reason"), "operator_apology_required", missing)
+        self.op = str(uuid.uuid4())
+        self.text = "Перепрошую за очікування. Дякуємо за пропозицію роботи з Direct."
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            cold = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(cold.get("reason"), "operator_current_review_required", cold)
+        self.op = str(uuid.uuid4())
+        self.text += " Ваші питання щодо умов зараз потребують розгляду команди."
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()) as provider:
+            saved = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(saved["state"], "saved", saved)
+        payload = json.loads(provider.call_args.kwargs["data"])
+        self.assertIn("include one brief apology", payload["system_instruction"]["parts"][0]["text"])
+        task.refresh_from_db()
+        self.assertNotIn(task.status, ("completed", "cancelled"))
+        self.assertFalse(HumanReplyCommand.objects.exists())
+
+    def test_operator_flag_does_not_authorize_apology_for_a_short_unverified_wait(self):
+        InstagramBotMessage.objects.filter(pk=self.source.pk).update(provider_created_at=timezone.now() - timedelta(hours=1))
+        self.text = "Перепрошую за очікування. " + self.text
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            rejected = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(rejected.get("reason"), "operator_apology_unverified", rejected)
+        self.op = str(uuid.uuid4())
+        self.text = "Дякуємо за пропозицію допомоги з Direct. Умови потребують розгляду команди."
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            saved = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(saved["state"], "saved", saved)
+
+    def test_actual_staffing_contact_promise_is_not_a_current_team_review(self):
+        self.pending_review()
+        self.text = ("Перепрошую за очікування. Дякуємо за пропозицію допомоги з Direct. "
+            "Умови співпраці потребують розгляду команди. Ми збережемо вашу пропозицію, "
+            "і якщо у бренду з'явиться потреба в підсиленні команди, з вами зв'яжуться.")
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            rejected = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(rejected.get("reason"), "operator_hiring_followup_unverified", rejected)
+        self.op = str(uuid.uuid4())
+        self.text = ("Перепрошую за очікування. Дякуємо за пропозицію допомоги з Direct. "
+            "Питання щодо умов співпраці потребують розгляду команди. "
+            "Коли команда матиме відповідь, відпишемо вам тут.")
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            accepted = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(accepted["state"], "saved", accepted)
+
+    def test_current_saved_brief_and_clarification_callback_are_not_a_future_talent_queue(self):
+        task = self.pending_review()
+        for continuation in (
+            "Вашу пропозицію збережено в brief для поточного розгляду команди.",
+            "Якщо потрібні додаткові дані, повідомте; коли керівництво відповість, зв’яжемося тут.",
+        ):
+            self.op = str(uuid.uuid4())
+            self.text = ("Перепрошую за очікування. Дякуємо за пропозицію допомоги з Direct. "
+                "Ваші питання щодо умов потребують розгляду команди. " + continuation)
+            with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+                saved = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+            self.assertEqual(saved["state"], "saved", saved)
+        task.refresh_from_db()
+        self.assertNotIn(task.status, ("completed", "cancelled"))
+
+    def test_known_no_inventory_request_is_not_reopened_or_promoted_to_approved_format(self):
+        self.source.text = ("Добрий день! Хочу запустити Instagram-магазин. Цікавить співпраця. "
+            "Яка ціна для партнера? Чи можна почати без закупівлі партії товару? "
+            "Які умови доставки та чи можна використовувати ваші фото?")
+        self.source.save(update_fields=["text"])
+        self.pending_review()
+        brief = ("Перепрошую за очікування. Дякуємо за звернення щодо запуску магазину. "
+            "Ваші питання про партнерські умови та старт без закупівлі партії потребують розгляду команди. ")
+        for question in ("Вас більше цікавить формат дропшипінгу чи оптова закупівля?",
+                "Чи хочете ви почати без закупівлі партії?"):
+            self.op = str(uuid.uuid4())
+            self.text = brief + question
+            with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+                result = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+            self.assertEqual(result.get("reason"), "operator_business_requirement_repeated", result)
+        self.op = str(uuid.uuid4())
+        self.text = brief + "Який орієнтовний обсяг продажів на місяць плануєте?"
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            saved = prepare_operator_reply_draft(**self.kwargs(), allow_delay_apology=True)
+        self.assertEqual(saved["state"], "saved", saved)
+        self.assertNotIn("дропшип", HumanReplyPrivateDocument.objects.get().text)
+
+    def test_expired_private_archive_changes_only_document_state_after_replacement_exists(self):
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            first = prepare_operator_reply_draft(**self.kwargs())
+            self.op = str(uuid.uuid4())
+            replacement = prepare_operator_reply_draft(**self.kwargs())
+        self.assertEqual((first["state"], replacement["state"]), ("saved", "saved"))
+        doc = HumanReplyPrivateDocument.objects.get(document_id=first["document_id"])
+        original_source = dict(InstagramBotMessage.objects.values().get(pk=self.source.pk))
+        original_client = dict(IgClient.objects.values().get(pk=self.customer.pk))
+        with self.assertRaisesMessage(HumanReplyRejected, "reply_window_closed"):
+            update_private_document(doc.document_id, actor=self.actor,
+                expected_version=doc.version, expected_hash=doc.text_hash, text="Changed draft")
+        with patch("management.services.instagram_bot.send_text") as send:
+            archived = update_private_document(doc.document_id, actor=self.actor,
+                expected_version=doc.version, expected_hash=doc.text_hash, archive=True)
+        send.assert_not_called()
+        self.assertEqual((archived.state, archived.version, archived.text, archived.text_hash),
+            ("archived", doc.version + 1, doc.text, doc.text_hash))
+        self.assertEqual(original_source, InstagramBotMessage.objects.values().get(pk=self.source.pk))
+        self.assertEqual(original_client, IgClient.objects.values().get(pk=self.customer.pk))
+        self.assertFalse(HumanReplyCommand.objects.exists())
+        next_doc = HumanReplyPrivateDocument.objects.get(document_id=replacement["document_id"])
+        with self.assertRaisesMessage(HumanReplyRejected, "reply_window_closed"):
+            create_human_reply_command_from_draft(self.customer.pk, actor=self.actor, operation_id=uuid.uuid4(),
+                document_id=next_doc.document_id, expected_version=next_doc.version, expected_hash=next_doc.text_hash)
+
+    def test_expired_archive_keeps_actor_cas_epoch_and_no_text_change_guards(self):
+        with patch("management.services.call_ai_analysis.requests.post", return_value=self.response()):
+            saved = prepare_operator_reply_draft(**self.kwargs())
+        doc = HumanReplyPrivateDocument.objects.get(document_id=saved["document_id"])
+        other = get_user_model().objects.create_superuser(username="other-archive-operator", email="other@example.test", password="test")
+        attempts = (
+            ({"actor": other, "expected_version": doc.version, "expected_hash": doc.text_hash}, "private_document_owned_by_other_actor"),
+            ({"actor": self.actor, "expected_version": doc.version + 1, "expected_hash": doc.text_hash}, "private_document_stale"),
+            ({"actor": self.actor, "expected_version": doc.version, "expected_hash": "f" * 64}, "private_document_stale"),
+            ({"actor": self.actor, "expected_version": doc.version, "expected_hash": doc.text_hash, "text": "Changed"}, "private_archive_text_forbidden"),
+        )
+        for kwargs, reason in attempts:
+            with self.subTest(reason=reason), self.assertRaisesMessage(HumanReplyRejected, reason):
+                update_private_document(doc.document_id, archive=True, **kwargs)
+        IgClient.objects.filter(pk=self.customer.pk).update(reply_permission_epoch=self.customer.reply_permission_epoch + 1)
+        with self.assertRaisesMessage(HumanReplyRejected, "permission_epoch_changed"):
+            update_private_document(doc.document_id, actor=self.actor,
+                expected_version=doc.version, expected_hash=doc.text_hash, archive=True)
+        doc.refresh_from_db()
+        self.assertEqual((doc.state, doc.version), ("open", 1))

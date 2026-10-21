@@ -449,7 +449,8 @@ def _private_text(text):
     return text
 
 
-def _document_owner(client, context, namespace, kind, now, *, operator_generation_receipt=None):
+def _document_owner(client, context, namespace, kind, now, *, operator_generation_receipt=None,
+                    archiving=False):
     if client is None or client.hidden_at or client.privacy_erasure_started_at:
         raise HumanReplyRejected("client_unavailable")
     if context is None or context.client_id != client.pk or context.sender_id != client.igsid or context.role != "user" or context.status == "failed":
@@ -467,6 +468,10 @@ def _document_owner(client, context, namespace, kind, now, *, operator_generatio
             raise HumanReplyRejected("newer_inbound")
         deadline = _window_deadline(context)
         if deadline is None or deadline <= now:
+            # Archiving is a private state transition, never an edit/send
+            # permission. Even here an absent window anchor stays invalid.
+            if archiving and deadline is not None:
+                return floor
             if operator_generation_receipt is None:
                 raise HumanReplyRejected("reply_window_closed")
             from management.services.ig_operator_reply_drafts import validate_operator_generation_receipt
@@ -521,6 +526,8 @@ def create_private_document(client_id, *, actor, kind, text, context_message_id,
 
 def update_private_document(document_id, *, actor, expected_version, expected_hash, text=None,
                             archive=False, now=None):
+    if archive and text is not None:
+        raise HumanReplyRejected("private_archive_text_forbidden")
     actor = _private_actor(actor)
     document_id = _private_identity(document_id)
     _private_cas(expected_version, expected_hash)
@@ -542,7 +549,8 @@ def update_private_document(document_id, *, actor, expected_version, expected_ha
         if doc.state != doc.State.OPEN:
             raise HumanReplyRejected("private_document_closed")
         context = InstagramBotMessage.objects.filter(pk=doc.context_message_id, client_id=doc.client_id).first()
-        floor = _document_owner(client, context, doc.provider_namespace, doc.kind, now or timezone.now())
+        floor = _document_owner(client, context, doc.provider_namespace, doc.kind, now or timezone.now(),
+            archiving=archive is True and text is None)
         if floor != doc.reset_floor or human_payload_digest(_context_payload(context)) != doc.context_digest:
             raise HumanReplyRejected("private_context_changed")
         if doc.kind == doc.Kind.REPLY_DRAFT and client.reply_permission_epoch != doc.source_permission_epoch:

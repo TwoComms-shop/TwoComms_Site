@@ -31,13 +31,59 @@ OPERATOR_POLICY = (
     "Use the customer's evidenced language. Return JSON with exactly reply_text (nonempty, at most 3000 characters) "
     "and evidence_message_ids (actual captured user IDs). No controls, actions, markdown fences or internal notes. "
     "Answer the actual employment/customer-support offer or B2B questions, not a creator portfolio script. "
-    "Acknowledge known questions together, do not repeat them. At most one useful missing question. "
+    "Thank the person for the actual evidenced offer and acknowledge their known questions together; do not repeat them. "
+    "When manager_tasks is nonempty, explain that these actual questions/terms remain pending team review. "
+    "Do not replace that current review with a hypothetical future hiring need, talent queue or promise to contact the person if staff are needed. "
+    "A request to start without buying a batch is a known customer requirement, not approval of dropshipping. "
+    "Do not ask them again to choose wholesale versus dropshipping or whether they want to start without buying stock. "
+    "At most one useful actually missing question; expected monthly volume is optional, never mandatory. "
     "No hiring approval/vacancy/work conditions, trade prices, stock, delivery, payment or cooperation approval may be invented. "
     "An existing manager task permits saying the question is pending with the team; it proves neither approval nor that a manager read it. "
     "Without such a task do not claim forwarding or checking occurred. "
-    "A delay apology is allowed only when typed facts explicitly allow this same old unanswered wait; do not invent a technical cause. "
+    "If typed facts.delay_apology_allowed is true, include one brief apology for this same verified unanswered wait. "
+    "Otherwise include no delay apology. Never invent a technical cause. "
     "The draft will be reviewed by a human and cannot bypass a closed Meta messaging window."
 )
+_APOLOGY = re.compile(r"sorry|apolog\w*|вибач\w*|перепрош\w*|извин\w*|простите", re.I)
+
+
+def _private_case_reply_reason(text, facts):
+    """Keep this private answer attached to the actual unconfirmed request."""
+    from management.services.ig_reply_truth import _has_positive_claim
+
+    apology = _has_positive_claim(_APOLOGY, text)
+    if facts["delay_apology_allowed"] and not apology:
+        return "operator_apology_required"
+    if apology and not facts["delay_apology_allowed"]:
+        return "operator_apology_unverified"
+    employment, business = facts.get("employment") or {}, facts.get("business") or {}
+    if employment.get("employment_service_offer"):
+        conditional_need = any(re.search(
+            r"(?:потреб\w*|потріб\w*|понадоб\w*|нуж\w*|need\w*)[^.!?;\n]{0,65}"
+            r"(?:підсил\w*|усилен\w*|співробіт\w*|сотрудник\w*|працівник\w*|работник\w*|"
+            r"фахів\w*|специалист\w*|персонал\w*|менеджер\w*|допомог\w*|помощ\w*|staff|specialist\w*|help|support)"
+            r"|ваканс\w*|vacanc\w*|hiring|recruit\w*|staffing", clause, re.I)
+            for clause in re.findall(r"\b(?:якщо|коли|если|когда|if|when)\b[^.!?;\n]{0,180}", text, re.I))
+        contact = re.search(r"зв['’ʼ]?яж\w*|свяж\w*|сконтакт\w*|contact\w*|reach\s+out|get\s+in\s+touch", text, re.I)
+        talent_queue = re.search(
+            r"(?:кадров\w*\s+(?:резерв|баз)|talent\s+(?:pool|queue)|candidate\s+database)|"
+            r"(?:збережемо|збережу|сохраним|сохраню|we\s+will\s+(?:keep|save|retain))[^.!?]{0,65}"
+            r"(?:пропозиц\w*|предложен\w*|кандидат\w*|proposal|offer|application)", text, re.I)
+        if (conditional_need and contact) or talent_queue:
+            return "operator_hiring_followup_unverified"
+    if "start_without_stock" in business.get("requested_topics", ()):
+        for question in re.findall(r"[^.!?\n]*\?", text):
+            no_inventory = re.search(r"без\s+(?:закуп\w*|парті\w*|партии|склад\w*)|without\s+(?:buying|purchasing|stock|inventory)", question, re.I)
+            format_choice = re.search(r"дроп[-\s]?шип\w*|dropship\w*|drop[-\s]shipping", question, re.I) and re.search(
+                r"\b(?:опт\w*|гурт\w*|wholesale)\b", question, re.I)
+            if no_inventory or format_choice:
+                return "operator_business_requirement_repeated"
+    if facts.get("manager_tasks") and (employment or business):
+        pending = re.search(r"розгляд\w*|рассмотр\w*|уточн\w*|перевір\w*|провер\w*|pending|review\w*|await\w*|очіку\w*|ожида\w*", text, re.I)
+        team = re.search(r"команд\w*|керівництв\w*|руководств\w*|менедж\w*|team|management|manager", text, re.I)
+        if not pending or not team:
+            return "operator_current_review_required"
+    return ""
 
 
 def _operation(value):
@@ -230,8 +276,9 @@ def _validated_reply(parsed, capture):
     if re.search(r"(?:already|вже|уже).{0,30}(?:forward|sent|переда|надіс|отправ)|"
                  r"(?:передал\w*|переда[влн]\w*|forwarded)|(?:request|question).{0,25}(?:has\s+been\s+)?sent\b", text, re.I) and not capture["facts"]["manager_tasks"]:
         raise HumanReplyRejected("operator_handoff_unverified")
-    if re.search(r"sorry|apolog|вибач|перепрош|извин|простите", text, re.I) and not capture["facts"]["delay_apology_allowed"]:
-        raise HumanReplyRejected("operator_apology_unverified")
+    case_reason = _private_case_reply_reason(text, capture["facts"])
+    if case_reason:
+        raise HumanReplyRejected(case_reason)
     if re.search(r"(?:technical|техніч|техническ).{0,30}(?:issue|problem|збій|проблем|сбой)", text, re.I):
         raise HumanReplyRejected("operator_delay_cause_unknown")
     return text

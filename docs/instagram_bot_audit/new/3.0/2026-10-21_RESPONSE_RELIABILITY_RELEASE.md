@@ -1,6 +1,6 @@
 # Надёжность ответа, язык и срочный заказ · 21.10.2026
 
-Рабочий журнал инцидента и проверок. Статус до заключительного release checkpoint ниже: изменения локальные; результаты mock-provider тестов не являются доставкой настоящему клиенту. План90 принадлежит другому окну и здесь не изменяется.
+Рабочий журнал инцидента и проверок. Основной пакет выложен как4517beb24; точные code/runtime/CI receipts и отдельная незавершённая проверка качества новых приватных черновиков находятся в последних checkpoint ниже. Mock-provider тесты и private draft не являются доставкой настоящему клиенту. План90 принадлежит другому окну и здесь не изменяется.
 
 ## Подтверждённые обращения
 
@@ -95,7 +95,7 @@ Requirement сохраняет точное локальное время и т�
 
 Локальный frozen integration: **1834 теста,0 failures/errors,23 skips**,98 модулей;339.246с. SQLite skips не доказывают MariaDB concurrency: соответствующие native тесты включены отдельно в CI suite `conversion-context`. Дополнительно92 NodeJS теста,86 runner/workflow contracts, no-network Django check, migration drift check и production-like static pipeline прошли. SQL-план0244 —no-op. После синхронизации41D и33A свежие прогоны:108 restock/purpose тестов,0skips;152 reminder/commerce теста,0skips. Найденная регрессия25SQL при лимите24 устранена preload клиента в native source reader; первоначальный лимит24 и assertions сохранены. CI и production checkpoint ниже ещё не пройдены на этом этапе.
 
-Пока не заполнен: окончательный scoped SHA, результаты общего localQA/CI/MariaDB, точный productionSHA+childSHA, публикации, asset URLs, возврат временно взятого диалога боту и реальная переписка фиксируются после выполнения. Отсутствующий gate не считается пройденным.
+На первоначальном этапе этот checkpoint ещё не был заполнен. Выполненные позднее scoped commits, runtime SHA, публикации, assets и возврат диалога боту зафиксированы ниже отдельно от открытой проверки свежего Direct. Отсутствующий gate не считается пройденным.
 
 ### Дополнительные находки полной MariaDB QA
 
@@ -113,3 +113,23 @@ Requirement сохраняет точное локальное время и т�
 На corrective commit `d4463409b` общий CI прошёл:621 Instagram regression tests,8 ожидаемых backend-specific skips,490.965с; schema/command/static gates также зелёные. Private full20 native diagnostic дошёл до161 зелёных результатов, после чего сработал600-секундный предел вспомогательного subprocess. Это незавершённый прогон, а не успешный full20. Остальные native labels проверяются отдельно; один цельный процесс полного набора должен подтверждаться обязательным CI `conversion-context`.
 
 После этого отдельный native-code probe доказал ещё один monetary дефект: при известном личном товаре за900грн ответ с правдивой передачей brief и фразой «Партнерська ціна —900грн» проходил validator и создавал тестовыйSENT. Это был stub transport, не ответ настоящему клиенту. Нельзя смешивать catalog retail authority с B2B согласованием. Добавлены ограничение перед отправкой и пояснение для первого запроса Gemini; проверяются английское `partner price`, вопрос-приписка «оформляємо?», процент, pending status, соседняя корректная retail цена и вопрос о цене, предложенной самим клиентом. Финальные результаты и production checkpoint фиксируются после завершения.
+
+### Подтверждённая выкладка 4517beb24
+
+21 октября20:57:57UTC production checkout, supervisor и настоящий child загрузили `4517beb24c6f1ff5c86f0b1e6b53b35df01bba1d`; tracked tree чистый. Обработка включена, maintenance отсутствует, main и все10 lanes здоровы, включая два независимых customer execution slots; `stalled=false`, `worker_stalled=false`. Это runtime evidence, отдельно от подтверждения доставки.
+
+Применены0244 и0245. Два production INSERT guard содержат новый poll witness contract. Ядро `2026-10-21.core.v5` имеет целевой SHA256 `a207ecc11ad5eb0666fe6fee56c7f4749ef3780812a71874574273e1015c5620`. Штатная CAS publication создала head5/version5/hash `d33c22cfff3208ac9c672096a567c339aa76927bb6f721eb40f857cd264f6af1`; body и metadata всех пяти reviewed scenarios совпали. Изменились тела collaboration/objection, посторонние инструкции не публиковались.
+
+Первая попытка остановилась до maintenance/pull: вспомогательная проверка ошибочно требовала локальный patch Python3.14.6 на сервере. Фактический production runtime — Python3.14.8/Django6.1 в документированном virtualenv3.14. После проверки требуемой серверной ветки3.14 штатный pull и post-pull checks прошли. Локальные тесты оставались на обязательных3.14.6/6.1; runtime не устанавливался и не заменялся.
+
+Финальная денежная защита:138 focused SQLite tests/0skips, плюс отдельный native business module —24/24 на MariaDB11.4.12,0skips,532.310с, на точных final hashes. Отдельный positive probe подтвердил допустимость «Confirmed: for your partner…» для личной покупки. Native diagnostic baseline содержит213 уникальных успешных test IDs как split evidence; исходный600-секундный процесс остаётся незавершённым. Полный цельный MariaDB CI дляd446 зелёный во всех пяти suites. После native delta0245 reverse/reapply, schema/system checks и1422 source hashes проверены; одноразовые БД, пользователи, процесс, каталог и файл credentials удалены. Повторная подготовка старых source236/223 на production с опубликованной политикой также прошла без SQL/cache writes и HTTP:1393/2400 и1267/2400 tokens. Это diagnostic capture без send authority, не повтор старой отправки.
+
+В браузере после reload загружены актуальные assets: selection `274e711a8760`, commerce `3d87bf7c76b1`, fulfillment `f336cbcc83fe`. Английский операторский ответ@manuenggist виден полностью; native command5/part5 по-прежнемуSENT с physical receipt, client epoch3, takeover/paused=false. Нового сообщения после3413 нет; дубликат не создан. У тестового@zainllw0w последняя реальная входящая3373 от15 октября: свежая end-to-end переписка через клиентский Direct пока не подтверждена.
+
+### Реальная генерация Gemini и дополнительная проверка качества
+
+Для@tirutyr/source3383 и@urban1.drop.ua/source3401 выполнена именно управляемая генерация Gemini и сохранены приватные документы, не customer replies. Первая версия: management winners `gemini-3.6-flash`/request `fb23d44f320b486b89c3746ec5dccdb3` и `gemini-3.5-flash-lite`/request `f02fe90339c0447da488401674c3bd61`; audit содержит reservation→generation→save и настоящие request receipts. Никакой HUMAN_AGENT автоматизации, transcript message, ложногоSENT или закрытия долга по этим источникам нет.
+
+Ручная проверка фактического текста выявила недостатки, которых transport tests не обнаруживают: оба текста пропустили прямо запрошенное извинение при подтверждённом долгом ожидании; предложение поддержки Direct было отложено до гипотетической потребности в персонале; URBAN получил повторный вопрос wholesale/dropshipping при уже указанном интересе к старту без закупки. Первые документы не отправлялись. Требуется уточнить private generation contract и проверить новую генерацию; этот gate ещё не закрыт данным checkpoint.
+
+Уточнённый private contract проверяет обязательное краткое извинение только при `delay_apology_allowed=true`, текущий review при доказанной задаче и отсутствие неподтверждённого кадрового резерва/повторного no-inventory вопроса. Обычный callback после ответа команды и фактическое сохранение текущего brief разрешены. При проверке жизненного цикла обнаружено, что old-window private draft нельзя архивировать штатным API; теперь archive-only пропускает только истёкшее окно с существующим временным anchor, не редактирует текст и сохраняет остальные owner/CAS/source/privacy/reset/epoch guards. Обычные edit и human submit всё ещё отклоняются при закрытом окне. Проверен фактический UI payload: archive не передаёт text. Frozen scoped regression:112 tests,108passed,4 existing backend-specific skips; operator24passed. Отдельный native operator gate, выкладка этого дополнения, новая генерация и архивирование первых текстов ещё ожидаются.
