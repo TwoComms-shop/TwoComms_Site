@@ -23,6 +23,7 @@ from management.ig_restock_subscription_models import (
     IgRestockAvailabilityEvent as AvailabilityEvent,
 )
 from management.services.ig_purpose_sources import owned_source, latest_customer_source
+from management.services.ig_restock_ack_copy import VERSION as ACK_COPY_VERSION, attributed_label
 from management.services.ig_turn_revisions import _digest
 
 PREFIX = RESTOCK_SUBSCRIPTION_PREFIX = "RS1:"
@@ -156,13 +157,48 @@ def _label(inv):
     return inv.envelope["label"]
 
 
-def _copy_for(inv, kind):
+def _copy_for(inv, kind, *, accepted=None):
     from management.services import ig_restock_waiting_list as waiting
+    envelope = accepted.envelope if accepted is not None else inv.envelope
+    if kind == "accepted" and "ack_copy_version" in envelope and envelope["ack_copy_version"] != ACK_COPY_VERSION:
+        raise ValueError("restock_ack_copy_version_unknown")
     if kind == "accepted" and inv.envelope.get("producer") == "manager_followup.v1":
         from management.services.ig_restock_followup import accepted_copy
         return accepted_copy(inv.locale, inv.target)
+    if kind == "accepted" and envelope.get("ack_copy_version") == ACK_COPY_VERSION:
+        return _fresh_copy_for(inv, kind)
     return (waiting.copy_for(inv.locale, kind, _label(inv)) if waiting.is_list(inv.target)
         else _copy(inv.locale, kind, _label(inv)))
+
+
+def _fresh_copy(locale, kind, label, *, all_items=False):
+    from management.services import ig_restock_waiting_list as waiting
+    chosen = attributed_label(locale, label) if kind in {"invite", "accepted"} else label
+    return waiting.copy_for(locale, kind, chosen) if all_items else _copy(locale, kind, chosen)
+
+
+def _fresh_copy_for(inv, kind):
+    if kind == "accepted" and inv.envelope.get("producer") == "manager_followup.v1":
+        from management.services.ig_restock_followup import accepted_copy
+        return accepted_copy(inv.locale, inv.target)
+    from management.services import ig_restock_waiting_list as waiting
+    from management.services.ig_restock_ack_copy import list_label
+    all_items = waiting.is_list(inv.target)
+    label = (list_label(inv.target) if all_items else
+        _safe_label(inv.envelope["initial_availability"], truncate=False))
+    return _fresh_copy(inv.locale, kind, label, all_items=all_items)
+
+
+def _accepted_reply_copy(inv, accepted):
+    if "ack_copy_version" in accepted.envelope:
+        return _copy_for(inv, "accepted", accepted=accepted)
+    # A previously failed acknowledgement can resume without rewriting its
+    # signed Answer. A completed historical ACK retains its exact native body.
+    proof = _ack_card(inv, accepted)
+    if proof:
+        from management.models import IgRevisionDeliveryEffect
+        return IgRevisionDeliveryEffect.objects.get(pk=proof["effect_id"]).payload["message"]["text"]
+    return _fresh_copy_for(inv, "accepted")
 
 
 def _observe_target(target, *, now):
@@ -173,9 +209,11 @@ def _observe_target(target, *, now):
     return observe_target(target, now=now).as_dict()
 
 
-def _safe_label(observation):
+def _safe_label(observation, *, truncate=True):
     labels, target = observation.get("labels", {}), observation.get("target", {})
-    clean = lambda value, bound: re.sub(r"[\x00-\x1f\x7f]", " ", str(value))[:bound].strip()
+    def clean(value, bound):
+        text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value)).strip()
+        return text[:bound] if truncate else text
     parts = [clean(labels.get("product", ""), 70), clean(labels.get("color", ""), 25),
         clean(target.get("size", ""), 12), clean(labels.get("fit", ""), 25), f"× {target.get('quantity', '')}"]
     extra = [f"{clean(key, 16)}: {clean(value, 18)}" for key, value in sorted(target.get("option_values", {}).items()) if key != "fit"]
@@ -461,9 +499,10 @@ def prepare_request(revision, source, settings_obj=None, now=None):
                 return RestockRequest(True, _copy(locale, "stale"), reason="invitation_changed")
             return RestockRequest(True, existing.body, (_button(existing),), str(existing.pk), "existing_invitation")
         identity, key_id = uuid.uuid4(), next(iter(_keys()))
-        label = _safe_label(observation)
-        body = _copy(locale, "invite", label)
-        if len(body.encode()) > 1000:
+        label = _safe_label(observation, truncate=False)
+        body = _fresh_copy(locale, "invite", label)
+        if any(len(_fresh_copy(locale, kind, label).encode()) > 1000
+            for kind in ("invite", "accepted", "notification")):
             return RestockRequest(True, _copy(locale, "clarify"), reason="target_copy_too_long")
         inv = Invitation(id=identity, client=revision.client, request_source=row, revision=revision,
             target=deepcopy(observation["target"]), target_digest=_digest(observation["target"]),
@@ -474,7 +513,7 @@ def prepare_request(revision, source, settings_obj=None, now=None):
             selection_sources=captured["selection_sources"], initial_availability=observation, label=label, recipient=revision.client.igsid,
             settings_id=settings_obj.pk, settings_epoch=settings_obj.reply_permission_epoch,
             client_epoch=revision.client.reply_permission_epoch, manager_review=manager_case,
-            native_future_capability="unverified")
+            native_future_capability="unverified", ack_copy_version=ACK_COPY_VERSION)
         return RestockRequest(True, inv.body, (_button(inv),), str(inv.pk))
 
 
@@ -554,12 +593,28 @@ def provider_boundary_for_revision(revision_id, *, now=None):
     yield RestockBoundary(not reason, reason)
 
 
+def _ack_copy_version_valid(accepted):
+    return ("ack_copy_version" not in accepted.envelope
+        or accepted.envelope["ack_copy_version"] == ACK_COPY_VERSION)
+
+
+def _ack_copy_bodies(inv, accepted):
+    """Finite pure reconstruction; the caller verifies the actual native effect."""
+    if not _ack_copy_version_valid(accepted):
+        return ()
+    bodies = (_copy_for(inv, "accepted", accepted=accepted),)
+    if "ack_copy_version" not in accepted.envelope:
+        bodies += (_fresh_copy_for(inv, "accepted"),)
+    return bodies
+
+
 def _ack_card(inv, accepted, *, reply_to=""):
     from management.models import IgRevisionDeliveryEffect
     source = accepted.envelope["source"]
     effects = list(IgRevisionDeliveryEffect.objects.filter(revision_id=source["revision_id"], source_message_id=accepted.source_id))
-    matches = [effect for effect in effects if _effect_matches(inv, effect, body=_copy_for(inv, "accepted"),
-        action="revoke", source_id=accepted.source_id, revision_id=source["revision_id"])
+    bodies = _ack_copy_bodies(inv, accepted)
+    matches = [effect for effect in effects if any(_effect_matches(inv, effect, body=body,
+        action="revoke", source_id=accepted.source_id, revision_id=source["revision_id"]) for body in bodies)
         and effect.revision_snapshot_digest == source["revision_digest"]
         and (not reply_to or effect.provider_message_id == reply_to)]
     if len(effects) != 1 or len(matches) != 1:
@@ -572,6 +627,8 @@ def _ack_card(inv, accepted, *, reply_to=""):
 def _valid_answer(answer, settings_obj):
     from management.models import IgCustomerTurnRevision
     if not _verified(answer, "answer") or not _valid_receipt(answer.invitation, answer.receipt) or answer.envelope.get("receipt_hmac") != answer.receipt.envelope_hmac:
+        return False
+    if answer.kind == "accept" and not _ack_copy_version_valid(answer):
         return False
     revision = IgCustomerTurnRevision.objects.filter(pk=answer.envelope.get("source", {}).get("revision_id")).first()
     if not revision:
@@ -633,7 +690,14 @@ def handle_reply(row, revision=None, settings_obj=None, now=None):
             if action == "accept" and (now >= inv.expires_at or not Subscription.objects.filter(accepted_answer_id=previous.pk, state="active").exists()
                 or Answer.objects.filter(invitation_id=inv.pk, kind="revoke").exists()):
                 return invalid
-            return RestockRequest(True, _copy_for(inv, "accepted" if action == "accept" else "revoked"),
+            if (action == "accept" and "ack_copy_version" in previous.envelope
+                and previous.envelope["ack_copy_version"] != ACK_COPY_VERSION):
+                return invalid
+            body = (_accepted_reply_copy(inv, previous) if action == "accept"
+                else _copy_for(inv, "revoked", accepted=previous))
+            if len(body.encode()) > 1000:
+                return RestockRequest(True, _copy(locale, "clarify"), reason="target_copy_too_long")
+            return RestockRequest(True, body,
                 (_button(inv, "revoke"),) if action == "accept" and row.pk == previous.source_id else (), reason="duplicate_answer")
         ack = None
         if action == "accept":
@@ -650,13 +714,16 @@ def handle_reply(row, revision=None, settings_obj=None, now=None):
             ack = _ack_card(inv, accepted, reply_to=row.reply_to_provider_message_id)
             if not ack:
                 return invalid
+        if action == "accept" and len(_fresh_copy_for(inv, "accepted").encode()) > 1000:
+            return RestockRequest(True, _copy(locale, "clarify"), reason="target_copy_too_long")
+        version = {"ack_copy_version": ACK_COPY_VERSION} if action == "accept" else {}
         answer = _seal(Answer(invitation=inv, source=row, receipt=receipt, kind=action, answered_at=row.provider_created_at), "answer",
-            source=proof, payload=payload, receipt_hmac=receipt.envelope_hmac, ack_card=ack)
+            source=proof, payload=payload, receipt_hmac=receipt.envelope_hmac, ack_card=ack, **version)
         if action == "accept":
             Subscription.objects.create(accepted_answer=answer, client=inv.client, expires_at=inv.expires_at, next_check_at=now)
         else:
             Subscription.objects.filter(accepted_answer__invitation_id=inv.pk).exclude(state="sent").update(state="revoked", last_reason="customer_revoked")
-        return RestockRequest(True, _copy_for(inv, "accepted" if action == "accept" else "revoked"),
+        return RestockRequest(True, _copy_for(inv, "accepted" if action == "accept" else "revoked", accepted=answer),
             (_button(inv, "revoke"),) if action == "accept" else (), str(inv.pk), action)
 
 

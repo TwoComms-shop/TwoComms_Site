@@ -286,7 +286,10 @@ def prepare_request(revision, source, proof, settings_obj, *, now):
         reset_floor=proof["reset_floor"], watermark_message_id=source.pk, watermark_event_at=now)
     locale = language.template_family if language.template_family in {"uk", "ru", "en"} else language.knowledge_locale
     frozen_label = label(target)
-    if any(len(copy_for(locale, kind, frozen_label).encode()) > 1000 for kind in ("invite", "accepted", "notification")):
+    from management.services.ig_restock_ack_copy import list_label
+    fresh_label = list_label(target)
+    if (any(len(restock._fresh_copy(locale, kind, fresh_label, all_items=True).encode()) > 1000
+        for kind in ("invite", "accepted")) or len(copy_for(locale, "notification", frozen_label).encode()) > 1000):
         return restock.RestockRequest(True, copy_for(locale, "too_long", ""), reason="waiting_list_single_card_bound")
     from management.services import ig_restock_waiting_list_review as review
     from management.services import ig_assisted_commerce as commerce
@@ -302,13 +305,13 @@ def prepare_request(revision, source, proof, settings_obj, *, now):
         inv = restock.Invitation(id=identity, client=revision.client, request_source=source, revision=revision,
             target=target, target_digest=_digest(target), expires_at=now + restock.VALIDITY,
             acceptance_deadline=source.provider_created_at + restock.WINDOW, locale=locale,
-            body=copy_for(locale, "invite", frozen_label), button_title=restock._copy(locale, "button"),
+            body=restock._fresh_copy(locale, "invite", fresh_label, all_items=True), button_title=restock._copy(locale, "button"),
             accept_payload=restock._payload(identity, "accept", key_id), revoke_payload=restock._payload(identity, "revoke", key_id))
         restock._seal(inv, "invitation", source=proof, label=frozen_label, recipient=revision.client.igsid,
             settings_id=settings_obj.pk, settings_epoch=settings_obj.reply_permission_epoch,
             client_epoch=revision.client.reply_permission_epoch, manager_review=case,
             waiting_list={"schema": SCHEMA, "source_capture": deepcopy(cart), "configuration": commerce._configuration_capture(cart),
-                "reply_language": language.as_dict()}, native_future_capability="unverified")
+                "reply_language": language.as_dict()}, native_future_capability="unverified", ack_copy_version=restock.ACK_COPY_VERSION)
         return restock.RestockRequest(True, inv.body, (restock._button(inv),), str(inv.pk))
 
 

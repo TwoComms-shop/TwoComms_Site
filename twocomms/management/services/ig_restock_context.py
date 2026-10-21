@@ -61,7 +61,9 @@ def _native_receipt(invitation, receipt):
 def _native_answer(answer, invitation, receipt, *, now):
     proof = answer.envelope.get("source") or {}
     source = answer.source
-    return bool(restock._verified(answer, "answer") and answer.invitation_id == invitation.pk
+    return bool(restock._verified(answer, "answer")
+        and (answer.kind != "accept" or restock._ack_copy_version_valid(answer))
+        and answer.invitation_id == invitation.pk
         and answer.receipt_id == receipt.pk and answer.envelope.get("receipt_hmac") == receipt.envelope_hmac
         and answer.source_id == proof.get("message_id") and source.quick_reply_payload == answer.envelope.get("payload")
         and answer.answered_at == source.provider_created_at and answer.answered_at <= now
@@ -290,9 +292,9 @@ def capture_restock_interest(request, settings_obj, cart, now, *, reviewed_decis
         effect = effects[0]
         expected = {"effect_id": effect.pk, "payload_digest": effect.payload_digest,
             "plan_digest": effect.plan_digest, "provider_message_id": effect.provider_message_id}
-        if (ack != expected or not restock._effect_matches(invitation, effect, body=restock._copy(invitation.locale,
-            "accepted", invitation.envelope["label"]), action="revoke", source_id=answer.source_id,
-            revision_id=answer.envelope["source"]["revision_id"])
+        if (ack != expected or not any(restock._effect_matches(invitation, effect, body=body,
+            action="revoke", source_id=answer.source_id, revision_id=answer.envelope["source"]["revision_id"])
+            for body in restock._ack_copy_bodies(invitation, answer))
             or effect.revision_snapshot_digest != answer.envelope["source"]["revision_digest"]
             or not effect.terminal_at or effect.terminal_at > revocation.answered_at
             or (revocation.source.reply_to_provider_message_id and revocation.source.reply_to_provider_message_id != effect.provider_message_id)):

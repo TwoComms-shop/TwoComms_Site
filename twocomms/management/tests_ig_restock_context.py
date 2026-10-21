@@ -12,6 +12,7 @@ from management.ig_fulfillment_review_models import IgFulfillmentReviewRequest
 from management.models import IgFunnelResetAudit, IgFollowUpTask
 from management.services.ig_commerce_projection import capture_current_selection_lines
 from management.services.ig_restock_context import capture_restock_interest
+from management.services import ig_restock_subscriptions as restock
 from management.tests_ig_restock_subscriptions import _RestockFixture
 
 
@@ -90,6 +91,50 @@ class NativeRestockContextTests(_RestockFixture, TestCase):
         result = self.captured(request, cart, source.provider_created_at)
         self.assertEqual(result["status"], "revoked", result)
         self.assertIn(source.pk, {ref["id"] for ref in result["source_refs"]})
+
+    def test_historical_unversioned_ack_cancellation_remains_visible_read_only(self):
+        original_seal = restock._seal
+
+        def old_seal(row, kind, **proof):
+            proof.pop("ack_copy_version", None)
+            return original_seal(row, kind, **proof)
+
+        def old_copy(inv, kind, **kwargs):
+            return restock._copy(inv.locale, kind, inv.envelope["label"])
+
+        with patch.object(restock, "_seal", side_effect=old_seal), \
+                patch.object(restock, "_copy_for", side_effect=old_copy):
+            invitation, subscription, request, _, now = self.interest(ack=True)
+        self.assertNotIn("ack_copy_version", subscription.accepted_answer.envelope)
+        result, source, _, _ = self.reply(invitation, action="revoke", at=now + timedelta(seconds=1))
+        self.assertEqual(result.reason, "revoke", result)
+        cart = capture_current_selection_lines(self.client_row.pk, now=source.provider_created_at)
+        result = self.captured(request, cart, source.provider_created_at)
+        self.assertEqual(result["status"], "revoked", result)
+        self.assertIn(source.pk, {ref["id"] for ref in result["source_refs"]})
+
+    def bad_signed_version(self, marker):
+        original_seal = restock._seal
+
+        def changed_seal(row, kind, **proof):
+            if kind == "answer":
+                proof["ack_copy_version"] = marker
+            return original_seal(row, kind, **proof)
+
+        def old_copy(inv, kind, **kwargs):
+            return restock._copy(inv.locale, kind, inv.envelope["label"])
+
+        with patch.object(restock, "_seal", side_effect=changed_seal), \
+                patch.object(restock, "_copy_for", side_effect=old_copy):
+            _invitation, subscription, request, cart, now = self.interest()
+        self.assertTrue(restock._verified(subscription.accepted_answer, "answer"))
+        self.assertEqual(self.captured(request, cart, now)["status"], "unverified")
+
+    def test_unknown_signed_ack_version_is_unverified_in_read_model(self):
+        self.bad_signed_version("unknown-future-version")
+
+    def test_null_signed_ack_version_is_unverified_in_read_model(self):
+        self.bad_signed_version(None)
 
     def test_expired_native_agreement_remains_informational_without_future_send_grant(self):
         _, subscription, request, _, _ = self.interest()
