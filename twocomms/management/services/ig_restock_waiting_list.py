@@ -447,21 +447,21 @@ def waiting_list_projection(client_id, *, now=None, limit=16, include_manager_re
 
 
 def _capture_projection(client_id, *, now, limit, include_manager_review, result):
-    from management.models import IgClient, InstagramBotSettings
+    from management.models import InstagramBotSettings
     from django.db.models import Exists, OuterRef
     restock = _restock()
-    client = IgClient.objects.filter(pk=client_id, hidden_at__isnull=True, privacy_erasure_started_at__isnull=True).first()
-    if not client:
-        return result
     active = restock.Subscription.objects.filter(accepted_answer__invitation_id=OuterRef("pk"), state="active")
-    invitations = list(restock.Invitation.objects.filter(client=client, target__schema=SCHEMA).annotate(
+    invitations = list(restock.Invitation.objects.filter(client_id=client_id, client__hidden_at__isnull=True,
+        client__privacy_erasure_started_at__isnull=True, target__schema=SCHEMA).annotate(
         _active_interest=Exists(active)).select_related("client", "revision", "request_source").order_by(
             "-_active_interest", "-created_at", "pk")[:limit + 1])
+    if not invitations:
+        return result
     result["coverage_complete"] = len(invitations) <= limit
     if not result["coverage_complete"]:
         result["reason"] = "waiting_list_history_bound"
     from management.services import ig_restock_waiting_list_review as review
-    from management.services.ig_delivery_receipts import normalize_provider_message_id
+    from management.services.ig_restock_notification_projection import notification_projection, same_loaded_evidence
     for inv in invitations[:limit]:
         read_case = None
         try:
@@ -481,48 +481,58 @@ def _capture_projection(client_id, *, now, limit, include_manager_review, result
                 read_case = capture_read_case(receipt.followup_task)
             source_reason = invitation_reason(inv, settings_obj, now=now, check_dispatch_scope=False,
                 read_case=read_case) if settings_obj else "settings_missing"
-            receipt_valid = bool(receipt and restock._valid_receipt(inv, receipt, read_case=read_case))
             answers = list(restock.Answer.objects.filter(invitation=inv).select_related("invitation", "receipt__effect", "receipt__followup_task", "source").order_by("pk"))
             accepted = next((row for row in answers if row.kind == "accept"), None)
             revoked = next((row for row in answers if row.kind == "revoke"), None)
-            accepted_valid = bool(accepted and settings_obj and restock._valid_answer(accepted, settings_obj, read_case=read_case))
-            revoked_valid = bool(revoked and settings_obj and restock._valid_answer(revoked, settings_obj,
+            revoked_valid = bool(revoked and accepted and settings_obj and restock._valid_answer(revoked, settings_obj,
                 read_case=read_case, accepted_answer=accepted))
+            # A valid revoke recursively verified this exact accepted answer.
+            # Reuse that completed proof within this read, without repeating
+            # its source/receipt queries or weakening an invalid-revoke path.
+            accepted_valid = bool(accepted and settings_obj and (revoked_valid
+                or restock._valid_answer(accepted, settings_obj, read_case=read_case)))
+            # Full answer validation already checked its native receipt graph.
+            # Reuse it only for identical loaded evidence, including every
+            # scalar column/envelope/HMAC; another row cannot lend its proof.
+            if accepted_valid:
+                receipt_valid = bool(same_loaded_evidence(inv, accepted.invitation)
+                    and same_loaded_evidence(receipt, accepted.receipt))
+            else:
+                receipt_valid = bool(receipt and restock._valid_receipt(inv, receipt, read_case=read_case))
             state = "unverified" if source_reason else "expired" if now >= inv.expires_at else "revoked" if revoked_valid else "accepted" if accepted_valid else "invited"
-            subscription = restock.Subscription.objects.filter(accepted_answer=accepted).first() if accepted else None
-            manager = review.projection(inv, subscription, now=now) if include_manager_review else {
-                "ready": False, "request_id": None, "request_digest": None, "state": "unverified",
+            subscription = restock.Subscription.objects.select_related(
+                "availability_event__task__sent_message").filter(accepted_answer=accepted).first() if accepted else None
+            # Both readers share historical delivery evidence, independently of
+            # whether today's physical manager review is captured. LEFT JOINs
+            # in the existing subscription read spend no additional SELECTs.
+            event = subscription._state.fields_cache.get("availability_event") if subscription else None
+            task = event._state.fields_cache.get("task") if event else None
+            history = task._state.fields_cache.get("sent_message") if task else None
+            notification = notification_projection(invitation=inv, accepted=accepted, subscription=subscription,
+                event=event, task=task, history=history, source_reason=source_reason,
+                accepted_valid=accepted_valid, receipt_valid=receipt_valid, now=now)
+            manager = {"ready": False, "request_id": None, "request_digest": None, "state": "unverified",
                 "checked_at": None, "all_ready": False, "lines": []}
-            # The shared agreement descriptor deliberately leaves notification
-            # receipts unverified; the dedicated API verifies their full graph.
-            event = restock.AvailabilityEvent.objects.select_related("task").filter(subscription=subscription).first() if subscription and include_manager_review else None
-            task = event.task if event else None
-            sent = bool(accepted_valid and receipt_valid and subscription and subscription.state == "sent"
-                and subscription.client_id == client.pk and subscription.expires_at == inv.expires_at
-                and task and restock._verified(event, "event") and task.status == "sent"
-                and normalize_provider_message_id(task.provider_message_id)
-                and task.sent_at and accepted.answered_at <= event.observed_at <= task.sent_at <= now
-                and not task.claim_token and not task.claim_until and task.attempt_count == 1
-                and task.message_text == copy_for(inv.locale, "notification", label(inv.target))
-                and event.envelope.get("target_digest") == inv.target_digest and event.envelope.get("answer_hmac") == accepted.envelope_hmac
-                and event.envelope.get("availability", {}).get("target") == inv.target
-                and event.envelope.get("availability", {}).get("digest") == event.availability_digest
-                and event.envelope.get("manager_decision", {}).get("completion") == "all"
-                and event.envelope.get("manager_decision", {}).get("target_digest") == inv.target_digest
-                and task.client_id == client.pk and task.event_key == event.event_key == f"{restock.ORIGIN}:{subscription.pk}"
-                and task.reason == restock.ORIGIN and task.kind == "qualification" and task.trigger == "event"
-                and task.policy_version == "restock-agreement.v1" and task.event_payload == {
-                    "origin": restock.ORIGIN, "purpose": restock.PURPOSE, "subscription_id": str(subscription.pk), "event_id": str(event.pk)})
+            manager_read_failed = False
+            if include_manager_review:
+                try:
+                    manager = review.projection(inv, subscription, now=now)
+                except WaitingListReadError as error:
+                    # Today's optional physical review cannot erase a fully
+                    # captured agreement or historical native send. Keep the
+                    # physical state unverified and report the bounded read.
+                    result.update(coverage_complete=False, reason=str(error))
+                    manager_read_failed = True
             result["lists"].append({"id": str(inv.pk), "version": 2, "completion": "all", "locale": inv.locale,
                 "items": [{key: deepcopy(item[key]) for key in ("line_id", "recipient_id", "title", "color", "size", "fit", "options", "quantity", "item_kind")} for item in inv.target["items"]],
                 "agreement": {"state": state, "accepted_at": accepted.answered_at.isoformat() if accepted_valid else None,
                     "expires_at": inv.expires_at.isoformat(), "invitation_receipt_confirmed": receipt_valid}, "manager_review": manager,
-                "notification": {"state": "sent" if sent else "unknown" if subscription and subscription.state in {"sent", "unknown"} else "pending" if subscription and subscription.state == "active" else "not_sent",
-                    "reason": subscription.last_reason if subscription else source_reason, "sent_at": task.sent_at.isoformat() if sent else None,
-                    "native_receipt_confirmed": sent},
+                "notification": notification,
                 "source_refs": [{"kind": "message", "id": row.pk, "event_at": row.provider_created_at.isoformat()}
                     for row in (inv.request_source, *([accepted.source] if accepted_valid else []),
                         *([revoked.source] if revoked_valid else []))]})
+            if manager_read_failed:
+                break
         except (ValueError, KeyError, TypeError, AttributeError):
             result["coverage_complete"] = False
             result["reason"] = result["reason"] or "waiting_list_evidence_unverified"

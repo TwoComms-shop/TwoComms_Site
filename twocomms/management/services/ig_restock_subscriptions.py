@@ -629,24 +629,22 @@ def _ack_card(inv, accepted, *, reply_to=""):
 
 
 def _valid_answer(answer, settings_obj, *, read_case=None, accepted_answer=None):
-    from management.models import IgCustomerTurnRevision
+    from types import SimpleNamespace
     if not _verified(answer, "answer") or not _valid_receipt(answer.invitation, answer.receipt, read_case=read_case) or answer.envelope.get("receipt_hmac") != answer.receipt.envelope_hmac:
         return False
     if answer.kind == "accept" and not _ack_copy_version_valid(answer):
         return False
+    revision = SimpleNamespace(pk=answer.envelope.get("source", {}).get("revision_id"))
     if read_case is not None:
-        from types import SimpleNamespace
-        revision = SimpleNamespace(pk=answer.envelope.get("source", {}).get("revision_id"))
         owned, _ = read_case.owned_source(revision, answer.source, settings_obj)
     else:
-        revision = IgCustomerTurnRevision.objects.filter(pk=answer.envelope.get("source", {}).get("revision_id")).first()
-        if not revision:
-            return False
+        # The canonical owner reader reloads this exact revision and client;
+        # an earlier fetch adds no validation or source freshness.
         owned, _ = owned_source(revision, answer.source, settings_obj, require_head=False)
     if not owned or owned[2] != answer.envelope.get("source") or owned[1].quick_reply_payload != answer.envelope.get("payload"):
         return False
     if answer.kind == "revoke":
-        accepted = (accepted_answer if read_case is not None and accepted_answer is not None else
+        accepted = (accepted_answer if accepted_answer is not None else
             Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=answer.invitation_id, kind="accept").first())
         proof = answer.envelope.get("ack_card")
         return bool(accepted and accepted.kind == "accept" and accepted.invitation_id == answer.invitation_id
