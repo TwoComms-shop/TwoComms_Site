@@ -22,12 +22,19 @@ from management.services.ig_turn_revisions import create_collecting_revision
                    IG_TURN_CONTEXT_MODE="unified")
 class RetailPreparationLivenessTests(TransactionTestCase):
     reset_sequences = True
-    setUp = live_fixtures.RevisionLiveTests.setUp
     _message = live_fixtures.RevisionLiveTests._message
     _prepare = live_fixtures.RevisionLiveTests._prepare
     _execute = live_fixtures.RevisionLiveTests._execute
     _generate = live_fixtures.RevisionLiveTests._generate
     _selected_product = resilience_fixtures.RevisionReplyResilienceTests._selected_product
+
+    def setUp(self):
+        # Reuse the publication/client/source fixture, then form the first
+        # native revision only after this scenario's final sources exist.
+        # Revisions are append-only on MariaDB, including fixture setup.
+        with patch.object(live_fixtures, "create_collecting_revision",
+            return_value=SimpleNamespace(revision=None)):
+            live_fixtures.RevisionLiveTests.setUp(self)
 
     def test_selected_product_and_size_enter_provider_with_captured_context(self):
         product, _ = self._selected_product()
@@ -38,7 +45,6 @@ class RetailPreparationLivenessTests(TransactionTestCase):
         self.customer.save(update_fields=["current_commercial_episode"])
         product.title = "Футболка «Локальний Принт»"
         product.save(update_fields=["title"])
-        self.revision.delete()
         self.source.text = product.title
         self.source.save(update_fields=["text"])
         size = self._message("2XL", "selected-size")
@@ -50,7 +56,6 @@ class RetailPreparationLivenessTests(TransactionTestCase):
         self.assertEqual(generate.call_count, 1, result)
 
     def _english_question(self):
-        self.revision.delete()
         self.source.text = "Is my selected shirt and size clear? Please reply in English."
         self.source.save(update_fields=["text"])
         self.revision = create_collecting_revision(self.turn, [self.source], bypass_quiet=True).revision

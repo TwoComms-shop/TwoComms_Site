@@ -84,6 +84,28 @@ def _columns(row):
 
 
 def _seal(row, kind, **proof):
+    if kind in {"invitation", "answer"}:
+        source = row.request_source if kind == "invitation" else row.source
+        supplied = proof.get("source") or {}
+        if source.source == "poll" or supplied.get("poll_admission"):
+            from types import SimpleNamespace
+            from django.db import connection
+            from management.models import IgClient, InstagramBotMessage, InstagramBotSettings
+            if not connection.in_atomic_block:
+                raise ValueError("restock_poll_source_transaction_required")
+            # Keep canonical content and provider proof fixed from the final
+            # HMAC/source recapture through INSERT. The caller's transaction
+            # owns both locks until commit, in client -> source order.
+            IgClient.objects.select_for_update().get(pk=source.client_id)
+            source = InstagramBotMessage.objects.select_for_update().get(pk=source.pk)
+            settings_id = (proof.get("settings_id") if kind == "invitation"
+                else row.invitation.envelope.get("settings_id"))
+            settings_obj = InstagramBotSettings.objects.filter(pk=settings_id).first()
+            owned, _ = (owned_source(SimpleNamespace(pk=supplied.get("revision_id")), source, settings_obj,
+                require_head=False)
+                if settings_obj else (None, "settings_missing"))
+            if not owned or owned[2] != supplied:
+                raise ValueError("restock_poll_source_changed")
     row.key_id = next(iter(_keys()))
     row.envelope = {"version": 1, "purpose": PURPOSE, "columns": _columns(row), **proof}
     row.envelope_hmac = _sign(kind, row.envelope, row.key_id)

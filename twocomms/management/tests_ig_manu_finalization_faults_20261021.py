@@ -7,8 +7,8 @@ from django.test import TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from management import tests_ig_revision_delivery as delivery_fixtures
 from management import tests_ig_revision_execution as execution_fixtures
+from management.tests_ig_manu_fixture_helpers import setup_revision_delivery_fixture
 from management.models import IgBotNotification, IgCustomerTurnRevision, IgFollowUpTask
 from management.services import ig_revision_execution as execution
 from management.services.ig_revision_delivery import ProviderPartResult, drain_group
@@ -21,7 +21,7 @@ from management.services.ig_revision_outbox import _digest, plan_revision_effect
 @override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.test")
 class ManuFinalizationFaultTests(TransactionTestCase):
     reset_sequences = True
-    setUp = delivery_fixtures.RevisionDeliveryTests.setUp
+    setUp = setup_revision_delivery_fixture
     _source = execution_fixtures.RevisionExecutionTests._source
     _collecting_revision = execution_fixtures.RevisionExecutionTests._collecting_revision
     _ready_revision = execution_fixtures.RevisionExecutionTests._ready_revision

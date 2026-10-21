@@ -49,9 +49,10 @@ class ManuCatalogLocaleNativeTests(TransactionTestCase):
         color = Color.objects.create(name="Black", primary_hex="#111111")
         variant = ProductColorVariant.objects.create(product=self.product, color=color, stock=20, is_default=True)
         VariantSizeRule.objects.create(variant=variant, fit_code="classic", size="XXL", is_enabled=True, stock=20)
-        self.revision.delete()
-        self.turn.delete()
-        self.source.delete()
+        # Keep the shared fixture's append-only source/turn/revision intact.
+        # This scenario owns a fresh client and builds its history before its
+        # first revision, just as ingress does on the native MariaDB runtime.
+        self.customer = IgClient.objects.create(igsid="17840000000002", language="uk")
         now = timezone.now()
         history = self._message("My boyfriend is in Kharkiv. Please help me with your shirt.", "locale-history")
         history.provider_created_at, history.status = now - timedelta(minutes=1), "done"

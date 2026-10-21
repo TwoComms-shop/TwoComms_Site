@@ -118,8 +118,8 @@ class ManuMeasurementProjectionTests(SimpleTestCase):
     IG_CLIENT_STATE_PROMPT_TOKENS=2400, GEMINI_NONLIVE_ADMISSION_MODE="shadow")
 class ManuOwnedRendererLanguageTests(TestCase):
     def setUp(self):
-        from management.tests_ig_manu_language_20261021 import ManuNativeLanguagePipelineTests
-        ManuNativeLanguagePipelineTests.setUp(self)
+        from management.tests_ig_manu_fixture_helpers import setup_captured_context_fixture
+        setup_captured_context_fixture(self)
 
     def publish(self, **kwargs):
         from management.tests_ig_manu_language_20261021 import ManuNativeLanguagePipelineTests
@@ -245,9 +245,12 @@ class ManuNativeRequiredContextDeliveryTests(TransactionTestCase):
                 "legend": [{"label": "Garment width", "description": "Half-chest measured on the garment laid flat."}],
             })
             ProductOptionSizeGrid.objects.create(product=product, option_key="fit=" + fit, size_grid=grid)
-        self.revision.delete()
-        self.turn.delete()
-        self.source.delete()
+        # The shared fixture already owns a durable revision graph. Preserve
+        # it and build this chronological history on an independent customer
+        # before creating this test's sealed current-turn revision.
+        seed_revision, seed_turn, seed_source = self.revision, self.turn, self.source
+        seed_snapshot = deepcopy(seed_revision.bundle_snapshot)
+        self.customer = IgClient.objects.create(igsid="17840000000363", language="uk")
         now = timezone.now()
         deadline = self._message("My boyfriend is in Kharkiv and will leave tomorrow at 10. Please help me.", "native-deadline")
         deadline.provider_created_at = now - timedelta(minutes=2)
@@ -320,3 +323,9 @@ class ManuNativeRequiredContextDeliveryTests(TransactionTestCase):
         generate.assert_not_called()
         http.assert_not_called()
         self.assertEqual(self.revision.delivery_effects.count(), 1)
+        seed_revision.refresh_from_db()
+        seed_turn.refresh_from_db()
+        seed_source.refresh_from_db()
+        self.assertEqual(seed_revision.bundle_snapshot, seed_snapshot)
+        self.assertEqual(seed_turn.primary_source_message_id, seed_source.pk)
+        self.assertFalse(seed_revision.delivery_effects.exists())

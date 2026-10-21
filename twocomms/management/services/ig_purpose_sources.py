@@ -1,4 +1,6 @@
 """Canonical source ownership shared by explicit customer agreements."""
+import hashlib
+
 from management.services.ig_turn_revisions import _digest, _source_payload
 
 
@@ -35,6 +37,12 @@ def owned_source(revision, source, settings_obj, *, require_head=True):
     proof = {"message_id": row.pk, "digest": frozen.source_digest, "revision_id": revision.pk,
         "revision_digest": revision.snapshot_digest, "namespace": row.provider_namespace,
         "mid": row.mid, "provider_created_at": row.provider_created_at.isoformat(), "reset_floor": floor}
+    if row.source == "poll":
+        # Python verified the actual provider signature above. The native SQL
+        # insert guard binds this signed-envelope witness to the same current
+        # persisted proof bytes; SQL does not verify the application HMAC.
+        proof["poll_admission"] = {"version": row.ingress_proof["version"],
+            "signed_digest": hashlib.sha256(row.ingress_proof["signed"].encode()).hexdigest()}
     return (revision, row, proof), ""
 
 

@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from management import tests_ig_catalog_native_delivery as catalog_fixtures
 from management import tests_ig_commerce_reorder as reorder_fixtures
+from management.tests_ig_manu_fixture_helpers import setup_revision_delivery_fixture
 from management.models import (
     IgClient, IgCommerceSelectionSession, IgCommerceTurnDecision, InstagramBotMessage, InstagramBotSettings,
 )
@@ -44,7 +45,8 @@ def signed_poll(case, settings_row, source):
 class NativePollFitChoiceTests(TestCase):
     def setUp(self):
         self.environment = self.enterContext(patch.dict("os.environ", {"IG_PROVIDER_TRANSPORT": "instagram_login"}))
-        self.settings = InstagramBotSettings.objects.create(pk=1, ig_user_id="fit-poll-owner")
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(pk=1,
+            defaults={"ig_user_id": "fit-poll-owner"})
         self.customer = IgClient.objects.create(igsid="fit-poll-customer")
         self.namespace = "instagram_login:fit-poll-owner"
         self.question = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
@@ -90,7 +92,14 @@ class NativePollFitChoiceTests(TestCase):
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False, SITE_BASE_URL="https://twocomms.test")
 class NativePollCatalogChoiceTests(TransactionTestCase):
-    setUp = catalog_fixtures.CatalogNativeDeliveryTests.setUp
+    def setUp(self):
+        # The shared catalogue fixture's original delivery bootstrap creates
+        # singleton pk1/publication v1, already installed by native migrations.
+        # Replace only that test bootstrap; all real catalogue/assets/outbox
+        # factories and every receipt/projection assertion stay in use.
+        with patch.object(catalog_fixtures.delivery_fixtures.RevisionDeliveryTests, "setUp",
+                setup_revision_delivery_fixture):
+            catalog_fixtures.CatalogNativeDeliveryTests.setUp(self)
     response = catalog_fixtures.CatalogNativeDeliveryTests.response
     source_row = catalog_fixtures.CatalogNativeDeliveryTests.source_row
     seal = catalog_fixtures.CatalogNativeDeliveryTests.seal
@@ -212,7 +221,19 @@ class NativePollCatalogChoiceTests(TransactionTestCase):
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
 class NativePollHistoricalReorderTests(TestCase):
-    setUp = reorder_fixtures.HistoricalReorderTests.setUp
+    def setUp(self):
+        from management.tests_ig_checkout_episode_binding import CheckoutCurrentEpisodeBindingTests
+        from management.services.instagram_bot import ingress_provider_namespace
+
+        self.enterContext(patch.dict("os.environ", {"IG_PROVIDER_TRANSPORT": "instagram_login"}))
+        CheckoutCurrentEpisodeBindingTests.setUp(self)
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(pk=1,
+            defaults={"ig_user_id": "reorder-owner"})
+        self.namespace = ingress_provider_namespace(self.settings)
+        self.variant.stock = 10
+        self.variant.save(update_fields=["stock"])
+        self.customer = self.client_row
+        self.ordinal = 0
     source = reorder_fixtures.HistoricalReorderTests.source
     order = reorder_fixtures.HistoricalReorderTests.order
     counts = reorder_fixtures.HistoricalReorderTests.counts

@@ -20,7 +20,7 @@ _PENDING = re.compile(
     r"|(?:ще|поки|пока|ещ[её])\s+(?:не\s+)?(?:маю|немає|нема|нет|отрим\w*|получ\w*|підтвердж\w*|подтвержд\w*)"
     r"|очіку\w*|ожида\w*", re.I)
 _KINDS = frozenset({"customer_manager_request", "business_review", "product_configuration_review",
-                    "product_information_review"})
+                    "product_information_review", "collaboration_review"})
 
 
 def status_request_source_ids(sources):
@@ -70,7 +70,7 @@ def capture_pending_question_context(revision):
     refs = {row.get("reply_to_provider_message_id") for row in sources} - {None, ""}
     tasks = list(IgFollowUpTask.objects.filter(client_id=client.pk, kind="manager_task",
         reason__in=("revision_case:manager_handoff", "revision_case:product_configuration_review",
-                    "revision_case:product_information_review"))
+                    "revision_case:product_information_review", "revision_case:collaboration_review"))
         .exclude(status__in=("completed", "cancelled")).order_by("-pk")[:9])
     if len(tasks) > 8:
         return {}
@@ -91,6 +91,15 @@ def capture_pending_question_context(revision):
         if owner is None or owner.pk == revision.pk:
             continue
         old = (owner.bundle_snapshot or {}).get("sources") or []
+        if kind == "collaboration_review":
+            from management.services.ig_business_cooperation import business_cooperation_for_sources
+            business = business_cooperation_for_sources(old)
+            # Only the exact native trade brief is ordinary business-status
+            # evidence here. Creator/recruitment and untyped legacy cases have
+            # separate review contracts and cannot borrow this projection.
+            if (context.get("cooperation_kind") != "business" or not business
+                    or context.get("business_cooperation") != business):
+                continue
         receipt = (owner.action_receipts or {}).get("manager_handoff") or {}
         if (not isinstance(receipt, dict) or not 1 <= len(old) <= 32 or not owner.snapshot_digest
                 or _digest(owner.bundle_snapshot) != owner.snapshot_digest

@@ -113,8 +113,8 @@ class ManuNativeLanguagePipelineTests(TestCase):
     """Use native source sealing, captured history, manifest and response validator."""
 
     def setUp(self):
-        from management import tests_ig_turn_context_integration as context_fixture
-        context_fixture.TurnContextConsumerIntegrationTests.setUp(self)
+        from management.tests_ig_manu_fixture_helpers import setup_captured_context_fixture
+        setup_captured_context_fixture(self)
 
     def publish(self, **kwargs):
         from management import tests_ig_turn_context_integration as context_fixture

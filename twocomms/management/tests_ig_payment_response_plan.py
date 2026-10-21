@@ -307,6 +307,8 @@ class PaymentLiveCaptureOrderingTests(SimpleTestCase):
              patch("management.services.instagram_bot.ingress_provider_namespace", return_value="instagram_login:owner-1"), \
              patch("management.services.instagram_bot.get_page_token", return_value="fixture-token"), \
              patch("management.services.instagram_bot._provider_http") as http, \
+             patch("management.services.ig_revision_finalization_faults.finalization_fault_blocks_execution",
+                 return_value=False) as finalization_owner, \
              patch("management.services.ig_revision_live._drain_effects", return_value=stopped) as drain, \
              patch("management.services.ig_payment_observation.observe_payment_source", side_effect=lambda identity: ordering.append("observe")) as observe, \
              patch("management.services.ig_revision_commerce.reduce_revision_commerce",
@@ -314,6 +316,9 @@ class PaymentLiveCaptureOrderingTests(SimpleTestCase):
             settings_rows.select_related.return_value.get.return_value = settings
             revisions.select_related.return_value.filter.return_value.first.return_value = revision
             result = _execute_claimed_revision(2, "claim", settings)
+        # This pure ordering fixture supplies a healthy native owner; native
+        # finalization tests separately exercise the real quarantine boundary.
+        finalization_owner.assert_called_once_with(revision)
         http.assert_not_called()
         return result, observe, drain, ordering
 

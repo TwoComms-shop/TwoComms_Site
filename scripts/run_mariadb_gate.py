@@ -106,6 +106,7 @@ SUITES = {
         "management.tests_ig_manu_recruitment_20261021",
         "management.tests_ig_operator_reply_drafts",
         "management.tests_ig_manu_context_budget_20261021",
+        "management.tests_ig_manu_business_delivery_20261021",
         "management.tests_ig_manu_deadline_20261021",
         "management.tests_ig_manu_deadline_policy_20261021",
         "management.tests_ig_manu_finalization_faults_20261021",

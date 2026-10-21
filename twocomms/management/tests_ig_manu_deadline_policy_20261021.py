@@ -59,8 +59,8 @@ class MadeToOrderPublicationTests(SimpleTestCase):
     IG_CLIENT_STATE_PROMPT_TOKENS=2400, GEMINI_NONLIVE_ADMISSION_MODE="shadow")
 class MadeToOrderNativeRequestTests(TestCase):
     def setUp(self):
-        from management import tests_ig_turn_context_integration as fixtures
-        fixtures.TurnContextConsumerIntegrationTests.setUp(self)
+        from management.tests_ig_manu_fixture_helpers import setup_captured_context_fixture
+        setup_captured_context_fixture(self)
 
     def publish(self, **kwargs):
         from management import tests_ig_turn_context_integration as fixtures

@@ -383,7 +383,8 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             for row in source_rows)
         exact_available = all(line["target"] and line["configuration_digest"]
             and line["observation"].get("status") == "available" for line in lines)
-        prior = Request.objects.filter(client=client, source__isnull=False).order_by("-created_at").first()
+        prior = Request.objects.filter(client=client, source__isnull=False).order_by(
+            "-created_at", "-source_id", "-pk").first()
         if (history_reason and prior and _verified(prior, "request")
                 and (prior.envelope.get("deadline_history") or {}).get("reason") == history_reason
                 and prior.envelope.get("cart_identity") == _cart_identity(cart)
@@ -1028,7 +1029,7 @@ def fulfillment_review_projection(client_id, *, now=None, current_source_cart=No
         # reader; exact request IDs still expose their authenticated native form.
         query = query.filter(source__isnull=False).exclude(
             envelope__scope__in=["restock_list_invitation", "restock_list"])
-    request = query.select_related("client", "revision").order_by("-created_at").first()
+    request = query.select_related("client", "revision").order_by("-created_at", "-source_id", "-pk").first()
     return _projection(request, None, now=now, current_source_cart=current_source_cart, _catalog_readback=_catalog_readback)
 
 

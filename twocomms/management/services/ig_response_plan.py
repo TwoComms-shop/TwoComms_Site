@@ -475,6 +475,168 @@ def _requested_topics(text, parsed_topics=()):
     return sorted(topics)
 
 
+_PERSONAL_PURCHASE = re.compile(
+    r"\b(?:для\s+(?:себе|себя)|(?:і|и)\s+собі|особисто\s+(?:хочу|мені)|"
+    r"лично\s+(?:хочу|мне)|for\s+myself|for\s+my\s+own\s+use)\b", re.I)
+_BUSINESS_RETAIL_TOPICS = {"info:price", "info:shipping", "info:dispatch_timing", "info:question"}
+
+
+def _business_source_partition(sources):
+    """Separate an evidenced trade proposal from explicit personal questions.
+
+    Only sources which independently contain the current business proposal
+    qualify. The native brief's aggregate evidence IDs alone cannot convert an
+    unrelated retail source into a business question. Full source digests stay
+    in the contract; the original sources and commerce state are untouched.
+    """
+    from management.services.ig_business_cooperation import (
+        _TOPICS, business_cooperation_for_sources, current_cooperation_sources,
+    )
+    brief = business_cooperation_for_sources(sources)
+    if not brief:
+        return {}, list(sources)
+    current = {row["message_id"]: row for row in current_cooperation_sources(sources)
+        if type(row.get("message_id")) is int}
+    rows, retail = [], []
+    for source in sources:
+        own = current.get(source.get("message_id"))
+        if own is None:
+            retail.append(source)
+            continue
+        text = str(own.get("text") or "")
+        personal = _PERSONAL_PURCHASE.search(text)
+        trade, suffix = (text[:personal.start()], text[personal.start():]) if personal else (text, "")
+        if personal and not business_cooperation_for_sources([{**own, "text": trade}]):
+            # Personal purchase can precede the proposal in the same source.
+            # A new independently evidenced trade clause starts its own scope.
+            reentry = next((part.start() for part in re.finditer(r"[^.!?\n]+", text)
+                if part.start() > personal.end()
+                and business_cooperation_for_sources([{**own, "text": part.group()}])), None)
+            if reentry is not None:
+                trade, suffix = text[reentry:], text[:reentry]
+        trade_brief = business_cooperation_for_sources([{**own, "text": trade}])
+        topics = trade_brief.get("requested_topics") or []
+        if not trade_brief or not topics:
+            retail.append(source)
+            continue
+        # Material, care, language, payment and other independent questions
+        # survive even inside the proposal's source. An unmatched question is
+        # also debt; a known trade topic cannot cover arbitrary source text.
+        residual = []
+        for clause in re.findall(r"[^.!?\n]+[.!?]?", trade):
+            requested = set(_requested_topics(clause))
+            if requested - _BUSINESS_RETAIL_TOPICS or (
+                "info:question" in requested and not any(pattern.search(clause) for _, pattern in _TOPICS)):
+                residual.append(clause)
+        row = {"source_message_id": source["message_id"],
+            "source_digest": source.get("source_digest") or hashlib.sha256(str(source.get("text") or "").encode()).hexdigest(),
+            "topics": topics}
+        if "catalog_options" in topics:
+            row["catalog_facets"] = [name for name, pattern in (
+                ("sizes", r"розмір\w*|размер\w*|\bsizes?\b"),
+                ("colors", r"кольор\w*|колір\w*|цвет\w*|\bcolou?rs?\b")) if re.search(pattern, trade, re.I)]
+        rows.append(row)
+        retail.append({**source, "text": ". ".join([*residual, suffix]).strip(" .")})
+    if not rows:
+        return {}, list(sources)
+    return {"version": 1, "case_kind": "collaboration_review", "decision_owner": "manager",
+        "evidence_message_ids": [row["source_message_id"] for row in rows], "sources": rows}, retail
+
+
+def _business_obligations(context):
+    return [{"id": f"{row['source_message_id']}:business:{topic}", "kind": "business:" + topic,
+        "source_message_id": row["source_message_id"]}
+        for row in context.get("sources", ()) for topic in row["topics"]]
+
+
+def _personal_choice_fields(source):
+    from management.services.ig_commerce_turns import parse_turn
+    parsed = parse_turn(str(source.get("text") or ""))
+    fields = {"fit_option_code" if key == "fit" else "quantity" if key == "qty" else key
+        for key in parsed.field_updates}
+    if parsed.exact_product_id:
+        fields.add("product_id")
+    if parsed.garment_type:
+        fields.add("garment_type")
+    if parsed.purchase_requested:
+        fields.add("purchase_requested")
+    return fields
+
+
+def _business_topic_covered(kind, response, context, source_id):
+    """A trade acknowledgement keeps the actual management decision pending."""
+    from management.services.ig_business_cooperation import _TOPICS
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_reply_truth import _locally_negated
+    if (not response.control.get("manager") or context.get("case_kind") != "collaboration_review"
+            or _business_approval_reason(response, context)):
+        return False
+    topic = kind.removeprefix("business:")
+    row = next((row for row in context.get("sources", ())
+        if row["source_message_id"] == source_id and topic in row["topics"]), None)
+    pattern = dict(_TOPICS).get(topic)
+    if row is None or pattern is None:
+        return False
+    for clause in re.split(r"[.!?\n]+", own_reply_text(response.reply_text)):
+        owner = re.search(r"менедж\w*|команд\w*|адміністрац\w*|администрац\w*|manager\w*|team|administration", clause, re.I)
+        action = re.search(r"переда\w*|передам|передано|уточн\w*|перевір\w*|провер\w*|розгля\w*|рассмотр\w*|forward\w*|pass\w*|review\w*|check\w*", clause, re.I)
+        whole_brief = re.search(
+            r"(?:ваш\w*|ус[іи]|вс[еи]|your|all)[^.!?\n]{0,25}(?:питан\w*|вопрос\w*|questions?|proposal|запит\w*)"
+            r"\s+(?:щодо|про|по|о|about|regarding|on)\s+(?:співпрац\w*|сотруднич\w*|cooperat\w*|partnership|business)", clause, re.I)
+        review = owner or re.search(r"на\s+(?:розгляд|рассмотрен\w*)|for\s+review", clause, re.I)
+        if whole_brief and action and review and not _locally_negated(clause, action.start()):
+            return True
+        if not owner or not action or _locally_negated(clause, action.start()) or not pattern.search(clause):
+            continue
+        if topic == "catalog_options" and any(not re.search(
+            r"розмір\w*|размер\w*|\bsizes?\b" if facet == "sizes" else r"кольор\w*|колір\w*|цвет\w*|\bcolou?rs?\b",
+            clause, re.I) for facet in row.get("catalog_facets", ())):
+            continue
+        return True
+    return False
+
+
+def _business_approval_reason(response, context):
+    """A captured trade request contains no approval of individual terms."""
+    if not context:
+        return ""
+    from management.services.ig_business_cooperation import _TOPICS
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_reply_truth import _locally_negated
+    approval = re.compile(
+        r"\b(?:confirmed|approved|agreed|authori[sz]ed|permitted|allowed)\b|"
+        r"\bпідтверджен(?:о|а|ий|і)\b|підтверди\w*|\bподтвержден[оыа]\b|подтвердил\w*|"
+        r"погоджено|узгоджено|согласовано|затверджено|утверждено|"
+        r"дозвол(?:ено|яємо|яється)|разреш(?:ено|аем|ается)|"
+        r"(?:можете|можна|можно|you\s+(?:may|can))\s+(?:використов\w*|использов\w*|use|resell|sell)", re.I)
+    trade_scope = re.compile(r"співпрац\w*|сотруднич\w*|партнер\w*|партнёр\w*|оптов\w*|гуртов\w*|"
+        r"wholesale|business|partnership|cooperat\w*|resell\w*|dropship\w*", re.I)
+    for sentence in re.findall(r"[^.!?\n]+[.!?]?", own_reply_text(response.reply_text)):
+        for clause in re.split(r"[;\n]|\b(?:але|но|but)\b", sentence, flags=re.I):
+            # Ordinary selected-product prices/sizes keep their own native
+            # truth authority. Only trade terms or photo-use rights belong to
+            # this unapproved business decision.
+            rights = dict(_TOPICS)["photo_usage"].search(clause) and re.search(
+                r"використов\w*|использов\w*|use|usage|rights?|дозвол\w*|разреш\w*", clause, re.I)
+            if "?" in clause or not (trade_scope.search(clause) or rights):
+                continue
+            for match in approval.finditer(clause):
+                if _locally_negated(clause, match.start()):
+                    continue
+                if re.search(r"(?:не\s+(?:маю|отрим\w*|получ\w*)|"
+                    r"(?:do\s+not|don['’]t|haven['’]t|have\s+not)\s+(?:have|received|got)?)\s+(?:an?\s+)?$",
+                    clause[:match.start()], re.I):
+                    continue
+                # A whether/чи clause scopes only its own question, not a
+                # later coordinated assertion of the same permission.
+                checks = list(re.finditer(r"(?:уточн\w*|перевір\w*|провер\w*|check\w*)[^.!?\n]{0,50}(?:чи|ли|whether|if)\b",
+                    clause[:match.start()], re.I))
+                if checks and not re.search(r",|\b(?:and|а|і|й)\b", clause[checks[-1].end():match.start()], re.I):
+                    continue
+                return "response_plan_business_terms_unconfirmed"
+    return ""
+
+
 def _expand_chart_obligations(rows, source, *, supported_fits=()):
     """A comparison requests each chart; one attachment cannot cover both."""
     from management.services.ig_fit_consultation import requested_chart_fits
@@ -585,6 +747,7 @@ class ResponsePlan:
     fit_consultation: dict = field(default_factory=dict)
     product_focus: dict = field(default_factory=dict)
     product_information: dict = field(default_factory=dict)
+    business_context: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -598,6 +761,8 @@ class ResponsePlan:
                 "obligations": list(self.obligations)}
         if self.pending_questions:
             payload["pending_questions"] = deepcopy(self.pending_questions)
+        if self.business_context:
+            payload["business_context"] = deepcopy(self.business_context)
         if self.payment_observation or self.payment_claim_source_ids:
             payload.update(payment_observation=self.payment_observation,
                 payment_claim_source_ids=list(self.payment_claim_source_ids))
@@ -628,7 +793,7 @@ class ResponsePlan:
 
     @property
     def next_selector_line(self):
-        if self.obligations and all(row["kind"].startswith(("payment:", "info:payment")) for row in self.obligations):
+        if self.obligations and all(row["kind"].startswith(("payment:", "info:payment", "business:")) for row in self.obligations):
             return {}
         for line in self.line_plans:
             row = line.as_dict()
@@ -722,6 +887,8 @@ class ResponsePlan:
                 del group["obligations"]
         payload = {"version": 1, "plan_digest": self.digest, "obligation_columns": ["id", "kind"],
             "obligation_groups": list(groups.values())}
+        if self.business_context:
+            payload["business_context"] = deepcopy(self.business_context)
         chart_fits = [{key: row[key] for key in ("id", "source_message_id", "fit_code", "line_id") if key in row}
             for row in self.obligations if row.get("fit_code") and row["kind"] == "info:size_chart"]
         if chart_fits:
@@ -811,6 +978,10 @@ class ResponsePlan:
         if self.pending_questions:
             from management.services.ig_pending_question_context import pending_question_guidance
             guidance += "\n" + pending_question_guidance(self.pending_questions)
+        if self.business_context:
+            guidance += ("\nBusiness obligations acknowledge each exact trade topic with manager control and explicit team review; "
+                "they grant no partner terms or retail price authority. The native collaboration case retains the decision. "
+                "Trade catalog colors/sizes are no personal SKU selection. Answer independent personal purchase questions separately.")
         if self.configuration.get("source_clarifications"):
             guidance += "\nThe current ad reference is ambiguous. Ask one short product clarification without selection/payment controls; retained cart choices do not answer that reference."
         if (not self.line_plans or self.payment_observation or self.payment_claim_source_ids
@@ -865,6 +1036,11 @@ class ResponsePlan:
     def validate(self, response):
         if self.plan_gap:
             return self.plan_gap
+        business_context = self.business_context or ({"case_kind": "collaboration_review"}
+            if any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())) else {})
+        business_reason = _business_approval_reason(response, business_context)
+        if business_reason:
+            return business_reason
         if self.fit_consultation:
             from management.services.ig_fit_consultation import validate_fit_consultation
 
@@ -969,6 +1145,7 @@ class ResponsePlan:
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
                         or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"]))
+                        or (kind.startswith("business:") and _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"]))
                         or (kind.startswith("withdrawal:") and asks_next_selector(text, kind.split(":", 1)[1])))
             if not done and kind in {"unresolved_line_operation", "info:question"}:
                 from management.services.ig_source_clarification import source_clarifier_covered
@@ -1013,6 +1190,8 @@ class ResponsePlan:
             done = False
             if obligation["id"] in chart_ids:
                 done = True
+            elif kind.startswith("business:"):
+                done = _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"])
             elif kind in {"unresolved_line_operation", "info:question"} and self.configuration.get("source_clarifications"):
                 from management.services.ig_source_clarification import source_clarifier_covered
                 done = source_clarifier_covered(self.configuration, obligation["source_message_id"], response)
@@ -1069,12 +1248,19 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
         plan = replace(plan, payment_observation=admitted, payment_claim_source_ids=claim_ids)
         return attach_cart_response_plan(plan, capture=captured_cart, sources=sources,
             readiness_by_line=readiness_by_line or {}, contexts_by_line=contexts_by_line or {}, context=context)
+    current_sources = [row for row in sources[:64] if row.get("role") == "user"]
+    business_context, retail_sources = _business_source_partition(current_sources)
+    business_ids = set(business_context.get("evidence_message_ids", ()))
+    personal_fields = {row["message_id"]: _personal_choice_fields(row)
+        for row in retail_sources if row["message_id"] in business_ids}
     values = preferences.get("values") or {}
     watermark = max((int(row.get("message_id") or 0) for row in sources), default=0)
     original_evidence = preferences.get("evidence") or {}
     choices = {key: values[key] for key in CHOICE_FIELDS
                if key in values and isinstance(original_evidence.get(key), dict)
                and original_evidence[key].get("source_message_id")
+               and (original_evidence[key]["source_message_id"] not in business_ids
+                    or key in personal_fields[original_evidence[key]["source_message_id"]])
                and (not watermark or int(original_evidence[key]["source_message_id"]) <= watermark)}
     evidence = {key: {name: original_evidence[key][name] for name in
                      ("source_message_id", "source_digest", "decision_id", "transition_id", "product_resolution", "presentation_effect_ids", "authority", "correction")
@@ -1105,15 +1291,14 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
                  "standard_dispatch_days": list(context.explicitly_qualified_standard_dispatch_days or ()),
                  "timing_claims": list(context.approved_timing_claims)[:16],
                  "recruitment_status": context.recruitment_status}
-    current_sources = [row for row in sources[:64] if row.get("role") == "user"]
     inquiry_context = _catalog_inquiry_context(current_sources)
     bare_media = {row["source_message_id"] for row in inquiry_context.get("media_sources", ()) if row["bare"]}
     payment_observation = _captured_payment_observation(payment_observation, current_sources)
     receipt_ids = set(payment_observation.get("source_message_ids") or [])
     payment_claim_ids = set()
-    obligations_list = []
-    commerce_present = False
-    for source in current_sources:
+    obligations_list = _business_obligations(business_context)
+    commerce_present = bool(obligations_list)
+    for source in retail_sources:
         from management.services.ig_commerce_turns import parse_turn
         parsed = parse_turn(str(source.get("text") or ""))
         kinds = ["fit_option_code" if key == "fit" else "quantity" if key == "qty" else key
@@ -1124,20 +1309,20 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
         text_digest = hashlib.sha256(str(source.get("text") or "").encode()).hexdigest()
         for field in ("fit_option_code", "size", "color", "quantity"):
             proof = original_evidence.get(field) or {}
-            if (field in choices and proof.get("source_message_id") == source["message_id"]
+            if (source["message_id"] not in business_ids and field in choices and proof.get("source_message_id") == source["message_id"]
                 and proof.get("source_digest") == text_digest and field not in kinds):
                 kinds.append(field)
-        if (evidence.get("model_query") or {}).get("source_message_id") == source["message_id"]:
+        if source["message_id"] not in business_ids and (evidence.get("model_query") or {}).get("source_message_id") == source["message_id"]:
             # A catalog title such as Classic may resemble a parser preference.
             # Canonical ambiguity evidence cannot manufacture that choice.
             kinds = [kind for kind in kinds if (evidence.get(kind) or {}).get("source_message_id") == source["message_id"]]
-        if parsed.exact_product_id or (evidence.get("product_id") or {}).get("source_message_id") == source["message_id"]:
+        if parsed.exact_product_id or (source["message_id"] not in business_ids and (evidence.get("product_id") or {}).get("source_message_id") == source["message_id"]):
             kinds.append("product_id")
-        if (evidence.get("model_query") or {}).get("source_message_id") == source["message_id"]:
+        if source["message_id"] not in business_ids and (evidence.get("model_query") or {}).get("source_message_id") == source["message_id"]:
             kinds.append("model_query")
         if parsed.purchase_requested:
             kinds.append("purchase_requested")
-        if (evidence.get("garment_type") or {}).get("source_message_id") == source["message_id"]:
+        if (source["message_id"] not in business_ids and (evidence.get("garment_type") or {}).get("source_message_id") == source["message_id"]) or (source["message_id"] in business_ids and parsed.garment_type):
             kinds.append("garment_type")
         for field in parsed.preference_withdrawals:
             selector = {"fit": "fit", "size": "size", "color": "color"}.get(field)
@@ -1163,7 +1348,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             commerce_present = True
         if topics:
             kinds.extend(topics)
-        if not kinds:
+        if not kinds and (source["message_id"] not in business_ids or str(source.get("text") or "").strip()):
             kinds = (["media:catalog_reference"] if source["message_id"] in bare_media else
                 [] if re.fullmatch(r"\s*(?:привіт|вітаю|добрий\s+день|привет|здравствуйте|hello|hi|дякую|спасиб[оа]|thanks?|thank you|ок|okay|👍|❤|❤️)[.!\s]*", str(source.get("text") or ""), re.I) else ["unclassified"])
         for kind in kinds:
@@ -1175,7 +1360,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
     # Outside this commerce slice existing intent and delivery contracts retain
     # responsibility. Within it, an independent source never vanishes.
     obligations = tuple(obligations_list) if commerce_present else ()
-    if obligations and all(row["kind"].startswith(("payment:", "info:payment")) for row in obligations):
+    if obligations and all(row["kind"].startswith(("payment:", "info:payment", "business:")) for row in obligations):
         next_selector = ""
     scope = {key: preferences[key] for key in ("session_id", "generation", "revision", "line_id", "active_index") if key in preferences}
     from management.services.ig_fit_consultation import build_fit_consultation
@@ -1183,7 +1368,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
     return ResponsePlan(choices, evidence, scope, configuration, next_selector, authority, obligations,
         payment_observation=payment_observation, payment_claim_source_ids=tuple(sorted(payment_claim_ids)),
         communication_context=context, catalog_inquiry=inquiry_context,
-        fit_consultation=build_fit_consultation(current_sources))
+        fit_consultation=build_fit_consultation(retail_sources), business_context=business_context)
 
 
 def _capture_payment_context(client, revision, sources, session, line):
@@ -1225,6 +1410,10 @@ def _capture_payment_context(client, revision, sources, session, line):
 def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, contexts_by_line, context):
     """Pure attachment, preserving the legacy constructor and single-line API."""
     from management.services.ig_response_cart_plan import build_cart_response_lines, matching_line_ids, MAX_OBLIGATIONS
+    business_context, retail_sources = _business_source_partition(sources)
+    business_ids = set(business_context.get("evidence_message_ids", ()))
+    personal_fields = {row["message_id"]: _personal_choice_fields(row)
+        for row in retail_sources if row["message_id"] in business_ids}
     def single(preferences, readiness, line_context):
         if line_context is None:
             applicable = bool(readiness.get("applicability_known"))
@@ -1244,12 +1433,29 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
         readiness_by_line=readiness_by_line, authority_by_line=contexts_by_line, single_builder=single)
     if gap:
         return replace(plan, source_cart_capture=deepcopy(capture), plan_gap=gap)
-    obligations = [item for line in lines for item in line.as_dict()["obligations"]]
-    for source in sources:
+    # The source cart is immutable evidence of what the reducer captured.
+    # Its reply projection must not recast trade assortment words as personal
+    # choices. Retain all unrelated historical/line choices and source debt.
+    projected_lines = []
+    for line in lines:
+        row = line.as_dict()
+        row["obligations"] = [item for item in row["obligations"]
+            if item["source_message_id"] not in business_ids
+            or item["kind"] in personal_fields[item["source_message_id"]]]
+        for key, proof in list(row["evidence"].items()):
+            source_id = proof.get("source_message_id")
+            if source_id in business_ids and key not in personal_fields[source_id]:
+                row["evidence"].pop(key, None)
+                row["choices"].pop(key, None)
+        projected_lines.append(replace(line, _payload_json=json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))))
+    lines = tuple(projected_lines)
+    obligations = [*(_business_obligations(business_context)),
+        *(item for line in lines for item in line.as_dict()["obligations"])]
+    for source in retail_sources:
         if source.get("role") != "user":
             continue
         source_id = source["message_id"]
-        owners = {item["line_id"] for item in obligations if item["source_message_id"] == source_id}
+        owners = {item["line_id"] for item in obligations if item["source_message_id"] == source_id and item.get("line_id")}
         accepted_owners = set(owners)
         semantic = set(matching_line_ids(_unquoted_text(source.get("text")), lines))
         if semantic:
@@ -1274,8 +1480,8 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
             obligations.append({"id": f"{source_id}:unresolved_line_operation", "kind": "unresolved_line_operation", "source_message_id": source_id})
     gap = "response_plan_obligation_bound" if len(obligations) > MAX_OBLIGATIONS or any(len(item["id"]) > 160 for item in obligations) else ""
     return replace(plan, source_cart_capture=deepcopy(capture), line_plans=lines,
-        obligations=tuple(obligations), plan_gap=gap,
-        next_selector="" if obligations and all(item["kind"].startswith(("payment:", "info:payment")) for item in obligations) else next((line.as_dict()["next_selector"] for line in lines if line.as_dict()["next_selector"]), ""))
+        obligations=tuple(obligations), plan_gap=gap, business_context=business_context,
+        next_selector="" if obligations and all(item["kind"].startswith(("payment:", "info:payment", "business:")) for item in obligations) else next((line.as_dict()["next_selector"] for line in lines if line.as_dict()["next_selector"]), ""))
 
 
 def _provided_source_cart(client, revision, capture):
@@ -1333,6 +1539,29 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
         return plan
     from management.services.ig_pending_question_context import capture_pending_question_context
     plan = replace(plan, pending_questions=capture_pending_question_context(revision))
+    if any(case.get("kind") == "collaboration_review" for case in plan.pending_questions.get("cases", ())):
+        from management.services.ig_reply_language import own_reply_text
+        from management.services.ig_pending_question_context import status_request_source_ids
+        from management.services.ig_commerce_turns import parse_turn
+        # An explicit question about management's answer on partner pricing
+        # asks for the existing decision's status, not the current retail SKU
+        # price. Generic price requests and personal/mixed clauses stay debt.
+        status_ids = set(plan.pending_questions.get("status_source_ids", ()))
+        trade_status_ids = set()
+        for source in revision.bundle_snapshot.get("sources") or []:
+            text = own_reply_text(str(source.get("text") or ""))
+            clauses = re.split(r"[.!?;\n]+|,|\b(?:та|і|й|и|and|also)\s+(?=(?:яка|який|скільки|какая|какой|сколько|what|how)\b)", text, flags=re.I)
+            price_clauses = [clause for clause in clauses
+                if "info:price" in _requested_topics(clause, parse_turn(clause).info_topics)]
+            if (source.get("message_id") in status_ids and not _PERSONAL_PURCHASE.search(text)
+                and price_clauses and all(
+                    status_request_source_ids([{**source, "text": clause}])
+                    and re.search(r"керівництв\w*|руководств\w*|менедж\w*|команд\w*|адміністрац\w*|администрац\w*|management|manager|team", clause, re.I)
+                    and re.search(r"партнер\w*|партнёр\w*|wholesale|partner\w*", clause, re.I)
+                    for clause in price_clauses)):
+                trade_status_ids.add(source["message_id"])
+        plan = replace(plan, obligations=tuple(row for row in plan.obligations
+            if not (row["source_message_id"] in trade_status_ids and row["kind"] == "info:price")))
     if revision is not None:
         from management.services.ig_fit_consultation import capture_fit_consultation
         from management.services.ig_product_focus import capture_product_focus, focus_selection_candidate
@@ -1340,6 +1569,17 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
         cart = source_cart_capture or plan.source_cart_capture
         focus = capture_product_focus(revision, source_cart_capture=cart)
         fit = capture_fit_consultation(revision, source_cart_capture=cart, product_focus=focus)
+        if plan.business_context:
+            from management.services.ig_fit_consultation import build_fit_consultation
+            _, retail_sources = _business_source_partition(revision.bundle_snapshot.get("sources") or [])
+            retail_fit = build_fit_consultation(retail_sources, focus=focus,
+                photo_capability=fit.get("fit_photo_capability"), approved_fact_keys=fit.get("approved_fact_keys", ()))
+            # Trade assortment/permission to reuse photos does not request a
+            # retail fit-photo effect. Keep actual personal fit capabilities
+            # and numeric guide evidence under their existing native scope.
+            fit = {**retail_fit, **({key: fit[key] for key in
+                ("size_measurements", "size_measurements_complete", "next_consultation_selector") if key in fit}
+                if retail_fit.get("focus") else {})} if retail_fit else {}
         candidate = focus_selection_candidate(revision, focus, source_cart_capture=cart)
         # Request-local reuse only. The immutable revision digest fences these
         # hints; a newly loaded dispatch owner recomputes its own source proof.

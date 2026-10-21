@@ -2,8 +2,10 @@
 from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import patch
+from unittest import skipUnless
+import uuid
 
-from django.db import transaction
+from django.db import DatabaseError, connection, transaction
 from django.test import TestCase, override_settings
 
 from management.models import IgCommerceTurnDecision, IgFunnelResetAudit
@@ -222,3 +224,131 @@ class SignedPollPurposeTests(_RestockFixture, TestCase):
         self.assertTrue(result.ready, result.reason)
         self.assertFalse(IgCommerceTurnDecision.objects.filter(source_message=ack).exists())
         self.assertEqual(IgCommerceSelectionSession.objects.get(client=self.client_row, open_slot=1).snapshot(), before)
+
+    def test_authorized_manager_followup_revalidates_historical_poll_without_granting_head_admission(self):
+        from django.contrib.auth import get_user_model
+        from management.models import IgCustomerTurnRevision, IgFollowUpTask
+        from management.services import ig_restock_followup as followup
+        source = self.signed_poll("Чи є ця позиція в наявності?")
+        revision, _ = self.revision(source)
+        prepared = fulfillment.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
+        self.assertTrue(prepared["ready"], prepared)
+        request = IgFulfillmentReviewRequest.objects.get(pk=prepared["request_id"])
+        manager = get_user_model().objects.create_superuser(username="poll-followup-manager",
+            email="poll-manager@example.test", password="test")
+        checked = fulfillment.apply_fulfillment_decision(request.pk, actor=manager,
+            expected_request_digest=request.envelope_hmac, operation_id=uuid.uuid4(),
+            decisions_by_line=[{"line_id": row["line_id"], "availability": "wait"}
+                for row in request.envelope["lines"]], now=self.now)
+        self.assertTrue(checked["ready"], checked)
+        task = IgFollowUpTask.objects.get(event_key=f"ig-fulfillment-update:{request.pk}:{checked['version']}")
+        source.status = "done"
+        source.save(update_fields=["status"])
+        IgCustomerTurnRevision.objects.filter(pk=revision.pk).update(state="processed", active_slot=None,
+            claim_token="", lease_until=None)
+        neutral = self.source("Дякую!", at=self.now + timedelta(seconds=1))
+        current, _ = self.revision(neutral)
+        neutral.status = "done"
+        neutral.save(update_fields=["status"])
+        IgCustomerTurnRevision.objects.filter(pk=current.pk).update(state="processed", claim_token="", lease_until=None)
+        self.assertEqual(owned_source(revision, source, self.settings)[1], "revision_not_current")
+        self.assertIsNotNone(owned_source(revision, source, self.settings, require_head=False)[0])
+        projection = fulfillment.validated_update_task(task, self.settings, now=self.now + timedelta(seconds=2))
+        self.assertTrue(projection["ready"], projection)
+        with transaction.atomic(), patch("management.services.instagram_bot._provider_http") as provider:
+            offer = followup.prepare_task_offer(task, projection, self.settings,
+                text="Менеджер перевірив: позиція очікується.", now=self.now + timedelta(seconds=2))
+        provider.assert_not_called()
+        self.assertTrue(offer["ready"], offer)
+        invitation = restock.Invitation.objects.get(request_source=source)
+        self.assertIn("poll_admission", invitation.envelope["source"])
+
+
+@skipUnless(connection.vendor == "mysql", "Native restock trigger guards require MariaDB")
+@override_settings(IG_FULFILLMENT_REVIEWS_ENABLED=True, IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True,
+    GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class SignedPollNativeGuardTests(_RestockFixture, TestCase):
+    signed_poll = SignedPollPurposeTests.signed_poll
+
+    def poll_invitation(self):
+        from management.ig_restock_subscription_models import IgRestockInvitation
+        source = self.signed_poll("Повідомте, коли ця позиція буде в наявності")
+        result, _, revision, _ = self.request(source=source)
+        self.assertTrue(result.invitation_id, result)
+        invitation = IgRestockInvitation.objects.get(pk=result.invitation_id)
+        self.assertIn("poll_admission", invitation.envelope["source"])
+        return source, revision, invitation
+
+    def clone(self, original, *, missing_witness=False):
+        values = {field.attname: deepcopy(getattr(original, field.attname))
+            for field in original._meta.concrete_fields if field.name not in {"id", "created_at"}}
+        if isinstance(original.pk, uuid.UUID):
+            values["id"] = uuid.uuid4()
+        if missing_witness:
+            values["envelope"]["source"].pop("poll_admission", None)
+        return type(original)(**values)
+
+    def assert_native_rejects(self, row):
+        with self.assertRaisesMessage(DatabaseError, "Fulfilment immutable/source/privacy guard"):
+            with transaction.atomic():
+                row.save(force_insert=True)
+
+    def test_native_poll_invitation_requires_exact_current_signed_proof_witness(self):
+        from django.core import signing
+        from management.services.ig_ingress_source_proof import SALT, is_current_customer_source
+        source, _, invitation = self.poll_invitation()
+        self.assert_native_rejects(self.clone(invitation, missing_witness=True))
+        # Fixture-only proof replacement simulates the gap between checked
+        # Python ownership and the SQL insert. The replacement itself has a
+        # valid HMAC, but the old signed-envelope witness must not authorize it.
+        payload = signing.loads(source.ingress_proof["signed"], salt=SALT)
+        payload["admitted_at"] = (self.now + timedelta(seconds=1)).isoformat()
+        source.ingress_proof = {**source.ingress_proof,
+            "signed": signing.dumps(payload, salt=SALT, compress=True)}
+        source.save(update_fields=["ingress_proof"])
+        self.assertTrue(is_current_customer_source(source))
+        self.assert_native_rejects(self.clone(invitation))
+
+    def test_native_poll_answer_requires_witness_and_rejects_revoked_proof(self):
+        from management.ig_restock_subscription_models import IgRestockAnswer
+        invitation = self.invitation()
+        source = self.signed_poll(invitation.button_title, payload=invitation.accept_payload,
+            at=self.now + timedelta(seconds=1))
+        revision, _ = self.revision(source)
+        result = restock.handle_reply(source, revision=revision, settings_obj=self.settings,
+            now=source.provider_created_at)
+        self.assertEqual(result.reason, "accept", result)
+        answer = IgRestockAnswer.objects.get(source=source)
+        self.assert_native_rejects(self.clone(answer, missing_witness=True))
+        source.ingress_proof = {}
+        source.save(update_fields=["ingress_proof"])
+        self.assert_native_rejects(self.clone(answer))
+
+    def test_forged_or_unsigned_poll_is_rechecked_immediately_before_seal(self):
+        source, _, invitation = self.poll_invitation()
+        original = deepcopy(source.ingress_proof)
+        for proof in ({}, {**original, "signed": original["signed"] + "forged"}):
+            with self.subTest(unsigned=not proof):
+                source.ingress_proof = proof
+                source.save(update_fields=["ingress_proof"])
+                evidence = {key: deepcopy(value) for key, value in invitation.envelope.items()
+                    if key not in {"version", "purpose", "columns"}}
+                with self.assertRaisesMessage(ValueError, "restock_poll_source_changed"):
+                    restock._seal(self.clone(invitation), "invitation", **evidence)
+
+    def test_final_native_poll_recheck_locks_client_then_source_and_rejects_changed_content(self):
+        from django.test.utils import CaptureQueriesContext
+        source, _, invitation = self.poll_invitation()
+        source.text = "Changed after original source admission"
+        source.save(update_fields=["text"])
+        evidence = {key: deepcopy(value) for key, value in invitation.envelope.items()
+            if key not in {"version", "purpose", "columns"}}
+        row = self.clone(invitation)
+        with CaptureQueriesContext(connection) as reads:
+            with self.assertRaisesMessage(ValueError, "restock_poll_source_changed"):
+                restock._seal(row, "invitation", **evidence)
+        locked = [query["sql"] for query in reads if "FOR UPDATE" in query["sql"].upper()]
+        self.assertGreaterEqual(len(locked), 2)
+        self.assertIn("FROM `management_igclient`", locked[0])
+        self.assertIn("FROM `management_instagrambotmessage`", locked[1])
+        self.assertTrue(row._state.adding)

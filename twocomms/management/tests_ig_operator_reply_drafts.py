@@ -44,7 +44,8 @@ class OperatorReplyDraftTests(TestCase):
         self.actor = get_user_model().objects.create_user(username="operator-draft-owner")
         for codename in ("operate_ig_bot", "view_ig_conversation_pii"):
             self.actor.user_permissions.add(Permission.objects.get(content_type__app_label="management", codename=codename))
-        self.settings = InstagramBotSettings.objects.create(pk=1, is_enabled=True, ig_user_id="owner-1")
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(
+            pk=1, defaults={"is_enabled": True, "ig_user_id": "owner-1"})
         ensure_test_instruction_publication()
         self.settings.refresh_from_db()
         self.customer = IgClient.objects.create(igsid="operator-draft-offline", language="uk")

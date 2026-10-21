@@ -67,7 +67,8 @@ class BeneficiaryDraftContinuityTests(TestCase):
         environment = patch.dict("os.environ", {"IG_PROVIDER_TRANSPORT": "instagram_login"})
         environment.start()
         self.addCleanup(environment.stop)
-        settings = InstagramBotSettings.objects.create(pk=1, ig_user_id="beneficiary-owner")
+        settings, _ = InstagramBotSettings.objects.update_or_create(
+            pk=1, defaults={"ig_user_id": "beneficiary-owner"})
         self.namespace = ingress_provider_namespace(settings)
         self.customer = IgClient.objects.create(igsid="beneficiary-customer")
         category = Category.objects.create(name="Beneficiary fixture", slug="beneficiary-fixture")

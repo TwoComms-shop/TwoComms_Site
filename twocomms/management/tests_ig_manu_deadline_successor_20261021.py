@@ -92,9 +92,19 @@ class NativeDeadlineSuccessorTests(_RestockFixture, TestCase):
 
     def test_real_expanded_review_without_cutoff_retains_only_original_exact_target_hold(self):
         first, decision, second = self.successor()
+        self.assertEqual(first.created_at, second.created_at,
+            "The native current-review regression must exercise equal creation clocks.")
+        self.assertGreater(second.source_id, first.source_id)
         cart = self.cart()
         current = reviews.fulfillment_review_projection(self.client_row.pk, now=self.now, current_source_cart=cart)
+        diagnostic = {key: current.get(key) for key in ("status", "reason", "request_digest", "captured_at")}
+        if current.get("current_request") is None:
+            diagnostic["request_order"] = list(reviews.Request.objects.filter(client=self.client_row)
+                .order_by("-created_at").values("id", "source_id", "created_at")[:4])
+            diagnostic["expected_request_id"] = str(second.pk)
+        self.assertIsNotNone(current.get("current_request"), diagnostic)
         self.assertEqual((current["status"], current["current_request"]["id"]), ("reviewed", str(second.pk)))
+        self.assertEqual(current["current_request"]["source_id"], second.source_id)
         self.assertEqual(self.gate(), "checkout_hard_deadline_later_receipt_consent_required")
         # Removing the original exact garment leaves B's independent review
         # usable, without assigning A's departure cutoff to the added item.
@@ -228,18 +238,34 @@ class NativeDeadlineSuccessorTests(_RestockFixture, TestCase):
 
     def test_changed_original_source_or_hmac_is_not_reused_as_a_live_hold(self):
         first, _, _ = self.successor()
-        from django.db import connection
+        from django.db import connection, DatabaseError, transaction
         import json
         original = deepcopy(first.envelope)
-        first.envelope["customer_requirements"][0]["raw_quote"] = "changed signed evidence"
-        # Deliberate disposable-fixture corruption bypasses the append-only
-        # application API, proving the reader checks the persisted HMAC.
-        table = connection.ops.quote_name(reviews.Request._meta.db_table)
-        with connection.cursor() as cursor:
-            cursor.execute(f"UPDATE {table} SET envelope=%s WHERE id=%s", [json.dumps(first.envelope), first.pk.hex])
-        self.assertEqual(self.gate(), "")
-        with connection.cursor() as cursor:
-            cursor.execute(f"UPDATE {table} SET envelope=%s WHERE id=%s", [json.dumps(original), first.pk.hex])
+        original_hmac = first.envelope_hmac
+        corrupted = deepcopy(first)
+        corrupted.envelope["customer_requirements"][0]["raw_quote"] = "changed signed evidence"
+        cart = self.cart()
+        # Authentication rejects a detached altered row before any further
+        # authority reads. The native immutable ledger must remain intact.
+        with self.assertNumQueries(0):
+            self.assertFalse(reviews._verified(corrupted, "request"))
+            self.assertEqual(reviews._current_reason(corrupted, self.settings, now=self.now,
+                current_source_cart=cart), "request_evidence_invalid")
+        with self.assertRaisesMessage(ValueError, "fulfillment review evidence is append-only"):
+            reviews.Request.objects.filter(pk=first.pk).update(envelope=corrupted.envelope)
+        if connection.vendor == "mysql":
+            # MariaDB installs the native SQL guard. Assert its rejection in
+            # an isolated savepoint instead of bypassing that protection.
+            table = connection.ops.quote_name(reviews.Request._meta.db_table)
+            with self.assertRaisesMessage(DatabaseError, "Fulfilment immutable/source/privacy guard"):
+                with transaction.atomic():
+                    with connection.cursor() as cursor:
+                        cursor.execute(f"UPDATE {table} SET envelope=%s WHERE id=%s",
+                            [json.dumps(corrupted.envelope), first.pk.hex])
+        first.refresh_from_db()
+        self.assertEqual(first.envelope, original)
+        self.assertEqual(first.envelope_hmac, original_hmac)
+        self.assertTrue(reviews._verified(first, "request"))
         self.assertEqual(self.gate(), "checkout_hard_deadline_later_receipt_consent_required")
         from management.models import InstagramBotMessage
         old_source_id = original["sources"][0]["message_id"]
@@ -361,6 +387,11 @@ class NativeDeadlineSuccessorTests(_RestockFixture, TestCase):
         self.assertEqual(request.task.manager_context["deadline_history"], raw["deadline_history"])
         from management.services.ig_fulfillment_context import fulfillment_prompt_value
         projected = reviews.fulfillment_review_projection(self.client_row.pk, now=at, current_source_cart=self.cart(now=at))
+        diagnostic = {key: projected.get(key) for key in ("status", "reason", "request_digest", "captured_at")}
+        if projected.get("current_request") is None:
+            diagnostic["request_order"] = list(reviews.Request.objects.filter(client=self.client_row)
+                .order_by("-created_at").values("id", "source_id", "created_at")[:4])
+        self.assertIsNotNone(projected.get("current_request"), diagnostic)
         shown = fulfillment_prompt_value(projected)
         self.assertEqual(shown["current_request"]["deadline_history"], raw["deadline_history"])
         from management.services.ig_admin_state_capture import current_admin_state
@@ -404,6 +435,12 @@ class NativeDeadlineSuccessorTests(_RestockFixture, TestCase):
         self.assertTrue(final["ready"], final)
         self.assertNotIn("deadline_history", reviews.Request.objects.get(pk=final["request_id"]).envelope)
         projected = reviews.fulfillment_review_projection(self.client_row.pk, now=later, current_source_cart=self.cart(now=later))
+        diagnostic = {key: projected.get(key) for key in ("status", "reason", "request_digest", "captured_at")}
+        if projected.get("current_request") is None:
+            diagnostic["request_order"] = list(reviews.Request.objects.filter(client=self.client_row)
+                .order_by("-created_at").values("id", "source_id", "created_at")[:4])
+            diagnostic["expected_request_id"] = final["request_id"]
+        self.assertIsNotNone(projected.get("current_request"), diagnostic)
         self.assertEqual(projected["current_request"]["active_hard_requirement_digest"], "")
         self.assertEqual(self.gate(now=later), "")
         for index in range(17):
