@@ -1,0 +1,80 @@
+{
+  "observed_at": "2026-10-21T10:35:59.129791+00:00",
+  "sha": "f9f3b0004f6d0fdb80fad542689a55c54c8a9cad",
+  "branch": "main",
+  "stock_rows": 81,
+  "stock_digest": "c84facc0c868919af3437b71db996ba21a3d615c1bd7cfd8be49684f9df6a30f",
+  "restock_enabled": true,
+  "manager_review_enabled": true,
+  "migration_0242": true,
+  "maintenance_active": false,
+  "provider_io": 0,
+  "receipt_columns": [
+    [
+      "effect_id",
+      "YES"
+    ],
+    [
+      "followup_task_id",
+      "YES"
+    ]
+  ],
+  "receipt_guards": [
+    "ig_ful_rec_delete",
+    "ig_ful_rec_insert",
+    "ig_ful_rec_update"
+  ],
+  "receipt_xor": true,
+  "copy_contract": {
+    "version": "source-choice.v1",
+    "locales": {
+      "uk": {
+        "source_choice_valid": true,
+        "invented_stock_rejected": true,
+        "decimal_comma_retained": true,
+        "within_byte_bound": true
+      },
+      "ru": {
+        "source_choice_valid": true,
+        "invented_stock_rejected": true,
+        "decimal_comma_retained": true,
+        "within_byte_bound": true
+      },
+      "en": {
+        "source_choice_valid": true,
+        "invented_stock_rejected": true,
+        "decimal_comma_retained": true,
+        "within_byte_bound": true
+      }
+    },
+    "validity_days": 90,
+    "acceptance_window_hours": 23.0
+  },
+  "select_queries": 7,
+  "sql_verbs": [
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "START"
+  ],
+  "provider_attempts": 0,
+  "baseline_sha": "8a317ba148bdaed292f2773b48d4f8c0ad1e83c8",
+  "stock_unchanged": true,
+  "local_runtime": "CPython3.14.6 / Django6.1",
+  "production_runtime": "CPython3.14.8 / Django6.1",
+  "main_healthy": true,
+  "workers_healthy": true,
+  "supervisor_sha": "f9f3b0004f6d0fdb80fad542689a55c54c8a9cad",
+  "child_sha": "f9f3b0004f6d0fdb80fad542689a55c54c8a9cad",
+  "tests": 186,
+  "unique_tests": 186,
+  "skips": 0,
+  "focused_sqlite": 24,
+  "test_seconds": 1323.219,
+  "mariadb_version": "11.4.12",
+  "mariadb_gate": "passed; full migration graph/reverse/reapply/check; cleanup verified",
+  "manual_customer_sends": 0,
+  "production_fixtures": 0,
+  "static_assets_changed": false,
+  "direct_visual_acceptance": "OPEN"
+}
