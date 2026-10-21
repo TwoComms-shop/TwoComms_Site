@@ -1,0 +1,23 @@
+{
+  "scripts/run_mariadb_gate.py": "7c7e774fb7e18ce94907426a63aeecb7be2b8b5ac2a4470528519d7d4220cbb7",
+  "twocomms/management/ig_payment_reminder_dialog_models.py": "cc14829272b8f2079530f9dd8aa485d58efd3982d92b6e960baf454427dad26f",
+  "twocomms/management/migrations/0243_payment_reminder_time_dialog.py": "a89c1f1ec97b378bd2e0ad6dd56b966cc514260096edbc9a136b8088d89526f4",
+  "twocomms/management/models.py": "e94f3e0dc65b35407dd75c0511de9bcc1a448b6261ad068f8fc599adec203525",
+  "twocomms/management/services/ig_commerce_turns.py": "777896f1d17e62e2974a1c1eebb1fccc3cebfeaef21243baa2efbe5d1ad39acc",
+  "twocomms/management/services/ig_payment_reminder_context.py": "e80ff32621ef98c3965efee96d9733885ca627292ea1ec8d06039402ed47bd98",
+  "twocomms/management/services/ig_payment_reminder_dialog.py": "917b81ae99570285b34a5a7d191df52bb0b11e2edd80e0bc2eccebcf32728621",
+  "twocomms/management/services/ig_payment_reminder_privacy.py": "59f13f87fdbfdd358e99df3c53f9c8b528844c7e239984f9ba02a817a7c586dd",
+  "twocomms/management/services/ig_payment_reminder_time.py": "3f6691af6f9c9c0b37516361f4a53adcebf2fd48f9ed871e4dfde7dbcb1ce4f7",
+  "twocomms/management/services/ig_payment_reminders.py": "bf678ae62f4d5b281b8d46c9968853ad69e900e10ed6301acbca06b1ae2d9304",
+  "twocomms/management/services/ig_request_manifest.py": "c930e479e6839d1df315bc0aba3e863e408ad1401443834d69b0d6356b24ada5",
+  "twocomms/management/services/ig_source_cart_catalog.py": "060230c6540ddab7dbd76d116c2d3d44b5ce6e8b52dce94c19ffac90b34fc3cd",
+  "twocomms/management/templates/management/bot.html": "6fcf6d787018f598edcafdca585ea7c385ee84d0d3e8cf21d0fdc45c6e32dfb9",
+  "twocomms/management/tests_ig_payment_reminder_context.py": "3a4609ca4e2bc926d671673f912343b52992a374886fbaeee95dd866ac3d817c",
+  "twocomms/management/tests_ig_payment_reminder_dialog.py": "53aedca8f76b549410b72660c6bf127644f7d8c763ce81f74356e2f19242bdc3",
+  "twocomms/management/tests_ig_payment_reminder_dialog_admin.py": "ac779c9eedcfd13270b3dce8c4bbb6d367f6b199c8e47075ce2f3fd45054eb33",
+  "twocomms/management/tests_ig_payment_reminder_dialog_context.py": "f1a211aa569874c70cdd11f1580fc73441652c5c319ec8ba98b73d2cbaf69366",
+  "twocomms/management/tests_ig_payment_reminder_dialog_intent.py": "dc111b8f8d582607b1b5a0696419ff625a70a056a34b99180488de799d2c0f13",
+  "twocomms/management/tests_ig_payment_reminder_dialog_storage.py": "a7a9637e21b8d4f884e0e5d65f041f7696d8ff1976dec1f544f83c3becf94f5b",
+  "twocomms/management/tests_ig_payment_reminder_time_migration.py": "3ae064335444dbd04831217dba4a2e7caaf01ef3f4146a1984b16d9bbaf4dd56",
+  "twocomms/management/tests_ig_payment_reminders.py": "971e9f03a4a6cba6e4eefe291b67e0fa258204dba1520d8aba7e2183818e45eb"
+}
