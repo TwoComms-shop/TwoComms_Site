@@ -1,0 +1,123 @@
+{
+  "observed_at": "2026-10-21T13:18:04.705029+00:00",
+  "sha": "0c178f61e533c4a5480a344092d41314bf12efd1",
+  "branch": "main",
+  "runtime": {
+    "python": "3.14.8",
+    "django": "6.1"
+  },
+  "stock_rows": 81,
+  "stock_digest": "c84facc0c868919af3437b71db996ba21a3d615c1bd7cfd8be49684f9df6a30f",
+  "restock_enabled": true,
+  "manager_review_enabled": true,
+  "migration_0242": true,
+  "maintenance_active": false,
+  "provider_io": 0,
+  "receipt_columns": [
+    [
+      "effect_id",
+      "YES"
+    ],
+    [
+      "followup_task_id",
+      "YES"
+    ]
+  ],
+  "receipt_guards": [
+    "ig_ful_rec_delete",
+    "ig_ful_rec_insert",
+    "ig_ful_rec_update"
+  ],
+  "receipt_xor": true,
+  "source_hashes_match": true,
+  "source_files_verified": 10,
+  "assisted_copy_contract": {
+    "locales": {
+      "uk": {
+        "all_positions_once": true,
+        "decimal_comma_retained": true,
+        "no_duplicate_fit": true,
+        "invite_bytes": 430,
+        "ack_bytes": 432,
+        "notification_bytes": 458,
+        "single_positive_button_title": "Так, повідомте 💛"
+      },
+      "ru": {
+        "all_positions_once": true,
+        "decimal_comma_retained": true,
+        "no_duplicate_fit": true,
+        "invite_bytes": 414,
+        "ack_bytes": 412,
+        "notification_bytes": 447,
+        "single_positive_button_title": "Да, сообщите 💛"
+      },
+      "en": {
+        "all_positions_once": true,
+        "decimal_comma_retained": true,
+        "no_duplicate_fit": true,
+        "invite_bytes": 312,
+        "ack_bytes": 299,
+        "notification_bytes": 326,
+        "single_positive_button_title": "Yes, notify me 💛"
+      }
+    },
+    "validity_days": 90,
+    "acceptance_window_hours": 23.0,
+    "native_future_capability": "unverified"
+  },
+  "select_queries": 7,
+  "sql_verbs": [
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "START"
+  ],
+  "provider_attempts": 0,
+  "processes": {
+    "process_online": true,
+    "main_healthy": true,
+    "workers_healthy": true,
+    "stalled": false,
+    "status": "current",
+    "supervisor_release_sha": "0c178f61e533c4a5480a344092d41314bf12efd1",
+    "child_release_sha": "0c178f61e533c4a5480a344092d41314bf12efd1",
+    "child_pid_matches_expected": true
+  },
+  "baseline": {
+    "observed_at": "2026-10-21T12:18:05.304442+00:00",
+    "sha": "eff6f3a70d6d50cece937a15feae6e7c8d23b2a2",
+    "stock_rows": 81,
+    "stock_digest": "c84facc0c868919af3437b71db996ba21a3d615c1bd7cfd8be49684f9df6a30f"
+  },
+  "acceptance": {
+    "unique_python": 273,
+    "native_gate_tests": 262,
+    "native_gate_seconds": 2173.424,
+    "native_gate_includes_explicit_sqlite_receipt_migration_cases": true,
+    "additional_sqlite_media_tests": 11,
+    "additional_sqlite_media_seconds": 8.766,
+    "node_ui_tests": 12,
+    "skips": 0,
+    "mariadb_gate": {
+      "status": "passed",
+      "suite": "restock-followup",
+      "version": "11.4.12-MariaDB",
+      "version_comment": "Homebrew",
+      "database_check": "default:passed;allowed_warnings=0",
+      "warning_contract_reverse": "generated_removed+endpoint_hash_preserved",
+      "migration": "management.0156_ig_order_event_delivery_receipts",
+      "provider_message_id": "varchar(255)",
+      "delivery_provider_message_ids": "longtext+json_valid",
+      "engines": "reviewvote_fit_innodb+push_myisam",
+      "generated_columns": "2_verified",
+      "unique_indexes": "3_new+1_preserved",
+      "endpoint_unique": "hash_preserved",
+      "show_create_tables": "verified",
+      "cleanup": "verified"
+    }
+  },
+  "production_fixtures": 0,
+  "manual_customer_test_sends": 0,
+  "direct_visual_acceptance": "open",
+  "remaining_full_41": "multipart lifecycle and proven ALL delegation"
+}

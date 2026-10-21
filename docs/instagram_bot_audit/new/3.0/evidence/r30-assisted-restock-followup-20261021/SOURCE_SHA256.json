@@ -1,0 +1,12 @@
+{
+  "scripts/run_mariadb_gate.py": "4431482160360d139e33418cf21b88ce505fc772860164c085dce285832bb7d8",
+  "twocomms/management/services/ig_assisted_commerce.py": "627ed5d9431d03b9f2cff48c06c8fc59885a8e21e08ce397af5e74eeb505da83",
+  "twocomms/management/services/ig_assisted_manager_update.py": "5d357da70a5b73f87beb050e1d11f003a17bf2c2e80ce414ddf0428198d3366b",
+  "twocomms/management/services/ig_fulfillment_delivery.py": "d37009736729e4fe885dbb98b6ee313813a643e390112a8d8a842c9c1a5631d8",
+  "twocomms/management/services/ig_restock_followup.py": "9c650f70dc404161eec67dcf3e5d34919e8924faa1406070e54e58648fe9427d",
+  "twocomms/management/services/ig_restock_subscriptions.py": "a7aad84aeb5f693444deea311bae24a11c8d500b6d230464b88df3c01063f825",
+  "twocomms/management/services/ig_restock_waiting_list.py": "a85cd04ea00b0b218f8acd3a1b6b0934ffd05964d852a563fe7de1ad739a9cf6",
+  "twocomms/management/services/ig_restock_waiting_list_coordination.py": "daa6ecb187cbb3f8c043460fcf14305ab17ab3e388f3487e7a1e8a26c52b1801",
+  "twocomms/management/services/ig_restock_waiting_list_review.py": "e7353062b5a42e3f0aaeb08c708e045e0eaaf616906bc82e1009e8a1adaac38e",
+  "twocomms/management/tests_ig_assisted_restock_followup.py": "d25780f113e0cf126f8b5362aacdd2c425bdf51a7b08f509b25a0fff42894a10"
+}
