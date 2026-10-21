@@ -44,6 +44,10 @@ SUITES = {
         "management.tests_ig_daemon_progress.MariaDbLeaseContractTests",
     ),
     "restock-followup": (
+        "management.tests_ig_assisted_restock_followup",
+        "management.tests_ig_assisted_commerce",
+        "management.tests_ig_assisted_mixed_purchase",
+        "management.tests_ig_assisted_partial_core",
         "management.tests_ig_restock_legacy_acceptance",
         "management.tests_ig_restock_followup",
         "management.tests_ig_restock_followup_lifecycle",

@@ -71,7 +71,7 @@ def render_task_update(task, projection):
     """Verify frozen new copy; unmarked historic tasks use the exact old copy."""
     frozen = (task.manager_context or {}).get(CUSTOMER_COPY_KEY)
     if frozen is None:
-        return render_manager_update(projection)
+        return _render_update(task, projection)
     if (not isinstance(frozen, dict) or set(frozen) != {"body", "key_id", "hmac"}
         or not isinstance(frozen["key_id"], str) or not isinstance(frozen["hmac"], str)):
         return ""
@@ -190,18 +190,55 @@ def _core():
     return ig_fulfillment_reviews
 
 
+def _assisted_task(task):
+    from management.services import ig_assisted_manager_update
+    return bool(task and (task.event_payload or {}).get("source_kind") == ig_assisted_manager_update.SOURCE_KIND)
+
+
+def validated_update_task(task, settings_obj, *, now):
+    """An explicit source type owns its tables, currentness and approval proof."""
+    from management.services import ig_assisted_manager_update
+    if task and "source_kind" in (task.event_payload or {}):
+        if not _assisted_task(task):
+            return {"ready": False, "reason": "task_source_kind_unknown"}
+        return ig_assisted_manager_update.validated_update_task(task, settings_obj, now=now)
+    return _core().validated_update_task(task, settings_obj, now=now)
+
+
+def validated_update_history(task):
+    from management.services import ig_assisted_manager_update
+    if task and "source_kind" in (task.event_payload or {}):
+        if not _assisted_task(task):
+            return {"ready": False, "reason": "task_source_kind_unknown"}
+        return ig_assisted_manager_update.validated_update_history(task)
+    return _core().validated_update_history(task)
+
+
+def _render_update(task, projection, *, copy_version=1):
+    if _assisted_task(task):
+        from management.services import ig_assisted_manager_update
+        return ig_assisted_manager_update.render_manager_update(projection, copy_version=copy_version)
+    return render_manager_update(projection, copy_version=copy_version)
+
+
 def _guard(task, settings_obj, *, now):
     from management.models import IgClient
     if not task or task.reason != ORIGIN or task.trigger != "event":
         return None, "task_binding_changed"
-    projection = _core().validated_update_task(task, settings_obj, now=now)
+    projection = validated_update_task(task, settings_obj, now=now)
     if not isinstance(projection, dict) or not projection.get("ready"):
         return None, (projection.get("reason") if isinstance(projection, dict) else "") or "manager_decision_unverified"
     request = projection.get("current_request") or {}
-    if request.get("scope") != "cart" or request.get("client_id") != task.client_id or not projection.get("proof"):
+    expected_scope = "assisted_cart" if _assisted_task(task) else "cart"
+    if request.get("scope") != expected_scope or request.get("client_id") != task.client_id or not projection.get("proof"):
         return None, "task_binding_changed"
+    if _assisted_task(task):
+        reason = restock_followup.subscription_overlap_reason(task.client_id, projection["waiting_list"],
+            settings_obj, now=now, exact_scope=True)
+        if reason:
+            return None, reason
     from management.services.ig_fulfillment_notification_coordination import cart_update_coordination
-    coordinated = cart_update_coordination(task, projection, settings_obj, now=now)
+    coordinated = ({} if _assisted_task(task) else cart_update_coordination(task, projection, settings_obj, now=now))
     if coordinated.get("reason"):
         return None, coordinated["reason"]
     client = IgClient.objects.filter(pk=task.client_id).first()
@@ -220,7 +257,7 @@ def _guard(task, settings_obj, *, now):
     if not quiet_time_allowed(now):
         return None, "quiet_hours"
     text = (render_task_update(task, projection) if CUSTOMER_COPY_KEY in (task.manager_context or {})
-        or task.status != "pending" or task.attempt_count else render_manager_update(projection, copy_version=2))
+        or task.status != "pending" or task.attempt_count else _render_update(task, projection, copy_version=2))
     if not text:
         return None, "summary_requires_manager_clarification"
     if restock_followup.TASK_KEY in (task.manager_context or {}):
@@ -291,7 +328,7 @@ def _history(task_id):
             task = IgFollowUpTask.objects.select_for_update().get(pk=task_id)
             if task.status != "sent" or not task.provider_message_id or task.sent_message_id:
                 return bool(task.sent_message_id)
-            binding = _core().validated_update_history(task)
+            binding = validated_update_history(task)
             if not isinstance(binding, dict) or not binding.get("ready"):
                 return False
             if render_task_update(task, binding) != task.message_text:

@@ -153,13 +153,23 @@ def verify_item_sources(target, client, namespace):
                 raise ValueError("waiting_list_original_source_changed")
 
 
-def _assisted_items(client, cart, *, now):
+def _assisted_items(client, cart, *, now, request=None, decision=None):
+    """Resolve an approved intention, optionally pinned by its native owner.
+
+    The default is the existing customer-request producer. A manager update
+    pins both ORM rows so another intention can never silently replace them.
+    Its caller additionally owns current heads, permissions and delivery.
+    """
     from management.services import ig_assisted_commerce as commerce, ig_assisted_scopes as scopes
-    request = commerce.latest_assisted_request(client.pk)
+    pinned = request is not None or decision is not None
+    if pinned and (request is None or decision is None or request.client_id != client.pk
+        or decision.request_id != request.pk or decision.client_id != client.pk):
+        raise ValueError("waiting_list_assisted_source_changed")
+    request = request if pinned else commerce.latest_assisted_request(client.pk)
     if request is None:
         return None
     _Request, Decision, _Execution, _Image = commerce._models()
-    decision = Decision.objects.filter(request=request).order_by("-version").first()
+    decision = decision if pinned else Decision.objects.filter(request=request).order_by("-version").first()
     if not decision or decision.status != "approved" or not commerce._verified(decision, "decision") or not commerce._verified(request, "request"):
         return None
     if decision.expires_at <= now or request.created_at > now:
@@ -315,15 +325,19 @@ def prepare_request(revision, source, proof, settings_obj, *, now):
         return restock.RestockRequest(True, inv.body, (restock._button(inv),), str(inv.pk))
 
 
-def invitation_reason(inv, settings_obj, *, require_head=False, now=None, check_dispatch_scope=True):
+def invitation_reason(inv, settings_obj, *, require_head=False, now=None, check_dispatch_scope=True, read_case=None):
     restock = _restock()
     try:
         validate_target(inv.target)
         # A manager task follows its original genuine source after that turn
         # completed. Its signed CART binding, not a fabricated new turn, owns
         # the offer; fresh cart/manager admission is checked by its dispatcher.
-        followup = inv.envelope.get("producer") == "manager_followup.v1"
-        owned, reason = restock.owned_source(inv.revision, inv.request_source, settings_obj, require_head=False if followup else require_head)
+        from management.services.ig_restock_followup import ASSISTED_PROVENANCE, is_followup_invitation
+        followup = is_followup_invitation(inv)
+        if read_case is not None and inv.envelope.get("producer") != ASSISTED_PROVENANCE:
+            return "waiting_list_source_unverified"
+        owned, reason = (read_case.owned_source(inv.revision, inv.request_source, settings_obj) if read_case is not None else
+            restock.owned_source(inv.revision, inv.request_source, settings_obj, require_head=False if followup else require_head))
         if not owned or owned[2] != inv.envelope.get("source"):
             return reason or "waiting_list_request_source_changed"
         client = owned[0].client
@@ -331,9 +345,10 @@ def invitation_reason(inv, settings_obj, *, require_head=False, now=None, check_
             or settings_obj.reply_permission_epoch != inv.envelope.get("settings_epoch")
             or client.reply_permission_epoch != inv.envelope.get("client_epoch")):
             return "permission_scope_changed"
-        verify_item_sources(inv.target, client, inv.envelope["source"]["namespace"])
+        if read_case is None:
+            verify_item_sources(inv.target, client, inv.envelope["source"]["namespace"])
         from management.services import ig_restock_waiting_list_review as review
-        if not review.invitation_review_valid(inv):
+        if not review.invitation_review_valid(inv, read_case=read_case):
             return "manager_review_binding_changed"
         return restock._scope(client, settings_obj) if check_dispatch_scope else ""
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -448,6 +463,7 @@ def _capture_projection(client_id, *, now, limit, include_manager_review, result
     from management.services import ig_restock_waiting_list_review as review
     from management.services.ig_delivery_receipts import normalize_provider_message_id
     for inv in invitations[:limit]:
+        read_case = None
         try:
             if not restock._verified(inv, "invitation") or _digest(inv.target) != inv.target_digest:
                 result["coverage_complete"] = False
@@ -458,14 +474,21 @@ def _capture_projection(client_id, *, now, limit, include_manager_review, result
             # Consent history is independent of a later service complaint,
             # token configuration or dispatch eligibility. The read descriptor
             # still checks exact native ownership, reset, epochs and receipts.
-            source_reason = invitation_reason(inv, settings_obj, now=now, check_dispatch_scope=False) if settings_obj else "settings_missing"
             receipt = restock.Receipt.objects.select_related("effect", "followup_task").filter(invitation=inv).first()
-            receipt_valid = bool(receipt and restock._valid_receipt(inv, receipt))
+            from management.services.ig_restock_followup import ASSISTED_PROVENANCE
+            if inv.envelope.get("producer") == ASSISTED_PROVENANCE and receipt and receipt.followup_task_id:
+                from management.services.ig_assisted_manager_update import capture_read_case
+                read_case = capture_read_case(receipt.followup_task)
+            source_reason = invitation_reason(inv, settings_obj, now=now, check_dispatch_scope=False,
+                read_case=read_case) if settings_obj else "settings_missing"
+            receipt_valid = bool(receipt and restock._valid_receipt(inv, receipt, read_case=read_case))
             answers = list(restock.Answer.objects.filter(invitation=inv).select_related("invitation", "receipt__effect", "receipt__followup_task", "source").order_by("pk"))
             accepted = next((row for row in answers if row.kind == "accept"), None)
             revoked = next((row for row in answers if row.kind == "revoke"), None)
-            accepted_valid = bool(accepted and settings_obj and restock._valid_answer(accepted, settings_obj))
-            state = "unverified" if source_reason else "expired" if now >= inv.expires_at else "revoked" if revoked and restock._valid_answer(revoked, settings_obj) else "accepted" if accepted_valid else "invited"
+            accepted_valid = bool(accepted and settings_obj and restock._valid_answer(accepted, settings_obj, read_case=read_case))
+            revoked_valid = bool(revoked and settings_obj and restock._valid_answer(revoked, settings_obj,
+                read_case=read_case, accepted_answer=accepted))
+            state = "unverified" if source_reason else "expired" if now >= inv.expires_at else "revoked" if revoked_valid else "accepted" if accepted_valid else "invited"
             subscription = restock.Subscription.objects.filter(accepted_answer=accepted).first() if accepted else None
             manager = review.projection(inv, subscription, now=now) if include_manager_review else {
                 "ready": False, "request_id": None, "request_digest": None, "state": "unverified",
@@ -499,8 +522,11 @@ def _capture_projection(client_id, *, now, limit, include_manager_review, result
                     "native_receipt_confirmed": sent},
                 "source_refs": [{"kind": "message", "id": row.pk, "event_at": row.provider_created_at.isoformat()}
                     for row in (inv.request_source, *([accepted.source] if accepted_valid else []),
-                        *([revoked.source] if revoked and restock._valid_answer(revoked, settings_obj) else []))]})
+                        *([revoked.source] if revoked_valid else []))]})
         except (ValueError, KeyError, TypeError, AttributeError):
             result["coverage_complete"] = False
             result["reason"] = result["reason"] or "waiting_list_evidence_unverified"
+        finally:
+            if read_case is not None:
+                read_case.close()
     return result

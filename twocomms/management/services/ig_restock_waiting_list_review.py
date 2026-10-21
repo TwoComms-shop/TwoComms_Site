@@ -59,10 +59,10 @@ def create_invitation_review(revision, source, proof, target, settings_obj, *, n
             "task_id": request.task_id, "client_id": client.pk, "target_digest": waiting._digest(target)}
 
 
-def _invitation_review(inv):
-    if inv.envelope.get("producer") == "manager_followup.v1":
-        from management.services.ig_restock_followup import invitation_case
-        case = invitation_case(inv)
+def _invitation_review(inv, *, read_case=None):
+    from management.services.ig_restock_followup import is_followup_invitation, invitation_case
+    if is_followup_invitation(inv):
+        case = invitation_case(inv, read_case=read_case)
         return case[0] if case else None
     try:
         frozen = inv.envelope.get("manager_review") or {}
@@ -92,12 +92,13 @@ def _invitation_review(inv):
         return None
 
 
-def invitation_review_valid(inv):
-    return bool(_invitation_review(inv))
+def invitation_review_valid(inv, *, read_case=None):
+    return bool(_invitation_review(inv, read_case=read_case))
 
 
 def _original_baseline(inv):
-    if inv.envelope.get("producer") == "manager_followup.v1":
+    from management.services.ig_restock_followup import is_followup_invitation
+    if is_followup_invitation(inv):
         from management.services.ig_restock_followup import original_baseline
         return original_baseline(inv)
     restock = waiting._restock()

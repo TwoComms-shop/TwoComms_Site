@@ -15,7 +15,17 @@ from management.services import ig_restock_waiting_list as waiting
 
 TASK_KEY = "restock_invitation.v1"
 PROVENANCE = "manager_followup.v1"
+ASSISTED_PROVENANCE = "assisted_manager_followup.v1"
 MAX_BYTES = 950
+
+
+def is_followup_invitation(inv):
+    return inv.envelope.get("producer") in {PROVENANCE, ASSISTED_PROVENANCE}
+
+
+def _assisted_task(task):
+    from management.services import ig_assisted_manager_update as assisted
+    return bool(task and (task.event_payload or {}).get("source_kind") == assisted.SOURCE_KIND)
 
 
 def _failure(reason):
@@ -67,8 +77,13 @@ def _target(request, decision):
     return target
 
 
-def _case(task, projection):
+def _case(task, projection, *, read_case=None):
     data = task.event_payload or {}
+    if "source_kind" in data:
+        if not _assisted_task(task):
+            raise ValueError("waiting_list_manager_source_kind_unknown")
+        from management.services import ig_assisted_manager_update as assisted
+        return assisted.case(task, projection, read_case=read_case)
     # Reject malformed or synthetic task identifiers before ORM conversion.
     uuid.UUID(str(data.get("request_id")))
     uuid.UUID(str(data.get("decision_id")))
@@ -89,7 +104,8 @@ def _case(task, projection):
 
 
 def _binding(request, decision, task, target):
-    return {"schema": PROVENANCE, "request_id": str(request.pk), "request_hmac": request.envelope_hmac,
+    producer = ASSISTED_PROVENANCE if _assisted_task(task) else PROVENANCE
+    return {"schema": producer, "request_id": str(request.pk), "request_hmac": request.envelope_hmac,
         "decision_id": str(decision.pk), "decision_hmac": decision.envelope_hmac,
         "decision_version": decision.version, "task_id": task.pk, "client_id": task.client_id,
         "target_digest": restock._digest(target)}
@@ -97,6 +113,9 @@ def _binding(request, decision, task, target):
 
 def _target_parity(inv, request, decision):
     """Immutable signed source parity; current source proofs have their owner."""
+    if inv.envelope.get("producer") == ASSISTED_PROVENANCE:
+        from management.services import ig_assisted_manager_update as assisted
+        return assisted.target_parity(inv, request, decision)
     waiting.validate_target(inv.target)
     rows = {row["line_id"]: row for row in request.envelope["lines"]}
     decisions = decision.envelope["lines"]
@@ -119,23 +138,38 @@ def _target_parity(inv, request, decision):
     return True
 
 
-def invitation_case(inv, *, task=None, history=None):
+def invitation_case(inv, *, task=None, history=None, read_case=None):
     """Validate historical provenance without claiming current stock or review."""
     from management.models import IgFollowUpTask
     frozen = inv.envelope.get("manager_review") or {}
-    if (not restock._verified(inv, "invitation") or inv.envelope.get("producer") != PROVENANCE
-        or restock._digest(inv.target) != inv.target_digest or frozen.get("schema") != PROVENANCE):
+    producer = inv.envelope.get("producer")
+    if (not restock._verified(inv, "invitation") or not is_followup_invitation(inv)
+        or restock._digest(inv.target) != inv.target_digest or frozen.get("schema") != producer):
         return None
     try:
-        task = task or IgFollowUpTask.objects.filter(pk=frozen.get("task_id"), client_id=inv.client_id).first()
+        if task is None:
+            task = (read_case.task_snapshot(task_id=frozen.get("task_id"), client_id=inv.client_id)
+                if read_case is not None else
+                IgFollowUpTask.objects.filter(pk=frozen.get("task_id"), client_id=inv.client_id).first())
         if not task or task.pk != frozen.get("task_id") or task.client_id != inv.client_id:
             return None
-        history = history if history is not None else reviews.validated_update_history(task)
+        from management.services.ig_fulfillment_delivery import validated_update_history
+        if read_case is not None:
+            from management.services import ig_assisted_manager_update as assisted
+            history = assisted.validated_update_history(task, read_case=read_case)
+        else:
+            history = history if history is not None else validated_update_history(task)
         if not history.get("ready"):
             return None
-        request, decision = _case(task, history)
-        if (inv.request_source_id != request.source_id or inv.revision_id != request.revision_id
-            or inv.envelope.get("source") not in request.envelope.get("sources", [])
+        request, decision = _case(task, history, read_case=read_case)
+        if _assisted_task(task):
+            from management.services import ig_assisted_manager_update as assisted
+            source = read_case.source_snapshot(request) if read_case is not None else assisted.source_snapshot(request)
+            source_matches = inv.request_source_id == source.pk and producer == ASSISTED_PROVENANCE
+        else:
+            source_matches = (inv.request_source_id == request.source_id and producer == PROVENANCE
+                and inv.envelope.get("source") in request.envelope.get("sources", []))
+        if (not source_matches or inv.revision_id != request.revision_id
             or not _target_parity(inv, request, decision) or frozen != _binding(request, decision, task, inv.target)):
             return None
         return request, decision, task
@@ -147,6 +181,9 @@ def original_baseline(inv):
     case = invitation_case(inv)
     if not case:
         raise ValueError("waiting_list_configuration_ancestry_changed")
+    if _assisted_task(case[2]):
+        from management.services import ig_assisted_manager_update as assisted
+        return assisted.original_baseline(case[2])
     ids = {item["line_id"] for item in inv.target["items"]}
     return {row["line_id"]: row["configuration_digest"] for row in case[0].envelope["lines"] if row["line_id"] in ids}
 
@@ -160,12 +197,19 @@ def _locale(request, source, proof):
     return locale, language.as_dict()
 
 
-def _copy(locale, text, target):
+def _copy(locale, text, target, *, producer=PROVENANCE):
     offers = {
         "uk": "💛 Повідомити один раз, коли менеджер підтвердить наявність усіх позицій?\n{items}\nПідтвердьте кнопкою. Це не бронювання.",
         "ru": "💛 Сообщить один раз, когда менеджер подтвердит наличие всех позиций?\n{items}\nПодтвердите кнопкой. Это не резерв.",
         "en": "💛 One message when our manager confirms all these items are available?\n{items}\nConfirm below. This is not a reservation.",
     }
+    if producer == ASSISTED_PROVENANCE:
+        from management.services.ig_restock_ack_copy import attributed_label, list_label
+        if attributed_label(locale, list_label(target)) not in text:
+            raise ValueError("waiting_list_complete_label_required")
+        # The typed manager update already names every exact item once.
+        footer = offers.get(locale, offers["uk"]).format(items="").replace("\n\n", "\n")
+        return text + "\n\n" + footer
     return text + "\n\n" + offers.get(locale, offers["uk"]).format(items=waiting.label(target))
 
 
@@ -189,7 +233,11 @@ def accepted_copy(locale, target):
     return header + "\n" + "\n".join(lines) + "\n\n" + footer
 
 
-def _current_case_reason(request, decision, settings_obj, now):
+def _current_case_reason(request, decision, settings_obj, now, *, task=None):
+    if _assisted_task(task):
+        from management.services import ig_assisted_manager_update as assisted
+        projection = assisted.validated_update_task(task, settings_obj, now=now)
+        return "" if projection.get("ready") else projection.get("reason") or "waiting_list_manager_source_changed"
     from django.contrib.auth import get_user_model
     from management.bot_access import has_all_bot_capabilities, OPERATE_IG_BOT_PERMISSION, VIEW_IG_CONVERSATION_PII_PERMISSION
     actor = get_user_model().objects.filter(pk=decision.actor_id, is_active=True).first()
@@ -200,23 +248,49 @@ def _current_case_reason(request, decision, settings_obj, now):
 
 
 
-def subscription_overlap_reason(client_id, target, settings_obj, *, now):
+def subscription_overlap_reason(client_id, target, settings_obj, *, now, exact_scope=False):
     """Deduplicate authenticated matching variants, allowing other interests."""
     def identities(value):
+        if exact_scope:
+            if not waiting.is_list(value):
+                return set()
+            return {restock._digest({"line_id": item["line_id"], "recipient_id": item["recipient_id"],
+                "quantity": item["quantity"], "item_kind": item["item_kind"],
+                "configuration": ({key: item["catalog_target"][key] for key in
+                    ("product_id", "color_variant_id", "size", "fit_option_code", "option_values")}
+                    if item["catalog_target"] is not None else
+                    {"intention_id": item["source"].get("intention_id"),
+                        **{key: item[key] for key in ("title", "color", "size", "fit", "options")}})})
+                for item in value["items"]}
         values = [item.get("catalog_target") for item in value["items"]] if waiting.is_list(value) else [value]
-        return {restock._digest({key: item[key] for key in
+        result = {restock._digest({key: item[key] for key in
             ("product_id", "color_variant_id", "size", "fit_option_code", "option_values")})
             for item in values if isinstance(item, dict) and "color_variant_id" in item}
+        if waiting.is_list(value):
+            for item in value["items"]:
+                if item.get("item_kind") == "custom_apparel" and item.get("source", {}).get("kind") == "assisted_intention":
+                    result.add(restock._digest({"kind": "custom_apparel", "intention_id": item["source"].get("intention_id"),
+                        "line_id": item["line_id"], "recipient_id": item["recipient_id"],
+                        **{key: item[key] for key in ("title", "color", "size", "fit", "options")}}))
+        return result
     expected = identities(target)
-    rows = list(restock.Subscription.objects.filter(client_id=client_id, state="active").select_related(
+    states = ["active", "sent", "unknown"] if exact_scope else ["active"]
+    rows = list(restock.Subscription.objects.filter(client_id=client_id, state__in=states).select_related(
         "accepted_answer__invitation__client", "accepted_answer__invitation__revision",
         "accepted_answer__invitation__request_source", "accepted_answer__source",
         "accepted_answer__receipt__effect", "accepted_answer__receipt__followup_task").order_by("pk")[:17])
     if len(rows) > 16:
         return "waiting_list_subscription_capture_bound"
     for row in rows:
-        if not restock._subscription_reason(row, settings_obj, now=now):
-            if identities(row.accepted_answer.invitation.target) & expected:
+        reason = restock._subscription_reason(row, settings_obj, now=now)
+        if not reason or exact_scope and reason in {"subscription_sent", "subscription_unknown"}:
+            actual = identities(row.accepted_answer.invitation.target)
+            matches = bool(expected) and actual == expected if exact_scope else bool(actual & expected)
+            if matches:
+                if exact_scope:
+                    from management.services.ig_restock_waiting_list_review import configuration_reason
+                    if configuration_reason(row.accepted_answer.invitation, now=now):
+                        continue
                 return "waiting_list_existing_subscription"
     return ""
 
@@ -229,10 +303,17 @@ def prepare_task_offer(task, projection, settings_obj, *, text, now):
         return _failure("waiting_list_offer_not_pending")
     try:
         request, decision = _case(task, projection)
-        reason = _current_case_reason(request, decision, settings_obj, now)
+        assisted_task = _assisted_task(task)
+        producer = ASSISTED_PROVENANCE if assisted_task else PROVENANCE
+        reason = _current_case_reason(request, decision, settings_obj, now, task=task)
         if reason:
             return _failure(reason)
-        owned, reason = restock.owned_source(request.revision, request.source, settings_obj, require_head=False)
+        if assisted_task:
+            from management.services import ig_assisted_manager_update as assisted
+            request_source = assisted.source_snapshot(request)
+        else:
+            request_source = request.source
+        owned, reason = restock.owned_source(request.revision, request_source, settings_obj, require_head=False)
         if not owned:
             return _failure(reason)
         revision, source, proof = owned
@@ -241,23 +322,28 @@ def prepare_task_offer(task, projection, settings_obj, *, text, now):
             return _failure(reason)
         if now >= source.provider_created_at + restock.WINDOW:
             return _failure("waiting_list_acceptance_window_closed")
-        target = _target(request, decision)
         from management.services.ig_assisted_commerce import _configuration_capture
         from management.services.ig_commerce_projection import capture_current_selection_lines
         cart = capture_current_selection_lines(task.client_id, now=now)
         if (cart.get("status") != "captured" or not cart.get("coverage_complete")
-            or reviews._cart_identity(cart) != request.envelope.get("cart_identity")):
+            or not assisted_task and reviews._cart_identity(cart) != request.envelope.get("cart_identity")):
             return _failure("waiting_list_source_cart_unavailable")
-        locale, language = _locale(request, source, proof)
-        body = _copy(locale, text, target)
+        target = assisted.target(request, decision, cart=cart, now=now) if assisted_task else _target(request, decision)
+        if assisted_task and target != assisted.frozen_target(task):
+            return _failure("waiting_list_source_cart_unavailable")
+        locale, language = assisted.locale(request) if assisted_task else _locale(request, source, proof)
+        body = _copy(locale, text, target, producer=producer)
+        from management.services.ig_restock_ack_copy import list_label
+        ack = (restock._fresh_copy(locale, "accepted", list_label(target), all_items=True)
+            if assisted_task else accepted_copy(locale, target))
         if any(len(value.encode()) > MAX_BYTES for value in (body,
-            accepted_copy(locale, target), waiting.copy_for(locale, "notification", waiting.label(target)))):
+            ack, waiting.copy_for(locale, "notification", waiting.label(target)))):
             return _failure("waiting_list_single_card_bound")
         # A previous source invitation or active overlapping agreement owns its
         # consent. Another manager update must not silently compete with it.
         if restock.Invitation.objects.filter(revision=revision, request_source=source).exists():
             return _failure("waiting_list_source_invitation_exists")
-        reason = subscription_overlap_reason(task.client_id, target, settings_obj, now=now)
+        reason = subscription_overlap_reason(task.client_id, target, settings_obj, now=now, exact_scope=assisted_task)
         if reason:
             return _failure(reason)
         if restock.Invitation.objects.filter(client_id=task.client_id, target_digest=restock._digest(target),
@@ -273,7 +359,8 @@ def prepare_task_offer(task, projection, settings_obj, *, text, now):
             settings_id=settings_obj.pk, settings_epoch=settings_obj.reply_permission_epoch,
             client_epoch=revision.client.reply_permission_epoch, manager_review=_binding(request, decision, task, target),
             waiting_list={"schema": waiting.SCHEMA, "source_capture": deepcopy(cart), "configuration": _configuration_capture(cart),
-                "reply_language": language}, native_future_capability="unverified", producer=PROVENANCE)
+                "reply_language": language}, native_future_capability="unverified", producer=producer,
+            **({"ack_copy_version": restock.ACK_COPY_VERSION} if assisted_task else {}))
         task.manager_context = {**(task.manager_context or {}), TASK_KEY: {"invitation_id": str(inv.pk),
             "invitation_hmac": inv.envelope_hmac, "payload_digest": restock._digest(_plan(inv))}}
         return _wire(inv)
@@ -283,12 +370,14 @@ def prepare_task_offer(task, projection, settings_obj, *, text, now):
 
 def task_offer(task, projection, settings_obj, *, text, now, require_current=True):
     try:
+        if require_current and not restock._enabled():
+            return _failure("waiting_list_feature_disabled")
         frozen = (task.manager_context or {}).get(TASK_KEY)
         if not isinstance(frozen, dict):
             return _failure("waiting_list_offer_absent")
         inv = restock.Invitation.objects.select_related("client", "request_source", "revision").filter(
             pk=frozen.get("invitation_id"), client_id=task.client_id).first()
-        if (not restock._verified(inv, "invitation") or inv.envelope.get("producer") != PROVENANCE
+        if (not restock._verified(inv, "invitation") or not is_followup_invitation(inv)
             or frozen != {"invitation_id": str(inv.pk), "invitation_hmac": inv.envelope_hmac,
                 "payload_digest": restock._digest(_plan(inv))} or text != inv.body or len(inv.body.encode()) > MAX_BYTES):
             return _failure("waiting_list_offer_plan_changed")
@@ -299,7 +388,7 @@ def task_offer(task, projection, settings_obj, *, text, now, require_current=Tru
         reason = waiting.invitation_reason(inv, settings_obj, require_head=False, now=now,
             check_dispatch_scope=require_current)
         if not reason and require_current:
-            reason = (_current_case_reason(request, decision, settings_obj, now)
+            reason = (_current_case_reason(request, decision, settings_obj, now, task=task)
                 or waiting.current_target_reason(inv, now=now))
             if not reason and now >= inv.acceptance_deadline:
                 reason = "waiting_list_acceptance_window_closed"
@@ -308,13 +397,18 @@ def task_offer(task, projection, settings_obj, *, text, now, require_current=Tru
         return _failure("waiting_list_offer_unverified")
 
 
-def valid_task_receipt(inv, receipt):
+def valid_task_receipt(inv, receipt, *, read_case=None):
     from management.services.ig_delivery_receipts import normalize_provider_message_id
     from management.services.ig_fulfillment_delivery import render_task_update
     try:
         task = receipt.followup_task
-        history = reviews.validated_update_history(task)
-        case = invitation_case(inv, task=task, history=history)
+        from management.services.ig_fulfillment_delivery import validated_update_history
+        if read_case is not None:
+            from management.services import ig_assisted_manager_update as assisted
+            history = assisted.validated_update_history(task, read_case=read_case)
+        else:
+            history = validated_update_history(task)
+        case = invitation_case(inv, task=task, history=history, read_case=read_case)
         if not history.get("ready") or not case:
             return False
         frozen = (task.manager_context or {}).get(TASK_KEY)
@@ -359,7 +453,8 @@ def record_task_delivery(task_id, *, now=None):
         if existing:
             return valid_task_receipt(inv, existing)
         try:
-            history = reviews.validated_update_history(task)
+            from management.services.ig_fulfillment_delivery import validated_update_history
+            history = validated_update_history(task)
         except (ValueError, TypeError, AttributeError):
             return False
         case = invitation_case(inv, task=task, history=history)

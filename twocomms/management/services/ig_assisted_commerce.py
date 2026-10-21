@@ -1171,6 +1171,9 @@ def record_assisted_decision(request_id, *, actor, operation_id, status, expecte
             approved_custom_quantity=quantity, physical_checked_at=physical_checked, expires_at=expires),
             "decision", snapshot, operation_input_digest=input_digest)
         _publish_task_head(task, request, decision)
+        if status == "approved":
+            from management.services.ig_assisted_manager_update import create_approved_task
+            create_approved_task(request, decision, now=now)
         AdminAuditLog.objects.create(actor=actor, action="ig_assisted_commerce_decision",
             entity_type="IgAssistedCommerceRequest", entity_id=str(request.pk),
             before={"decision_version": expected_decision_version}, after={"decision_id": str(decision.pk),
@@ -1335,6 +1338,14 @@ def verify_assisted_evidence(row, kind):
     return kind in {"request", "decision", "execution", "image", "stock_sync"} and _verified(row, kind)
 
 
+def _verify_historical_image_parity(lines, images):
+    """Pure parity over this reader's actual owned image rows."""
+    for line in lines:
+        image = images.get(line.image_id) if line.image_id else None
+        if image and (not _verified(image, "image") or image.content_digest != line.image_digest):
+            _fail("frozen_image_identity_invalid")
+
+
 def verified_assisted_decision_from_evidence(request, decision, *, historical=False):
     """Verify frozen native terms after an execution owner's strong guard.
 
@@ -1388,11 +1399,10 @@ def verified_assisted_decision_from_evidence(request, decision, *, historical=Fa
     else:
         # Paid facts remain exact if an owned photo subsequently expires or is
         # erased. The media reader displays a placeholder; no URL/storage read.
-        for line in lines:
-            if line.image_id:
-                image = Image.objects.filter(pk=line.image_id, request=request, client_id=request.client_id).first()
-                if image and (not _verified(image, "image") or image.content_digest != line.image_digest):
-                    _fail("frozen_image_identity_invalid")
+        image_ids = {line.image_id for line in lines if line.image_id}
+        images = {image.pk: image for image in Image.objects.filter(
+            pk__in=image_ids, request=request, client_id=request.client_id)} if image_ids else {}
+        _verify_historical_image_parity(lines, images)
     return VerifiedAssistedDecision(request.pk, decision.pk, request.client_id, decision.actor_id,
         decision.actor_id, request.intention_id, request.version, decision.version, request.revision_id,
         request.envelope_hmac, decision.envelope_hmac, request.full_capture_digest, decision.snapshot_digest,

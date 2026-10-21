@@ -39,6 +39,13 @@ def restock_update_coordination(event, settings_obj, *, now):
         # A durable earlier receipt cannot consume or block a later agreement.
         if task.status == "sent" and task.sent_at and task.sent_at < subscription.accepted_answer.answered_at:
             continue
+        if "source_kind" in (task.event_payload or {}):
+            from management.services import ig_assisted_manager_update as assisted
+            # This original-purpose update describes an authenticated ALL-WAIT
+            # decision, never physical stock availability or a delegated MID.
+            if not assisted.validated_update_history(task).get("ready"):
+                return {"reason": coordination.CORRUPT}
+            continue
         binding = coordination._cart_binding(task)
         if not binding:
             return {"reason": coordination.CORRUPT}

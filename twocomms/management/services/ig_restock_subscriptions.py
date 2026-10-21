@@ -532,10 +532,14 @@ def _effect_matches(inv, effect, *, body=None, action="accept", source_id=None, 
         and effect.payload.get("message") == {"text": body or inv.body, "quick_replies": [_native_button(inv, action)]})
 
 
-def _valid_receipt(inv, receipt):
+def _valid_receipt(inv, receipt, *, read_case=None):
+    if read_case is not None:
+        from management.services.ig_restock_followup import ASSISTED_PROVENANCE
+        if inv.envelope.get("producer") != ASSISTED_PROVENANCE or not receipt or not receipt.followup_task_id:
+            return False
     if receipt and getattr(receipt, "followup_task_id", None):
         from management.services.ig_restock_followup import valid_task_receipt
-        return bool(_verified(inv, "invitation") and valid_task_receipt(inv, receipt))
+        return bool(_verified(inv, "invitation") and valid_task_receipt(inv, receipt, read_case=read_case))
     return bool(_verified(inv, "invitation") and _verified(receipt, "receipt")
         and receipt.effect_id
         and _invitation_manager_case(inv)
@@ -624,22 +628,29 @@ def _ack_card(inv, accepted, *, reply_to=""):
         "plan_digest": effect.plan_digest, "provider_message_id": effect.provider_message_id}
 
 
-def _valid_answer(answer, settings_obj):
+def _valid_answer(answer, settings_obj, *, read_case=None, accepted_answer=None):
     from management.models import IgCustomerTurnRevision
-    if not _verified(answer, "answer") or not _valid_receipt(answer.invitation, answer.receipt) or answer.envelope.get("receipt_hmac") != answer.receipt.envelope_hmac:
+    if not _verified(answer, "answer") or not _valid_receipt(answer.invitation, answer.receipt, read_case=read_case) or answer.envelope.get("receipt_hmac") != answer.receipt.envelope_hmac:
         return False
     if answer.kind == "accept" and not _ack_copy_version_valid(answer):
         return False
-    revision = IgCustomerTurnRevision.objects.filter(pk=answer.envelope.get("source", {}).get("revision_id")).first()
-    if not revision:
-        return False
-    owned, _ = owned_source(revision, answer.source, settings_obj, require_head=False)
+    if read_case is not None:
+        from types import SimpleNamespace
+        revision = SimpleNamespace(pk=answer.envelope.get("source", {}).get("revision_id"))
+        owned, _ = read_case.owned_source(revision, answer.source, settings_obj)
+    else:
+        revision = IgCustomerTurnRevision.objects.filter(pk=answer.envelope.get("source", {}).get("revision_id")).first()
+        if not revision:
+            return False
+        owned, _ = owned_source(revision, answer.source, settings_obj, require_head=False)
     if not owned or owned[2] != answer.envelope.get("source") or owned[1].quick_reply_payload != answer.envelope.get("payload"):
         return False
     if answer.kind == "revoke":
-        accepted = Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=answer.invitation_id, kind="accept").first()
+        accepted = (accepted_answer if read_case is not None and accepted_answer is not None else
+            Answer.objects.select_related("invitation", "receipt__effect", "receipt__followup_task", "source").filter(invitation_id=answer.invitation_id, kind="accept").first())
         proof = answer.envelope.get("ack_card")
-        return bool(accepted and _valid_answer(accepted, settings_obj) and proof
+        return bool(accepted and accepted.kind == "accept" and accepted.invitation_id == answer.invitation_id
+            and _valid_answer(accepted, settings_obj, read_case=read_case) and proof
             and _ack_card(answer.invitation, accepted, reply_to=proof.get("provider_message_id", "")) == proof)
     return answer.kind == "accept" and answer.envelope.get("payload") == answer.invitation.accept_payload
 
