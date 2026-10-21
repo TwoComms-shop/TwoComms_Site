@@ -7,6 +7,7 @@ def purge_payment_reminder_data(client_ids, *, using="default"):
     from management.ig_payment_reminder_models import (
         IgPaymentReminderAnswer, IgPaymentReminderReceipt, IgPaymentReminderInvitation,
     )
+    from management.ig_payment_reminder_dialog_models import IgPaymentReminderTimeRequest
 
     ids = sorted({int(value) for value in client_ids})
     if not ids:
@@ -19,6 +20,14 @@ def purge_payment_reminder_data(client_ids, *, using="default"):
     ).order_by("pk").values_list("pk", flat=True))
     if fenced != ids:
         raise ValueError("Reminder erasure requires every exact persisted owner fence")
+    # A time clarification can exist before any invitation. Erase this
+    # independent evidence too, under the same exact committed owner fences.
+    placeholders = ", ".join(["%s"] * len(ids))
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM {connection.ops.quote_name(IgPaymentReminderTimeRequest._meta.db_table)} "
+            f"WHERE client_id IN ({placeholders})", ids,
+        )
     invitations = list(IgPaymentReminderInvitation.objects.using(using).select_for_update().filter(
         client_id__in=ids,
     ).order_by("pk").values_list("pk", flat=True))

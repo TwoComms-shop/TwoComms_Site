@@ -119,6 +119,10 @@ def _payment_reminder_snapshot(value):
     if raw["status"] == "unknown":
         if ids or epoch:
             _invalid()
+    elif raw["status"] == "awaiting_time":
+        if (len(ids) != 2 or epoch or not as_of or not watermark_id or not watermark_epoch
+                or max(ids) > watermark_id or raw["reason"]):
+            _invalid()
     elif (not ids or not epoch or not as_of or not watermark_id or not watermark_epoch
             or max(ids) > watermark_id or raw["reason"]):
         _invalid()

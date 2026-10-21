@@ -704,7 +704,11 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
     if consultation and not selection_action:
         field_updates.pop("fit", None)
 
-    checkout_requested = bool(
+    # A request to schedule a payment reminder does not request a new invoice
+    # or change the agreed cart. The parser admits only a pure explicit request.
+    from management.services.ig_payment_reminder_time import parse_requested_reminder
+    reminder_requested = parse_requested_reminder(current, None).handled
+    checkout_requested = not reminder_requested and bool(
         re.search(r"(?:оплатить|оформить|оформлюємо|оформити|pay|checkout|payment)", lowered)
     )
     # A generic phrase such as "у меня другой вопрос" is not product-change

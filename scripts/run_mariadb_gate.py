@@ -37,6 +37,28 @@ SUITES = {
         "IgCheckoutProposalConcurrencyTests."
         "test_concurrent_replacement_creation_serializes_on_deal",
     ),
+    "payment-time-dialog": (
+        "management.tests_ig_payment_reminder_dialog",
+        "management.tests_ig_payment_reminder_dialog_storage",
+        "management.tests_ig_payment_reminder_dialog_context",
+        "management.tests_ig_payment_reminder_dialog_admin",
+        "management.tests_ig_payment_reminder_dialog_intent",
+        "management.tests_ig_payment_reminder_time_migration",
+        "management.tests_ig_payment_reminders",
+        "management.tests_ig_payment_reminder_context",
+    ),
+    "payment-time-context": (
+        "management.tests_ig_payment_reminder_dialog_admin",
+        "management.tests_ig_payment_reminder_dialog_intent",
+        "management.tests_ig_payment_reminder_time_migration",
+        "management.tests_ig_restock_notification_context",
+        "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
+        "test_typed_native_agreement_reaches_actual_read_model_and_shared_gemini_context",
+        "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
+        "test_actual_photographed_native_cancelled_agreement_reaches_shared_context_inside_24_reads",
+        "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
+        "test_real_owned_photos_in_all_wait_agreement_keep_shared_context_inside_24_reads",
+    ),
     "follow-ugc-concurrency": (
         "management.tests_ig_mariadb_follow_ugc",
     ),

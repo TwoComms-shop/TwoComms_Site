@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from django.core.cache import cache
 from django.db import transaction
+from django.db.models import Max
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
@@ -57,12 +58,13 @@ class RequestedPaymentReminderTests(TestCase):
         snapshot = {"schema_version": 1, "instructions": []}
         snapshot_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False,
             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        self.publication = BotPolicyPublication.objects.create(version=1, kind="publish",
+        version = int(BotPolicyPublication.objects.aggregate(value=Max("version"))["value"] or 0) + 1
+        self.publication = BotPolicyPublication.objects.create(version=version, kind="publish",
             schema_version=1, snapshot=snapshot, snapshot_hash=snapshot_hash,
             compiler_version="instruction-set-v1", instruction_count=0)
-        self.settings = InstagramBotSettings.objects.create(pk=1, is_enabled=True,
-            ig_user_id="owner-1", reply_permission_epoch=4,
-            active_instruction_publication=self.publication)
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(pk=1, defaults={
+            "is_enabled": True, "ig_user_id": "owner-1", "reply_permission_epoch": 4,
+            "active_instruction_publication": self.publication})
         self.client_row = IgClient.objects.create(igsid="requested-reminder-client",
             reply_permission_epoch=3, language="uk", last_user_message_at=self.now)
         category = Category.objects.create(name="Reminder", slug="requested-reminder")
@@ -225,8 +227,11 @@ class RequestedPaymentReminderTests(TestCase):
 
     def pay(self):
         payload = HostedSettlementFixture.payload(self, self.attempt)
-        order, created = _apply_payment_attempt_status(self.attempt, "success",
-            payload=payload, source="provider_pull")
+        # Settlement is real; its independent thank-you delivery is outside
+        # this reminder fixture and must never reach a provider socket.
+        with patch("management.services.ig_lifecycle.dispatch_lifecycle_event", return_value="pending"):
+            order, created = _apply_payment_attempt_status(self.attempt, "success",
+                payload=payload, source="provider_pull")
         self.assertTrue(created)
         self.assertIsNotNone(order)
         self.attempt.refresh_from_db()
@@ -444,7 +449,9 @@ class RequestedPaymentReminderTests(TestCase):
     def test_reissued_invoice_never_inherits_original_agreed_reminder(self):
         _, task, _ = self.accepted()
         self.expire()
-        payload = {"full_name": "Іван Петренко", "phone": "+380501112233",
+        self.proposal.refresh_from_db()
+        payload = {"expected_revision": self.proposal.revision, "expected_digest": self.proposal.items_digest,
+            "full_name": "Іван Петренко", "phone": "+380501112233",
             "email": "buyer@example.com", "city": "Київ",
             "np_settlement_ref": "settlement-ref", "np_city_ref": "city-ref",
             "np_city_token": build_city_choice_token({"label": "Київ",

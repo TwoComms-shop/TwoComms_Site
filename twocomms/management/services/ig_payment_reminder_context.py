@@ -17,6 +17,7 @@ KYIV = ZoneInfo("Europe/Kyiv")
 SOURCE_ROLES = ("request", "card", "answer", "send")
 PURCHASE_KEYS = ("selection_session_id", "selection_generation", "selection_revision", "source_cart_capture_digest")
 STATE_LABELS = {
+    "awaiting_time": "Очікує дати й часу від клієнта",
     "awaiting_delivery": "Підтвердження ще не доставлено",
     "awaiting_confirmation": "Очікує підтвердження клієнта",
     "accepted": "Узгоджено — очікує свого часу",
@@ -85,7 +86,7 @@ def payment_reminder_slot(projection, *, boundary, captured_at):
             or not isinstance(times, dict) or set(times) - set(SOURCE_ROLES)):
         return _unknown(boundary, captured_at, "payment_reminder_source_invalid")
     needed = ["request"]
-    if state in {"awaiting_confirmation", "accepted", "sent", "revoked", "delivery_unknown"}:
+    if state in {"awaiting_time", "awaiting_confirmation", "accepted", "sent", "revoked", "delivery_unknown"}:
         needed.append("card")
     if state in {"accepted", "sent", "revoked", "delivery_unknown"}:
         needed.append("answer")
@@ -99,7 +100,15 @@ def payment_reminder_slot(projection, *, boundary, captured_at):
         cutoff = _time(watermark["event_at"])
         if captured_at.tzinfo is None or type(watermark.get("message_id")) is not int:
             raise ValueError("capture boundary unknown")
-        due = _time(projection["due_at"])
+        if state == "awaiting_time":
+            if (projection.get("due_at") is not None or projection.get("due_at_kyiv") is not None
+                or projection.get("task_id") is not None or projection.get("invitation_id") is not None
+                or projection.get("prompt_receipt_confirmed") is not True
+                or any(ids.get(role) is not None or times.get(role) is not None for role in ("answer", "send"))):
+                raise ValueError("time request is not a scheduled agreement")
+            due = None
+        else:
+            due = _time(projection["due_at"])
         for role in SOURCE_ROLES:
             identity = ids.get(role)
             if identity is None:
@@ -115,9 +124,9 @@ def payment_reminder_slot(projection, *, boundary, captured_at):
     except (TypeError, ValueError, KeyError, OverflowError):
         return _unknown(boundary, captured_at, "payment_reminder_source_invalid")
     # All public strings are produced here, never copied from model/provider text.
-    due_label = due.astimezone(KYIV).strftime("%d.%m.%Y о %H:%M") + " (Київ)"
+    due_label = due.astimezone(KYIV).strftime("%d.%m.%Y о %H:%M") + " (Київ)" if due else None
     value = {"version": VERSION, "state": state, "state_label": STATE_LABELS[state],
-        "scheduled_for": due.isoformat(), "scheduled_for_label": due_label,
+        "scheduled_for": due.isoformat() if due else None, "scheduled_for_label": due_label,
         "purchase_label": "Поточна покупка — усі погоджені позиції",
         "business_agreement": state in {"accepted", "sent", "delivery_unknown"},
         "native_future_permission": "unverified", "one_reminder_only": True,
@@ -145,7 +154,7 @@ def payment_reminder_manifest(slot):
     """Content-free closed proof derived from the admitted slot, without I/O."""
     value = slot.get("value") or {}
     valid = slot.get("status") == "confirmed" and value.get("state") in STATE_LABELS
-    due_epoch = int(_time(value["scheduled_for"]).timestamp()) if valid else 0
+    due_epoch = int(_time(value["scheduled_for"]).timestamp()) if valid and value["state"] != "awaiting_time" else 0
     watermark = slot.get("source_watermark") or {}
     observed = slot.get("observed_at")
     reason = slot.get("omission_reason") or ""

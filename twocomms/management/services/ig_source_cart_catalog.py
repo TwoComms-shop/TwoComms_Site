@@ -194,8 +194,6 @@ def _resolve(capture, *, _catalog_readback=None):
     product_ids.discard(None)
     if len(product_ids) > MAX_PRODUCTS or any(not _positive(value) for value in product_ids):
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_product_bound"},))
-    from management.services.ig_catalog_choice_actions import admitted_native_color_variants
-    native_variants = admitted_native_color_variants(capture, capture["lines"])
     if _catalog_readback is not None:
         products, variants = _prepared_catalog_rows(capture, _catalog_readback, product_ids)
     else:
@@ -203,6 +201,10 @@ def _resolve(capture, *, _catalog_readback=None):
             .select_related("category", "catalog", "size_grid").order_by("pk")[:MAX_PRODUCTS + 1])
         variants = list(ProductColorVariant.objects.filter(product_id__in=[row.pk for row in products])
             .select_related("color").order_by("product_id", "order", "pk")[:MAX_VARIANTS + 1])
+    # Reject a foreign/stale prepared graph before observing any native choice.
+    # A valid graph still needs fresh customer color-source ownership checks.
+    from management.services.ig_catalog_choice_actions import admitted_native_color_variants
+    native_variants = admitted_native_color_variants(capture, capture["lines"])
     if len(variants) > MAX_VARIANTS:
         return _result(capture=capture, gaps=({"reason": "source_cart_catalog_variant_bound"},))
     if _catalog_readback is None:

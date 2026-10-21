@@ -25,7 +25,7 @@ from management.ig_payment_reminder_models import (
     IgPaymentReminderReceipt as Receipt,
 )
 from management.services.ig_payment_reminder_time import (
-    format_kyiv_datetime, parse_requested_reminder, quiet_time_allowed,
+    format_kyiv_datetime, parse_requested_reminder, parse_reminder_time_reply, quiet_time_allowed,
 )
 
 PAYMENT_REMINDER_PREFIX = PREFIX = "PR1:"
@@ -84,7 +84,10 @@ def _invitation_columns(inv):
 
 
 def _valid_invitation(inv):
-    return _verified(inv, "invitation") and inv.envelope.get("columns") == _invitation_columns(inv)
+    from management.services.ig_payment_reminder_dialog import VERSION
+    return (_verified(inv, "invitation") and inv.envelope.get("columns") == _invitation_columns(inv)
+        and ("continuation" not in inv.envelope or isinstance(inv.envelope["continuation"], dict)
+            and inv.envelope["continuation"].get("version") == VERSION))
 
 
 def _receipt_columns(row):
@@ -124,19 +127,22 @@ def _revoke_button(inv):
 
 def _copy(locale, key, value=""):
     copies = {
-        "uk": {"clarify": "Коли саме нагадати про оплату? Напишіть повний запит із датою й часом за Києвом, наприклад «Нагадай про оплату сьогодні о 15:30». Нагадування можна запланувати з 10:00 до 21:30, поки діє ця пропозиція.",
+        "uk": {"clarify": "Коли саме нагадати про оплату? Напишіть дату й час за Києвом, наприклад «сьогодні о 15:30». Нагадування можна запланувати з 10:00 до 21:30, поки діє ця пропозиція. Після вибору часу попросимо окремо підтвердити одне нагадування кнопкою 💛",
+            "time_retry": "Цей час не підходить для поточної пропозиції. Напишіть новий повний запит, наприклад «Нагадай про оплату сьогодні о 15:30». Час не переносимо автоматично; нагадування ще не заплановано.",
             "invite": "🕒 Нагадаю про оплату {value} за київським часом.\n\nПідтвердьте одне нагадування кнопкою нижче 💛 Якщо до цього часу рахунок спливе, повідомлю про це без автоматичного створення нового.",
             "button": "Так, нагадайте 💛", "accepted": "Домовились 💛 Одне нагадування про оплату заплановано на {value} за київським часом.",
             "revoked": "Нагадування скасовано 💛", "stale": "Це підтвердження вже не актуальне. Якщо нагадування ще потрібне, напишіть нову дату й час за Києвом.",
             "active": "💛 Як і домовились, нагадую про оплату. Чинне посилання на ваш рахунок:\n{value}",
             "expired": "💛 Як і домовились, нагадую про оплату. Попередній рахунок уже сплив, тому посилання не додаю. Якщо хочете продовжити оформлення, напишіть нам — перевіримо актуальні умови."},
-        "ru": {"clarify": "Когда именно напомнить об оплате? Напишите полный запрос с датой и временем по Киеву, например «Напомни об оплате сегодня в 15:30». Напоминание можно запланировать с 10:00 до 21:30, пока действует это предложение.",
+        "ru": {"clarify": "Когда именно напомнить об оплате? Напишите дату и время по Киеву, например «сегодня в 15:30». Напоминание можно запланировать с 10:00 до 21:30, пока действует это предложение. После выбора времени попросим отдельно подтвердить одно напоминание кнопкой 💛",
+            "time_retry": "Это время не подходит для текущего предложения. Напишите новый полный запрос, например «Напомни об оплате сегодня в 15:30». Время автоматически не переносим; напоминание ещё не запланировано.",
             "invite": "🕒 Напомню об оплате {value} по киевскому времени.\n\nПодтвердите одно напоминание кнопкой ниже 💛 Если к этому времени счёт истечёт, сообщу об этом без автоматического создания нового.",
             "button": "Да, напомните 💛", "accepted": "Договорились 💛 Одно напоминание об оплате запланировано на {value} по киевскому времени.",
             "revoked": "Напоминание отменено 💛", "stale": "Это подтверждение уже не актуально. Если напоминание ещё нужно, напишите новую дату и время по Киеву.",
             "active": "💛 Как и договорились, напоминаю об оплате. Действующая ссылка на ваш счёт:\n{value}",
             "expired": "💛 Как и договорились, напоминаю об оплате. Предыдущий счёт уже истёк, поэтому ссылку не добавляю. Если хотите продолжить оформление, напишите нам — проверим актуальные условия."},
-        "en": {"clarify": "When exactly should I remind you about payment? Please send a full request with a date and time in Kyiv, for example “Remind me to pay today at 15:30”. A reminder can be scheduled between 10:00 and 21:30 while this offer is valid.",
+        "en": {"clarify": "When exactly should I remind you about payment? Send a date and time in Kyiv, for example “today at 15:30”. A reminder can be scheduled between 10:00 and 21:30 while this offer is valid. After choosing the time, we’ll ask you to confirm one reminder with a separate button 💛",
+            "time_retry": "That time is not available for this offer. Send a new full request, for example “Remind me to pay today at 15:30”. We do not move the time automatically; no reminder is scheduled yet.",
             "invite": "🕒 I’ll remind you about payment on {value}, Kyiv time.\n\nConfirm one reminder using the button below 💛 If the invoice has expired by then, I’ll let you know without automatically creating another one.",
             "button": "Yes, remind me 💛", "accepted": "Agreed 💛 One payment reminder is scheduled for {value}, Kyiv time.",
             "revoked": "Your reminder is cancelled 💛", "stale": "This confirmation is no longer current. If you still need a reminder, please send a new date and time in Kyiv.",
@@ -486,9 +492,24 @@ def _scope(graph, client, settings_obj, now, *, invitation=None, allow_expired=F
 
 def _projection_scope(graph, client, settings_obj, inv, cart, now, *, revision_snapshot=None, item_rows=None):
     """Finite agreement read; execution alone owns full send-policy guards."""
+    return _projection_purchase_scope(graph, client, settings_obj, inv.commercial_episode, cart, now,
+        generation_id=inv.invoice_generation_id, attempt_id=inv.payment_attempt_id,
+        invoice=inv.envelope.get("invoice"), source_cart=inv.envelope.get("source_cart"),
+        settings_epoch=inv.envelope.get("settings_epoch"), client_epoch=inv.envelope.get("client_epoch"),
+        namespace=inv.envelope["source"]["namespace"], revision_snapshot=revision_snapshot, item_rows=item_rows)
+
+
+def _projection_purchase_scope(graph, client, settings_obj, episode, cart, now, *, generation_id,
+    attempt_id, invoice, source_cart, settings_epoch, client_epoch, namespace,
+    revision_snapshot=None, item_rows=None):
+    """Pure purchase read shared by actual signed invitations and time requests.
+
+    The caller loads the real episode and exact signed binding. This grants no
+    provider dispatch authority; `_scope` still owns every physical send.
+    """
     from management.services.ig_reply_boundary import _client_allowed
     from management.services.instagram_bot import ingress_provider_namespace
-    if not graph or not cart or not settings_obj or not _enabled():
+    if not graph or not cart or not settings_obj or not episode or not _enabled():
         return None, "source_cart_binding_unavailable"
     allowed, reason = _client_allowed(client)
     if not allowed or not settings_obj.is_enabled:
@@ -496,10 +517,11 @@ def _projection_scope(graph, client, settings_obj, inv, cart, now, *, revision_s
     if client.stage in {"spam", "lead_manager"} or client.primary_objection == "no_buy" or client.lost_reason in {"no_buy", "stop"}:
         return None, "customer_stopped_or_manager_routed"
     deal, proposal, generations, attempts = graph
-    episode = inv.commercial_episode
-    generation = next((row for row in generations if row.pk == inv.invoice_generation_id), None)
-    attempt = attempts.get(inv.payment_attempt_id)
-    if (client.current_commercial_episode_id != episode.pk or episode.open_slot != 1 or episode.state != "active"
+    generation = next((row for row in generations if row.pk == generation_id), None)
+    attempt = attempts.get(attempt_id)
+    if (deal.client_id != client.pk or proposal.client_id != client.pk or episode.client_id != client.pk
+        or not proposal.assisted_checkout_v2
+        or client.current_commercial_episode_id != episode.pk or episode.open_slot != 1 or episode.state != "active"
         or episode.deal_id != deal.pk or episode.intended_order_id or episode.primary_payment_review_id or episode.order_attribution_id
         or deal.active_checkout_proposal_id != proposal.pk or proposal.commercial_episode_id != episode.pk
         or deal.order_id or deal.paid_at or deal.paid_amount > 0 or deal.refunded_amount > 0
@@ -508,11 +530,11 @@ def _projection_scope(graph, client, settings_obj, inv, cart, now, *, revision_s
         or not generation or not attempt or generation.proposal_revision != proposal.revision
         or any(row.generation > generation.generation or row.winner_slot or row.paid_at for row in generations)
         or any(row.order_id or row.checkout_winner_claimed or (row.paid_amount or 0) > 0 for row in attempts.values())
-        or inv.envelope.get("invoice") != _fingerprint(proposal, generation, attempt, revision_snapshot=revision_snapshot, item_rows=item_rows)
-        or inv.envelope.get("source_cart") != _stable_cart_proof(cart)
-        or inv.envelope.get("settings_epoch") != settings_obj.reply_permission_epoch
-        or inv.envelope.get("client_epoch") != client.reply_permission_epoch
-        or inv.envelope["source"]["namespace"] != ingress_provider_namespace(settings_obj)):
+        or invoice != _fingerprint(proposal, generation, attempt, revision_snapshot=revision_snapshot, item_rows=item_rows)
+        or source_cart != _stable_cart_proof(cart)
+        or settings_epoch != settings_obj.reply_permission_epoch
+        or client_epoch != client.reply_permission_epoch
+        or namespace != ingress_provider_namespace(settings_obj)):
         return None, "agreement_scope_changed"
     current = (proposal.current_invoice_generation_id == generation.pk and proposal.payment_attempt_id == attempt.pk
         and proposal.status == "invoice_created" and generation.state == "invoice_created" and attempt.status == "processing")
@@ -547,38 +569,62 @@ def _invitation_source(inv, settings_obj, *, require_head=False):
     proof, reason = _owned_source(inv.revision, inv.request_source, settings_obj, require_head=require_head)
     if proof and proof[2] != inv.envelope.get("source"):
         return None, "request_source_changed"
+    if proof and not reason:
+        from management.services.ig_payment_reminder_dialog import invitation_reason
+        reason = invitation_reason(inv, settings_obj)
+        if reason:
+            return None, reason
     return proof, reason
 
 
 def prepare_request(revision, source, *, settings_obj=None, now=None):
     from management.models import InstagramBotSettings, IgCommercialEpisode, IgClient
+    from management.services import ig_payment_reminder_dialog as dialog
     if not _enabled():
         return ReminderRequest(False, reason="disabled")
     settings_obj = settings_obj or InstagramBotSettings.load()
     now = now or timezone.now()
     parsed = parse_requested_reminder(getattr(source, "text", ""), getattr(source, "provider_created_at", None))
-    if not parsed.handled:
+    continuation = not parsed.handled
+    if continuation and not parse_reminder_time_reply(getattr(source, "text", ""),
+        getattr(source, "provider_created_at", None), locale="uk").handled:
         return ReminderRequest(False, reason=parsed.reason)
     with transaction.atomic():
         owned, reason = _owned_source(revision, source, settings_obj)
         if not owned:
             return ReminderRequest(False, reason=reason)
         revision, row, proof = owned
-        if revision.sources.count() != 1 or row.quick_reply_payload or revision.bundle_snapshot.get("sources", [{}])[0].get("media_part_count", 0):
+        if (revision.sources.count() != 1 or row.quick_reply_payload or row.status == "ignored"
+            or row.attachments not in (None, "", "[]") or row.attachment_media
+            or revision.bundle_snapshot.get("sources", [{}])[0].get("media_part_count", 0)):
             return ReminderRequest(False, reason="mixed_request")
         client = IgClient.objects.select_for_update().get(pk=row.client_id)
         episode = IgCommercialEpisode.objects.filter(client_id=client.pk, open_slot=1, state="active").first()
         graph = _graph(episode.deal_id) if episode and episode.deal_id else None
         scope, reason = _scope(graph, client, settings_obj, now)
         if not scope:
+            if continuation:
+                return ReminderRequest(False, reason=reason)
             return ReminderRequest(True, _copy(parsed.locale, "stale"), reason=reason)
         deal, proposal, episode, generation, attempt, _ = scope
         deadline = min(row.provider_created_at + timedelta(hours=23), proposal.expires_at, proposal.created_at + timedelta(hours=12))
+        pending = None
+        if continuation:
+            pending, parsed, reason = dialog.resolve_continuation(owned, scope, settings_obj, now=now)
+            if not pending:
+                return ReminderRequest(False, reason=reason)
+            deadline = pending.window_deadline
         if not parsed.due_at or parsed.due_at <= now or parsed.due_at >= deadline or row.provider_created_at > now + timedelta(minutes=1):
-            return ReminderRequest(True, _copy(parsed.locale, "clarify"), reason=parsed.reason or "outside_window")
+            if pending:
+                return ReminderRequest(True, _copy(parsed.locale, "time_retry"), reason=parsed.reason or "outside_window")
+            try:
+                pending = dialog.capture_request(owned, scope, settings_obj, locale=parsed.locale, now=now, deadline=deadline)
+            except ValueError as error:
+                return ReminderRequest(True, _copy(parsed.locale, "stale"), reason=str(error))
+            return ReminderRequest(True, pending.body, reason=parsed.reason or "outside_window")
         existing = Invitation.objects.filter(revision_id=revision.pk, request_source_id=row.pk).first()
         if existing:
-            if not _valid_invitation(existing):
+            if not _valid_invitation(existing) or _invitation_source(existing, settings_obj)[1]:
                 return ReminderRequest(True, _copy(parsed.locale, "stale"), reason="invitation_signature_invalid")
             return ReminderRequest(True, existing.body, (_quick_reply(existing),), str(existing.pk))
         identity = uuid.uuid4()
@@ -594,6 +640,9 @@ def prepare_request(revision, source, *, settings_obj=None, now=None):
             "settings_id": settings_obj.pk, "settings_epoch": settings_obj.reply_permission_epoch,
             "client_epoch": client.reply_permission_epoch,
             "locale_proof": {"source_id": row.pk, "source_digest": proof["digest"], "locale": parsed.locale, "basis": "explicit_payment_request_language"}}
+        if pending:
+            inv.envelope["continuation"] = dialog.continuation_proof(pending, proof)
+            inv.envelope["locale_proof"] = pending.envelope["locale_proof"]
         inv.envelope_hmac = _sign("invitation", inv.envelope)
         inv.save(force_insert=True)
         return ReminderRequest(True, inv.body, (_quick_reply(inv),), str(inv.pk))
@@ -631,7 +680,10 @@ def provider_boundary_for_revision(revision_id, *, now=None):
         with invitation_provider_boundary(inv.pk, now=now) as allowed:
             yield allowed
     else:
-        yield ReminderBoundary(True)
+        from management.services.ig_payment_reminder_dialog import provider_boundary_reason
+        with transaction.atomic():
+            reason = provider_boundary_reason(revision_id, now=now)
+        yield ReminderBoundary(not reason, reason)
 
 
 def _valid_native_effect(inv, effect, *, require_sent=True):
@@ -1071,6 +1123,10 @@ def payment_reminder_projection(client, *, now=None, current_source_cart=None):
     client_id = client if type(client) is int else client.pk
     empty = {"version": 1, "status": "none", "reason": "", "captured_at": now.isoformat(), "client_id": client_id}
     with transaction.atomic():
+        from management.services import ig_payment_reminder_dialog as dialog
+        awaiting_time = dialog.projection(client_id, now=now, current_source_cart=current_source_cart)
+        if awaiting_time:
+            return awaiting_time
         inv = Invitation.objects.select_related("client", "revision", "request_source", "commercial_episode", "deal", "proposal").filter(client_id=client_id).order_by("-created_at").first()
         if not inv:
             return empty
@@ -1130,6 +1186,8 @@ def payment_reminder_projection(client, *, now=None, current_source_cart=None):
                 revision_snapshot=revision_snapshot, item_rows=item_rows)
             source_reason = _projection_source_reason(inv.revision, inv.request_source, inv.envelope["source"], current, settings_obj,
                 (current_source_cart.get("scope") or {}).get("reset_floor", 0)) if settings_obj else "settings_missing"
+            if not source_reason and "continuation" in inv.envelope:
+                source_reason = dialog.invitation_reason(inv, settings_obj)
             owned = not source_reason
         else:
             graph = _graph(inv.deal_id, inv.proposal_id, read_only=True)

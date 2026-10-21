@@ -3397,7 +3397,7 @@ body.bot-drawer-open{overflow:hidden;}
             if(completed)appendCapturedCheckoutOrder(row,key,item);
             if(key==='payment.reminder'){
               if(item.status==='confirmed'&&item.value){if(item.value.scheduled_for_label)row.appendChild(node('div','bot-hint','Час: '+String(item.value.scheduled_for_label)));if(item.value.purchase_label)row.appendChild(node('div','bot-hint',String(item.value.purchase_label)));}
-              row.appendChild(node('div','bot-hint','Домовленість про одне нагадування для цієї покупки. Не підтверджує оплату або дозвіл Meta на майбутні повідомлення.'));
+              row.appendChild(node('div','bot-hint',item.value&&item.value.state==='awaiting_time'?'Потрібно уточнити час. Нагадування ще не погоджене й не заплановане — після вибору часу клієнт окремо підтвердить його кнопкою.':'Домовленість про одне нагадування для цієї покупки. Не підтверджує оплату або дозвіл Meta на майбутні повідомлення.'));
             }
             if(key==='choice.size'&&item.authority==='audited_correction')row.appendChild(node('div','bot-hint','Уточнення менеджера. Початкове повідомлення клієнта збережено.'));
             const refs=(item.source_refs||[]).map(ref=>(ref.kind==='message'?'повідомлення №':'джерело №')+String(ref.id||ref.source_message_id||'—'));if(refs.length&&!completed)row.appendChild(node('div','bot-hint',refs.join(' · ')));

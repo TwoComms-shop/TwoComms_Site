@@ -224,17 +224,19 @@ class PreparedAdminReminderCatalogTests(TestCase):
             **{key: cart[key] for key in ("session_id", "generation", "selection_revision")})
         return readback
 
-    def test_reused_graph_matches_fresh_all_position_catalog_with_zero_additional_selects(self):
+    def test_reused_catalog_graph_preserves_fresh_native_color_source_validation(self):
         from management.services.ig_source_cart_catalog import resolve_source_cart_catalog
         cart = self.capture()
         readback = self.prepared(cart)
         fresh = resolve_source_cart_catalog(cart).as_dict()
         with CaptureQueriesContext(connection) as queries:
             reused = resolve_source_cart_catalog(cart, _catalog_readback=readback).as_dict()
-        self.assertEqual(len(queries), 0)
+        self.assertEqual(len(queries), 1)
+        self.assertIn("management_instagrambotmessage", queries[0]["sql"])
+        self.assertNotIn('FROM "storefront_product"', queries[0]["sql"])
         for key in ("complete", "gaps", "readiness_by_line", "authority_by_line", "item_specs_by_line"):
             self.assertEqual(reused[key], fresh[key], key)
-        self.assertEqual(reused["select_count"], 0)
+        self.assertEqual(reused["select_count"], 1)
         json.dumps(reused)  # Private ORM models never enter the returned DTO.
 
     def test_changed_owner_head_digest_or_product_set_rejects_without_requery(self):
