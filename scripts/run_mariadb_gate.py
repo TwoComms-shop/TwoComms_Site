@@ -66,6 +66,7 @@ SUITES = {
         "management.tests_ig_daemon_progress.MariaDbLeaseContractTests",
     ),
     "restock-followup": (
+        "management.tests_ig_restock_notification_context",
         "management.tests_ig_assisted_restock_followup",
         "management.tests_ig_assisted_commerce",
         "management.tests_ig_assisted_mixed_purchase",
@@ -80,6 +81,18 @@ SUITES = {
         "management.tests_ig_restock_waiting_list_context",
         "management.tests_ig_restock_delivery",
         "management.tests_ig_fulfillment_delivery",
+    ),
+    "restock-notification-context": (
+        "management.tests_ig_restock_notification_context",
+        "management.tests_ig_restock_waiting_list",
+        "management.tests_ig_restock_waiting_list_context",
+        "management.tests_ig_restock_context",
+        "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
+        "test_typed_native_agreement_reaches_actual_read_model_and_shared_gemini_context",
+        "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
+        "test_actual_photographed_native_cancelled_agreement_reaches_shared_context_inside_24_reads",
+        "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
+        "test_real_owned_photos_in_all_wait_agreement_keep_shared_context_inside_24_reads",
     ),
     "conversion-context": (
         "management.tests_ig_conversion_mariadb",
