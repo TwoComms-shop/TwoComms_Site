@@ -1,0 +1,7 @@
+{
+  "scripts/run_mariadb_gate.py": "c52e1ace62e788a9ddaa2bda5b9c03d6ede04f6d703b14e02b60c5f7cc22fa88",
+  "twocomms/management/services/ig_restock_waiting_list.py": "1fb97d5e8468e9d12da164c4a66b9e39aa3203b26c3453069052448a257b8f5b",
+  "twocomms/management/services/ig_restock_subscriptions.py": "8aaa2039e5221ba181263ce8f72d72b3517aab4403d7f3cc7b781048fb3065f8",
+  "twocomms/management/services/ig_restock_notification_projection.py": "72ff75eca8f493b54bc29660dccd2eddff3fa125050c4d961d41296593b08c1e",
+  "twocomms/management/tests_ig_restock_notification_context.py": "6988aeebc94443afde6085a92ad1aab989f05966b0ef5d333c960e9da9657247"
+}
