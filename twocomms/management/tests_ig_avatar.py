@@ -7,7 +7,7 @@
 from unittest.mock import patch
 
 from django.core.files.storage import default_storage
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from management.models import IgClient, InstagramBotSettings
 from management.services import instagram_bot as bot
@@ -69,6 +69,7 @@ class EnsureProfileLocalizesTests(TestCase):
         mock_dl.assert_not_called()
 
 
+@override_settings(ROOT_URLCONF="twocomms.urls_management")
 class ClientCardUsesLocalAvatarTests(TestCase):
     def test_card_prefers_local_avatar(self):
         from management.bot_views import _client_card

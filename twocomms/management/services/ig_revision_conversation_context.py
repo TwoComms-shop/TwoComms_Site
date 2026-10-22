@@ -13,14 +13,14 @@ from django.utils.dateparse import parse_datetime
 
 _DELAY_PREFIX = re.compile(
     r"\A\s*(?:(?:вибачте|перепрошую|просимо вибачення)\s+за\s+"
-    r"(?:(?:технічну\s+)?затримку(?:\s+(?:з\s+)?відповід(?:дю|і))?|довге\s+очікування)"
-    r"|(?:извините|прошу прощения)\s+за\s+(?:(?:техническую\s+)?задержку|долгое\s+ожидание)"
+    r"(?:(?:технічну\s+)?затримку(?:\s+(?:з\s+)?відповід(?:дю|і))?|(?:довге\s+)?очікування)"
+    r"|(?:извините|простите|прошу прощения)\s+за\s+(?:(?:техническую\s+)?задержку|(?:долгое\s+)?ожидание)"
     r"(?:\s+(?:с\s+)?ответ(?:ом|а))?"
-    r"|(?:sorry|apologies)\s+for\s+(?:the\s+)?(?:(?:technical\s+)?delay|long\s+wait)"
+    r"|(?:sorry|apologies)\s+for\s+(?:the\s+)?(?:(?:technical\s+)?delay|(?:long\s+)?wait)"
     r"(?:\s+(?:in\s+)?(?:replying|responding))?)[.!…]+\s+", re.I,
 )
 # Receipt suppression searches the delivered useful answer, including a brief
-# apology after the answer. Normalization still edits only a leading prefix.
+# apology after the answer. Normalization edits standalone sentences only.
 _DELIVERED_DELAY_APOLOGY = re.compile(
     r"(?:^|[\s.!?…])(?:" + _DELAY_PREFIX.pattern.removeprefix(r"\A\s*").replace(
         r"[.!…]+\s+", r"[.!…]+(?:\s+|$)")

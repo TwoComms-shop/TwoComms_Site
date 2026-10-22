@@ -413,7 +413,7 @@ def validate_inquiry_response(disposition, response):
                    for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row)):
                 continue
             prefix = clause[:match.start()]
-            if not re.search(r"^\s*(?:(?:я\s+)?(?:уточн\w*|перевір\w*|провер\w*|не\s+(?:зна\w*|мож\w*\s+підтверд\w*))|(?:i(?:['’]ll)?|we(?:['’]ll)?)\s+(?:will\s+)?(?:check|clarif\w*)|(?:i|we)\s+(?:don't|do\s+not)\s+know|let\s+(?:me|us)\s+check|потрібно\s+уточн\w*)", prefix, re.I):
+            if not re.search(r"^\s*(?:(?:я\s+)?(?:уточн\w*|перевір\w*|провер\w*|не\s+(?:зна\w*|мож\w*\s+підтверд\w*))|(?:i(?:['’]ll)?|we(?:['’]ll)?)\s+(?:will\s+)?(?:also\s+)?(?:check|clarif\w*)|(?:i|we)\s+(?:don't|do\s+not)\s+know|let\s+(?:me|us)\s+check|потрібно\s+уточн\w*)", prefix, re.I):
                 return "product_information_unverified"
     return ""
 
@@ -465,16 +465,19 @@ def inquiry_handoff_topic_covered(topic, response, disposition, *, source_messag
 
     if disposition.get("status") != "manager_required" or not response.control.get("manager"):
         return False
-    wanted = str(topic).removeprefix("info:")
-    wanted = {"fabric": "material"}.get(wanted, wanted)
+    # The response plan groups composition under material. Normalize both
+    # sides only for an uncertain handoff; this grants no factual assertion.
+    def handoff_topic(value):
+        return {"fabric": "material", "composition": "material"}.get(value, value)
+    wanted = handoff_topic(str(topic).removeprefix("info:"))
     rows = [row for row in disposition.get("inquiries", ()) if row.get("axis") == "information"
         and (source_message_id is None or row.get("source_message_id") == source_message_id)
-        and (row.get("requested_topic") == wanted
-             or wanted in requested_product_topics(str(row.get("question") or "")))]
+        and (handoff_topic(row.get("requested_topic")) == wanted
+             or wanted in {handoff_topic(value) for value in requested_product_topics(str(row.get("question") or ""))})]
     if not rows or wanted == "question":
         return False
     for clause in re.split(r"[.!?;\n]+", own_reply_text(response.reply_text)):
-        if wanted not in requested_product_topics(clause):
+        if wanted not in {handoff_topic(value) for value in requested_product_topics(clause)}:
             continue
         if re.search(r"уточн\w*|перевір\w*|провер\w*|(?:will\s+)?check|clarif\w*|confirm\w*", clause, re.I):
             return True

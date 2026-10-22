@@ -1,0 +1,7 @@
+/* Keyed rows stay connected; only a visible movement owns compositor layers. */
+.bot-clients-list{overflow-anchor:none;isolation:isolate;}
+.bot-client-row.is-live-moving{transition:none!important;will-change:transform;position:relative;}
+.bot-client-row.is-client-list-promoted{z-index:2;}
+@media(prefers-reduced-motion:reduce){
+  .bot-client-row.is-live-moving{will-change:auto;}
+}

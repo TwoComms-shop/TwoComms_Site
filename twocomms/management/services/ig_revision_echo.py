@@ -594,7 +594,13 @@ def _projection_matches(event, message, *, historical=False):
     elif any(item.get("type") == "story" for item in event.payload.get("attachments") or ()):
         texts = {"(відповідь менеджера на сторіс)", "(сторіс менеджера)", "(зображення менеджера)"}
     else:
-        texts = {"", "(зображення менеджера)"}
+        from management.services.instagram_bot import _echo_media_metadata, _project_media_text
+
+        # Keep the legacy image projection replayable while checking the typed
+        # label against this exact event's provider attachment metadata.
+        texts = {"", "(зображення менеджера)", _project_media_text(
+            "(зображення менеджера)", _echo_media_metadata(event.payload.get("attachments") or []),
+        )}
     return message.text in texts and stored_urls == expected_urls
 
 

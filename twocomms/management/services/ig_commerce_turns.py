@@ -35,7 +35,10 @@ _GARMENT_WORDS = {
     "футболк": "tshirt", "t-shirt": "tshirt", "tshirt": "tshirt",
     "худі": "hoodie", "худи": "hoodie", "hoodie": "hoodie",
 }
-_SIZE_RE = re.compile(r"(?<!\w)(?:xxxs|xxs|xs|[xх]{1,3}[lл]|[2-5][xх][lл]|s|m|l|л|м|с|ес|эм|ем|ель|эль|ікс\s*ель|икс\s*эль)(?!\w)", re.I)
+# Match the whole spoken double-XL alias before the single-XL suffix, keeping
+# source offsets and the existing quote/question/negation checks intact.
+_DOUBLE_XL_ALIAS = r"(?:два|дві|две)[^\S\r\n]*(?:[xх][lл]|[іи]кс[^\S\r\n]*[еэ]ль)"
+_SIZE_RE = re.compile(r"(?<!\w)(?:" + _DOUBLE_XL_ALIAS + r"|xxxs|xxs|xs|[xх]{1,3}[lл]|[2-5][xх][lл]|s|m|l|л|м|с|ес|эм|ем|ель|эль|ікс\s*ель|икс\s*эль)(?!\w)", re.I)
 _SIZE_ALIASES = {"л": "L", "м": "M", "с": "S", "ес": "S", "эм": "M", "ем": "M", "ель": "L", "эль": "L", "іксель": "XL", "иксэль": "XL", "2XL": "XXL", "3XL": "XXXL"}
 _SOURCE_WORD_SUFFIXES = {
     "черн": r"(?:ый|ая|ое|ые|ую|ого|ой|ых|ыми|ым|ом|ому)?",
@@ -116,6 +119,8 @@ def _preference_source_text(text):
 
 
 def _canonical_source_size(token):
+    if re.fullmatch(_DOUBLE_XL_ALIAS, token, re.I):
+        return "XXL"
     token = re.sub(r"\s+", "", token).casefold()
     if token in _SIZE_ALIASES:
         return _SIZE_ALIASES[token]

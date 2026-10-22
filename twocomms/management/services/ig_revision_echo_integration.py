@@ -56,7 +56,7 @@ def _project_manager_event(event_id):
     )
     from management.services.ig_permission_transitions import create_permission_transition
     from management.services.instagram_bot import (
-        _echo_media_metadata, _historicalize_provider_media,
+        _echo_media_metadata, _historicalize_provider_media, _project_media_text,
         _stage_permission_message, ingress_provider_namespace,
     )
 
@@ -103,7 +103,8 @@ def _project_manager_event(event_id):
         fallback_text = (
             "" if historical else
             "(відповідь менеджера на сторіс)" if story_reply else
-            "(сторіс менеджера)" if story else "(зображення менеджера)"
+            "(сторіс менеджера)" if story else
+            _project_media_text("(зображення менеджера)", metadata)
         )
         message, _created = _stage_permission_message(
             sender_id=client.igsid, role=InstagramBotMessage.Role.MANAGER,

@@ -555,22 +555,50 @@ def _database_disconnected(exc: Exception, *, lane: str) -> bool:
     return True
 
 
+def _profile_refresh_tick(s):
+    """One profile at most; urgent identity shares this existing background worker."""
+    owner = bot._provider_owner_id(s)
+    if not owner or not cache.add(
+        f"ig_profile_urgent:{owner}", "1", timeout=bot.PROFILE_URGENT_REFRESH_INTERVAL,
+    ):
+        return
+    result = bot.refresh_profiles_batch(s, limit=1, urgent_only=True)
+    if result.get("checked") or result.get("state") != "ok":
+        return
+    if cache.add(f"ig_profile_batch:{owner}", "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
+        bot.refresh_profiles_batch(s, limit=1)
+
+
 def _conv_refresher(stop_event: threading.Event):
-    """Фоновий потік: рідко оновлює список тредів (важкий ~25 c виклик),
-    тільки коли увімкнено резервний поллінг."""
+    """Refresh identities promptly; keep conversation discovery on its own cadence."""
+    discovery_due = 0.0
     while not stop_event.is_set():
-        wait_seconds = CONV_REFRESH_EVERY
+        wait_seconds = bot.PROFILE_URGENT_REFRESH_INTERVAL
         with worker_iteration("conversation_refresh"):
             try:
                 close_old_connections()
                 require_database_ready(lane="conv_refresher")
                 s = InstagramBotSettings.load()
-                if s.receive_via_poll and bot._provider_account_id(s):
+                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                    try:
+                        _profile_refresh_tick(s)
+                    except Exception as exc:
+                        _raise_disconnected_database(exc, lane="conv_refresher")
+                        bot.log("warning", "profile_refresh_batch", type(exc).__name__)
+                if stop_event.is_set():
+                    return
+                if s.receive_via_poll and bot._provider_account_id(s) and time.monotonic() >= discovery_due:
+                    # Failure/no-token keeps the original discovery backoff;
+                    # the faster identity wakeup must not accelerate retries.
+                    discovery_due = time.monotonic() + CONV_REFRESH_EVERY
                     token = bot.get_page_token(s)
                     if token:
                         bot.refresh_conv_ids(s, token)
                         s.refresh_from_db(fields=["conversation_discovery_cursor"])
-                        wait_seconds = _conversation_refresh_wait_seconds(s)
+                        discovery_wait = _conversation_refresh_wait_seconds(s)
+                        discovery_due = time.monotonic() + discovery_wait
+                if discovery_due > time.monotonic():
+                    wait_seconds = min(wait_seconds, max(0.1, discovery_due - time.monotonic()))
             except DbCircuitOpen:
                 pass
             except Exception as exc:
@@ -1093,16 +1121,14 @@ def _daemon_runtime_hooks(stop_event: threading.Event):
 # «своя частота либо свой поток» выполняется через свой интервал и свой бюджет.
 CUSTOMER_LANE = "customer_inbound"
 SERVICE_LANE_NOTIFICATIONS = "manager_notifications"
-SERVICE_LANE_PROFILES = "profile_refresh"
 SERVICE_LANE_RECLAIM_GUARD = "reclaim_lease_guard"
 SERVICE_LANE_PRIVATE_MEDIA = "private_media_cleanup"
 
 # Бюджет одной обслуживающей полосы на цикл. Величины разные, потому что цена
-# перерасхода разная: уведомления — сетевой I/O с внешним лимитом, профили —
-# батч к Meta, guard — один запрос по индексу.
+# перерасхода разная: уведомления — сетевой I/O с внешним лимитом,
+# guard — один запрос по индексу. Профили принадлежат conversation_refresh.
 SERVICE_LANE_BUDGET_SECONDS = {
     SERVICE_LANE_NOTIFICATIONS: 10.0,
-    SERVICE_LANE_PROFILES: 15.0,
     SERVICE_LANE_RECLAIM_GUARD: 5.0,
     SERVICE_LANE_PRIVATE_MEDIA: 5.0,
 }
@@ -1393,12 +1419,6 @@ def _run_legacy_work_cycle(settings_obj, last_poll: float) -> tuple[bool, float]
         # kill switch. The next cycle retries and the error remains visible in
         # the operational log/status surface.
         bot.log("error", "notification_outbox", repr(exc))
-    profile_key = f"ig_profile_batch:{bot._provider_owner_id(settings_obj)}"
-    if not _active_customer_input(settings_obj) and cache.add(profile_key, "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
-        try:
-            bot.refresh_profiles_batch(settings_obj, limit=1)
-        except Exception as exc:
-            bot.log("warning", "profile_refresh_batch", repr(exc))
     if enabled:
         bot.process_pending(settings_obj)
         if maintenance_status(path=MAINTENANCE_FILE)["active"]:
@@ -1597,16 +1617,7 @@ def _run_service_lanes(settings_obj) -> None:
         lambda: bot.drain_manager_notifications(limit=1),
         error_event="notification_outbox",
     )
-    profile_key = f"ig_profile_batch:{bot._provider_owner_id(settings_obj)}"
-    # A message can arrive during the notification send. Do not start profile
-    # I/O behind it or consume the profile cooldown without doing that work.
-    if not _active_customer_input(settings_obj) and cache.add(profile_key, "1", timeout=bot.PROFILE_REFRESH_INTERVAL):
-        _run_service_lane(
-            SERVICE_LANE_PROFILES,
-            lambda: bot.refresh_profiles_batch(settings_obj, limit=1),
-            error_event="profile_refresh_batch",
-            error_level="warning",
-        )
+    # Profile provider I/O is owned by _conv_refresher, never this reply lane.
     _run_service_lane(
         SERVICE_LANE_RECLAIM_GUARD,
         _reclaim_lease_guard,

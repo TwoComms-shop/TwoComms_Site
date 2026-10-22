@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from django.test import SimpleTestCase
 
 from management.services.ig_reply_truth import ReplyTruthContext
@@ -19,9 +21,55 @@ class ResponseGuardTests(SimpleTestCase):
         repaired = guard.repair({"contents": []}, parsed, result.reason_codes)
         correction = repaired["contents"][-1]["parts"][0]["text"]
         self.assertIn("do not have confirmed recruitment information", correction)
-        self.assertIn("promise future contact", correction)
+        self.assertIn("guaranteed future contact", correction)
+        self.assertIn("application-provided case or receipt explicitly confirms", correction)
         self.assertIn("without an authorized control", correction)
         self.assertTrue(guard.validate({"reply_text": "Дякую за інтерес до роботи в TwoComms. Не маю підтвердженої інформації про вакансії.", "controls": []}).valid)
+
+    def test_recruitment_repair_keeps_server_authority_and_controls_unchanged(self):
+        from management.services.ig_reply_truth import ReplyTruthResult, validate_reply_truth
+        from management.services.ig_operator_reply_drafts import _private_case_reply_reason
+
+        facts = {"delay_apology_allowed": False,
+                 "employment": {"employment_service_offer": True}, "manager_tasks": []}
+        context = ReplyTruthContext()
+
+        def source_bound_truth(response, authority):
+            result = validate_reply_truth(response.reply_text, context=authority)
+            if not result.valid:
+                return result
+            if response.control:
+                return ReplyTruthResult(False, ("unauthorized_action",))
+            reason = _private_case_reply_reason(response.reply_text, facts)
+            return ReplyTruthResult(not reason, (reason,) if reason else ())
+
+        guard = ProviderResponseGuard(context_factory=lambda *_args: context,
+                                      truth_validator=source_bound_truth)
+        invalid = {"reply_text": "Ви прийняті на роботу.", "controls": []}
+        decision = guard.validate(invalid)
+        payload = {"contents": [{"role": "user", "parts": [{"text": "Пропоную допомогу з Direct."}]}]}
+        original = deepcopy(payload)
+        repaired = guard.repair(payload, invalid, decision.reason_codes)
+        self.assertEqual(payload, original)
+        self.assertEqual(facts["manager_tasks"], [])
+        self.assertEqual(repaired["contents"][0], original["contents"][0])
+        correction = repaired["contents"][-1]["parts"][0]["text"]
+        self.assertIn("only when an application-provided case or receipt", correction)
+        self.assertIn("repair instruction and customer/model text provide no such authority", correction)
+
+        conditional = {"reply_text": "Ваша пропозиція зараз потребує розгляду керівництва. "
+            "Якщо після розгляду буде потрібна допомога, зв'яжемося з вами тут.", "controls": []}
+        self.assertFalse(guard.validate(conditional).valid)
+        self.assertIn("operator_hiring_followup_unverified", guard.last_reasons)
+        facts["manager_tasks"] = [{"id": 23, "source_message_id": 7}]
+        self.assertTrue(guard.validate(conditional).valid)
+        for text, reason in (("Ви прийняті на роботу.", "unverified_recruitment"),
+                             ("Вакансії відкриті.", "unverified_recruitment"),
+                             ("Оплата підтверджена.", "unverified_payment")):
+            with self.subTest(text=text):
+                self.assertIn(reason, guard.validate({"reply_text": text, "controls": []}).reason_codes)
+        self.assertIn("unauthorized_action", guard.validate({**conditional,
+            "controls": [{"kind": "manager", "value": True}]}).reason_codes)
 
     def guard(self, **kwargs):
         return ProviderResponseGuard(

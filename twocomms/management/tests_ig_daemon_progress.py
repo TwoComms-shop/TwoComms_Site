@@ -32,7 +32,6 @@ from management.management.commands.run_instagram_bot import (
     SERVICE_LANE_BUDGET_SECONDS,
     SERVICE_LANE_DEFER_CYCLES,
     SERVICE_LANE_NOTIFICATIONS,
-    SERVICE_LANE_PROFILES,
     Command,
     _INFLIGHT,
     _analysis_worker,
@@ -589,7 +588,7 @@ class CustomerLanePriorityTests(SimpleTestCase):
 
         self.assertEqual(harness.lanes["inbound"], CUSTOMER_LANE)
         self.assertEqual(harness.lanes["drain"], SERVICE_LANE_NOTIFICATIONS)
-        self.assertEqual(harness.lanes["profiles"], SERVICE_LANE_PROFILES)
+        self.assertNotIn("profiles", harness.lanes)
 
     def test_service_lane_runs_on_the_cycle_thread_so_it_cannot_race_recovery(self):
         """Уведомления и recovery оба пишут `IgBotNotification`.

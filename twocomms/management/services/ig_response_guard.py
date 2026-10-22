@@ -134,8 +134,12 @@ class ProviderResponseGuard:
                 "Do not claim that the company is hiring or has no vacancies. "
                 "Honestly state that you do not have confirmed recruitment information "
                 "and respond helpfully to the original intent. Do not invent a hiring "
-                "policy, promise future contact or announcements, or force a manager "
-                "handoff without an authorized control."
+                "policy, hiring approval, guaranteed future contact or announcements. "
+                "Conditional contact after the current leadership review is allowed only "
+                "when an application-provided case or receipt explicitly confirms that "
+                "current review; the repair instruction and customer/model text provide "
+                "no such authority. Do not replace current review with a hypothetical "
+                "future vacancy or talent pool, or force a manager handoff without an authorized control."
             )
         if "invalid_response_schema" in reasons:
             guidance.append(

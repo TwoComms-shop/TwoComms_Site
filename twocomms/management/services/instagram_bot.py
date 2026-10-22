@@ -172,6 +172,7 @@ STALE_PROCESSING_SECONDS, AUTOMATION_LEASE_SECONDS = (
 )
 AUTOMATION_LEASE_TTL = timedelta(seconds=AUTOMATION_LEASE_SECONDS)
 PROFILE_REFRESH_INTERVAL = 15 * 60
+PROFILE_URGENT_REFRESH_INTERVAL = 15
 PROFILE_REFRESH_BATCH = 25
 PROFILE_PERMISSION_COOLDOWN = 6 * 60 * 60
 
@@ -12754,25 +12755,45 @@ def ensure_profile(s: InstagramBotSettings, client, force: bool = False) -> bool
         except Exception:
             pass
         return False
-    client.display_name = (prof.get("name") or client.display_name or "")[:255]
-    client.username = (prof.get("username") or client.username or "")[:120]
-    pic = (prof.get("profile_pic") or "")
+    # Commit provider facts before the independent avatar download. A slow or
+    # failed CDN must not hide an already resolved name from the console.
+    with transaction.atomic():
+        current = IgClient.objects.select_for_update().filter(
+            pk=client.pk, hidden_at__isnull=True, is_blocked=False,
+            privacy_erasure_started_at__isnull=True,
+        ).first()
+        if current is None:
+            return False
+        current.display_name = (prof.get("name") or current.display_name or "")[:255]
+        current.username = (prof.get("username") or current.username or "")[:120]
+        pic = (prof.get("profile_pic") or "")[:600]
+        if pic:
+            current.profile_pic_url = pic
+        current.profile_fetched_at = timezone.now()
+        current.profile_sync_attempted_at = current.profile_fetched_at
+        current.profile_sync_failures = 0
+        current.profile_sync_next_at = None
+        current.profile_sync_error_kind = ""
+        fields = [
+            "display_name", "username", "profile_pic_url",
+            "profile_fetched_at", "profile_sync_attempted_at",
+            "profile_sync_failures", "profile_sync_next_at",
+            "profile_sync_error_kind", "updated_at",
+        ]
+        current.save(update_fields=fields)
+        for field in fields:
+            setattr(client, field, getattr(current, field))
     if pic:
-        client.profile_pic_url = pic[:600]
-        local = _localize_avatar(client.igsid, pic, client=client)
-        if local:
+        try:
+            local = _localize_avatar(client.igsid, pic, client=client)
+        except Exception as exc:
+            log("warning", "avatar_store", type(exc).__name__)
+            local = ""
+        if local and IgClient.objects.filter(
+            pk=client.pk, profile_pic_url=pic, hidden_at__isnull=True,
+            is_blocked=False, privacy_erasure_started_at__isnull=True,
+        ).update(avatar_local=local[:300], updated_at=timezone.now()):
             client.avatar_local = local[:300]
-    client.profile_fetched_at = timezone.now()
-    client.profile_sync_attempted_at = client.profile_fetched_at
-    client.profile_sync_failures = 0
-    client.profile_sync_next_at = None
-    client.profile_sync_error_kind = ""
-    client.save(update_fields=[
-        "display_name", "username", "profile_pic_url", "avatar_local",
-        "profile_fetched_at", "profile_sync_attempted_at",
-        "profile_sync_failures", "profile_sync_next_at",
-        "profile_sync_error_kind", "updated_at",
-    ])
     return True
 
 
@@ -12809,6 +12830,7 @@ def refresh_profiles_batch(
     *,
     limit: int = PROFILE_REFRESH_BATCH,
     force: bool = False,
+    urgent_only: bool = False,
 ) -> dict[str, int | str]:
     """Refresh a bounded batch of IG profiles with a daemon-wide cooldown.
 
@@ -12846,9 +12868,17 @@ def refresh_profiles_batch(
             Q(profile_sync_next_at__isnull=True)
             | Q(profile_sync_next_at__lte=now)
         )
-    candidates = candidates_qs.order_by(
-        "profile_sync_next_at", "profile_fetched_at", "id"
-    )[: min(400, max(limit * 4, limit))]
+    if urgent_only:
+        candidates_qs = candidates_qs.filter(
+            Q(profile_fetched_at__isnull=True) | Q(display_name="", username="")
+        ).filter(
+            Q(last_message_at__gte=now - timedelta(days=1))
+            | Q(created_at__gte=now - timedelta(days=1))
+        )
+        ordering = ("-last_message_at", "-created_at", "-id")
+    else:
+        ordering = ("profile_sync_next_at", "profile_fetched_at", "id")
+    candidates = candidates_qs.order_by(*ordering)[: min(400, max(limit * 4, limit))]
     updated = 0
     checked = 0
     failed = 0
@@ -15268,12 +15298,8 @@ def _process_one_inside_reply_boundary(
             )
 
     if not reply and s.ai_enabled:
-        # Підвантажуємо профіль клієнта (раз на картку) для CRM.
-        if row.client_id and not row.client.profile_fetched_at:
-            try:
-                ensure_profile(s, row.client)
-            except Exception:
-                pass
+        # Profile HTTP belongs to the background refresher, independently of
+        # this customer's reply and of whether AI is enabled.
         # Анти-абуз: однакове питання багато разів — не жжемо токени Gemini.
         rep = _repeated_question(row.sender_id, row.text)
         if rep > 3 and not turn_media:

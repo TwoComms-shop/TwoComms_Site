@@ -34,6 +34,7 @@ OPERATOR_POLICY = (
     "Thank the person for the actual evidenced offer and acknowledge their known questions together; do not repeat them. "
     "When manager_tasks is nonempty, explain that these actual questions/terms remain pending team review. "
     "Do not replace that current review with a hypothetical future hiring need, talent queue or promise to contact the person if staff are needed. "
+    "With that captured current review, a conditional follow-up explicitly after its review is allowed, without promising hiring or terms. "
     "A request to start without buying a batch is a known customer requirement, not approval of dropshipping. "
     "Do not ask them again to choose wholesale versus dropshipping or whether they want to start without buying stock. "
     "At most one useful actually missing question; expected monthly volume is optional, never mandatory. "
@@ -58,18 +59,33 @@ def _private_case_reply_reason(text, facts):
         return "operator_apology_unverified"
     employment, business = facts.get("employment") or {}, facts.get("business") or {}
     if employment.get("employment_service_offer"):
-        conditional_need = any(re.search(
+        conditional_needs = [clause for clause in re.findall(
+            r"\b(?:якщо|коли|если|когда|if|when)\b[^.!?;\n]{0,180}", text, re.I) if re.search(
             r"(?:потреб\w*|потріб\w*|понадоб\w*|нуж\w*|need\w*)[^.!?;\n]{0,65}"
             r"(?:підсил\w*|усилен\w*|співробіт\w*|сотрудник\w*|працівник\w*|работник\w*|"
             r"фахів\w*|специалист\w*|персонал\w*|менеджер\w*|допомог\w*|помощ\w*|staff|specialist\w*|help|support)"
-            r"|ваканс\w*|vacanc\w*|hiring|recruit\w*|staffing", clause, re.I)
-            for clause in re.findall(r"\b(?:якщо|коли|если|когда|if|when)\b[^.!?;\n]{0,180}", text, re.I))
+            r"|ваканс\w*|vacanc\w*|hiring|recruit\w*|staffing", clause, re.I)]
         contact = re.search(r"зв['’ʼ]?яж\w*|свяж\w*|сконтакт\w*|contact\w*|reach\s+out|get\s+in\s+touch", text, re.I)
         talent_queue = re.search(
             r"(?:кадров\w*\s+(?:резерв|баз)|talent\s+(?:pool|queue)|candidate\s+database)|"
             r"(?:збережемо|збережу|сохраним|сохраню|we\s+will\s+(?:keep|save|retain))[^.!?]{0,65}"
             r"(?:пропозиц\w*|предложен\w*|кандидат\w*|proposal|offer|application)", text, re.I)
-        if (conditional_need and contact) or talent_queue:
+        # A pending source-bound leadership review may have a conditional next
+        # step after that review. It is distinct from keeping an applicant for
+        # an invented future vacancy, even when both mention needing help.
+        current_review = bool(facts.get("manager_tasks") and _has_positive_claim(re.compile(
+            r"(?:керівництв\w*|руководств\w*|leadership|management|команд\w*|team)"
+            r"\s+(?:is\s+)?(?:(?:зараз|наразі|сейчас|currently|now)\s+)?"
+            r"(?:розгляда\w*|рассматрива\w*|review\w*)"
+            r"|(?:потреб\w*|очіку\w*|ожида\w*|требу\w*|pending|await\w*)[^.!?;\n]{0,35}"
+            r"(?:розгляд\w*|рассмотр\w*|review\w*)[^.!?;\n]{0,35}"
+            r"(?:керівництв\w*|руководств\w*|leadership|management|команд\w*|team)", re.I), text))
+        after_review = bool(conditional_needs) and all(not re.search(
+            r"ваканс\w*|vacanc\w*|hiring|recruit\w*|staffing", clause, re.I) and re.search(
+            r"\b(?:після\s+(?:цього\s+|поточного\s+)?розгляд\w*|после\s+(?:этого\s+|текущего\s+)?рассмотр\w*|"
+            r"after\s+(?:this\s+|the\s+|current\s+)?review)\b", clause, re.I)
+            for clause in conditional_needs)
+        if (conditional_needs and contact and not (current_review and after_review)) or talent_queue:
             return "operator_hiring_followup_unverified"
     if "start_without_stock" in business.get("requested_topics", ()):
         for question in re.findall(r"[^.!?\n]*\?", text):

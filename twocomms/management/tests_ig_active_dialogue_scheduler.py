@@ -91,7 +91,7 @@ class ActiveDialogueServiceLaneTests(SimpleTestCase):
     def test_external_service_lanes_use_one_item_and_keep_privacy_and_db_work(self):
         runner._run_service_lanes(self.settings)
         self.notification.assert_called_once_with(limit=1)
-        self.profiles.assert_called_once_with(self.settings, limit=1)
+        self.profiles.assert_not_called()
         self.guard.assert_called_once()
         self.privacy.assert_called_once()
 

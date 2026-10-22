@@ -4,6 +4,7 @@
 картку, щоб у CRM було видно, хто саме пише (з аватаркою).
 """
 from datetime import timedelta
+import os
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -14,7 +15,19 @@ from management.models import IgClient, InstagramBotSettings
 from management.services import instagram_bot as bot
 
 
-class FetchProfileTests(TestCase):
+class _ConfiguredProviderMixin:
+    def setUp(self):
+        super().setUp()
+        self.enterContext(patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "legacy_page"}))
+        cache.clear()
+        self.addCleanup(cache.clear)
+        settings_obj = InstagramBotSettings.load()
+        settings_obj.page_id = "synthetic-profile-owner"
+        settings_obj.ig_user_id = "synthetic-profile-owner"
+        settings_obj.save(update_fields=["page_id", "ig_user_id"])
+
+
+class FetchProfileTests(_ConfiguredProviderMixin, TestCase):
     @patch("management.services.instagram_bot.get_page_token")
     @patch("management.services.instagram_bot._http")
     def test_fetch_parses_profile(self, mock_http, mock_pt):
@@ -33,7 +46,7 @@ class FetchProfileTests(TestCase):
         self.assertEqual(bot.fetch_ig_profile(InstagramBotSettings.load(), "u1"), {})
 
 
-class EnsureProfileTests(TestCase):
+class EnsureProfileTests(_ConfiguredProviderMixin, TestCase):
     def tearDown(self):
         settings_obj = InstagramBotSettings.load()
         cache.delete(f"ig_profile_global_error:{settings_obj.page_id or 'unknown'}")

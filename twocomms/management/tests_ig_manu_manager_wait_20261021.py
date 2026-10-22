@@ -201,7 +201,15 @@ class NativeManagerWaitTests(TransactionTestCase):
                 receipt = self.revision.action_receipts["manager_handoff"]
                 task = IgFollowUpTask.objects.get(pk=receipt["task_id"])
                 self.assertEqual(task.reason, "revision_case:product_information_review")
-                self.assertEqual(len(task.manager_context["sources"]), count)
+                # The first two ordinary unknown-question bursts share one
+                # exact open brief. A third burst would exceed its 64-source
+                # budget and therefore gets a distinct, untruncated case.
+                refs = {row["message_id"] for row in task.manager_context["sources"]}
+                current_ids = {row["message_id"] for row in self.revision.bundle_snapshot["sources"]}
+                self.assertEqual(len(refs), {16: 16, 17: 33, 32: 32}[count])
+                self.assertLessEqual(len(refs), 64)
+                self.assertTrue(current_ids.issubset(refs))
+                self.assertEqual(refs, {row["message_id"] for row in task.manager_context["product_inquiries"]["source_refs"]})
                 coverage = self.revision.action_receipts["response_coverage"]
                 self.assertIn(f"{max(row['message_id'] for row in self.revision.bundle_snapshot['sources'])}:info:price", coverage["remaining"])
 

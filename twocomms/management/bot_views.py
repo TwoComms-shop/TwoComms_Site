@@ -56,6 +56,7 @@ from .ig_bot_models import IgCheckoutAccessToken, IgCheckoutProposal, IgCheckout
 from .services import instagram_bot as bot
 from .services import bot_followups
 from .services import gemini_health, gemini_keys, gemini_probe, gemini_v2_read_model
+from .services.ig_conversation_activity import activity_payload, detail_revision, with_conversation_activity
 from .services.bot_payment_truth import (
     CONFIRMED_ORDER_PAYMENT_STATUSES,
     active_client_order_payment_context,
@@ -5424,6 +5425,7 @@ def _client_card(c, *, follow_settings=None, follow_now=None, source_selection=N
         "stage_raw": c.stage,
         "stage_label": displayed_stage_label,
         "last_message_at": c.last_message_at.isoformat() if c.last_message_at else "",
+        **activity_payload(c),
         "purchases": c.purchases_count,
         "total_spent": str(c.total_spent),
         "bot_paused": c.bot_paused,
@@ -5654,12 +5656,12 @@ def bot_clients_api(request):
         Q(commercial_episode__isnull=True) | Q(commercial_episode__client_id=OuterRef("pk")),
     )
 
-    client_rows = IgClient.objects.select_related(
+    client_rows = with_conversation_activity(IgClient.objects.select_related(
         "current_product",
         "current_commercial_episode",
         "follow_state_projection",
         "analysis_job",
-    )
+    ))
     from management.services.ig_analysis_materiality import RESET_FLOOR_ANNOTATION
 
     # `_client_potential_payload()` applies the reset boundary in both legacy
@@ -5824,7 +5826,8 @@ def bot_clients_api(request):
                 has_historical_paid_archive=False,
             )
         )
-    qs = qs.order_by("-last_message_at", "-id")
+    qs = qs.order_by(F("activity_at").desc(nulls_last=True),
+                     F("activity_message_id").desc(nulls_last=True), "-id")
     q = (request.GET.get("q") or "").strip()
     if q:
         qs = qs.filter(
@@ -6209,19 +6212,20 @@ def bot_client_detail_api(request, client_id):
     from management.services.ig_commercial_episodes import client_episode_payload
     from management.services.ig_funnel_reset import current_message_floor
 
-    c = IgClient.objects.select_related(
+    c = with_conversation_activity(IgClient.objects.select_related(
         "current_product",
         "current_commercial_episode",
         "current_commercial_episode__intended_order",
         "follow_state_projection",
-    ).filter(id=client_id).first()
+    )).filter(id=client_id).first()
     if not c:
         return JsonResponse({"success": False, "error": "Клієнта не знайдено."}, status=404)
     observation_now = timezone.now()
     if c.privacy_erasure_started_at:
         return JsonResponse({"success": False, "code": "client_erasing"}, status=410)
     from management.services.ig_commerce_projection import captured_selection_for
-    source_selection = captured_selection_for(c)
+    poll_only = request.GET.get("poll") == "1" and request.GET.get("journey_only") != "1"
+    source_selection = None if poll_only else captured_selection_for(c)
 
     from management.services.ig_journey_snapshot import (
         InvalidJourneyEpisode, build_journey_snapshot,
@@ -6229,7 +6233,7 @@ def bot_client_detail_api(request, client_id):
 
     viewed_episode_id = request.GET.get("view_episode_id") or None
     journey = None
-    if request.GET.get("journey_only") == "1" or not request.GET.get("before_id"):
+    if request.GET.get("journey_only") == "1" or (not poll_only and not request.GET.get("before_id")):
         try:
             journey = build_journey_snapshot(c, view_episode_id=viewed_episode_id,
                                              source_selection=source_selection)
@@ -6237,8 +6241,9 @@ def bot_client_detail_api(request, client_id):
             return JsonResponse(
                 {"success": False, "error": "Покупку не знайдено."}, status=404,
             )
-    episodes = client_episode_payload(c)
-    _apply_canonical_journey_purchase_labels(journey, episodes)
+    episodes = None if poll_only else client_episode_payload(c)
+    if not poll_only:
+        _apply_canonical_journey_purchase_labels(journey, episodes)
     if request.GET.get("journey_only") == "1":
         return JsonResponse({"success": True, "journey": journey})
 
@@ -6251,12 +6256,14 @@ def bot_client_detail_api(request, client_id):
     except (TypeError, ValueError):
         before_id = 0
 
+    incremental_poll = request.GET.get("poll") == "1" or bool(after_id)
+
     if before_id:
         # Older history is loaded from the local immutable transcript. Keep
         # the page bounded and expose a cursor so the UI can walk backwards.
         msg_rows = list(c.messages.filter(id__lt=before_id).order_by("-id")[:100])
         msg_rows.reverse()
-    elif after_id:
+    elif incremental_poll:
         msg_rows = list(c.messages.filter(id__gt=after_id).order_by("id")[:100])
     else:
         # Останні 300 (а не найстаріші) у хронологічному порядку — для live chat.
@@ -6300,10 +6307,11 @@ def bot_client_detail_api(request, client_id):
             "has_older": has_older,
         })
 
-    if after_id:
+    if incremental_poll:
         from management.services.ig_response_debt import reply_debt_payload
 
         operational_stage, operational_stage_label = _operational_client_stage(c)
+        activity = activity_payload(c)
         return JsonResponse({
             "success": True,
             "messages": messages,
@@ -6311,6 +6319,8 @@ def bot_client_detail_api(request, client_id):
             "newest_message_id": newest_message_id,
             "has_older": has_older,
             "last_message_id": last_message_id,
+            **activity,
+            "detail_revision": detail_revision(c, activity=activity),
             "bot_paused": c.bot_paused,
             "manager_takeover": c.manager_takeover,
             "stage": operational_stage,
@@ -6735,6 +6745,8 @@ def bot_client_detail_api(request, client_id):
     return JsonResponse({
         "success": True,
         "client": card,
+        **activity_payload(c),
+        "detail_revision": detail_revision(c),
         "messages": messages,
         "last_message_id": last_message_id,
         "oldest_message_id": oldest_message_id,

@@ -67,6 +67,16 @@ jobs:
           INDEXNOW_ENABLED: "0"
         run: |
           python manage.py test \
+            management.tests_ig_conversation_activity \
+            management.tests_ig_live_identity_echo_20261022 \
+            management.tests_ig_profile \
+            management.tests_ig_avatar \
+            management.tests_ig_live_conversation_contract_20261022 \
+            management.tests_ig_manager_case_continuity_20261022 \
+            management.tests_ig_live_burst_fairness_20261022 \
+            management.tests_ig_size_aliases_20261022 \
+            management.tests_ig_reply_truth_seams_20261022 \
+            management.tests_ig_communication_policy_20261022 \
             management.tests_ig_manu_context_budget_20261021 \
             management.tests_ig_manu_business_delivery_20261021 \
             management.tests_ig_manu_deadline_20261021 \
@@ -113,6 +123,9 @@ jobs:
             management.tests_ig_fulfillment_stock_api \
             management.tests_ig_mariadb_runner \
             --settings=test_settings_no_network_non_dtf --noinput --parallel 1
+      - name: Run live conversation UI regressions
+        run: |
+          node --test tests/js/management-bot-client-list.test.js tests/js/management-bot-live-sync.test.js tests/js/management-bot-chat-reading.test.js tests/js/management-bot-conversation-scroll.test.js
       - name: Exercise production-like static pipeline
         run: python scripts/run_static_gate.py --output static-gate.json
       - name: Build sanitized non-DTF coverage inventory

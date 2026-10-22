@@ -95,6 +95,10 @@ SUITES = {
         "test_real_owned_photos_in_all_wait_agreement_keep_shared_context_inside_24_reads",
     ),
     "conversion-context": (
+        "management.tests_ig_live_burst_fairness_20261022",
+        "management.tests_ig_live_conversation_contract_20261022",
+        "management.tests_ig_manager_case_continuity_20261022",
+        "management.tests_ig_conversation_activity",
         "management.tests_ig_manu_catalog_locale_20261021",
         "management.tests_ig_manu_catalog_poll_20261021",
         "management.tests_ig_manu_customer_pool_mariadb_20261021",

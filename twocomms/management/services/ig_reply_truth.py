@@ -303,6 +303,23 @@ _RECRUITMENT_UNCERTAINTY_RE = re.compile(
     r"|(?:do\s+not|don['’]?t)\s+know)"
     r"\s*,?\s*[^,;.!?]{0,80}$", re.I,
 )
+# An open vacancy never authorizes accepting a particular applicant. There is
+# deliberately no hiring-decision authority in ReplyTruthContext yet.
+_RECRUITMENT_COMMITMENT_RE = re.compile(
+    r"\b(?:(?:вас|ви|вы)\s+(?:(?:вже|уже)\s+)?(?:прийнят\w*|принят\w*)\s+(?:на\s+робот\w*|на\s+работ\w*|[ув]\s+команд\w*|до\s+команд\w*)"
+    r"|(?:беремо|беру|берем|берём|приймаємо|приймаю|принимаем|принимаю)\s+вас\s+(?:[ув]|до|на)\s+(?:команд\w*|робот\w*|работ\w*)"
+    r"|(?:наймаємо|нанимаем)\s+вас"
+    r"|(?:ви|вы)\s+(?:(?:вже|уже|тепер|теперь)\s+)?наш\w*\s+(?:нов\w*\s+)?(?:менеджер\w*|працівник\w*|співробітник\w*|сотрудник\w*)"
+    r"|you(?:\s+are|['’]re|\s+have\s+been|['’]ve\s+been)\s+(?:(?:now|officially)\s+)?hired"
+    r"|(?:ваш\w*\s+)?кандидатур\w*\s+(?:(?:вже|уже|була|была)\s+)?(?:схвален\w*|затверджен\w*|одобрен\w*|утвержден\w*)"
+    r"|you(?:\s+are|['’]re|\s+have\s+been|['’]ve\s+been)\s+(?:(?:now|officially)\s+)?accepted\s+(?:for|into|to)\s+(?:the\s+|our\s+)?(?:role|position|job|team)"
+    r"|your\s+candidacy\s+(?:(?:is|was|has\s+been)\s+)?(?:approved|accepted)"
+    r"|we(?:\s+are|['’]re)\s+hiring\s+you|we\s+(?:have\s+)?hired\s+you)\b", re.I,
+)
+_RECRUITMENT_HYPOTHETICAL_RE = re.compile(
+    r"\b(?:якщо|якби|если|if|whether|припуст\w*|уяв\w*|предполож\w*|suppose|imagine)\b"
+    r"|(?:не\s+(?:ствердж\w*|каж\w*|підтвердж\w*)|(?:cannot|can['’]t)\s+(?:say|confirm))[^;.!?]{0,80}$", re.I,
+)
 _MONEY_RE = re.compile(
     r"(?<!\d)(?P<amount>\d{1,9}(?:[.,]\d{1,2})?)\s*"
     r"(?P<currency>грн|₴|uah|usd|eur|gbp|pln|cad|aud|chf|jpy|"
@@ -772,6 +789,12 @@ def _recruitment_claims(sentence: str):
     # Closure is itself a protected assertion; the generic negation helper must
     # not turn "we are not hiring" into permission to invent a closed policy.
     for clause in _RECRUITMENT_CLAUSE_BOUNDARY_RE.split(sentence):
+        for match in _RECRUITMENT_COMMITMENT_RE.finditer(clause):
+            prefix = clause[:match.start()]
+            if not (_locally_negated(clause, match.start())
+                    or _RECRUITMENT_UNCERTAINTY_RE.search(prefix)
+                    or _RECRUITMENT_HYPOTHETICAL_RE.search(prefix.rsplit(",", 1)[-1])):
+                yield "hired"
         for match in _RECRUITMENT_STATUS_RE.finditer(clause):
             if not _RECRUITMENT_UNCERTAINTY_RE.search(clause[:match.start()]):
                 yield match.lastgroup
@@ -1500,7 +1523,7 @@ def validate_reply_truth(
             and (_EXPLICIT_FULL_RE.search(sentence) or not _PARTIAL_PAYMENT_RE.search(sentence))):
             _add(reasons, "unverified_payment")
         for recruitment_status in _recruitment_claims(sentence):
-            if context.recruitment_status != recruitment_status:
+            if recruitment_status == "hired" or context.recruitment_status != recruitment_status:
                 _add(reasons, "unverified_recruitment")
         range_spans = []
         for match in _RANGE_RE.finditer(sentence):

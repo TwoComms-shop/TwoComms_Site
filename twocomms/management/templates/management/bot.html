@@ -5,6 +5,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{% static 'management/ig_journey.css' %}?v=journey-confirmed-purchases-v17">
+<link rel="stylesheet" href="{% static 'management/bot_client_list.css' %}?v=live-list-v2">
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_human_documents.css' %}?v=human-documents-v2">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_selection_corrections.css' %}?v=commerce-scope-v1"><link rel="stylesheet" href="{% static 'management/ig_commerce_scope.css' %}?v=commerce-scope-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
@@ -1938,7 +1939,8 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=0a2aee9a669c"></script><script src="{% static 'management/js/ig_assisted_partial.js' %}?v=369002f1ad35"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
 <script src="{{ bot_conversation_scroll_url }}"></script>
-<script src="{% static 'management/bot_chat_reading.js' %}?v=chat-reading-v1"></script>
+<script src="{% static 'management/bot_chat_reading.js' %}?v=chat-reading-v3"></script>
+<script src="{% static 'management/bot_client_list.js' %}?v=live-list-v2"></script>
 {% if bot_can_operate %}<script src="{% static 'management/gemini_v2_panel.js' %}?v=gemini-public-evidence-v2"></script>{% endif %}
 <script src="{% static 'management/ig_console.js' %}?v=console-overview-v2"></script>
 <script>
@@ -2400,10 +2402,10 @@ body.bot-drawer-open{overflow:hidden;}
     function close(){if(!drawer||drawer.hidden)return;drawer.hidden=true;document.body.classList.remove('bot-drawer-open');currentData=null;restoreDrawerFocus();}
     function render(data){if(!body||!renderer||!data)return;body.replaceChildren();renderer(body,data,Number((data.client||{}).id||0));}
     function open(data,trigger){if(!drawer||!panel||!body||!renderer||!data)return;PaymentReviewDrawer.close();ClientContextDrawer.close(null,{persist:false,restoreFocus:false});currentData=data;returnFocus=trigger||document.activeElement;render(data);drawer.hidden=false;document.body.classList.add('bot-drawer-open');requestAnimationFrame(focusPrimary);}
-    function refresh(data){if(!drawer||drawer.hidden||!data)return;currentData=data;render(data);requestAnimationFrame(focusPrimary);}
+    function refresh(data,{background=false}={}){if(!drawer||drawer.hidden||!data)return;if(Number((currentData?.client||{}).id)!==Number((data.client||{}).id)){close();return;}if(background&&(body.dataset.operatorDirty==='true'||body.contains(document.activeElement)))return;currentData=data;delete body.dataset.operatorDirty;render(data);if(!background)requestAnimationFrame(focusPrimary);}
     function trap(event){if(!drawer||drawer.hidden||event.key!=='Tab')return;const items=focusable();if(!items.length){event.preventDefault();panel.focus();return;}const first=items[0],last=items[items.length-1];if(document.activeElement===panel||!panel.contains(document.activeElement)){event.preventDefault();(event.shiftKey?last:first).focus();}else if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
     function setRenderer(fn){renderer=fn;}
-    if(drawer){drawer.querySelectorAll('[data-assignment-drawer-close]').forEach(button=>button.addEventListener('click',close));drawer.addEventListener('keydown',trap);}
+    if(drawer){drawer.querySelectorAll('[data-assignment-drawer-close]').forEach(button=>button.addEventListener('click',close));drawer.addEventListener('keydown',trap);body.addEventListener('input',()=>{body.dataset.operatorDirty='true';});body.addEventListener('change',()=>{body.dataset.operatorDirty='true';});}
     document.addEventListener('keydown',event=>{if(event.key==='Escape'&&drawer&&!drawer.hidden){event.preventDefault();close();}});
     return {open:open,close:close,refresh:refresh,setRenderer:setRenderer,isOpen:()=>Boolean(drawer&&!drawer.hidden)};
   })();
@@ -2545,6 +2547,7 @@ body.bot-drawer-open{overflow:hidden;}
     let restockWaitingController=null,restockWaitingRoot=null;
     let splitShippingController=null,splitShippingRoot=null,splitShippingClientId=null;
     let assistedCommerceController=null,assistedCommerceRoot=null,assistedCommerceClientId=null,assistedPartialController=null,assistedPartialRoot=null;
+    let contextPreservedRoots=new Set();
     function canLeaveAssistedCommerce(id){
       if(!assistedCommerceController||assistedCommerceClientId===Number(id)||(assistedCommerceController.canLeave()&&(!assistedPartialController||assistedPartialController.canLeave())))return true;
       activeId=assistedCommerceClientId;listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));
@@ -2601,7 +2604,7 @@ body.bot-drawer-open{overflow:hidden;}
         });
         splitShippingClientId=Number(id);
       }
-      contextEl.appendChild(splitShippingRoot);void splitShippingController.load();
+      contextEl.appendChild(splitShippingRoot);if(!contextPreservedRoots.has(splitShippingRoot)&&splitShippingController.canLeave())void splitShippingController.load();
       {% endif %}
     }
     function renderRestockWaitingList(id){
@@ -2618,7 +2621,7 @@ body.bot-drawer-open{overflow:hidden;}
           }
         });
       }
-      contextEl.appendChild(restockWaitingRoot);void restockWaitingController.render(id);
+      contextEl.appendChild(restockWaitingRoot);if(!contextPreservedRoots.has(restockWaitingRoot))void restockWaitingController.render(id);
       {% endif %}
     }
     function renderFulfillmentReview(id){
@@ -2638,7 +2641,7 @@ body.bot-drawer-open{overflow:hidden;}
           }
         });
       }
-      contextEl.appendChild(fulfillmentReviewRoot);fulfillmentReviewController.render(id);
+      contextEl.appendChild(fulfillmentReviewRoot);if(!contextPreservedRoots.has(fulfillmentReviewRoot))fulfillmentReviewController.render(id);
       {% endif %}
     }
     function clearDecisionTrace(){
@@ -2716,7 +2719,7 @@ body.bot-drawer-open{overflow:hidden;}
         commerceScopeRequest++;if(commerceScopeAbort)commerceScopeAbort.abort();
         commerceScopeClientId=id;commerceScopeOrderId=null;commerceScopeEnvelope=null;commerceScopeController.clear();
       }
-      contextEl.appendChild(commerceScopeRoot);refreshCommerceScope(id);
+      contextEl.appendChild(commerceScopeRoot);if(!contextPreservedRoots.has(commerceScopeRoot))refreshCommerceScope(id);
       {% endif %}
     }
     async function refreshSizeCorrectionState(id){
@@ -2745,6 +2748,7 @@ body.bot-drawer-open{overflow:hidden;}
     }
     function canLeaveHumanDocuments(id){
       if(!humanDocumentsController||Number(humanDocumentsClientId)===Number(id)||!humanDocumentsController.hasUnsavedChanges())return true;
+      activeId=Number(humanDocumentsClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));
       setGlobalFeedback('Є незавершена приватна чернетка. Збережіть або відкиньте текст перед переходом до іншого клієнта.','error');
       if(humanDocumentsDisclosure)humanDocumentsDisclosure.open=true;
       return false;
@@ -2752,6 +2756,7 @@ body.bot-drawer-open{overflow:hidden;}
     function renderHumanDocuments(d,id){
       {% if bot_can_operate and bot_can_view_pii %}
       if(!window.IgHumanDocuments)return;
+      if(Number(humanDocumentsClientId)===Number(id)&&contextPreservedRoots.has(humanDocumentsDisclosure)){contextEl.appendChild(humanDocumentsDisclosure);return;}
       if(!humanDocumentsRoot){humanDocumentsDisclosure=node('details','bot-context-block bot-analysis-disclosure');humanDocumentsDisclosure.appendChild(node('summary','','Мої приватні чернетки та нотатки'));humanDocumentsRoot=node('div');humanDocumentsDisclosure.appendChild(humanDocumentsRoot);}
       const source=(d.messages||[]).filter(message=>message.role==='user').reduce((latest,message)=>Number(message.id)>Number(latest?.id||0)?message:latest,null);
       const options={clientId:id,contextMessageId:source?.id||null,csrf:csrf,baseUrl:'{% url "management_bot_clients_api" %}'.replace(/clients\/$/,''),onRefresh:()=>{if(Number(activeId)===Number(id))void detail(id);}};
@@ -2778,8 +2783,10 @@ body.bot-drawer-open{overflow:hidden;}
     let activeId=null;
     let currentView='all';
     let currentPage=1;let pageInfo=null;
-    let convId=null,convLastId=0,convOldestId=0,convHasOlder=false,convInFlight=false;
+    let convId=null,convLastId=0,convOldestId=0,convHasOlder=false,convInFlight=null,convAbortController=null;
     let detailRequestGeneration=0,detailAbortController=null,renderedDetailId=null;
+    let detailInFlight=null,detailInFlightId=null,detailRevision=null,detailRefreshedAt=0;
+    const CLIENT_DETAIL_RECONCILE_MS=120000;
     let convPollFailures=0;
     const CLIENT_CONVERSATION_POLL_MS=6500;
     const CLIENTS_PAGE_SIZE=20;
@@ -2787,6 +2794,7 @@ body.bot-drawer-open{overflow:hidden;}
     const CLIENTS_POLL_MAX_MS=120000;
     let listRequestGeneration=0;
     let listAbortController=null;
+    let listInFlight=null,listRequestKey='';
     let listPollTimer=null;
     let listPollFailures=0;
     let stableListPolls=0;
@@ -2795,6 +2803,8 @@ body.bot-drawer-open{overflow:hidden;}
     let hasRenderedClients=false;
     const reduceMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
     const activityTimers=new WeakMap();
+    function markContextDraft(event){const section=Array.from(contextEl.children).find(item=>item.contains(event.target));if(section&&!section.classList.contains('bot-context-block'))section.dataset.operatorDirty='true';}
+    contextEl.addEventListener('input',markContextDraft);contextEl.addEventListener('change',markContextDraft);
     function node(tag,className,text){const el=document.createElement(tag);if(className)el.className=className;if(text!==undefined)el.textContent=text;return el;}
     function followStateClass(follow){if(follow&&follow.fresh&&follow.state==='following')return 'fresh-following';if(follow&&follow.fresh&&follow.state==='not_following')return 'fresh-not-following';if(follow&&follow.stale)return 'stale-follow';return 'unknown-follow';}
     function followSymbol(follow){const state=followStateClass(follow);return state==='fresh-following'?'✓':state==='fresh-not-following'?'○':state==='stale-follow'?'!':'?';}
@@ -2923,7 +2933,20 @@ body.bot-drawer-open{overflow:hidden;}
     function syncNewTopAction(){if(!newTopEl)return;const away=isListAwayFromTop();if(!away)pendingTopCount=0;newTopEl.hidden=!(pendingTopCount>0&&away);if(newTopCountEl)newTopCountEl.textContent=String(pendingTopCount);}
     function markLiveActivity(row){if(!row)return;row.classList.remove('has-live-activity');void row.offsetWidth;row.classList.add('has-live-activity');const timer=activityTimers.get(row);if(timer)window.clearTimeout(timer);activityTimers.set(row,window.setTimeout(()=>{row.classList.remove('has-live-activity');activityTimers.delete(row);},900));}
     function clientSignature(c){return JSON.stringify(c||{});}
-    function bindClientRow(row){if(row.dataset.clientBound==='1')return;const openRow=()=>{const id=Number(row.dataset.clientId||0);if(!id)return;activeId=id;requestedClientId=0;listEl.querySelectorAll('.bot-client-row').forEach(el=>el.classList.remove('active'));row.classList.add('active');setMobilePane('conversation');detail(id);};row.addEventListener('click',openRow);row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openRow();}});row.dataset.clientBound='1';}
+    function bindClientRow(row){
+      if(row.dataset.clientBound==='1')return;
+      const openRow=async()=>{
+        const id=Number(row.dataset.clientId||0);if(!id)return;
+        const switching=Number(activeId)!==id,fromDeepLink=Number(requestedClientId)===id;
+        if(switching&&!fromDeepLink)requestedMessageId=0;
+        activeId=id;requestedClientId=0;listEl.querySelectorAll('.bot-client-row').forEach(el=>el.classList.remove('active'));row.classList.add('active');setMobilePane('conversation');
+        const request=detail(id,{preserveEditors:true}),generation=detailRequestGeneration;
+        if(await request&&switching&&!fromDeepLink&&Number(activeId)===id&&Number(convId)===id&&generation===detailRequestGeneration){
+          const url=new URL(window.location.href);url.search='';url.hash='';url.searchParams.set('section','clients');url.searchParams.set('client_id',String(id));window.history.replaceState(window.history.state,'',url.pathname+url.search);
+        }
+      };
+      row.addEventListener('click',openRow);row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();void openRow();}});row.dataset.clientBound='1';
+    }
     function renderClientRow(row,c){
       c={...c,response_debt:reconcileReplyDebt(c.id,c.response_debt)};
       if(c.response_debt?.required)c.manager_action_required=true;
@@ -2934,13 +2957,37 @@ body.bot-drawer-open{overflow:hidden;}
       row.replaceChildren(avatar(c),meta,tags);bindClientRow(row);bindAvatarFallback(row,c.name||c.username||c.igsid);row.dataset.renderSignature=clientSignature(c);
     }
     function createClientRow(c){const row=node('div','bot-client-row');renderClientRow(row,c);return row;}
-    function animateClientMoves(before){if(reduceMotion.matches)return;const moves=[];listEl.querySelectorAll('[data-client-id]').forEach(row=>{const beforeRect=before.get(row.dataset.clientId);if(!beforeRect)return;const after=row.getBoundingClientRect();const deltaY=beforeRect.top-after.top;if(Math.abs(deltaY)<1)return;row.style.transition='none';row.style.transform='translate3d(0, '+deltaY+'px, 0)';moves.push(row);});if(!moves.length)return;void listEl.offsetHeight;requestAnimationFrame(()=>{moves.forEach(row=>{row.style.transition='';row.classList.add('is-live-moving');row.style.transform='translate3d(0, 0, 0)';window.setTimeout(()=>{row.classList.remove('is-live-moving');row.style.transition='';row.style.transform='';},230);});});}
+    // The optional motion asset must not disable opening clients if it fails to load.
+    function createStaticClientList(){return {finish(){},destroy(){},reconcile(clients){
+      const rows=new Map(Array.from(listEl.querySelectorAll('[data-client-id]')).map(row=>[row.dataset.clientId,row]));
+      const kept=new Set();const focus=document.activeElement;const scrollTop=listEl.scrollTop;let cursor=listEl.firstChild;
+      (clients||[]).forEach(c=>{const key=String(c.id);if(kept.has(key))return;kept.add(key);let row=rows.get(key);
+        if(!row)row=createClientRow(c);else if(row.dataset.renderSignature!==clientSignature(c))renderClientRow(row,c);
+        row.classList.toggle('active',Number(c.id)===Number(activeId));if(row!==cursor)listEl.insertBefore(row,cursor);cursor=row.nextSibling;
+      });
+      Array.from(listEl.children).forEach(row=>{if(!kept.has(row.dataset.clientId))row.remove();});
+      if(!kept.size)listEl.appendChild(node('div','bot-empty','Ще немає клієнтів.'));
+      listEl.scrollTop=scrollTop;if(focus&&listEl.contains(focus))focus.focus({preventScroll:true});
+      else if(focus&&focus.dataset?.clientId&&listHeading)listHeading.focus({preventScroll:true});
+      return {activityCount:0};
+    }};}
+    const clientList=window.TwcBotClientList?.create?window.TwcBotClientList.create(listEl,{
+      createRow:createClientRow,getKey:c=>String(c.id),getSignature:clientSignature,
+      getActivity:c=>c.activity_at||c.last_message_at||'',isSelected:c=>Number(c.id)===Number(activeId),
+      empty:()=>node('div','bot-empty','Ще немає клієнтів.'),
+      onFocusRemoved:()=>listHeading?.focus({preventScroll:true}),motionQuery:reduceMotion,onActivity:markLiveActivity
+    }):createStaticClientList();
     function reconcileClients(clients,{animate=false}={}){
-      const focusedClientId=document.activeElement&&document.activeElement.dataset?document.activeElement.dataset.clientId:'';const focusedRow=document.activeElement&&document.activeElement.closest?document.activeElement.closest('[data-client-id]'):null;const rowsById=new Map(Array.from(listEl.querySelectorAll('[data-client-id]')).map(row=>[row.dataset.clientId,row]));const before=new Map();if(animate&&!reduceMotion.matches)rowsById.forEach((row,id)=>before.set(id,row.getBoundingClientRect()));let activityCount=0;const fragment=document.createDocumentFragment();
-      (clients||[]).forEach(c=>{const id=String(c.id);let row=rowsById.get(id);const previousStamp=row?row.dataset.lastMessageAt||'':'';const previousSignature=row?row.dataset.renderSignature||'':'';if(!row)row=createClientRow(c);else if(previousSignature!==clientSignature(c))renderClientRow(row,c);else{row.dataset.lastMessageAt=c.last_message_at||'';row.classList.toggle('active',Number(c.id)===Number(activeId));}if(animate&&row&&(previousStamp!==String(c.last_message_at||'')||!rowsById.has(id))){activityCount+=1;markLiveActivity(row);}fragment.appendChild(row);});
-      while(listEl.firstChild)listEl.removeChild(listEl.firstChild);if((clients||[]).length)listEl.appendChild(fragment);else listEl.appendChild(node('div','bot-empty','Ще немає клієнтів.'));if(animate)animateClientMoves(before);if(activityCount){pendingTopCount+=activityCount;syncNewTopAction();}if(focusedClientId){const restoredRow=listEl.querySelector('[data-client-id="'+CSS.escape(String(focusedClientId))+'"]');if(restoredRow&&document.activeElement!==restoredRow)restoredRow.focus({preventScroll:true});else if(!restoredRow&&listHeading)listHeading.focus({preventScroll:true});}
+      const result=clientList.reconcile(clients,{animate});
+      if(result.activityCount){pendingTopCount+=result.activityCount;syncNewTopAction();}
     }
-    async function load(q,{background=false}={}){
+    function load(q,{background=false}={}){
+      const key=JSON.stringify([currentView,currentPage,q||'',requestedClientId]);
+      if(listInFlight&&listRequestKey===key)return listInFlight;
+      const request=fetchClients(q,{background});listRequestKey=key;listInFlight=request;
+      void request.finally(()=>{if(listInFlight===request){listInFlight=null;listRequestKey='';}});return request;
+    }
+    async function fetchClients(q,{background=false}={}){
       if(!background)scheduleClientsPoll();
       const requestGeneration=++listRequestGeneration;if(listAbortController)listAbortController.abort();listAbortController=new AbortController();const controller=listAbortController;const params=new URLSearchParams();params.set('view', currentView);params.set('page', String(currentPage));params.set('page_size',String(CLIENTS_PAGE_SIZE));if(q)params.set('q', q);if(requestedClientId)params.set('client_id',String(requestedClientId));
       try{const response=await fetch(base+'?'+params.toString(),{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'},signal:controller.signal});const d=await readJsonResponse(response,'Не вдалося завантажити список клієнтів.');if(!response.ok||!d.success)throw new Error(d.error||'Не вдалося завантажити список клієнтів.');if(requestGeneration!==listRequestGeneration)return false;noteListSnapshot(d,{background});setBadge(document.getElementById('badge-clients'),d.total||0);pageInfo=d.pagination||null;if(pageInfo)currentPage=pageInfo.page;if(totalEl)totalEl.textContent=pageInfo?('Показано '+pageInfo.start_item+'–'+pageInfo.end_item+' з '+pageInfo.total_items):((d.total||0)+' усього');renderPager();reconcileClients(d.clients||[],{animate:background&&hasRenderedClients});hasRenderedClients=true;if(background)markListRefreshSuccess();if(globalFeedback&&globalFeedback.dataset.source==='clients-list'){setGlobalFeedback('');delete globalFeedback.dataset.source;}let requestedOpen=null;if(requestedClientId&&!background){const requestedRow=listEl.querySelector('[data-client-id="'+CSS.escape(String(requestedClientId))+'"]');if(requestedRow)requestedOpen=()=>requestedRow.click();}if(requestedOpen)requestAnimationFrame(requestedOpen);return true;
@@ -2974,6 +3021,8 @@ body.bot-drawer-open{overflow:hidden;}
       const confirmsReset=action==='reset-funnel';
       if(confirmsReset && !window.confirm('Скинути воронку цього клієнта? Переписка, оплати, замовлення та обміни залишаться збереженими.')) return;
       const originalLabel=button.innerHTML;
+      const actionClientId=Number(id),actionGeneration=detailRequestGeneration;
+      const ownsSelection=(generation=actionGeneration)=>Number(activeId)===actionClientId&&detailRequestGeneration===generation;
       button.disabled=true;
       button.textContent='Зберігаємо…';
       const formData=new FormData();
@@ -2987,6 +3036,7 @@ body.bot-drawer-open{overflow:hidden;}
         const data=await response.json().catch(()=>({}));
         if(!response.ok || !data.success) throw new Error(data.error || 'Не вдалося виконати дію.');
         const message=actionSuccessText(action,data);
+        if(!ownsSelection()){await load(currentQuery(),{background:true});return;}
         const removeFromView=(action==='hide' && currentView!=='hidden')
           || (action==='unhide' && currentView==='hidden')
           || (action==='lost' && currentView==='active');
@@ -2998,13 +3048,13 @@ body.bot-drawer-open{overflow:hidden;}
           await load(currentQuery());
           return;
         }
-        await detail(id);
+        const refresh=detail(id);const refreshedGeneration=detailRequestGeneration;await refresh;
         await load(currentQuery());
-        setActionFeedback(message,'success');
+        if(ownsSelection(refreshedGeneration))setActionFeedback(message,'success');
       }catch(error){
         button.disabled=false;
         button.innerHTML=originalLabel;
-        setActionFeedback(error && error.message ? error.message : 'Не вдалося виконати дію. Спробуйте ще раз.','error');
+        if(ownsSelection())setActionFeedback(error && error.message ? error.message : 'Не вдалося виконати дію. Спробуйте ще раз.','error');
       }
     }
     function section(root,title,count){const section=node('section','bot-context-section');const head=node('div','bot-context-title');head.append(node('span','',title));if(count!==undefined)head.append(node('span','',String(count)));section.appendChild(head);root.appendChild(section);return section;}
@@ -3161,11 +3211,11 @@ body.bot-drawer-open{overflow:hidden;}
       return box;
     }
     function appendMessage(root,m){
-      const roleClass=m.role==='user'?'user':(m.role==='manager'?'manager':'model');const roleLabel=m.role==='user'?'Клієнт':(m.role==='manager'?'Менеджер':'AI-агент');const message=node('article','bot-msg '+roleClass);message.dataset.mid=m.id||0;message.dataset.messageSignature=JSON.stringify(m);if(m.text)message.appendChild(document.createTextNode(m.text));
+      const roleClass=m.role==='user'?'user':(m.role==='manager'?'manager':'model');const roleLabel=m.role==='user'?'Клієнт':(m.role==='manager'?'Менеджер':'AI-агент');const message=node('article','bot-msg '+roleClass);message.dataset.mid=m.id||0;message.dataset.messageTime=m.time||'';message.dataset.messageSignature=JSON.stringify(m);if(m.text)message.appendChild(document.createTextNode(m.text));
       const mediaRoot=node('div','bot-media-coverage');mediaRoot.style.cssText='display:grid;gap:4px;margin-top:7px;';const captureLabels={owned:'отримано',fetching:'завантажується',discovered:'очікується',failed:'не отримано',unknown:'стан невідомий',not_applicable:'готове зображення'};const inspectionLabels={understood:'прочитано',uncertain:'непевний результат',unreadable:'нечитабельно',not_captured:'ще не отримано',uninspected:'ще не прочитано',not_applicable:'не потрібно'};(m.media||[]).forEach(rawItem=>{const item=rawItem.media_lifecycle&&window.TwcMediaLifecycle?window.TwcMediaLifecycle.applyEligibility(rawItem,rawItem.media_lifecycle):rawItem;const kind=String(item.media_kind||'').toLowerCase();const publicUrl=safeHttpUrl(item.public_url);if(publicUrl&&(!kind||kind==='image')){const link=node('a');link.href=publicUrl;link.target='_blank';link.rel='noopener noreferrer';link.style.cssText='display:inline-flex;flex-direction:column;gap:3px;margin:2px 0;color:inherit;text-decoration:none;';const image=node('img');image.src=publicUrl;image.alt=item.media_label||'Зображення товару';image.loading='lazy';image.style.cssText='width:86px;height:66px;object-fit:cover;border-radius:6px;border:1px solid rgba(148,163,184,.35);';link.append(image,node('span','bot-msg-meta',item.media_label||'Зображення товару'));if(item.media_lifecycle&&window.TwcMediaLifecycle){const wrapper=node('div','bot-media-part');wrapper.appendChild(link);window.TwcMediaLifecycle.render(wrapper,item.media_lifecycle);mediaRoot.appendChild(wrapper);}else mediaRoot.appendChild(link);return;}const part=Number(item.original_index||0)+1;const capture=captureLabels[item.capture_state]||'стан невідомий';const inspection=inspectionLabels[item.inspection_outcome]||(item.inspection_state==='inspected'?'прочитано':'ще не прочитано');const label=String(item.media_label||({audio:'Аудіо',video:'Відео',story:'Сторіс',repost:'Репост'}[kind]||'Вкладення'));const row=node('div','bot-msg-meta',label+' · отримання: '+capture+' · аналіз: '+inspection);const details=[];if(item.error_kind)row.title='Код причини: '+item.error_kind;if(item.type_code)details.push('Тип: '+({product:'товар',custom_reference:'приклад принта',receipt:'чек',payment_screenshot:'скриншот оплати',selfie:'фото людини',certificate:'сертифікат',document:'документ',other:'інше зображення',unknown:'не визначено'}[item.type_code]||'не визначено'));if(item.model)details.push('Модель: '+item.model);else if(item.request_id)details.push('Модель: невідомо');if(item.effort)details.push('Зусилля: '+(item.effort==='unknown'?'невідомі':item.effort));if(details.length)row.appendChild(node('span','', ' · '+details.join(' · ')));const preview=String(item.preview_url||'');if(preview.startsWith('/bot/private-media/')){const link=node('a','bot-mini-btn','Приватний перегляд');link.href=preview;link.target='_blank';link.rel='noopener noreferrer';link.style.marginLeft='6px';row.appendChild(link);}if(item.media_lifecycle&&window.TwcMediaLifecycle)window.TwcMediaLifecycle.render(row,item.media_lifecycle);mediaRoot.appendChild(row);});if(mediaRoot.children.length)message.appendChild(mediaRoot);const meta=node('span','bot-msg-meta');meta.appendChild(document.createTextNode(roleLabel));if(m.role==='model'&&m.gemini_model){const fullModel=String(m.gemini_model);const shortModel=(fullModel.match(/gemini-(\d+\.\d+)-flash/)||[])[1]||fullModel.replace(/^gemini-/,'');const badge=node('span','bot-model-badge '+(fullModel==='gemini-3.7-flash'?'primary':'fallback'),shortModel);badge.title='Фактична модель: '+fullModel;badge.setAttribute('aria-label','Фактична модель: '+fullModel);meta.appendChild(badge);}if(m.time)meta.appendChild(document.createTextNode(' · '+fmtDateTime(m.time)));message.appendChild(meta);root.appendChild(message);
     }
     function refreshMessage(existing,message){
-      const opened=Array.from(existing.querySelectorAll('details')).map(el=>el.open);const highlighted=existing.classList.contains('evidence-highlight');const holder=node('div');appendMessage(holder,message);const replacement=holder.firstElementChild;existing.replaceChildren(...replacement.childNodes);existing.className=replacement.className;if(highlighted)existing.classList.add('evidence-highlight');existing.dataset.messageSignature=replacement.dataset.messageSignature;existing.querySelectorAll('details').forEach((el,index)=>{if(opened[index])el.open=true;});
+      const opened=Array.from(existing.querySelectorAll('details')).map(el=>el.open);const highlighted=existing.classList.contains('evidence-highlight');const holder=node('div');appendMessage(holder,message);const replacement=holder.firstElementChild;existing.replaceChildren(...replacement.childNodes);existing.className=replacement.className;if(highlighted)existing.classList.add('evidence-highlight');existing.dataset.messageSignature=replacement.dataset.messageSignature;existing.dataset.messageTime=replacement.dataset.messageTime;existing.querySelectorAll('details').forEach((el,index)=>{if(opened[index])el.open=true;});
     }
     function conversationIsDocumentScrolled(messages){return !messages||getComputedStyle(messages).overflowY==='visible';}
     function documentNearBottom(){return window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-60;}
@@ -3264,7 +3314,7 @@ body.bot-drawer-open{overflow:hidden;}
       const status=node('div','bot-attention-status',text);status.dataset.mode=attention.mode||'bot';status.setAttribute('role','status');status.setAttribute('aria-label','Стан уваги: '+text);conversationEl.appendChild(status);
     }
     function renderConversation(d){
-      const c=d.client;const sameClient=Number(convId)===Number(c.id);const previousMessages=sameClient&&window.TwcBotChatReading?document.getElementById('bot-msgs'):null;const readingFocus=previousMessages?.contains(document.activeElement)?document.activeElement:null;const reading=window.TwcBotChatReading&&window.TwcBotChatReading.capture(previousMessages);const previousOldest=convOldestId;const previousHasOlder=convHasOlder;const summaryWasOpen=sameClient&&Boolean(conversationEl.querySelector('.bot-chat-summary')?.open);if(cancelConversationPin){cancelConversationPin();cancelConversationPin=null;}const active=d.review&&d.review.active;conversationEl.replaceChildren();const head=node('header','bot-conversation-head');const meta=node('div','bot-conversation-meta');const titleRow=node('div','bot-conversation-title-row');titleRow.append(node('div','bot-conversation-title',c.name||c.username||c.igsid||'Клієнт'),renderFollowIndicator(c.follow||d.follow||{},c.id));meta.append(titleRow,node('div','bot-conversation-sub',[c.username?('@'+c.username):c.igsid,c.phone,c.ad_title?('Реклама: '+c.ad_title):''].filter(Boolean).join(' · ')));const linkedOrderBadge=linkedOrderContextBadge(c);if(linkedOrderBadge)meta.append(linkedOrderBadge);const actions=node('div','bot-conversation-actions');const back=node('button','bot-head-action bot-mobile-back','‹ Клієнти');back.type='button';back.addEventListener('click',()=>{setMobilePane('list');const activeRow=listEl.querySelector('.bot-client-row.active');if(activeRow){activeRow.scrollIntoView({block:'center'});activeRow.focus({preventScroll:true});}});const sections=node('button','bot-head-action bot-mobile-sections','Розділи');sections.type='button';sections.addEventListener('click',()=>{setMobilePane('list');tabsEl.scrollIntoView({block:'start'});tabsEl.querySelector('[aria-selected=true]')?.focus({preventScroll:true});});actions.append(back,sections);if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-head-action needs-action',active.approval.state==='needs_order_resolution'?'Прив’язати замовлення':'Перевірити оплату');review.type='button';review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));actions.appendChild(review);}const assignments=d.orders&&d.orders.assignments||[];const assignmentAction=node('button','bot-head-action icon','⇄');assignmentAction.type='button';assignmentAction.title='Прив’язати або відв’язати замовлення';assignmentAction.setAttribute('aria-label','Відкрити прив’язку замовлень');assignmentAction.addEventListener('click',()=>OrderAssignmentDrawer.open(d,assignmentAction));actions.appendChild(assignmentAction);const advanced=node('button','bot-head-action bot-context-action','Контекст');advanced.type='button';advanced.title='Показати або приховати контекст клієнта';advanced.setAttribute('aria-label','Показати або приховати контекст клієнта');advanced.setAttribute('aria-controls','bot-client-drawer');advanced.setAttribute('data-client-context-toggle','');advanced.setAttribute('aria-expanded',String(ClientContextDrawer.isOpen()));advanced.addEventListener('click',()=>ClientContextDrawer.toggle(advanced));actions.appendChild(advanced);const identityStatus=node('div','bot-conversation-identity-status');identityStatus.appendChild(node('span','bot-stage-chip '+stageCls(c.stage),conversationStageLabel(d)));if(linkedOrderBadge)identityStatus.appendChild(linkedOrderBadge);meta.appendChild(identityStatus);const title=titleRow.querySelector('.bot-conversation-title');title.title=title.textContent;head.append(avatar(c,46),meta,actions);conversationEl.appendChild(head);
+      const c=d.client;const sameClient=Number(convId)===Number(c.id);const previousMessages=sameClient&&window.TwcBotChatReading?document.getElementById('bot-msgs'):null;const readingFocus=previousMessages?.contains(document.activeElement)?document.activeElement:null;const reading=window.TwcBotChatReading&&window.TwcBotChatReading.capture(previousMessages,{documentScrolled:conversationIsDocumentScrolled(previousMessages)});const previousOldest=convOldestId;const previousHasOlder=convHasOlder;const summaryWasOpen=sameClient&&Boolean(conversationEl.querySelector('.bot-chat-summary')?.open);if(cancelConversationPin){cancelConversationPin();cancelConversationPin=null;}const active=d.review&&d.review.active;conversationEl.replaceChildren();const head=node('header','bot-conversation-head');const meta=node('div','bot-conversation-meta');const titleRow=node('div','bot-conversation-title-row');titleRow.append(node('div','bot-conversation-title',c.name||c.username||c.igsid||'Клієнт'),renderFollowIndicator(c.follow||d.follow||{},c.id));meta.append(titleRow,node('div','bot-conversation-sub',[c.username?('@'+c.username):c.igsid,c.phone,c.ad_title?('Реклама: '+c.ad_title):''].filter(Boolean).join(' · ')));const linkedOrderBadge=linkedOrderContextBadge(c);if(linkedOrderBadge)meta.append(linkedOrderBadge);const actions=node('div','bot-conversation-actions');const back=node('button','bot-head-action bot-mobile-back','‹ Клієнти');back.type='button';back.addEventListener('click',()=>{setMobilePane('list');const activeRow=listEl.querySelector('.bot-client-row.active');if(activeRow){activeRow.scrollIntoView({block:'center'});activeRow.focus({preventScroll:true});}});const sections=node('button','bot-head-action bot-mobile-sections','Розділи');sections.type='button';sections.addEventListener('click',()=>{setMobilePane('list');tabsEl.scrollIntoView({block:'start'});tabsEl.querySelector('[aria-selected=true]')?.focus({preventScroll:true});});actions.append(back,sections);if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-head-action needs-action',active.approval.state==='needs_order_resolution'?'Прив’язати замовлення':'Перевірити оплату');review.type='button';review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));actions.appendChild(review);}const assignments=d.orders&&d.orders.assignments||[];const assignmentAction=node('button','bot-head-action icon','⇄');assignmentAction.type='button';assignmentAction.title='Прив’язати або відв’язати замовлення';assignmentAction.setAttribute('aria-label','Відкрити прив’язку замовлень');assignmentAction.addEventListener('click',()=>OrderAssignmentDrawer.open(d,assignmentAction));actions.appendChild(assignmentAction);const advanced=node('button','bot-head-action bot-context-action','Контекст');advanced.type='button';advanced.title='Показати або приховати контекст клієнта';advanced.setAttribute('aria-label','Показати або приховати контекст клієнта');advanced.setAttribute('aria-controls','bot-client-drawer');advanced.setAttribute('data-client-context-toggle','');advanced.setAttribute('aria-expanded',String(ClientContextDrawer.isOpen()));advanced.addEventListener('click',()=>ClientContextDrawer.toggle(advanced));actions.appendChild(advanced);const identityStatus=node('div','bot-conversation-identity-status');identityStatus.appendChild(node('span','bot-stage-chip '+stageCls(c.stage),conversationStageLabel(d)));if(linkedOrderBadge)identityStatus.appendChild(linkedOrderBadge);meta.appendChild(identityStatus);const title=titleRow.querySelector('.bot-conversation-title');title.title=title.textContent;head.append(avatar(c,46),meta,actions);conversationEl.appendChild(head);
       renderReplyDebt(c.response_debt,c.id);
       if(!reconcileReplyDebt(c.id,c.response_debt)?.required)renderAttentionStatus(c.attention_snapshot);
       const summary=node('details','bot-chat-summary');summary.open=summaryWasOpen;summary.appendChild(node('summary','','Шлях клієнта та деталі'));const summaryBody=node('div','bot-chat-details');summary.appendChild(summaryBody);mountJourney(summaryBody,d);summary.addEventListener('toggle',()=>{if(summary.open&&journeyView)journeyView.queueLayout();});const secondary=node('details','bot-journey-secondary');secondary.append(node('summary','','Оцінка та платіжні дані'));
@@ -3276,7 +3326,7 @@ body.bot-drawer-open{overflow:hidden;}
       const latest=node('button','bot-head-action bot-chat-latest','До останніх ↓');latest.type='button';latest.setAttribute('aria-controls','bot-msgs');latest.addEventListener('click',()=>scrollConversationToBottom(document.getElementById('bot-msgs'),true));tools.appendChild(latest);
       const expand=node('button','bot-head-action bot-chat-expand',workspaceEl.classList.contains('is-expanded')?'Згорнути ↙':'Розгорнути ↗');expand.type='button';expand.setAttribute('aria-label','Розгорнути або згорнути робоче вікно чату');expand.setAttribute('aria-pressed',String(workspaceEl.classList.contains('is-expanded')));expand.addEventListener('click',()=>setChatExpanded(!workspaceEl.classList.contains('is-expanded')));tools.appendChild(expand);
       const messages=previousMessages||node('div','bot-conversation-messages');messages.id='bot-msgs';messages.tabIndex=0;messages.setAttribute('role','region');messages.setAttribute('aria-label','Переписка з '+(c.name||c.username||'клієнтом'));
-      if(previousMessages&&window.TwcBotChatReading){window.TwcBotChatReading.merge(messages,d.messages,appendMessage,refreshMessage);if((d.messages||[]).length)messages.querySelector('.bot-empty')?.remove();}else{(d.messages||[]).forEach(message=>appendMessage(messages,message));}
+      if(previousMessages&&window.TwcBotChatReading){window.TwcBotChatReading.merge(messages,d.messages,appendMessage,refreshMessage);if((d.messages||[]).length)messages.querySelector('.bot-empty')?.remove();}else{(d.messages||[]).forEach(message=>appendMessage(messages,message));if(window.TwcBotChatReading)window.TwcBotChatReading.order(messages);}
       if(!(d.messages||[]).length&&!messages.children.length)messages.appendChild(node('div','bot-empty','У переписці ще немає повідомлень.'));conversationEl.appendChild(messages);
       const syncLatest=()=>{latest.hidden=messages.scrollHeight-messages.scrollTop-messages.clientHeight<60;};if(messages._chatScrollListener)messages.removeEventListener('scroll',messages._chatScrollListener);messages._chatScrollListener=syncLatest;messages.addEventListener('scroll',syncLatest,{passive:true});
       bindAvatarFallback(conversationEl,c.name||c.username||c.igsid);convId=c.id;convPollFailures=0;convLastId=sameClient?Math.max(convLastId,d.last_message_id||0):d.last_message_id||0;const keepsOlder=previousMessages&&previousOldest&&(previousOldest<Number(d.oldest_message_id||Infinity));convOldestId=keepsOlder?previousOldest:d.oldest_message_id||0;convHasOlder=keepsOlder?previousHasOlder:Boolean(d.has_older);older.hidden=!convHasOlder;older.disabled=Boolean(olderMessagesRequest&&Number(olderMessagesClient)===Number(c.id));if(readingFocus)(messages.contains(readingFocus)?readingFocus:messages).focus({preventScroll:true});
@@ -3299,8 +3349,18 @@ body.bot-drawer-open{overflow:hidden;}
     }
     async function fetchOlder(button){
       if(!convId||!convOldestId||!convHasOlder||button.disabled)return false;
-      const mc=document.getElementById('bot-msgs');if(!mc)return;const anchor=mc.firstElementChild;const previousAnchorTop=anchor?anchor.getBoundingClientRect().top:0;const requestedClient=convId;button.disabled=true;
-      try{const response=await fetch(base+convId+'/?before_id='+convOldestId,{headers:{'X-Requested-With':'XMLHttpRequest'}});const d=await response.json();if(!response.ok||!d.success)throw new Error();if(convId!==requestedClient||!mc.isConnected)return false;const insertionAnchor=mc.firstChild;(d.messages||[]).forEach(m=>{const holder=document.createElement('div');appendMessage(holder,m);while(holder.firstChild)mc.insertBefore(holder.firstChild,insertionAnchor);});convOldestId=d.oldest_message_id||convOldestId;convHasOlder=Boolean(d.has_older);button.hidden=!convHasOlder;const liveButton=conversationEl.querySelector('[data-older-messages]');if(liveButton)liveButton.hidden=!convHasOlder;preserveConversationAnchor(anchor,previousAnchorTop);return true;}catch(_){button.textContent='Не вдалося завантажити';return false;}finally{button.disabled=false;if(Number(convId)===Number(requestedClient)){const liveButton=conversationEl.querySelector('[data-older-messages]');if(liveButton)liveButton.disabled=false;}}
+      const mc=document.getElementById('bot-msgs');if(!mc)return;const requestedClient=convId;button.disabled=true;
+      try{
+        const response=await fetch(base+convId+'/?before_id='+convOldestId,{headers:{'X-Requested-With':'XMLHttpRequest'}});const d=await response.json();if(!response.ok||!d.success)throw new Error();if(convId!==requestedClient||!mc.isConnected)return false;
+        // Capture immediately before merging: the operator may have scrolled
+        // while the page was loading, and old ID pages can sort into the middle.
+        const reading=window.TwcBotChatReading?.capture(mc,{documentScrolled:conversationIsDocumentScrolled(mc)});
+        const anchor=mc.firstElementChild;const previousAnchorTop=anchor?anchor.getBoundingClientRect().top:0;const insertionAnchor=mc.firstChild;
+        if(window.TwcBotChatReading)window.TwcBotChatReading.merge(mc,d.messages,appendMessage,refreshMessage);
+        else(d.messages||[]).forEach(m=>{const holder=document.createElement('div');appendMessage(holder,m);while(holder.firstChild)mc.insertBefore(holder.firstChild,insertionAnchor);});
+        convOldestId=d.oldest_message_id||convOldestId;convHasOlder=Boolean(d.has_older);button.hidden=!convHasOlder;const liveButton=conversationEl.querySelector('[data-older-messages]');if(liveButton)liveButton.hidden=!convHasOlder;
+        if(reading)window.TwcBotChatReading.restore(mc,reading);else preserveConversationAnchor(anchor,previousAnchorTop);return true;
+      }catch(_){button.textContent='Не вдалося завантажити';return false;}finally{button.disabled=false;if(Number(convId)===Number(requestedClient)){const liveButton=conversationEl.querySelector('[data-older-messages]');if(liveButton)liveButton.disabled=false;}}
     }
     function renderFollowupResolution(row,item,id){
       const outcomes=Array.isArray(item.allowed_outcomes)?item.allowed_outcomes:[];
@@ -3590,23 +3650,45 @@ body.bot-drawer-open{overflow:hidden;}
       block.querySelectorAll('.bot-assignment-unlink').forEach(confirm=>{const reason=confirm.querySelector('input[aria-label="Причина відв\'язки"]');const submit=confirm.querySelector('button.danger');const cancel=confirm.querySelector('button:not(.danger)');if(!reason||!submit)return;const sync=()=>{submit.disabled=!reason.value.trim();};sync();reason.addEventListener('input',sync);if(cancel)cancel.addEventListener('click',sync);});
     }
     OrderAssignmentDrawer.setRenderer(renderAssignmentDrawer);
-    async function detail(id){
+    async function detail(id,{background=false,preserveEditors=background}={}){
+      if(Number(activeId)!==Number(id))return false;
       if(!canLeaveAssistedCommerce(id))return false;
       if(fulfillmentReviewController&&!fulfillmentReviewController.canLeave(id)){activeId=Number(fulfillmentReviewController.clientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));setGlobalFeedback('Завершіть або відкиньте перевірку виконання перед переходом до іншого клієнта.','error');return false;}
       if(splitShippingController&&splitShippingClientId!==Number(id)&&!splitShippingController.canLeave()){activeId=splitShippingClientId;listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));setGlobalFeedback('Збережіть або відкиньте умови відправлення перед переходом до іншого клієнта.','error');return false;}
       if(sizeCorrectionController&&!sizeCorrectionController.canLeave(id)){activeId=Number(sizeCorrectionClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));sizeCorrectionDisclosure.open=true;setGlobalFeedback('Завершіть або відкиньте уточнення розміру перед переходом до іншого клієнта.','error');return false;}
       if(!canLeaveHumanDocuments(id)){activeId=Number(humanDocumentsClientId);listEl.querySelectorAll('[data-client-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.clientId)===activeId));return false;}
-      const requestedDetailId=Number(id);const requestGeneration=++detailRequestGeneration;if(detailAbortController)detailAbortController.abort();detailAbortController=new AbortController();const controller=detailAbortController;const preserveLastGood=renderedDetailId===requestedDetailId;
-      if(!preserveLastGood){clearDecisionTrace();conversationEl.replaceChildren(node('div','bot-client-pane-empty','Завантаження переписки…'));contextEl.replaceChildren(node('div','bot-client-pane-empty','Завантаження контексту…'));}
-      try{const response=await fetch(base+requestedDetailId+'/?detail=1'+journeyQuery(requestedDetailId),{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'},signal:controller.signal});const d=await readJsonResponse(response,'Не вдалося завантажити картку клієнта.');if(!response.ok||!d.success)throw new Error(d.error||'Не вдалося завантажити картку клієнта.');if(requestGeneration!==detailRequestGeneration||Number(activeId)!==requestedDetailId)return false;renderConversation(d);renderContext(d,requestedDetailId);OrderAssignmentDrawer.refresh(d);renderedDetailId=requestedDetailId;if(globalFeedback&&globalFeedback.dataset.source==='client-detail'){setGlobalFeedback('');delete globalFeedback.dataset.source;}return true;}catch(error){if(requestGeneration!==detailRequestGeneration||error&&error.name==='AbortError')return false;if(preserveLastGood){setGlobalFeedback((error&&error.message)||'Не вдалося оновити картку клієнта. Показано останні успішні дані.','error');if(globalFeedback)globalFeedback.dataset.source='client-detail';return false;}conversationEl.replaceChildren(node('div','bot-client-pane-empty',(error&&error.message)||'Не вдалося завантажити переписку.'));contextEl.replaceChildren(node('div','bot-client-pane-empty','Не вдалося завантажити картку клієнта.'));return false;}finally{if(requestGeneration===detailRequestGeneration&&detailAbortController===controller)detailAbortController=null;}
+      const requestedDetailId=Number(id);
+      if(detailInFlight&&detailInFlightId===requestedDetailId)return detailInFlight;
+      const requestGeneration=++detailRequestGeneration;if(detailAbortController)detailAbortController.abort();if(convAbortController)convAbortController.abort();detailAbortController=new AbortController();const controller=detailAbortController;const preserveLastGood=renderedDetailId===requestedDetailId;
+      if(!preserveLastGood){convId=null;detailRevision=null;clearDecisionTrace();OrderAssignmentDrawer.close();conversationEl.replaceChildren(node('div','bot-client-pane-empty','Завантаження переписки…'));contextEl.replaceChildren(node('div','bot-client-pane-empty','Завантаження контексту…'));}
+      detailInFlightId=requestedDetailId;
+      const request=(async()=>{
+        try{
+          const response=await fetch(base+requestedDetailId+'/?detail=1'+journeyQuery(requestedDetailId),{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'},signal:controller.signal});const d=await readJsonResponse(response,'Не вдалося завантажити картку клієнта.');if(!response.ok||!d.success)throw new Error(d.error||'Не вдалося завантажити картку клієнта.');
+          if(requestGeneration!==detailRequestGeneration||Number(activeId)!==requestedDetailId)return false;
+          const contextState=preserveLastGood&&preserveEditors&&window.TwcBotChatReading?.captureContext(contextEl,document.activeElement);
+          contextPreservedRoots=new Set((contextState?.sections||[]).map(item=>item.section));
+          try{renderConversation(d);renderContext(d,requestedDetailId);if(contextState)window.TwcBotChatReading.restoreContext(contextEl,contextState);}finally{contextPreservedRoots=new Set();}
+          OrderAssignmentDrawer.refresh(d,{background:preserveEditors});renderedDetailId=requestedDetailId;detailRevision=d.detail_revision||null;detailRefreshedAt=Date.now();
+          if(globalFeedback&&globalFeedback.dataset.source==='client-detail'){setGlobalFeedback('');delete globalFeedback.dataset.source;}return true;
+        }catch(error){
+          if(requestGeneration!==detailRequestGeneration||Number(activeId)!==requestedDetailId||error&&error.name==='AbortError')return false;
+          if(preserveLastGood){setGlobalFeedback((error&&error.message)||'Не вдалося оновити картку клієнта. Показано останні успішні дані.','error');if(globalFeedback)globalFeedback.dataset.source='client-detail';return false;}
+          conversationEl.replaceChildren(node('div','bot-client-pane-empty',(error&&error.message)||'Не вдалося завантажити переписку.'));contextEl.replaceChildren(node('div','bot-client-pane-empty','Не вдалося завантажити картку клієнта.'));return false;
+        }finally{if(requestGeneration===detailRequestGeneration&&detailAbortController===controller){detailAbortController=null;detailInFlight=null;detailInFlightId=null;}}
+      })();detailInFlight=request;return request;
     }
     function appendConvMessages(items){
       const mc=document.getElementById('bot-msgs'); if(!mc||!items||!items.length) return;
       const atBottom = conversationIsDocumentScrolled(mc)
         ? documentNearBottom()
         : mc.scrollHeight - mc.scrollTop - mc.clientHeight < 60;
-      mc.querySelector('.bot-empty')?.remove();items.forEach(m=>{if(!mc.querySelector('[data-mid="'+Number(m.id)+'"]'))appendMessage(mc,m);convLastId=Math.max(convLastId,m.id||0);});
-      if(atBottom) scrollConversationToBottom(mc,true);
+      const reading=window.TwcBotChatReading?.capture(mc,{documentScrolled:conversationIsDocumentScrolled(mc)});
+      mc.querySelector('.bot-empty')?.remove();
+      if(window.TwcBotChatReading)window.TwcBotChatReading.merge(mc,items,appendMessage,refreshMessage);
+      else items.forEach(m=>{if(!mc.querySelector('[data-mid="'+Number(m.id)+'"]'))appendMessage(mc,m);});
+      items.forEach(m=>{convLastId=Math.max(convLastId,m.id||0);});
+      if(atBottom)scrollConversationToBottom(mc,true);else if(reading)window.TwcBotChatReading.restore(mc,reading);
     }
     function applyIncrementalConversationState(d){
       if(d.follow) updateFollowIndicator(d.follow);
@@ -3620,19 +3702,22 @@ body.bot-drawer-open{overflow:hidden;}
     function pollConv(){
       // Live chat: тягнемо лише НОВІ повідомлення відкритої картки. Не вантажимо
       // сервер — поллимо тільки коли картка реально видима (offsetParent) і не прихована.
-      if(convInFlight || convId===null) return Promise.resolve();
+      if(detailInFlight)return detailInFlight;
+      if(convInFlight)return convInFlight;
+      if(convId===null||Number(activeId)!==Number(convId))return Promise.resolve();
       const mc=document.getElementById('bot-msgs');
-      if(!mc || mc.offsetParent===null || document.hidden) return Promise.resolve();
+      if(!mc || mc.offsetParent===null || !clientsPanelIsVisible()) return Promise.resolve();
       const requestedConvId=convId;
+      const requestedGeneration=detailRequestGeneration;
       const requestedAfterId=convLastId;
       const requestedJourney=journeyQuery(requestedConvId);
       const requestedJourneySequence=journeyView?journeyView.sequence:0;
-      convInFlight=true;
-      return fetch(base+requestedConvId+'/?after_id='+requestedAfterId+requestedJourney,{cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest'}})
+      const controller=new AbortController();convAbortController=controller;
+      const request=fetch(base+requestedConvId+'/?poll=1&after_id='+requestedAfterId+requestedJourney,{cache:'no-store',signal:controller.signal,headers:{'X-Requested-With':'XMLHttpRequest'}})
         .then(async response=>{
           const data=await readJsonResponse(response,'Не вдалося перевірити нові повідомлення.');
           if(!response.ok||!data.success)throw new Error(data.error||'Не вдалося перевірити нові повідомлення.');
-          if(convId!==requestedConvId)return;
+          if(convId!==requestedConvId||Number(activeId)!==Number(requestedConvId)||requestedGeneration!==detailRequestGeneration||!mc.isConnected)return;
           appendConvMessages(data.messages);
           if(requestedJourney!==journeyQuery(requestedConvId)||requestedJourneySequence!==(journeyView?journeyView.sequence:0))delete data.journey;
           applyIncrementalConversationState(data);
@@ -3641,16 +3726,18 @@ body.bot-drawer-open{overflow:hidden;}
           if(globalFeedback&&globalFeedback.dataset.source==='conversation-poll'){
             setGlobalFeedback('');delete globalFeedback.dataset.source;
           }
+          if(data.detail_revision&&data.detail_revision!==detailRevision||Date.now()-detailRefreshedAt>=CLIENT_DETAIL_RECONCILE_MS)await detail(requestedConvId,{background:true});
         })
         .catch(error=>{
-          if(convId!==requestedConvId)return;
+          if(error?.name==='AbortError'||convId!==requestedConvId||Number(activeId)!==Number(requestedConvId)||requestedGeneration!==detailRequestGeneration)return;
           convPollFailures+=1;
           const authFailure=String(error&&error.message||'').startsWith('Сесія завершилася.');
           if(authFailure||convPollFailures>=3){
             setGlobalFeedback(authFailure?error.message:'Оновлення діалогу тимчасово недоступне. Показано останні успішні дані.','error');
             if(globalFeedback)globalFeedback.dataset.source='conversation-poll';
           }
-        }).finally(()=>{ convInFlight=false; });
+        }).finally(()=>{if(convInFlight===request)convInFlight=null;if(convAbortController===controller)convAbortController=null;});
+      convInFlight=request;return request;
     }
     let convTimer=null;
     function scheduleConv(){
@@ -3684,7 +3771,7 @@ body.bot-drawer-open{overflow:hidden;}
     if(listEl)listEl.addEventListener('scroll',syncNewTopAction,{passive:true});
     if(newTopEl)newTopEl.addEventListener('click',()=>{pendingTopCount=0;syncNewTopAction();const firstRow=listEl&&listEl.querySelector('[data-client-id]');if(firstRow){firstRow.scrollIntoView({behavior:reduceMotion.matches?'auto':'smooth',block:'start'});}else if(listEl){listEl.scrollTo({top:0,behavior:reduceMotion.matches?'auto':'smooth'});}});
     function scheduleClientsPoll(delay=clientsPollDelay()){if(listPollTimer)window.clearTimeout(listPollTimer);listPollTimer=null;if(document.hidden||!loaded.clients)return;const boundedDelay=Math.max(CLIENTS_POLL_MS,Number(delay)||CLIENTS_POLL_MS);listPollTimer=window.setTimeout(async()=>{listPollTimer=null;if(clientsPanelIsVisible())await load(currentQuery(),{background:true});scheduleClientsPoll();},boundedDelay);}
-    document.addEventListener('visibilitychange',()=>{if(document.hidden){if(listPollTimer)window.clearTimeout(listPollTimer);listPollTimer=null;return;}if(loaded.clients)scheduleClientsPoll();});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){clientList.finish();if(listPollTimer)window.clearTimeout(listPollTimer);listPollTimer=null;return;}if(loaded.clients){void pollConv();scheduleClientsPoll();}});
     scheduleClientsPoll();
     async function refreshClient(id){if(!id||Number(id)!==Number(activeId))return;await detail(id);await load(currentQuery());}
     // The media payload is deliberately rendered after the shared message path:

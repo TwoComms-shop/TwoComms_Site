@@ -370,11 +370,165 @@ def manager_handoff_promised(response):
     return bool(response is not None and _MANAGER_PROMISE.search(response.reply_text))
 
 
+def _product_information_scopes(task):
+    """Exact revision capabilities underlying a combined operator brief."""
+    context = task.manager_context or {}
+    if not isinstance(context, dict):
+        return []
+    scopes = context.get("product_inquiry_scopes")
+    if scopes is not None:
+        return scopes if (isinstance(scopes, list) and 1 <= len(scopes) <= 32
+            and all(isinstance(row, dict) and type(row.get("revision_id")) is int and row["revision_id"] > 0
+                and isinstance(row.get("product_inquiries"), dict) for row in scopes)) else []
+    owner_id = context.get("latest_revision_id")
+    if type(owner_id) is not int or owner_id <= 0:
+        return []
+    owner = IgCustomerTurnRevision.objects.filter(pk=owner_id, client_id=task.client_id).first()
+    if owner is None:
+        return []
+    return [{"revision_id": owner.pk, "snapshot_digest": owner.snapshot_digest,
+        "generation_proposal_digest": owner.generation_proposal_digest,
+        "product_inquiries": context.get("product_inquiries")}]
+
+
+def _product_information_subject(revision, inquiry):
+    """A SKU or an explicit garment topic, never today's mutable selection."""
+    products = {row.get("product_id") for row in inquiry.get("inquiries", ())}
+    if len(products) != 1:
+        return None
+    product = next(iter(products))
+    if type(product) is int and product > 0:
+        return ("product", product)
+    if product is not None:
+        return None
+    from management.services.ig_product_focus import information_subject, _switches_product
+    sources = (revision.bundle_snapshot or {}).get("sources") or []
+    subject = information_subject(sources)
+    if (subject.get("status") != "identified" or subject.get("future_base_requested")
+        or any(_switches_product(row.get("text")) for row in sources)):
+        return None
+    return ("garment", subject["garment_type"])
+
+
+def _mergeable_native_manager_task(revision, reason, tasks, *, inquiry=None, collaboration=None):
+    """A unique same-kind case, backed by the shared batched native proof path."""
+    from management.services.ig_pending_question_context import _prior_native_case_scopes
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_turn_intent import _scope_for_sources
+    if len(tasks) > 8:
+        return None
+    current = revision.bundle_snapshot['sources']
+    namespaces = {row.get('source_namespace') for row in current}
+    if len(namespaces) != 1 or not next(iter(namespaces)):
+        return None
+    subject = _product_information_subject(revision, inquiry) if inquiry is not None else None
+    if reason == 'product_information_review' and subject is None:
+        return None
+    kind = (collaboration or {}).get('cooperation_kind')
+    candidates = [task for task in tasks if isinstance(task.manager_context, dict)
+        and task.manager_context.get('case_kind') == reason and task.manager_approval_status == 'pending'
+        and (reason != 'collaboration_review' or task.manager_context.get('cooperation_kind') == kind)]
+    if not candidates:
+        return None
+    floor = conversation_route_reset_floor(revision.client_id)
+    episode = _scope_for_sources(revision.client, [row['message_id'] for row in current]).get('commercial_episode_id')
+    cart_scope = (revision.generation_proposal.get('source_cart_capture') or {}).get('scope') or {}
+    if episode and cart_scope.get('episode_id') and episode != cart_scope['episode_id']:
+        return None
+    episode = episode or cart_scope.get('episode_id')
+    proofs = _prior_native_case_scopes(revision, candidates, floor=floor,
+        namespace=next(iter(namespaces)), episode_id=episode, for_projection=False)
+    notifications = {}
+    if reason == 'product_information_review':
+        notification_ids = {pk for proof in proofs.values() if proof for bound in proof['scopes']
+            for pk in (bound['owner'].action_receipts[MANAGER_RECEIPT].get('notification_id'),)
+            if type(pk) is int and pk > 0}
+        notifications = IgBotNotification.objects.filter(client_id=revision.client_id).in_bulk(notification_ids)
+    matches = []
+    for task in candidates:
+        proof = proofs.get(task.pk)
+        if not proof or not 1 <= len(proof['scopes']) < 32:
+            continue
+        sources = {row['message_id']: row for bound in proof['scopes'] for row in bound['sources']}
+        refs = task.manager_context.get('sources')
+        if (not isinstance(refs, list) or any(not isinstance(row, dict) or type(row.get('message_id')) is not int for row in refs)
+            or {row['message_id']: row.get('source_digest') for row in refs} != {pk: row['source_digest'] for pk, row in sources.items()}
+            or task.event_key != f"ig-revision-case:{revision.client_id}:{proof['scopes'][0]['owner'].pk}:{reason}"[:180]
+            or len(sources.keys() | {row['message_id'] for row in current}) > 64
+            or sum(len(row.get('text') or '') for row in [*sources.values(), *current]) > 64000):
+            continue
+        if reason == 'product_information_review':
+            if any(_product_information_subject(bound['owner'], bound['scope']['product_inquiries']) != subject
+                or type(bound['owner'].action_receipts[MANAGER_RECEIPT].get('notification_id')) is not int
+                or bound['owner'].action_receipts[MANAGER_RECEIPT].get('notification_id') not in notifications
+                or product_review_receipt_reason(bound['owner'], task=task,
+                    notification=notifications[bound['owner'].action_receipts[MANAGER_RECEIPT]['notification_id']])
+                for bound in proof['scopes']):
+                continue
+            if sum(len(bound['scope']['product_inquiries'].get('inquiries', ())) for bound in proof['scopes']) + len(inquiry.get('inquiries', ())) > 256:
+                continue
+        task._validated_case_scopes = [bound['scope'] for bound in proof['scopes']]
+        matches.append(task)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _native_manager_scope(revision, reason, collaboration):
+    return {'revision_id': revision.pk, 'snapshot_digest': revision.snapshot_digest,
+        'generation_proposal_digest': revision.generation_proposal_digest, 'case_kind': reason,
+        'collaboration_brief': collaboration if reason == 'collaboration_review' else None,
+        'source_questions': [{'message_id': row['message_id'], 'question': row.get('text') or ''}
+            for row in revision.bundle_snapshot['sources']]}
+
+
+def _manager_source_refs_valid(context):
+    refs = context.get('sources') if isinstance(context, dict) else None
+    return bool(isinstance(refs, list) and 1 <= len(refs) <= 64
+        and all(isinstance(row, dict) and type(row.get('message_id')) is int and row['message_id'] > 0
+            and isinstance(row.get('source_digest'), str) and row['source_digest'] for row in refs))
+
+
+def _combined_collaboration_brief(scopes):
+    """Display union; immutable native scopes remain its evidence, not authority."""
+    briefs = [row['collaboration_brief'] for row in scopes]
+    result = dict(briefs[-1])
+    if len(briefs) == 1:
+        return result
+    result['case_brief_only'] = True
+    result['items'] = [item for brief in briefs for item in brief.get('items', ())]
+    for key in ('business_cooperation', 'recruitment_service'):
+        parts = [brief.get(key) for brief in briefs if brief.get(key)]
+        if not parts:
+            continue
+        merged = dict(parts[-1])
+        for field in ('requested_topics', 'evidence_message_ids', 'subtypes'):
+            if any(field in part for part in parts):
+                merged[field] = list(dict.fromkeys(value for part in parts for value in part.get(field, ())))
+        result[key] = merged
+    return result
+
+
+def _combined_product_information(scopes):
+    """Bounded display brief; per-revision capabilities remain separate."""
+    result = dict(scopes[-1]["product_inquiries"])
+    result["inquiries"] = [row for scope in scopes for row in scope["product_inquiries"]["inquiries"]]
+    refs = {row["message_id"]: row for scope in scopes for row in scope["product_inquiries"]["source_refs"]}
+    result["source_refs"] = list(refs.values())
+    if len(scopes) > 1:
+        result["case_brief_only"] = True
+        result["digest"] = _digest({key: value for key, value in result.items() if key != "digest"})
+    return result
+
+
 def product_review_receipt_reason(revision, *, task=None, notification=None):
     """The exact native product case must remain open until provider start."""
     from management.services.ig_product_inquiries import REVIEW_REASONS, product_inquiries_for_revision
     from management.models import IgFollowUpTask, IgBotNotification
-    receipt = (revision.action_receipts or {}).get(MANAGER_RECEIPT) or {}
+    receipts = revision.action_receipts or {}
+    if not isinstance(receipts, dict):
+        return "product_inquiry_handoff_invalid"
+    receipt = receipts.get(MANAGER_RECEIPT) or {}
+    if not isinstance(receipt, dict):
+        return "product_inquiry_handoff_invalid"
     reason = receipt.get("case_kind")
     current = product_inquiries_for_revision(revision)
     if current.get("status") == "none" and current.get("assisted_resolution"):
@@ -397,11 +551,31 @@ def product_review_receipt_reason(revision, *, task=None, notification=None):
         return "product_inquiry_handoff_invalid"
     task = task or IgFollowUpTask.objects.filter(pk=receipt.get("task_id"), client_id=revision.client_id).first()
     notification = notification or IgBotNotification.objects.filter(pk=receipt.get("notification_id"), client_id=revision.client_id).first()
+    if (task is not None and not isinstance(task.manager_context, dict)
+        or notification is not None and not isinstance(notification.payload, dict)):
+        return "product_inquiry_handoff_invalid"
+    scope = next((row for row in _product_information_scopes(task)
+        if isinstance(row, dict) and row.get("revision_id") == revision.pk), None) if task is not None and (task.manager_context or {}).get("product_inquiry_scopes") is not None else None
+    scoped = scope is not None and scope == {"revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
+        "generation_proposal_digest": revision.generation_proposal_digest, "product_inquiries": current}
+    declared_scopes = task is not None and "product_inquiry_scopes" in (task.manager_context or {})
+    try:
+        scopes = _product_information_scopes(task) if declared_scopes else []
+        brief_valid = not declared_scopes or bool(scopes and
+            task.event_key == f"ig-revision-case:{revision.client_id}:{scopes[0]['revision_id']}:{reason}"[:180]
+            and task.manager_context.get("product_inquiries") == _combined_product_information(scopes)
+            and len({row['revision_id'] for row in scopes}) == len(scopes)
+            and {row['message_id']: row['source_digest'] for row in task.manager_context.get('sources', ())}
+                == {row['message_id']: row['source_digest'] for scope_row in scopes
+                    for row in scope_row['product_inquiries']['source_refs']})
+    except (KeyError, TypeError, IndexError, ValueError, AttributeError):
+        brief_valid = False
     if (task is None or notification is None or task.kind != "manager_task"
         or task.reason != "revision_case:" + reason
-        or task.event_key != f"ig-revision-case:{revision.client_id}:{revision.pk}:{reason}"[:180]
-        or (task.manager_context or {}).get("product_inquiries") != current
-        or notification.dedupe_key != f"ig-revision-case:{task.pk}"
+        or declared_scopes and not scoped or not brief_valid
+        or (not scoped and (task.event_key != f"ig-revision-case:{revision.client_id}:{revision.pk}:{reason}"[:180]
+            or (task.manager_context or {}).get("product_inquiries") != current))
+        or notification.dedupe_key not in {f"ig-revision-case:{task.pk}", f"ig-revision-case:{task.pk}:{revision.pk}"}
         or (notification.payload or {}).get("case_kind") != reason
         or (notification.payload or {}).get("revision_id") != revision.pk
         or (notification.payload or {}).get("manager_task_id") != task.pk):
@@ -506,6 +680,16 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             notification = IgBotNotification.objects.filter(pk=existing.get("notification_id"), client=client).first()
             if existing.get("generation_proposal_digest") != revision.generation_proposal_digest or task is None or notification is None:
                 return RevisionIntentResult(reason="manager_receipt_invalid")
+            if not _manager_source_refs_valid(task.manager_context):
+                return RevisionIntentResult(reason="manager_receipt_invalid")
+            if task.manager_context.get('case_kind') != existing.get('case_kind'):
+                return RevisionIntentResult(reason='manager_receipt_invalid')
+            scopes = task.manager_context.get('manager_case_scopes')
+            if scopes is not None:
+                expected = _native_manager_scope(revision, existing['case_kind'],
+                    collaboration_brief_for_revision(revision) if existing['case_kind'] == 'collaboration_review' else {})
+                if not isinstance(scopes, list) or expected not in scopes:
+                    return RevisionIntentResult(reason='manager_receipt_invalid')
             product_reason = product_review_receipt_reason(revision, task=task, notification=notification)
             if product_reason:
                 return RevisionIntentResult(reason=product_reason)
@@ -544,8 +728,18 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         if complaint_evidence or service_complaint or reason in REVIEW_REASONS:
             # Different complaint sources have independent unresolved service
             # debt. Only this revision's exact case may be reused on replay.
-            tasks = tasks.filter(event_key=event_key)
-        task = tasks.order_by("id").first()
+            if reason == "product_information_review":
+                task = tasks.filter(event_key=event_key).first()
+                task = task or _mergeable_native_manager_task(revision, reason, list(tasks.order_by("id")[:9]), inquiry=product_inquiry)
+            else:
+                task = tasks.filter(event_key=event_key).first()
+        elif reason in {'customer_manager_request', 'business_review', 'collaboration_review'}:
+            task = tasks.filter(event_key=event_key).first()
+            task = task or _mergeable_native_manager_task(revision, reason, list(tasks.order_by('id')[:9]), collaboration=collaboration)
+        else:
+            task = tasks.order_by("id").first()
+        information_scopes = _product_information_scopes(task) if task is not None and reason == "product_information_review" else []
+        manager_scopes = getattr(task, '_validated_case_scopes', []) if task is not None else []
         now = timezone.now()
         source_refs = [{"message_id": row["message_id"], "source_digest": row["source_digest"]} for row in proposal.get("sources", ())]
         if task is None:
@@ -576,7 +770,16 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 skip_reason="human_business_decision_required", policy_started_at=now,
                 policy_version="revision-case-v1",
             )
+        if task.manager_context is not None and not isinstance(task.manager_context, dict):
+            return RevisionIntentResult(reason="product_inquiry_handoff_invalid")
         context = dict(task.manager_context or {})
+        if context and not _manager_source_refs_valid(context):
+            return RevisionIntentResult(reason='manager_receipt_invalid')
+        # Keep the pending-case anchor stable through this reply's final gate.
+        # New questions get their own immutable capability and notification;
+        # changing the anchor mid-send would invalidate the captured context.
+        pending_anchor = {key: context.get(key) for key in ("latest_revision_id", "generation_proposal_digest")}
+        anchored_business = context.get('business_cooperation')
         previous = list(context.get("sources") or [])
         known = {item["message_id"] for item in previous}
         previous.extend(item for item in source_refs if item["message_id"] not in known)
@@ -605,6 +808,20 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 # A pre-existing creator case must not keep its old portfolio
                 # instructions when this current source opens a trade inquiry.
                 task.message_text = "Клієнт питає про магазин, перепродаж або бізнес-співпрацю: розглянути його питання й погодити індивідуальні умови."
+        if reason in {'customer_manager_request', 'business_review', 'collaboration_review'}:
+            manager_scopes.append(_native_manager_scope(revision, reason, collaboration))
+            context['manager_case_scopes'] = manager_scopes
+            context['latest_manager_case_revision_id'] = revision.pk
+            context['source_questions'] = [row for scope in manager_scopes for row in scope['source_questions']]
+            if reason == 'collaboration_review':
+                context['collaboration_brief'] = _combined_collaboration_brief(manager_scopes)
+                context['current_business_cooperation'] = context['collaboration_brief'].get('business_cooperation') or {}
+            task.message_text = _product_inquiry_case_message(task.message_text,
+                {'inquiries': context['source_questions']})
+            if task.event_key != event_key:
+                context.update(pending_anchor)
+                if reason == 'collaboration_review' and business:
+                    context['business_cooperation'] = anchored_business
         if service_complaint:
             context["service_complaint"] = service_complaint
             context["required_decisions"] = ["customer_service_review", "leadership_review"]
@@ -618,11 +835,19 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 context["required_decisions"].append("remaining_customer_questions")
         if product_inquiry.get("status") == "manager_required":
             context["product_inquiries"] = product_inquiry
+            if reason == "product_information_review":
+                information_scopes.append({"revision_id": revision.pk, "snapshot_digest": revision.snapshot_digest,
+                    "generation_proposal_digest": revision.generation_proposal_digest, "product_inquiries": product_inquiry})
+                context["product_inquiry_scopes"] = information_scopes
+                context["product_inquiries"] = _combined_product_information(information_scopes)
+                context["latest_product_inquiry_revision_id"] = revision.pk
+                if task.event_key != event_key:
+                    context.update(pending_anchor)
             context["required_decisions"] = list(dict.fromkeys([*context["required_decisions"],
                 "exact_requested_configuration" if product_inquiry["reason"] == "product_configuration_review" else "exact_product_information"]))
             context["authority"].update(catalog_confirmed=False, stock_confirmed=False, checkout_authorized=False)
             if reason in REVIEW_REASONS:
-                task.message_text = _product_inquiry_case_message(task.message_text, product_inquiry)
+                task.message_text = _product_inquiry_case_message(task.message_text, context["product_inquiries"])
         if complaint_evidence:
             context["media_complaint_evidence"] = complaint_evidence
             if "customer_service_review" not in context["required_decisions"]:
@@ -633,10 +858,14 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
         task.manager_context = context
         task.save(update_fields=["manager_context", "message_text", "updated_at"])
         notification_key = f"ig-revision-case:{task.pk}"
+        if reason in {'product_information_review', 'customer_manager_request', 'business_review', 'collaboration_review'} and task.event_key != event_key:
+            notification_key += f":{revision.pk}"
         alert = format_operator_alert("Клієнту потрібна допомога команди", event_type="escalation", client_id=client.pk, task_id=task.pk, counts={"sources": len(previous)}, instruction_code="escalation")
         if product_inquiry.get("status") == "manager_required":
-            questions = list(dict.fromkeys(row["question"] for row in product_inquiry["inquiries"]))
+            questions = list(dict.fromkeys(row["question"] for row in context["product_inquiries"]["inquiries"]))
             alert += "\n\nТочний запит про товар: " + " · ".join(questions)[:600]
+        elif context.get('source_questions'):
+            alert += '\n\nПитання клієнта: ' + ' · '.join(dict.fromkeys(row['question'] for row in context['source_questions']))[:600]
         notified = notify_manager(
             alert,
             dedupe_key=notification_key, event_type="escalation", client=client,

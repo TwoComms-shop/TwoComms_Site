@@ -1475,15 +1475,14 @@ class DaemonHeartbeatTests(SimpleTestCase):
     @patch("management.management.commands.run_instagram_bot.bot_followups.process_due_followups")
     @patch("management.management.commands.run_instagram_bot.bot.process_pending")
     @patch("management.management.commands.run_instagram_bot.bot.drain_manager_notifications")
-    def test_profile_sync_is_independent_from_reply_enabled_gate(
+    def test_reply_cycle_never_runs_profile_provider_io(
         self, _drain, _pending, _followups, cache_add, refresh_profiles
     ):
         settings = InstagramBotSettings(is_enabled=False, receive_via_poll=False, page_id="page")
 
         _run_work_cycle(settings, 17.0)
 
-        cache_add.assert_called_once()
-        refresh_profiles.assert_called_once_with(settings, limit=1)
+        refresh_profiles.assert_not_called()
 
     @patch("management.management.commands.run_instagram_bot.bot.refresh_profiles_batch")
     @patch("management.management.commands.run_instagram_bot.cache.add", return_value=False)
