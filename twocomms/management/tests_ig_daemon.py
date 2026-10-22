@@ -667,6 +667,16 @@ class AnalysisWorkerTests(SimpleTestCase):
         super().setUp()
         # Typed-memory reconciliation now runs inside the same periodic branch;
         # this worker scheduling suite must not accidentally attempt DB writes.
+        # Scheduling tests use an explicit valid durable-owner double. Real
+        # busy/frozen/generation behavior is covered by lane-isolation tests.
+        for target, value in (
+            ("management.services.ig_analysis_lane.acquire_owner", {"owner_token": "worker-test", "generation": 1}),
+            ("management.services.ig_analysis_lane.renew_owner", True),
+            ("management.services.ig_analysis_lane.release_owner", True),
+        ):
+            owner_patch = patch(target, return_value=value)
+            owner_patch.start()
+            self.addCleanup(owner_patch.stop)
         memory = patch("management.services.ig_typed_memory.reconcile_typed_memory")
         narrative = patch("management.services.ig_memory_producer.reconcile_memory_sources")
         heartbeat = patch("management.management.commands.run_instagram_bot.task_heartbeat")

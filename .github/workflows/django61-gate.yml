@@ -81,6 +81,14 @@ jobs:
             management.tests_ig_conversion_audit_schema_20261022 \
             management.tests_ig_conversion_audit_analysis_20261022 \
             management.tests_ig_conversion_audit_stats_20261022 \
+            management.tests_ig_analysis_lane_isolation_20261023 \
+            management.tests_ig_analysis_lane \
+            management.tests_ig_worker_progress \
+            management.tests_ig_daemon \
+            management.tests_ig_daemon_progress \
+            management.tests_ig_daemon_health \
+            management.tests_ig_payment_observation_worker \
+            management.tests_ig_memory_lifecycle \
             management.tests_ig_reply_truth_seams_20261022 \
             management.tests_ig_communication_policy_20261022 \
             management.tests_ig_manu_context_budget_20261021 \

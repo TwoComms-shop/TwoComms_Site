@@ -1782,6 +1782,13 @@ print(json.dumps({
     def test_dialogue_quality_contains_all_new_dialogue_and_planned_audit_modules(self):
         modules = self.runner.SUITES["dialogue-quality"]
         expected = {
+            "management.tests_ig_analysis_lane_isolation_20261023",
+            "management.tests_ig_analysis_lane",
+            "management.tests_ig_worker_progress",
+            "management.tests_ig_daemon",
+            "management.tests_ig_daemon_health",
+            "management.tests_ig_payment_observation_worker",
+            "management.tests_ig_memory_lifecycle.MemoryDaemonOwnershipTests",
             "management.tests_ig_communication_policy_20261022",
             "management.tests_ig_conversation_activity",
             "management.tests_ig_conversion_audit_analysis_20261022",

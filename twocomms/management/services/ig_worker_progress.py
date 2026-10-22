@@ -86,6 +86,16 @@ class WorkerProgressRegistry:
                        completed_at=now, deadline_at=now + WORKER_LIMITS[name],
                        error_kind=error_kind)
 
+    def waiting(self, name, *, reason="owner_busy"):
+        """A completed bounded owner attempt is live, but admits no claims."""
+        now = self.clock()
+        with self.lock:
+            self.rows[name].update(
+                state="waiting_owner", progress_at=now, completed_at=now,
+                deadline_at=now + WORKER_LIMITS[name], error_kind="",
+                blocked_reason=reason if reason in {"owner_busy", "owner_lost"} else "owner_busy",
+            )
+
     def snapshot(self):
         with self.lock:
             return {name: dict(row) for name, row in self.rows.items()}
@@ -216,13 +226,13 @@ def worker_health_snapshot(payload, *, now):
         # Derive from the fixed limit; malformed cache cannot grant infinite life.
         deadline = progress + limit if progress is not None else None
         state = row.get("state")
-        if progress is None or progress > now + 30 or not isinstance(state, str) or state not in {"starting", "running", "idle", "failed"}:
+        if progress is None or progress > now + 30 or not isinstance(state, str) or state not in {"starting", "running", "idle", "failed", "waiting_owner"}:
             state = "unobserved"
         elif state != "failed" and now >= deadline:
             state = "stalled"
         lanes[name] = {
             "state": state,
-            "healthy": state in {"starting", "running", "idle"},
+            "healthy": state in {"starting", "running", "idle", "waiting_owner"},
             "progress_age_seconds": max(0.0, now - progress) if progress is not None else None,
             "iteration_age_seconds": max(0.0, now - started) if row.get("state") == "running" and started is not None else None,
             "completed_age_seconds": max(0.0, now - completed) if completed is not None else None,
@@ -230,4 +240,10 @@ def worker_health_snapshot(payload, *, now):
             "deadline_at": deadline,
             "progress_evidence": "worker_iteration" if progress is not None else "unobserved",
         }
+        if row.get("state") == "waiting_owner":
+            lanes[name].update(
+                ready=False, claim_admission=False,
+                blocked_reason=row.get("blocked_reason") if row.get("blocked_reason") in {"owner_busy", "owner_lost"} else "owner_busy",
+                progress_evidence=("owner_renewal_attempt" if row.get("blocked_reason") == "owner_lost" else "owner_acquire_attempt"),
+            )
     return {"healthy": all(row["healthy"] for row in lanes.values()), "lanes": lanes}

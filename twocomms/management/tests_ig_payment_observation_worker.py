@@ -34,7 +34,7 @@ class PaymentObservationWorkerTests(SimpleTestCase):
                 "management.management.commands.run_instagram_bot.task_heartbeat",
                 "management.management.commands.run_instagram_bot._memory_background_tick",
                 "management.management.commands.run_instagram_bot.bot.log",
-                "management.services.ig_analysis_lane.bind_owner",
+                "management.services.ig_analysis_lane.release_owner",
                 "management.services.ig_typed_memory.reconcile_typed_memory",
                 "management.services.ig_memory_producer.reconcile_memory_sources",
             ):

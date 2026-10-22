@@ -668,6 +668,10 @@ def _ad_metadata_background_tick():
     return drain_ad_metadata_imports(limit=1)
 
 
+class _AnalysisOwnerUnavailable(Exception):
+    """Local coordination outcome; never a daemon shutdown signal."""
+
+
 def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generation=None):
     """Drain source observations and CRM analysis independently of reply enablement."""
     from management.services.bot_conversation_analysis import (
@@ -675,180 +679,215 @@ def _analysis_worker(stop_event: threading.Event, lane_token=None, lane_generati
         reconcile_analysis_jobs,
     )
     from management.services.ig_analysis_events import process_due_analysis_events
-    if lane_token is not None:
-        from management.services.ig_analysis_lane import bind_owner
-        bind_owner({"owner_token": lane_token, "generation": lane_generation})
-
-    from management.services.ig_analysis_lane import bind_owner, renew_owner
+    from management.services.ig_analysis_lane import (
+        acquire_owner, bind_owner, release_owner, renew_owner, unbind_owner,
+    )
+    marker = None
     last_reconcile_at = None
     lane_owner = (
         {"owner_token": lane_token, "generation": lane_generation}
         if lane_token is not None else None
     )
-    while not stop_event.is_set():
-        with worker_iteration("analysis"):
-            try:
-                close_old_connections()
-                require_database_ready(lane="analysis_worker")
-                if lane_owner is not None and not renew_owner(
-                    owner_token=lane_owner["owner_token"],
-                    generation=lane_owner["generation"],
-                ):
-                    # The durable lane fence is authoritative. Once renewal is
-                    # rejected, this worker must drain without touching claims,
-                    # reconciliation, typed memory, or analysis events.
-                    stop_event.set()
-                    return
-                if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                    monotonic_now = time.monotonic()
-                    if (
-                        last_reconcile_at is None
-                        or monotonic_now - last_reconcile_at >= ANALYSIS_RECONCILE_EVERY
+    try:
+        while not stop_event.is_set():
+            waiting_reason = ""
+            iteration_error = ""
+            with worker_iteration("analysis"):
+                try:
+                    close_old_connections()
+                    require_database_ready(lane="analysis_worker")
+                    if lane_owner is None:
+                        lane_owner = acquire_owner(owner_kind="daemon")
+                        if lane_owner is None:
+                            raise _AnalysisOwnerUnavailable("owner_busy")
+                    if marker is None:
+                        marker = bind_owner(lane_owner)
+                    if lane_owner is not None and not renew_owner(
+                        owner_token=lane_owner["owner_token"],
+                        generation=lane_owner["generation"],
                     ):
-                        try:
-                            reconcile_result = reconcile_analysis_jobs(
-                                limit=ANALYSIS_RECONCILE_BATCH
-                            )
-                            if isinstance(reconcile_result, dict):
-                                graph_count = int(
-                                    reconcile_result.get(
-                                        "request_graphs_reconciled",
-                                        0,
-                                    )
-                                    or 0
-                                )
-                                if graph_count > 0:
-                                    bot.log(
-                                        "info",
-                                        "gemini_request_graphs_reconciled",
-                                        f"reconciled={graph_count}",
-                                    )
-                            from management.services.ig_typed_memory import (
-                                reconcile_typed_memory,
-                            )
-
-                            with task_heartbeat("ig_typed_memory_reconcile"):
-                                reconcile_typed_memory(limit=ANALYSIS_RECONCILE_BATCH)
-                        except Exception as exc:
-                            _raise_disconnected_database(exc, lane="analysis_worker")
+                        # A rejected generation loses only analysis authority;
+                        # customer workers continue under their own fences.
+                        raise _AnalysisOwnerUnavailable("owner_lost")
+                    if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                        monotonic_now = time.monotonic()
+                        if (
+                            last_reconcile_at is None
+                            or monotonic_now - last_reconcile_at >= ANALYSIS_RECONCILE_EVERY
+                        ):
                             try:
-                                bot.log(
-                                    "error",
-                                    "conversation_analysis_reconcile",
-                                    repr(exc),
+                                reconcile_result = reconcile_analysis_jobs(
+                                    limit=ANALYSIS_RECONCILE_BATCH
                                 )
-                            except Exception:
-                                pass
-                        else:
-                            last_reconcile_at = monotonic_now
-                            try:
-                                from management.services.ig_memory_producer import reconcile_memory_sources
+                                if isinstance(reconcile_result, dict):
+                                    graph_count = int(
+                                        reconcile_result.get(
+                                            "request_graphs_reconciled",
+                                            0,
+                                        )
+                                        or 0
+                                    )
+                                    if graph_count > 0:
+                                        bot.log(
+                                            "info",
+                                            "gemini_request_graphs_reconciled",
+                                            f"reconciled={graph_count}",
+                                        )
+                                from management.services.ig_typed_memory import (
+                                    reconcile_typed_memory,
+                                )
 
-                                reconcile_memory_sources(limit=MEMORY_RECONCILE_BATCH)
+                                with task_heartbeat("ig_typed_memory_reconcile"):
+                                    reconcile_typed_memory(limit=ANALYSIS_RECONCILE_BATCH)
                             except Exception as exc:
                                 _raise_disconnected_database(exc, lane="analysis_worker")
                                 try:
-                                    bot.log("error", "memory_source_reconcile", type(exc).__name__)
+                                    bot.log(
+                                        "error",
+                                        "conversation_analysis_reconcile",
+                                        repr(exc),
+                                    )
                                 except Exception:
                                     pass
-                    if stop_event.is_set():
-                        return
-                    if lane_owner is not None and not renew_owner(
-                        owner_token=lane_owner["owner_token"],
-                        generation=lane_owner["generation"],
-                    ):
-                        stop_event.set()
-                        return
-                    if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                        try:
-                            from management.services.ig_payment_observation import drain_payment_observations
+                            else:
+                                last_reconcile_at = monotonic_now
+                                try:
+                                    from management.services.ig_memory_producer import reconcile_memory_sources
 
-                            # OCR may consume its complete provider deadline.
-                            # Keep this singleton-owned work off the customer
-                            # reply lane, even while replies/AI are disabled.
-                            drain_payment_observations(max_items=1)
+                                    reconcile_memory_sources(limit=MEMORY_RECONCILE_BATCH)
+                                except Exception as exc:
+                                    _raise_disconnected_database(exc, lane="analysis_worker")
+                                    try:
+                                        bot.log("error", "memory_source_reconcile", type(exc).__name__)
+                                    except Exception:
+                                        pass
+                        if stop_event.is_set():
+                            return
+                        if lane_owner is not None and not renew_owner(
+                            owner_token=lane_owner["owner_token"],
+                            generation=lane_owner["generation"],
+                        ):
+                            raise _AnalysisOwnerUnavailable("owner_lost")
+                        if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                            try:
+                                from management.services.ig_payment_observation import drain_payment_observations
+
+                                # OCR may consume its complete provider deadline.
+                                # Keep this singleton-owned work off the customer
+                                # reply lane, even while replies/AI are disabled.
+                                drain_payment_observations(max_items=1)
+                            except Exception as exc:
+                                _raise_disconnected_database(exc, lane="analysis_worker")
+                                try:
+                                    bot.log("warning", "payment_observation_drain_deferred", type(exc).__name__)
+                                except Exception:
+                                    pass
+                        if stop_event.is_set():
+                            return
+                        if lane_owner is not None and not renew_owner(
+                            owner_token=lane_owner["owner_token"],
+                            generation=lane_owner["generation"],
+                        ):
+                            raise _AnalysisOwnerUnavailable("owner_lost")
+                        try:
+                            process_due_analysis(limit=1)
                         except Exception as exc:
                             _raise_disconnected_database(exc, lane="analysis_worker")
                             try:
-                                bot.log("warning", "payment_observation_drain_deferred", type(exc).__name__)
+                                bot.log("error", "conversation_analysis_due", repr(exc))
                             except Exception:
                                 pass
-                    if stop_event.is_set():
-                        return
-                    if lane_owner is not None and not renew_owner(
-                        owner_token=lane_owner["owner_token"],
-                        generation=lane_owner["generation"],
-                    ):
-                        stop_event.set()
-                        return
-                    try:
-                        process_due_analysis(limit=1)
-                    except Exception as exc:
-                        _raise_disconnected_database(exc, lane="analysis_worker")
+                        if stop_event.is_set():
+                            return
+                        if not renew_owner(
+                            owner_token=lane_owner["owner_token"],
+                            generation=lane_owner["generation"],
+                        ):
+                            raise _AnalysisOwnerUnavailable("owner_lost")
                         try:
-                            bot.log("error", "conversation_analysis_due", repr(exc))
+                            event_result = process_due_analysis_events(limit=1)
+                            terminal_rejected = int(event_result.get("rejected", 0) or 0)
+                            terminal_failed = int(event_result.get("failed", 0) or 0)
+                            if terminal_rejected or terminal_failed:
+                                bot.log(
+                                    "error" if terminal_failed else "warning",
+                                    "conversation_analysis_events_terminal",
+                                    f"rejected={terminal_rejected} failed={terminal_failed}",
+                                )
+                        except Exception as exc:
+                            _raise_disconnected_database(exc, lane="analysis_worker")
+                            try:
+                                bot.log("error", "conversation_analysis_events", repr(exc))
+                            except Exception:
+                                pass
+                        if stop_event.is_set():
+                            return
+                        if lane_owner is not None and not renew_owner(
+                            owner_token=lane_owner["owner_token"],
+                            generation=lane_owner["generation"],
+                        ):
+                            raise _AnalysisOwnerUnavailable("owner_lost")
+                        if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
+                            try:
+                                _memory_background_tick()
+                            except Exception as exc:
+                                _raise_disconnected_database(exc, lane="analysis_worker")
+                                try:
+                                    bot.log("error", "memory_background_tick", type(exc).__name__)
+                                except Exception:
+                                    pass
+                            try:
+                                _ad_metadata_background_tick()
+                            except Exception as exc:
+                                _raise_disconnected_database(exc, lane="analysis_worker")
+                                try:
+                                    bot.log("error", "ad_metadata_background_tick", type(exc).__name__)
+                                except Exception:
+                                    pass
+                        if lane_owner is not None and not renew_owner(
+                            owner_token=lane_owner["owner_token"],
+                            generation=lane_owner["generation"],
+                        ):
+                            raise _AnalysisOwnerUnavailable("owner_lost")
+                except _AnalysisOwnerUnavailable as exc:
+                    waiting_reason = str(exc)
+                    if marker is not None:
+                        unbind_owner(marker)
+                        marker = None
+                    lane_owner = None
+                    last_reconcile_at = None
+                except DbCircuitOpen:
+                    iteration_error = "DbCircuitOpen"
+                except Exception as exc:
+                    iteration_error = type(exc).__name__[:80]
+                    if not _database_disconnected(exc, lane="analysis_worker"):
+                        try:
+                            bot.log("error", "conversation_analysis", repr(exc))
                         except Exception:
                             pass
-                    try:
-                        event_result = process_due_analysis_events(limit=1)
-                        terminal_rejected = int(event_result.get("rejected", 0) or 0)
-                        terminal_failed = int(event_result.get("failed", 0) or 0)
-                        if terminal_rejected or terminal_failed:
-                            bot.log(
-                                "error" if terminal_failed else "warning",
-                                "conversation_analysis_events_terminal",
-                                f"rejected={terminal_rejected} failed={terminal_failed}",
-                            )
-                    except Exception as exc:
-                        _raise_disconnected_database(exc, lane="analysis_worker")
-                        try:
-                            bot.log("error", "conversation_analysis_events", repr(exc))
-                        except Exception:
-                            pass
-                    if stop_event.is_set():
-                        return
-                    if lane_owner is not None and not renew_owner(
-                        owner_token=lane_owner["owner_token"],
-                        generation=lane_owner["generation"],
-                    ):
-                        stop_event.set()
-                        return
-                    if not maintenance_status(path=MAINTENANCE_FILE)["active"]:
-                        try:
-                            _memory_background_tick()
-                        except Exception as exc:
-                            _raise_disconnected_database(exc, lane="analysis_worker")
-                            try:
-                                bot.log("error", "memory_background_tick", type(exc).__name__)
-                            except Exception:
-                                pass
-                        try:
-                            _ad_metadata_background_tick()
-                        except Exception as exc:
-                            _raise_disconnected_database(exc, lane="analysis_worker")
-                            try:
-                                bot.log("error", "ad_metadata_background_tick", type(exc).__name__)
-                            except Exception:
-                                pass
-                    if lane_owner is not None and not renew_owner(
-                        owner_token=lane_owner["owner_token"],
-                        generation=lane_owner["generation"],
-                    ):
-                        stop_event.set()
-                        return
-            except DbCircuitOpen:
-                pass
-            except Exception as exc:
-                if _database_disconnected(exc, lane="analysis_worker"):
-                    stop_event.wait(2)
-                    continue
-                try:
-                    bot.log("error", "conversation_analysis", repr(exc))
-                except Exception:
-                    pass
-            finally:
-                close_old_connections()
-        stop_event.wait(5)
+                finally:
+                    close_old_connections()
+            if waiting_reason:
+                # Mark after worker_iteration.finish so healthy coordination
+                # cannot be mistaken for an idle, claim-ready analysis lane.
+                WORKERS.waiting("analysis", reason=waiting_reason)
+            elif iteration_error:
+                WORKERS.finish("analysis", iteration_error)
+            stop_event.wait(5)
+
+    finally:
+        try:
+            if lane_owner is not None:
+                release_owner(owner_token=lane_owner["owner_token"],
+                              generation=lane_owner["generation"])
+        except Exception:
+            # A failed release leaves the normal bounded durable lease; never
+            # clear or steal a successor's generation during shutdown.
+            pass
+        finally:
+            if marker is not None:
+                unbind_owner(marker)
+            close_old_connections()
 
 
 # Прибирання «зависших» інцидентів — housekeeping, а не гарячий шлях: рішення
@@ -2083,13 +2122,6 @@ class Command(BaseCommand):
             self.stdout.write("maintenance active — daemon exit")
             return
         owner = f"{os.getpid()}:{time.time_ns()}"
-        from management.services.ig_analysis_lane import acquire_owner, release_owner
-        lane_owner = acquire_owner(owner_kind="daemon")
-        if not lane_owner:
-            self.stdout.write("analysis lane owner busy — daemon exit")
-            return
-        lane_token = lane_owner["owner_token"]
-        lane_generation = lane_owner["generation"]
         start_sentinel = _restart_sentinel_mtime()
         stop_event = threading.Event()
         WORKERS.reset()
@@ -2161,7 +2193,7 @@ class Command(BaseCommand):
         analysis_worker = threading.Thread(
             name="ig-analysis",
             target=_analysis_worker,
-            args=(stop_event, lane_token, lane_generation),
+            args=(stop_event,),
             daemon=True,
         )
         analysis_worker.start()
@@ -2317,10 +2349,6 @@ class Command(BaseCommand):
                 _CUSTOMER_EXECUTION_POOL = None
                 _drain_background_workers(workers, owner=owner,
                     start_sentinel=start_sentinel, cycle=cycle)
-                try:
-                    release_owner(owner_token=lane_token, generation=lane_generation)
-                except Exception:
-                    pass
                 if shutdown.get("signal"):
                     try:
                         bot.log(

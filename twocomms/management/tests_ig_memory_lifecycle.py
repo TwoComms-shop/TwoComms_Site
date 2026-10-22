@@ -26,8 +26,21 @@ class MemoryInboundLifecycleTests(TransactionTestCase):
         self.addCleanup(self.environment.stop)
 
     def enqueue(self, mid="memory-inbound", text="Хочу футболку L", source="webhook"):
+        received_at = timezone.now()
+        proof = None
+        if source == "poll":
+            from management.services.ig_ingress_source_proof import build_polled_ingress_proof
+            # Simulated validated provider envelope, matching the real poll
+            # admission contract; the source label alone grants no authority.
+            proof = build_polled_ingress_proof(self.settings_row, {
+                "id": mid, "message": text, "created_time": received_at.isoformat(),
+                "from": {"id": self.customer.igsid},
+                "to": {"data": [{"id": self.settings_row.ig_user_id}]},
+            }, conversation_id="memory-fixture-conversation", now=received_at)
+            self.assertTrue(proof)
         return bot.enqueue_inbound(self.settings_row, sender_id=self.customer.igsid, text=text,
-            mid=mid, source=source, received_at=timezone.now(), persistence_only=True)
+            mid=mid, source=source, received_at=received_at,
+            poll_ingress_proof=proof, persistence_only=True)
 
     def test_accepted_inbound_dirty_while_ai_off_and_client_paused_without_generation(self):
         self.customer.bot_paused = True
@@ -58,6 +71,14 @@ class MemoryInboundLifecycleTests(TransactionTestCase):
         self.customer.refresh_from_db()
         source = InstagramBotMessage.objects.get(mid="memory-live-poll")
         self.assertEqual(self.customer.memory_producer_state["dirty"]["message_id"], source.pk)
+
+    def test_unsigned_poll_source_cannot_create_dirty_memory_work(self):
+        self.assertFalse(bot.enqueue_inbound(self.settings_row,
+            sender_id=self.customer.igsid, text="Хочу футболку L", mid="unsigned-poll",
+            source="poll", received_at=timezone.now(), persistence_only=True))
+        self.customer.refresh_from_db()
+        self.assertIsNone(self.customer.memory_dirty_at)
+        self.assertFalse(InstagramBotMessage.objects.filter(mid="unsigned-poll").exists())
 
     @override_settings(IG_REVISION_EXECUTION_ENABLED=False)
     def test_legacy_manager_accepted_source_dirty(self):
@@ -235,7 +256,8 @@ class MemoryDaemonOwnershipTests(TransactionTestCase):
             role="user", source="webhook", status="done", text="L", mid="memory-daemon-source",
             provider_namespace="instagram_login:owner", provider_created_at=timezone.now())
         self.owner_context = owner_scope(lease_seconds=3600)
-        self.assertIsNotNone(self.owner_context.__enter__())
+        self.lane_owner = self.owner_context.__enter__()
+        self.assertIsNotNone(self.lane_owner)
         self.addCleanup(self.owner_context.__exit__, None, None, None)
         self.assertTrue(producer.enqueue_memory_source(self.source.pk).queued)
         self.customer.refresh_from_db()
@@ -268,7 +290,7 @@ class MemoryDaemonOwnershipTests(TransactionTestCase):
             "management.services.bot_conversation_analysis.process_due_analysis", side_effect=lambda **kw: order.append("analysis")), patch(
             "management.services.ig_analysis_events.process_due_analysis_events",
             side_effect=lambda **kw: order.append("events") or {}):
-            daemon._analysis_worker(_BoundedWorkerEvent(cycles=1))
+            daemon._analysis_worker(_BoundedWorkerEvent(cycles=1), self.lane_owner["owner_token"], self.lane_owner["generation"])
         self.assertEqual(order, ["analysis", "events", "memory"])
         memory.assert_called_once_with()
         reconcile.assert_called_once_with(limit=daemon.MEMORY_RECONCILE_BATCH)
@@ -285,7 +307,7 @@ class MemoryDaemonOwnershipTests(TransactionTestCase):
             producer, "reconcile_memory_sources", side_effect=RuntimeError("offline")) as narrative, patch(
             "management.services.bot_conversation_analysis.process_due_analysis"), patch(
             "management.services.ig_analysis_events.process_due_analysis_events", return_value={}):
-            daemon._analysis_worker(_BoundedWorkerEvent(cycles=3))
+            daemon._analysis_worker(_BoundedWorkerEvent(cycles=3), self.lane_owner["owner_token"], self.lane_owner["generation"])
         analysis.assert_called_once_with(limit=daemon.ANALYSIS_RECONCILE_BATCH)
         narrative.assert_called_once_with(limit=daemon.MEMORY_RECONCILE_BATCH)
 

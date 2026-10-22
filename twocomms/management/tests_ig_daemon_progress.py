@@ -67,7 +67,7 @@ from management.services.ig_task_health import (
 
 
 class AnalysisWorkerOwnershipTests(SimpleTestCase):
-    def test_worker_stops_terminally_after_lane_renewal_is_rejected(self):
+    def test_worker_pauses_only_analysis_after_lane_renewal_is_rejected(self):
         class StopEvent:
             def __init__(self):
                 self.stopped = False
@@ -76,7 +76,7 @@ class AnalysisWorkerOwnershipTests(SimpleTestCase):
                 return self.stopped
 
             def set(self):
-                self.stopped = True
+                raise AssertionError("analysis ownership must not stop customer workers")
 
             def wait(self, _seconds):
                 self.stopped = True
@@ -943,8 +943,8 @@ class ReclaimRaceTests(TestCase):
 class DaemonStartupObservabilityTests(SimpleTestCase):
     """ЭА.14 — окно старта наблюдаемо: демон держит lock и уже доказывает живость."""
 
-    # The daemon now acquires the durable analysis-lane owner before startup
-    # reconciliation, so these startup contract tests must permit that read.
+    # Startup reconciliation fixtures share a database, but analysis ownership
+    # is acquired only by the independent worker after startup.
     databases = {"default"}
 
     def setUp(self):
