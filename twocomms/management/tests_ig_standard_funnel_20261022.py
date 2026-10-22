@@ -16,6 +16,7 @@ from management.services.ig_commerce_projection import capture_current_selection
 ACTUAL_REGULAR_XXL_REPLY = ('Got it! I\'ve noted your selection: the "Воля" T-shirt in a regular fit and size XXL. '
     'Let me know if you are ready to proceed or if you need help with anything else!')
 ACTUAL_REGULAR_XXL_SOURCE = 'Please reply in English. Keep my selected Воля T-shirt in regular fit, size XXL. Just confirm this selection for me.'
+ACTUAL_COMMA_REGULAR_XXL_REPLY = 'Great choice! I\'ve noted your selection of the "Воля" T-shirt in a regular fit, size XXL.'
 
 
 @override_settings(IG_REVISION_EXECUTION_ENABLED=False, GOOGLE_INDEXING_ENABLED=False)
@@ -126,6 +127,12 @@ class StandardPhotoRetailFunnelTests(TransactionTestCase):
         self.customer.refresh_from_db()
         self.assertEqual((self.customer.current_product_id, self.customer.current_size), (self.product.pk, 'XXL'))
 
+    def test_actual_comma_configuration_confirmation_is_sent_without_catalog_widening(self):
+        self._actual_selection_confirmation()
+        self._reply(ACTUAL_COMMA_REGULAR_XXL_REPLY)
+        self.customer.refresh_from_db()
+        self.assertEqual((self.customer.current_product_id, self.customer.current_size), (self.product.pk, 'XXL'))
+
     def test_actual_foreign_size_and_fit_are_rejected_before_send(self):
         self._actual_selection_confirmation()
         for index, reply in enumerate((ACTUAL_REGULAR_XXL_REPLY.replace('size XXL', 'size L'),
@@ -150,14 +157,60 @@ class StandardPhotoRetailFunnelTests(TransactionTestCase):
                 result, _, http = self._execute()
                 self.assertNotEqual(result.state, 'completed')
                 self.revision.refresh_from_db()
-                if http.call_count:
-                    self.assertIn(f'{self.source.pk}:{debt}',
-                        self.revision.action_receipts['response_coverage']['remaining'])
+                self.assertEqual(http.call_count, 0)
+                self.assertFalse(self.revision.delivery_effects.exists())
                 self.customer.refresh_from_db()
                 self.assertEqual((self.customer.current_product_id, self.customer.current_size), (self.product.pk, 'XXL'))
 
+    def test_wrong_named_print_is_repaired_before_the_only_send(self):
+        self._actual_selection_confirmation()
+        self.parsed = {'reply_text': ACTUAL_COMMA_REGULAR_XXL_REPLY, 'controls': []}
+        original = self._generate
+        def generate(payload, **kwargs):
+            wrong = {'reply_text': ACTUAL_COMMA_REGULAR_XXL_REPLY.replace('Воля', 'Мрія'), 'controls': []}
+            decision = kwargs['result_validator'](wrong, usage={'_request_inline_count': 0})
+            self.assertFalse(decision.valid)
+            self.assertIn('response_plan_selected_product_mismatch', decision.reason_codes)
+            repaired = kwargs['repair_payload_factory'](payload, wrong, decision.reason_codes)
+            self.assertIsInstance(repaired, dict)
+            return original(repaired, **kwargs)
+        from unittest.mock import patch
+        with patch.object(self, '_generate', side_effect=generate):
+            self._reply(ACTUAL_COMMA_REGULAR_XXL_REPLY)
+        self.assertNotIn('Мрія', json.dumps(self.revision.delivery_effects.get().payload, ensure_ascii=False))
+
 
 class RegularFitAcknowledgementScopeTests(SimpleTestCase):
+    def test_source_only_wishes_continue_through_bare_configuration_lists(self):
+        from management.services.ig_reply_truth import ReplyTruthContext, validate_reply_truth
+        context = ReplyTruthContext(source_chosen_fits=('classic',),
+            source_chosen_sizes=('XXL',), source_chosen_colors=('black',))
+        self.assertEqual((context.allowed_fits, context.allowed_sizes, context.allowed_colors), ((), (), ()))
+        for reply in (ACTUAL_COMMA_REGULAR_XXL_REPLY,
+                'You selected regular fit, size XXL, color black.',
+                'You selected size XXL, regular fit, color black.',
+                'You selected color black, size XXL, regular fit.',
+                'You selected regular fit,size XXL,and color black.',
+                'You selected regular fit — size XXL and color black.'):
+            with self.subTest(reply=reply):
+                self.assertTrue(validate_reply_truth(reply, context=context).valid)
+        for reply in ('You selected regular fit, size L.',
+                'You selected oversize fit, size XXL.',
+                'You selected regular fit, size XXL, color white.',
+                'You selected regular fit, size XXL available.',
+                'You selected regular fit, we have size XXL.',
+                'You selected regular fit, the manager said size XXL.',
+                'You selected regular fit, our model wears size XXL.',
+                'I did not note your selection: regular fit, size XXL.',
+                'You selected no regular fit, size XXL.',
+                "I've noted that you didn't select regular fit, size XXL.",
+                'You selected regular fit, but size XXL is available.',
+                'You selected regular fit; size XXL.',
+                'You selected regular fit. Size XXL.',
+                'You selected regular fit, ' + ', '.join(['size XXL'] * 18) + '.'):
+            with self.subTest(reply=reply):
+                self.assertFalse(validate_reply_truth(reply, context=context).valid)
+
     def test_english_filler_or_manager_deferral_cannot_cover_a_language_only_concern(self):
         from management.services.ig_reply_truth import ReplyTruthContext
         from management.services.ig_response_control import parse_structured_response
@@ -186,6 +239,33 @@ class RegularFitAcknowledgementScopeTests(SimpleTestCase):
         def coverage(text):
             return plan.coverage(parse_structured_response({'reply_text': text, 'controls': []}))
         self.assertEqual(coverage(ACTUAL_REGULAR_XXL_REPLY)['remaining'], [])
+        self.assertEqual(coverage(ACTUAL_COMMA_REGULAR_XXL_REPLY)['remaining'], [])
+        self.assertEqual(plan.validate(parse_structured_response({
+            'reply_text': ACTUAL_COMMA_REGULAR_XXL_REPLY.replace('Воля', 'Мрія'), 'controls': []})),
+            'response_plan_selected_product_mismatch')
+        self.assertEqual(plan.validate(parse_structured_response({
+            'reply_text': "I've noted your selection of the 'Мрія' T-shirt.", 'controls': []})),
+            'response_plan_selected_product_mismatch')
+        from dataclasses import replace
+        wrapped = replace(plan, configuration={**plan.configuration, 'product_title': 'Футболка «Воля»'})
+        self.assertEqual(wrapped.validate(parse_structured_response({
+            'reply_text': ACTUAL_COMMA_REGULAR_XXL_REPLY, 'controls': []})), '')
+        self.assertEqual(wrapped.coverage(parse_structured_response({
+            'reply_text': ACTUAL_COMMA_REGULAR_XXL_REPLY, 'controls': []}))['remaining'], [])
+        for text in ('The price is 900 UAH.', 'You selected size XXL.',
+                'Compared with the "Мрія" T-shirt, the "Воля" T-shirt has this print.',
+                'You selected the "Воля" T-shirt; the "Мрія" T-shirt is a different example.',
+                'You selected the "Воля" T-shirt instead of the "Мрія" T-shirt.',
+                'You selected regular fit like the "Мрія" T-shirt.',
+                'You selected regular fit as shown on the "Мрія" T-shirt.',
+                'You selected the same fit as the "Мрія" T-shirt.',
+                'You selected the "Мрія" T-shirt?',
+                'You did not select the "Мрія" T-shirt.',
+                'The manager wrote “You selected the "Мрія" T-shirt.”',
+                'The manager wrote: You selected the "Мрія" T-shirt.',
+                'I noted the difference between the "Мрія" T-shirt and the "Воля" T-shirt.'):
+            with self.subTest(text=text):
+                self.assertEqual(plan.validate(parse_structured_response({'reply_text': text, 'controls': []})), '')
         self.assertIn('8:info:reply_language', coverage('I will check with our manager.')['remaining'])
         for text in (ACTUAL_REGULAR_XXL_REPLY.replace('Воля', 'Мрія'),
                 'The customer wrote “I noted your selection: the Воля T-shirt.”',

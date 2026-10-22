@@ -153,11 +153,18 @@ def _unquoted_text(text):
 
 
 def _acknowledges_choice(kind, value, text, authority, *, audited=False):
-    from management.services.ig_reply_truth import _claim_sentences, _CUSTOMER_CHOICE_RE, _locally_negated, CORRECTED_REQUIREMENT_RE
+    from management.services.ig_reply_truth import (
+        _claim_sentences, _CUSTOMER_CHOICE_RE, _locally_negated,
+        CORRECTED_REQUIREMENT_RE, _comma_choice_continuation,
+    )
     aliases = CHOICE_ALIASES.get(value, (value,))
     unquoted = _unquoted_text(text)
     for sentence in _claim_sentences(unquoted, ()):
+        cursor = 0
         for clause in re.split(r"[,;]|\b(?:але|но|but)\b", sentence, flags=re.I):
+            clause_start = sentence.find(clause, cursor)
+            clause_end = clause_start + len(clause)
+            cursor = clause_end
             choice = _CUSTOMER_CHOICE_RE.search(clause)
             for alias in aliases:
                 match = re.search(r"(?<!\w)" + re.escape(alias) +
@@ -168,7 +175,8 @@ def _acknowledges_choice(kind, value, text, authority, *, audited=False):
                     continue
                 if audited and CORRECTED_REQUIREMENT_RE.search(clause):
                     return True
-                if not audited and choice and not _locally_negated(clause, choice.start()):
+                if not audited and ((choice and not _locally_negated(clause, choice.start()))
+                    or _comma_choice_continuation(sentence, clause_start, clause_end)):
                     return True
                 canonical = authority.get({"size": "sizes", "fit_option_code": "fits", "color": "colors"}.get(kind, ""), ())
                 if value.casefold() in {str(item).casefold() for item in canonical} and re.search(
@@ -177,8 +185,25 @@ def _acknowledges_choice(kind, value, text, authority, *, audited=False):
     return False
 
 
+_PRODUCT_NAME_QUOTES = re.compile(
+    r'"([^"\n]{1,240})"|«([^»\n]{1,240})»|“([^”\n]{1,240})”|‘([^’\n]{1,240})’|'
+    r"(?<!\w)'((?:[^'\n]|(?<=\w)'(?=\w)){1,240})'(?!\w)")
+_PRODUCT_GARMENT_NOUN = r'(?:t[- ]?shirts?|hoodies?|sweatshirts?|футболк\w*|худі|худи|світшот\w*|свитшот\w*)'
+
+
 def _acknowledges_product(title, text):
     from management.services.ig_reply_truth import _CUSTOMER_CHOICE_RE, _claim_sentences
+    # A canonical label may include its garment noun around one literal name.
+    # Accept that captured inner identity only as a quoted named garment, not
+    # as an unquoted color/style keyword or a manufactured translation.
+    embedded = list(_PRODUCT_NAME_QUOTES.finditer(title))
+    if len(embedded) == 1:
+        name = next(value for value in embedded[0].groups() if value is not None)
+        literal = r'["\'«“‘]' + re.escape(name) + r'["\'»”’]'
+        garment = _PRODUCT_GARMENT_NOUN
+        if (re.search(literal + r'\s*' + garment + r'\b|\b' + garment + r'\s*' + literal, text, re.I)
+            and _acknowledges_product(name, text)):
+            return True
     # Remove whole reported utterances before splitting sentences, so an
     # opening quote in an earlier sentence cannot be lost. Only the exact
     # selected title can be unwrapped inside an otherwise own acknowledgement.
@@ -195,6 +220,70 @@ def _acknowledges_product(title, text):
             return True
         if re.match(r"(?:для\s+(?:моделі|модели)|for\s+)", sentence, re.I):
             return True
+    return False
+
+
+def _named_selected_product_conflict(plan, text):
+    """Reject an own named-garment substitution for one fresh proven SKU.
+
+    Titles are identity only. Generic facts need no repeated name; ambiguous
+    carts, comparisons and reported/negated utterances grant no new identity.
+    """
+    product_id = plan.configuration.get("product_id")
+    proof = plan.evidence.get("product_id") or {}
+    source_id = proof.get("source_message_id")
+    title = str(plan.configuration.get("product_title") or "")
+    if (plan.line_plans or type(product_id) is not int or product_id <= 0
+        or plan.choices.get("product_id") != product_id or type(source_id) is not int or source_id <= 0
+        or not title or len(text) > 64000 or not any(row["kind"] == "product_id"
+            and row.get("source_message_id") == source_id for row in plan.obligations)):
+        return False
+    from management.services.ig_reply_truth import _CUSTOMER_CHOICE_RE, _claim_sentences
+
+    quoted = _PRODUCT_NAME_QUOTES
+    garment = _PRODUCT_GARMENT_NOUN
+    normalize = lambda value: " ".join(str(value).casefold().split())
+    allowed = {normalize(title)}
+    allowed.update(normalize(next(value for value in match.groups() if value is not None))
+        for match in quoted.finditer(title))
+    names = {}
+
+    def mask(match):
+        name = next(value for value in match.groups() if value is not None)
+        if (len(names) >= 16 or not (re.match(r"\s*" + garment + r"\b", text[match.end():], re.I)
+            or re.search(r"\b" + garment + r"\s*$", text[:match.start()], re.I))):
+            return match.group(0)
+        marker = f"twc_named_garment_{len(names)}"
+        names[marker] = name
+        return marker
+
+    own = _unquoted_text(quoted.sub(mask, text))
+    clauses = (clause for sentence in _claim_sentences(own, ())
+        for clause in re.split(r"[,;]|\b(?:але|но|but|while|whereas)\b", sentence, flags=re.I))
+    for clause in clauses:
+        for marker in re.finditer(r"\btwc_named_garment_\d+\b", clause):
+            name = names.get(marker.group(0))
+            if name is None or normalize(name) in allowed:
+                continue
+            choices = list(_CUSTOMER_CHOICE_RE.finditer(clause[:marker.start()]))
+            if not choices:
+                continue
+            choice = choices[-1]
+            between = clause[choice.end():marker.start()]
+            if (re.search(r"\btwc_named_garment_\d+\b|\b(?:could|may|might|would)\b", between, re.I)
+                or (choice.group(0).casefold() in {"noted", "recorded"}
+                    and not re.match(r"\s+your\s+(?:selection|choice|preference)\b", between, re.I))):
+                continue
+            # The named garment must be the selected object. A fit/size or
+            # comparison/example bridge does not select the example's print.
+            bridge = re.sub(r"^\s+your\s+(?:selection|choice|preference)\b", "", between, flags=re.I)
+            if not re.fullmatch(r"[\s:=–—-]*(?:(?:of|for|the|a|an|цю|цей|це|эту|этот|эта|" + garment
+                + r")\b[\s:=–—-]*)*", bridge, re.I):
+                continue
+            rendered = re.sub(r"\btwc_named_garment_\d+\b",
+                lambda found: '"' + names[found.group(0)] + '"' if found.group(0) in names else found.group(0), clause)
+            if _acknowledges_product(name, rendered):
+                return True
     return False
 
 
@@ -1105,6 +1194,8 @@ class ResponsePlan:
     def validate(self, response):
         if self.plan_gap:
             return self.plan_gap
+        if _named_selected_product_conflict(self, response.reply_text):
+            return "response_plan_selected_product_mismatch"
         business_context = self.business_context or ({"case_kind": "collaboration_review"}
             if any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())) else {})
         business_reason = _business_approval_reason(response, business_context)

@@ -849,6 +849,54 @@ def _configuration_axis_value(axis: str, value) -> str:
     return _normalize(value)
 
 
+def _comma_choice_continuation(sentence, clause_start, clause_end):
+    """Carry a wish only through bare comma-separated configuration items.
+
+    Source wishes authorize neither another speaker's statement nor stock.
+    Existing axis parsers identify list items; leftover subjects/predicates,
+    hard clause boundaries and negated/reported introductions end this scope.
+    """
+    if not clause_start or sentence[clause_start - 1] != ",":
+        return False
+    # Only a short configuration list can extend a marker. Bound scanning
+    # independently of the maximum model-response size and number of claims.
+    if clause_end > 4096 or clause_end - clause_start > 512:
+        return False
+    pieces = sentence[:clause_start - 1].split(",", 16)
+    if len(pieces) > 16:
+        return False
+
+    def item_only(text):
+        spans = [found.span() for pattern in (_SIZE_RE, _FIT_RE, _COLOR_RE)
+            for found in pattern.finditer(text) if _positive_configuration_value(text, found)]
+        if not spans:
+            return False
+        remainder = list(text)
+        for start, end in spans:
+            remainder[start:end] = " " * (end - start)
+        return bool(re.fullmatch(r"\s*(?:(?:and|the|a|an|та|і|и)\s*)*", "".join(remainder), re.I))
+
+    if not item_only(sentence[clause_start:clause_end]):
+        return False
+    for index in range(len(pieces) - 1, -1, -1):
+        head = pieces[index]
+        choice = _CUSTOMER_CHOICE_RE.search(head)
+        if choice:
+            prefix = head[:choice.start()].strip()
+            if prefix and not re.fullmatch(
+                r"(?:i(?:['’]ve)?|we(?:['’]ve)?|я|ми|мы)(?:\s+have)?(?:\s+just)?|(?:as\s+)?you|as", prefix, re.I):
+                return False
+            if (_locally_negated(head, choice.start()) or re.search(
+                r"\b(?:не|ні|not|no|never|(?:do|does|did|has|have|had|is|are|was|were|ca|wo|could|would|should|must|need)n['’]t)\b",
+                _QUOTED_SPAN_RE.sub(" ", head), re.I) or re.search(
+                r";|\b(?:але|но|but|and\s+we|і\s+ми|и\s+мы)\b", head, re.I)):
+                return False
+            return all(item_only(piece) for piece in pieces[index + 1:])
+        if not item_only(head):
+            return False
+    return False
+
+
 def _is_qualified_standard_dispatch_timing(
     sentence: str,
     timing: str,
@@ -1736,7 +1784,10 @@ def validate_reply_truth(
                     effective.update(_configuration_axis_value(axis, row[1]) for row in context.agreement_choices[:80]
                         if isinstance(row, (tuple, list)) and len(row) == 3 and row[0] == axis
                         and isinstance(row[1], str) and type(row[2]) is int and row[2] > 0)
-                if not _has_positive_claim(_AVAILABILITY_RE, clause) and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause) and _CUSTOMER_CHOICE_RE.search(clause):
+                if (not _has_positive_claim(_AVAILABILITY_RE, clause)
+                    and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
+                    and (_CUSTOMER_CHOICE_RE.search(clause)
+                        or _comma_choice_continuation(sentence, clause_start, clause_end))):
                     effective.update(_configuration_axis_value(axis, value) for value in source_choices)
                 if (not _has_positive_claim(_AVAILABILITY_RE, clause)
                     and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
