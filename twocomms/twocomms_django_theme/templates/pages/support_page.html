@@ -229,11 +229,11 @@
               <div class="support-size-guide-copy">
                 <div class="support-size-grid-meta">{{ block.eyebrow }}</div>
                 <h3 class="support-size-grid-title">{{ block.title }}</h3>
-                {% if block.intro %}
+                {% if block.intro and block.rows or block.intro and block.image_url %}
                   <p class="support-size-grid-copy">{{ block.intro }}</p>
                 {% endif %}
 
-                {% if block.legend %}
+                {% if block.legend and block.rows or block.legend and block.image_url %}
                   <div class="support-guide-legend">
                     {% for item in block.legend %}
                       <div class="support-guide-legend-item">
@@ -274,13 +274,17 @@
 
               {% if block.notes %}
                 <div class="support-guide-notes">
+                  {% if block.profile_key == 'hoodie' and not block.rows and not block.image_url %}
+                    <div class="support-guide-note">{% trans "Для цього худі ще немає підтверджених числових замірів. Напишіть свій зріст і вагу — допоможемо з вибором." %}</div>
+                  {% else %}
                   {% for note in block.notes %}
                     <div class="support-guide-note">{{ note }}</div>
                   {% endfor %}
+                  {% endif %}
                 </div>
               {% endif %}
 
-              {% if block.fit_notes %}
+              {% if block.fit_notes and block.rows or block.fit_notes and block.image_url %}
                 <div class="support-guide-fit">
                   <div class="support-guide-fit-title">{% trans 'Поради по посадці' %}</div>
                   <ul class="support-bullet-list support-bullet-list--compact">

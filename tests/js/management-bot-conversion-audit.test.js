@@ -155,8 +155,8 @@ test('viewing a historical purchase cannot relabel current readiness or reasons 
   detail.journey = { viewed_episode: { conversion_audit: { state: 'historical', fresh: false, episode_id: 2, data: {} } } };
   h.renderConversionAudit(root, detail);
   const potential = h.analysisPotentialForDetail(detail);
-  assert.match(text(root), /Історична покупка/);
-  assert.match(text(root), /Розбір покупки #2/);
+  assert.match(text(root), /Попереднє звернення/);
+  assert.match(text(root), /Розбір звернення #2/);
   assert.doesNotMatch(text(root), /CURRENT_PURCHASE_REASON|CURRENT_QUOTE/);
   assert.equal(h.analysisReadinessValue(potential), null);
   assert.equal(potential.confidence, null);
@@ -229,8 +229,8 @@ test('aggregate report separates bounded page coverage from total window and cus
     pagination: { has_more: true, limit: 50 },
     scope: { since: '<script>date</script>', until_exclusive: '2026-10-23', maximum_days: 31, window_bounded: true },
   } });
-  assert.match(html, /Покупки у всьому вікні спостереження<\/td><td>120/);
-  assert.match(html, /Оглянуто на цій сторінці<\/td><td>50/);
+  assert.match(html, /Комерційні звернення у вікні спостереження<\/td><td>120/);
+  assert.match(html, /Оглянуто звернень на цій сторінці<\/td><td>50/);
   assert.match(html, /усі причини, стани й оплати стосуються лише оглянутої сторінки/);
   assert.match(html, /Зі слів клієнта/);
   assert.match(html, /Можливе пояснення/);

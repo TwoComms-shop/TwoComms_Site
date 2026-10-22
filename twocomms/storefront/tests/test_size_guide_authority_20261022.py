@@ -163,12 +163,15 @@ class HoodieSizeGuideAuthorityTests(SimpleTestCase):
 
     def test_public_template_renders_missing_chart_disclosure_without_empty_table(self):
         self.grid.guide_data = {}
+        self.grid.description = "Заміри зняті з виробу. Порівнюйте їх зі своїм худі, яке вже добре сидить по корпусу."
         guide = self.public()
         html = render_to_string("pages/support_page.html", {"page": {},
                                 "size_guide_blocks": {"blocks": [guide], "extra_visuals": []}})
         self.assertNotIn('class="support-table"', html)
         self.assertNotIn("Confirmed guides", html)
         self.assertIn("підтверджених числових замірів", html)
+        self.assertNotIn(self.grid.description, html)
+        self.assertNotIn(str(guide["intro"]), html)
 
 
 class TshirtAdvisorApplicabilityTests(SimpleTestCase):
@@ -209,7 +212,8 @@ class TshirtAdvisorPdpApplicabilityTests(TestCase):
         product = Product.objects.create(title="T-shirt print on garment", slug="advisor-applicability",
                                          category=category, catalog=catalog, price=1000, status="published")
         ProductFitOption.objects.create(product=product, code=fit, label=fit, is_active=True, is_default=True)
-        grid = SizeGrid.objects.create(name="Explicit measured grid", catalog=catalog, guide_data={
+        grid = SizeGrid.objects.create(name="Explicit measured grid", catalog=catalog,
+            description="Заміри зняті з виробу. Порівнюйте їх зі своїм худі, яке вже добре сидить по корпусу.", guide_data={
             "profile_key": "hoodie" if category_slug == "hoodie" else "basic_tshirt",
             "columns": [{"key": "size", "label": "Size"}, {"key": "length", "label": "Length (cm)"}],
             "rows": [{"size": "M", "length": "99"}],
@@ -218,11 +222,32 @@ class TshirtAdvisorPdpApplicabilityTests(TestCase):
         return self.client.get(reverse("product", kwargs={"slug": product.slug}), secure=True)
 
     def test_hoodie_shared_tshirt_catalog_never_renders_tshirt_calculator(self):
+        from storefront.models import Product, SizeGrid
+        from django.core.cache import cache
+
         response = self.pdp("hoodie", "oversize")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["size_grid_comparison"])
         self.assertFalse(response.context["size_advisor_enabled"])
         self.assertNotContains(response, "data-size-advisor-form")
+        self.assertContains(response, 'class="tc-size-table"')
+        grid = SizeGrid.objects.get()
+        Product.objects.update(size_grid=grid)
+        cache.clear()
+        # Exercise the direct-guide fallback used by older persisted products.
+        with patch("product_catalog.size_grid_services.build_size_grid_comparison", return_value=[]):
+            response = self.client.get(reverse("product", kwargs={"slug": "advisor-applicability"}), secure=True)
+            self.assertContains(response, grid.description)
+            self.assertContains(response, 'class="tc-size-table"')
+            # A persisted legacy seed does not lend that same caption authority.
+            grid.guide_data = _legacy_hoodie_seed_fixture()
+            grid.save(update_fields=["guide_data"])
+            cache.clear()
+            response = self.client.get(reverse("product", kwargs={"slug": "advisor-applicability"}), secure=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, grid.description)
+            self.assertNotContains(response, 'class="tc-size-table"')
+            self.assertContains(response, "підтверджених числових замірів")
 
     def test_normal_tshirt_keeps_its_calculator(self):
         response = self.pdp("tshirts", "classic")

@@ -5,9 +5,9 @@
       <span class="tc-guide-eyebrow">{% trans "Посадка та розміри" %}</span>
       <h2 class="tc-guide-title" id="size-guide-title-{{ product.id }}">{% trans "Знайдіть свою посадку" %}</h2>
     </div>
-    <p class="tc-muted-copy tc-size-comparison__lead">
+    {% if size_grid_comparison.0.guide.rows or size_grid_comparison.0.guide.image_url %}<p class="tc-muted-copy tc-size-comparison__lead">
       {{ size_grid_comparison.0.guide.comparison_intro }}
-    </p>
+    </p>{% endif %}
   </div>
 
   <div class="tc-size-guide-switch{% if not size_advisor_enabled %} tc-size-guide-switch--guides-only{% endif %}" role="tablist" aria-label="{% trans 'Розмірні сітки' %}">

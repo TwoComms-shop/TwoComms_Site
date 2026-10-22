@@ -13,6 +13,10 @@ from management import tests_ig_revision_live as live_fixtures
 from management.models import IgFollowUpTask
 from management.services.ig_commerce_projection import capture_current_selection_lines
 
+ACTUAL_REGULAR_XXL_REPLY = ('Got it! I\'ve noted your selection: the "Воля" T-shirt in a regular fit and size XXL. '
+    'Let me know if you are ready to proceed or if you need help with anything else!')
+ACTUAL_REGULAR_XXL_SOURCE = 'Please reply in English. Keep my selected Воля T-shirt in regular fit, size XXL. Just confirm this selection for me.'
+
 
 @override_settings(IG_REVISION_EXECUTION_ENABLED=False, GOOGLE_INDEXING_ENABLED=False)
 class StandardPhotoRetailFunnelTests(TransactionTestCase):
@@ -108,8 +112,119 @@ class StandardPhotoRetailFunnelTests(TransactionTestCase):
         self._reply('You selected regular fit. Which size do you need?',
             [{'kind': 'product', 'value': str(self.product.pk)}, {'kind': 'fit', 'value': 'classic'}])
 
+    def _actual_selection_confirmation(self):
+        self.product.title = 'Воля'
+        self.product.save(update_fields=['title'])
+        self._select_then_size(fit='classic', fit_text='I prefer regular fit.', size_texts=('Size 2XL',),
+            fit_reply='You selected regular fit. Which size do you need?',
+            size_reply='You selected size XXL and regular fit.')
+        self._fresh(ACTUAL_REGULAR_XXL_SOURCE)
+
+    def test_actual_english_fit_and_size_confirmation_is_sent_without_controls(self):
+        self._actual_selection_confirmation()
+        self._reply(ACTUAL_REGULAR_XXL_REPLY)
+        self.customer.refresh_from_db()
+        self.assertEqual((self.customer.current_product_id, self.customer.current_size), (self.product.pk, 'XXL'))
+
+    def test_actual_foreign_size_and_fit_are_rejected_before_send(self):
+        self._actual_selection_confirmation()
+        for index, reply in enumerate((ACTUAL_REGULAR_XXL_REPLY.replace('size XXL', 'size L'),
+                ACTUAL_REGULAR_XXL_REPLY.replace('regular fit', 'oversize fit'))):
+            with self.subTest(reply=reply):
+                if index:
+                    self._fresh(ACTUAL_REGULAR_XXL_SOURCE)
+                self.parsed = {'reply_text': reply, 'controls': []}
+                result, _, http = self._execute()
+                self.assertEqual(result.state, 'blocked')
+                self.assertEqual(http.call_count, 0)
+                self.assertFalse(self.revision.delivery_effects.exists())
+
+    def test_actual_wrong_title_or_reply_language_never_completes_confirmation(self):
+        self._actual_selection_confirmation()
+        for index, (reply, debt) in enumerate(((ACTUAL_REGULAR_XXL_REPLY.replace('Воля', 'Мрія'), 'product_id'),
+                ('Я записала ваш выбор: футболка «Воля», классический крой и размер XXL. Если нужна помощь, напишите нам.', 'info:reply_language'))):
+            with self.subTest(debt=debt):
+                if index:
+                    self._fresh(ACTUAL_REGULAR_XXL_SOURCE)
+                self.parsed = {'reply_text': reply, 'controls': []}
+                result, _, http = self._execute()
+                self.assertNotEqual(result.state, 'completed')
+                self.revision.refresh_from_db()
+                if http.call_count:
+                    self.assertIn(f'{self.source.pk}:{debt}',
+                        self.revision.action_receipts['response_coverage']['remaining'])
+                self.customer.refresh_from_db()
+                self.assertEqual((self.customer.current_product_id, self.customer.current_size), (self.product.pk, 'XXL'))
+
 
 class RegularFitAcknowledgementScopeTests(SimpleTestCase):
+    def test_english_filler_or_manager_deferral_cannot_cover_a_language_only_concern(self):
+        from management.services.ig_reply_truth import ReplyTruthContext
+        from management.services.ig_response_control import parse_structured_response
+        from management.services.ig_response_plan import build_response_plan
+        for question in ('Do you speak English?', 'sorry, I dont speak the language'):
+            plan = build_response_plan(preferences={}, readiness={}, context=ReplyTruthContext(),
+                sources=[{'message_id': 8, 'role': 'user', 'text': question}])
+            for reply in ('I will check with our manager.', 'Hello! How can I help?',
+                    'Thank you for your message. We will review your request.'):
+                with self.subTest(question=question, reply=reply):
+                    self.assertIn('8:info:reply_language', plan.coverage(parse_structured_response(
+                        {'reply_text': reply, 'controls': []}))['remaining'])
+            self.assertEqual(plan.coverage(parse_structured_response(
+                {'reply_text': 'Yes, I can reply in English.', 'controls': []}))['remaining'], [])
+
+    def test_exact_quoted_selected_title_and_english_prose_cover_their_own_obligations(self):
+        from management.services.ig_reply_truth import ReplyTruthContext
+        from management.services.ig_response_control import parse_structured_response
+        from management.services.ig_response_plan import build_response_plan
+        values = {'product_id': 55, 'fit_option_code': 'classic', 'size': 'XXL', 'garment_type': 'tshirt'}
+        plan = build_response_plan(preferences={'values': values,
+            'evidence': {key: {'source_message_id': 8} for key in values}},
+            readiness={'has_product': True, 'product': {'id': 55, 'title': 'Воля'}, 'missing': []},
+            context=ReplyTruthContext(), sources=[{'message_id': 8, 'role': 'user',
+                'text': 'Please reply in English. Keep my selected Воля T-shirt in regular fit, size XXL. Just confirm this selection for me.'}])
+        def coverage(text):
+            return plan.coverage(parse_structured_response({'reply_text': text, 'controls': []}))
+        self.assertEqual(coverage(ACTUAL_REGULAR_XXL_REPLY)['remaining'], [])
+        self.assertIn('8:info:reply_language', coverage('I will check with our manager.')['remaining'])
+        for text in (ACTUAL_REGULAR_XXL_REPLY.replace('Воля', 'Мрія'),
+                'The customer wrote “I noted your selection: the Воля T-shirt.”',
+                'The customer wrote “Please confirm. I noted your selection: the "Воля" T-shirt.”',
+                'The customer wrote: I noted your selection: the "Воля" T-shirt.',
+                'The manager said: I noted your selection: the "Воля" T-shirt.',
+                'The bot wrote: I noted your selection: the "Воля" T-shirt.',
+                'The assistant said: I noted your selection: the "Воля" T-shirt.',
+                'I did not note your selection of the "Воля" T-shirt.'):
+            with self.subTest(text=text):
+                self.assertIn('8:product_id', coverage(text)['remaining'])
+        self.assertIn('8:info:reply_language', coverage(
+            'Я записала ваш выбор: футболка «Воля», классический крой и размер XXL. Если нужна помощь, напишите нам.')['remaining'])
+
+    def test_actual_fit_and_size_sentence_uses_fit_and_size_authority_independently(self):
+        from management.services.ig_reply_truth import ReplyTruthContext, validate_reply_truth
+        context = ReplyTruthContext(allowed_fits=('regular',), allowed_sizes=('XXL',),
+            source_chosen_fits=('regular',), source_chosen_sizes=('XXL',))
+        self.assertTrue(validate_reply_truth(ACTUAL_REGULAR_XXL_REPLY, context=context).valid)
+        for reply in ('You selected regular fit and size XXL.',
+                'You selected regular fit and the size is XXL.',
+                'You selected regular fit in XXL.', 'You selected regular fit   in XXL.',
+                'You selected regular fit in size XXL.',
+                'You selected regular fit, size XXL.',
+                'You selected regular fit for this T-shirt, size XXL.',
+                'You selected regular fit with size XXL.',
+                'You selected regular fit of this T-shirt, size XXL.',
+                'You selected the regular fit version, size XXL.'):
+            with self.subTest(reply=reply):
+                self.assertTrue(validate_reply_truth(reply, context=context).valid)
+        for reply in (ACTUAL_REGULAR_XXL_REPLY.replace('regular fit', 'oversize fit'),
+                ACTUAL_REGULAR_XXL_REPLY.replace('size XXL', 'size L'),
+                ACTUAL_REGULAR_XXL_REPLY.replace('regular fit', 'mystery fit'),
+                'You selected fit: mystery and size XXL.', 'You selected regular fit: slim and size XXL.',
+                'You selected regular fit in L.', 'You selected regular fit   in L.',
+                'You selected oversize fit in XXL.'):
+            with self.subTest(reply=reply):
+                self.assertIn('configuration_mismatch', validate_reply_truth(reply, context=context).reasons)
+
     def test_regular_alias_does_not_cover_negated_quoted_or_different_fit(self):
         from management.services.ig_reply_truth import ReplyTruthContext
         from management.services.ig_response_control import parse_structured_response

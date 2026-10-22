@@ -650,12 +650,12 @@ CSS rules на mobile FCP/LCP window.
               <div>
                 <div class="tc-guide-eyebrow">{{ resolved_size_guide.eyebrow|default:"Fit guide" }}</div>
                 <h2 class="tc-guide-title">{{ resolved_size_guide.title }}</h2>
-                {% if resolved_size_guide.intro %}
+                {% if resolved_size_guide.intro and resolved_size_guide.rows or resolved_size_guide.intro and resolved_size_guide.image_url %}
                   <p class="tc-muted-copy">{{ resolved_size_guide.intro }}</p>
                 {% endif %}
               </div>
 
-              {% if resolved_size_guide.legend %}
+              {% if resolved_size_guide.legend and resolved_size_guide.rows or resolved_size_guide.legend and resolved_size_guide.image_url %}
                 <div class="tc-guide-notes">
                   {% for item in resolved_size_guide.legend %}
                     <div><strong>{{ item.label }}</strong>{% if item.description %} {{ item.description }}{% endif %}</div>
@@ -703,13 +703,17 @@ CSS rules на mobile FCP/LCP window.
 
               {% if resolved_size_guide.notes %}
                 <div class="tc-check-list">
+                  {% if resolved_size_guide.profile_key == 'hoodie' and not resolved_size_guide.rows and not resolved_size_guide.image_url %}
+                    <div>{% trans "Для цього худі ще немає підтверджених числових замірів. Напишіть свій зріст і вагу — допоможемо з вибором." %}</div>
+                  {% else %}
                   {% for note in resolved_size_guide.notes %}
                     <div>{{ note }}</div>
                   {% endfor %}
+                  {% endif %}
                 </div>
               {% endif %}
 
-              {% if resolved_size_guide.fit_notes %}
+              {% if resolved_size_guide.fit_notes and resolved_size_guide.rows or resolved_size_guide.fit_notes and resolved_size_guide.image_url %}
                 <div class="tc-guide-subtitle">{% trans 'Рекомендації по посадці' %}</div>
                 <div class="tc-check-list">
                   {% for note in resolved_size_guide.fit_notes %}

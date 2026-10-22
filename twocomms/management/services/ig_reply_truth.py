@@ -648,14 +648,15 @@ _SELECTION_WORDS = (
 )
 _SIZE_RE = re.compile(
     rf"\b(?:(?P<selected>{_SELECTION_WORDS})\s+)?"
-    r"(?:розмір|размер|size)(?:\s+requirement(?:\s+is)?)?\s*(?P<separator>[:=–—-])?\s*[\"'«“]?"
+    r"(?:розмір|размер|size|fit\s+in(?:\s+size)?)(?:\s+requirement)?(?:\s+is)?\s*(?P<separator>[:=–—-])?\s*[\"'«“]?"
     r"(?P<value>[A-Za-z0-9_-]{1,16})\b",
     re.I,
 )
 _FIT_RE = re.compile(
-    rf"\b(?:(?P<selected>{_SELECTION_WORDS})\s+)?"
+    r"\b(?:(?P<descriptive_fit>regular|classic|oversize|slim|relaxed|loose|fitted|standard)\s+fit\b(?!\s*[:=-])|"
+    rf"(?:(?P<selected>{_SELECTION_WORDS})\s+)?"
     r"(?:крій|крой|fit)\s*(?P<separator>[:=-])?\s*"
-    r"(?P<value>[A-Za-z0-9_-]{1,32})\b",
+    r"(?P<value>[A-Za-z0-9_-]{1,32})\b)",
     re.I,
 )
 _COLOR_RE = re.compile(
@@ -807,6 +808,11 @@ def _add(reasons: list[str], reason: str) -> None:
 
 def _positive_configuration_value(sentence: str, match: re.Match) -> str:
     """Return an asserted selection, excluding descriptive label phrases."""
+    if match.re is _FIT_RE and match.group("descriptive_fit"):
+        # In a noun phrase the adjective names the fit, independently of the
+        # conjunction, preposition or noun following it. Explicit fit labels
+        # and separators remain on the value branch and retain their checks.
+        return match.group("descriptive_fit")
     claimed = str(match.group("value") or "")
     if _normalize(claimed) in _NON_CONFIGURATION_VALUES:
         return ""

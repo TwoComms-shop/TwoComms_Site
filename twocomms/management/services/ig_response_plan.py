@@ -179,13 +179,19 @@ def _acknowledges_choice(kind, value, text, authority, *, audited=False):
 
 def _acknowledges_product(title, text):
     from management.services.ig_reply_truth import _CUSTOMER_CHOICE_RE, _claim_sentences
-    for sentence in _claim_sentences(text, ()):
+    # Remove whole reported utterances before splitting sentences, so an
+    # opening quote in an earlier sentence cannot be lost. Only the exact
+    # selected title can be unwrapped inside an otherwise own acknowledgement.
+    identity = re.sub(r'["\'«“‘]' + re.escape(title) + r'["\'»”’]',
+        lambda _match: title, text, flags=re.I)
+    for sentence in _claim_sentences(_unquoted_text(identity), ()):
         if title.casefold() not in sentence.casefold():
             continue
         if _NEGATED_CHOICE_RE.search(sentence):
             continue
-        unquoted = _unquoted_text(sentence)
-        if title.casefold() in unquoted.casefold() and _CUSTOMER_CHOICE_RE.search(unquoted):
+        if re.search(r'\b(?:customer|client|manager|bot|assistant|клієнт\w*|клиент\w*|менеджер\w*|бот\w*|асистент\w*|помічниц\w*|помощниц\w*)\s+(?:wrote|said|asked|напис\w*|сказ\w*|запит\w*|спрос\w*)\b', sentence, re.I):
+            continue
+        if _CUSTOMER_CHOICE_RE.search(sentence):
             return True
         if re.match(r"(?:для\s+(?:моделі|модели)|for\s+)", sentence, re.I):
             return True
@@ -711,6 +717,35 @@ def _topic_covered(kind, response, plan, *, source_message_id=None):
         return pending_status_answer_covered(plan.pending_questions, response.reply_text,
             source_message_id=source_message_id)
     if kind == "info:reply_language":
+        from management.services.ig_reply_language import _observed_language
+        product_id = plan.configuration.get("product_id")
+        proof = plan.evidence.get("product_id") or {}
+        names = (str(plan.configuration["product_title"]),) if (
+            product_id and str(plan.choices.get("product_id")) == str(product_id)
+            and type(proof.get("source_message_id")) is int
+            and plan.configuration.get("product_title")) else ()
+        if _observed_language(response.reply_text, non_language_names=names) == "en":
+            # Answering another current request in English demonstrates that
+            # we can continue in it. English filler or a generic deferral alone
+            # does not answer a standalone communication concern.
+            checked = set()
+            for obligation in plan.obligations:
+                other = obligation["kind"]
+                key = (other, obligation.get("source_message_id"))
+                if other == kind or key in checked:
+                    continue
+                checked.add(key)
+                if other == "product_id" and names and _acknowledges_product(names[0], response.reply_text):
+                    return True
+                value = str(plan.choices.get(other) or "")
+                if (other in {"size", "fit_option_code", "color", "quantity", "garment_type"}
+                    and value and _acknowledges_choice(other, value, response.reply_text, plan.authority,
+                        audited=other == "size" and plan._audited_size())):
+                    return True
+                if (other.startswith("info:") and not other.startswith("info:payment")
+                    and _topic_covered(other, response, plan,
+                        source_message_id=obligation.get("source_message_id"))):
+                    return True
         return bool(re.search(r"\b(?:i|we)\s+(?:can|will|shall|(?:am|are)\s+happy\s+to)\s+(?:reply|answer|speak|write|continue)[^.!?\n]{0,25}\benglish\b"
             r"|\b(?:let['’]s|let\s+us)\s+(?:continue|speak|write)[^.!?\n]{0,15}\benglish\b", _unquoted_text(response.reply_text), re.I))
     if kind == "info:presentation" and response.control.get("show_products"):

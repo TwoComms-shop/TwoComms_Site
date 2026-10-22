@@ -3330,7 +3330,7 @@ body.bot-drawer-open{overflow:hidden;}
       if(!audit)return p;
       if(audit.state==='current'&&audit.fresh!==false)return {...p,conversion_audit:audit};
       if(['missing','unobservable'].includes(audit.state||'missing')&&analysisBaselineCurrent(d))return {...p,conversion_audit:audit,baseline_readiness:true};
-      return {...p,conversion_audit:audit,state:audit.state,label:audit.state==='historical'?'Оцінка історичної покупки недоступна':'Оцінка цієї покупки недоступна',fresh:false,confidence:null,evidence:[],evidence_message_ids:[],analyzed_at:audit.analyzed_at};
+      return {...p,conversion_audit:audit,state:audit.state,label:audit.state==='historical'?'Оцінка попереднього звернення недоступна':'Оцінка цього звернення недоступна',fresh:false,confidence:null,evidence:[],evidence_message_ids:[],analyzed_at:audit.analyzed_at};
     }
     function analysisReadinessValue(p){
       if(p?.baseline_readiness===true)return p.probability;
@@ -3343,13 +3343,13 @@ body.bot-drawer-open{overflow:hidden;}
       const block=node('section','bot-context-section');block.dataset.conversionAudit='';
       const title=node('div','bot-context-title');title.appendChild(node('span','','Що відомо про рішення клієнта'));block.appendChild(title);root.appendChild(block);
       const state=audit?.state||'missing';
-      const states={current:'Актуальний розбір цієї покупки',stale:'Розбір потребує оновлення',historical:'Історична покупка · розбір її стану недоступний',missing:'Розбору цієї покупки ще немає',unobservable:'Даних для розбору недостатньо',invalid:'Розбір не пройшов перевірку джерел'};
+      const states={current:'Актуальний розбір цього звернення',stale:'Розбір звернення потребує оновлення',historical:'Попереднє звернення · розбір його стану недоступний',missing:'Розбору цього звернення ще немає',unobservable:'Даних для розбору недостатньо',invalid:'Розбір не пройшов перевірку джерел'};
       block.appendChild(node('p','bot-hint',states[state]||states.unobservable));
       if(audit?.analyzed_at)block.appendChild(node('div','bot-hint','Оновлено '+fmtDateTime(audit.analyzed_at)));
       block.appendChild(node('p','bot-hint','Оцінка готовності AI не є відкаліброваною ймовірністю купівлі. Слова клієнта та можливі пояснення показані окремо від фактів оплати.'));
       const clientId=Number(d.client?.id),episodeId=Number(audit?.episode_id||0);
-      if(Number.isSafeInteger(episodeId)&&episodeId>0)block.appendChild(node('div','bot-hint','Розбір покупки #'+episodeId+' · джерела відкривають точне повідомлення цього клієнта.'));
-      if(!audit||state!=='current'||audit.fresh===false){block.appendChild(node('p','bot-hint','Невідоме не означає нульову готовність або відсутність причини. Припущення іншої покупки сюди не переносяться.'));return;}
+      if(Number.isSafeInteger(episodeId)&&episodeId>0)block.appendChild(node('div','bot-hint','Розбір звернення #'+episodeId+' · джерела відкривають точне повідомлення цього клієнта.'));
+      if(!audit||state!=='current'||audit.fresh===false){block.appendChild(node('p','bot-hint','Невідоме не означає нульову готовність або відсутність причини. Припущення іншого звернення сюди не переносяться.'));return;}
       const appendEvidence=(parent,evidence,label='Джерело')=>{
         (Array.isArray(evidence)?evidence:[]).slice(0,4).forEach(item=>{
           const line=node('div','bot-hint');if(item.quote)line.appendChild(node('span','','«'+String(item.quote)+'» '));
@@ -3376,13 +3376,13 @@ body.bot-drawer-open{overflow:hidden;}
       });
       block.appendChild(node('p','bot-hint',diagnostics.length?'Квитанція надсилання не підтверджує прочитання клієнтом чи якість відповіді.':'Підтверджене надсилання в цьому розборі поки не спостерігається. Це не доказ відсутності відповіді.'));
       const motivationLabels={self:'Для себе',gift:'На подарунок',team:'Для команди',resale:'Для перепродажу',custom:'Індивідуальний друк',unknown:'Мета не визначена'};
-      group('Мета покупки',(Array.isArray(data.motivation)?data.motivation:[]).slice(0,3),(body,item)=>{body.appendChild(node('b','',motivationLabels[item.code]||motivationLabels.unknown));body.appendChild(node('div','bot-hint',item.basis==='customer_stated'?'Зі слів клієнта':item.basis==='hypothesis'?'Можливе пояснення · потребує перевірки':'Підстава невідома'));appendEvidence(body,item.evidence);});
+      group('Мета звернення',(Array.isArray(data.motivation)?data.motivation:[]).slice(0,3),(body,item)=>{body.appendChild(node('b','',motivationLabels[item.code]||motivationLabels.unknown));body.appendChild(node('div','bot-hint',item.basis==='customer_stated'?'Зі слів клієнта':item.basis==='hypothesis'?'Можливе пояснення · потребує перевірки':'Підстава невідома'));appendEvidence(body,item.evidence);});
       group('На чому базується оцінка готовності',(Array.isArray(data.readiness_evidence)?data.readiness_evidence:[]).slice(0,4),(body,item)=>appendEvidence(body,[item]));
       const reasons=(Array.isArray(data.nonconversion_reasons)?data.nonconversion_reasons:[]).slice(0,3);
       const reasonLabels={price:'Ціна',relevance:'Відповідність запиту',product:'Властивості товару',size_fit:'Розмір або посадка',delivery_deadline:'Доставка або строк',payment_friction:'Складність оплати',response_delay:'Очікування відповіді',handoff:'Передача менеджеру',unknown:'Причину не встановлено'};
       const renderReason=(body,item)=>{const row=node('article','bot-deal');row.appendChild(node('b','',reasonLabels[item.code]||reasonLabels.unknown));const confidence={low:'низька',medium:'середня',high:'висока'}[item.confidence];if(confidence)row.appendChild(node('div','bot-hint','Впевненість оцінки: '+confidence));appendEvidence(row,item.evidence);if((item.counterevidence||[]).length){row.appendChild(node('b','','Що не підтверджує це пояснення'));appendEvidence(row,item.counterevidence,'Контекст');}body.appendChild(row);};
       group('Причини зі слів клієнта',reasons.filter(item=>item.basis==='reported_by_customer'),renderReason);
-      block.appendChild(node('p','bot-hint','Причина зі слів клієнта описує його пояснення; причинний вплив на покупку окремо не доведено.'));
+      block.appendChild(node('p','bot-hint','Причина зі слів клієнта описує його пояснення; причинний вплив на рішення клієнта окремо не доведено.'));
       group('Можливі причини · потребують перевірки',reasons.filter(item=>item.basis!=='reported_by_customer'),renderReason);
     }
     function renderAnalysisCard(root,d){
@@ -4722,8 +4722,8 @@ body.bot-drawer-open{overflow:hidden;}
       if(!report||report.status==='unavailable')return '<section class="bot-stats-analysis-card" data-conversion-audit-stats="missing"><h3 class="bot-stats-section-title">Розбір рішень клієнтів</h3><p class="bot-stats-detail-module-meta">Розбори за цей період ще не виміряно або зараз недоступні. Відсутність даних не означає відсутності перешкод.</p></section>';
       const counts=report.counts||{};
       const coverage=[
-        {name:'Покупки у всьому вікні спостереження',value:auditCount(counts.qualifying_episodes)},
-        {name:'Оглянуто на цій сторінці',value:auditCount(counts.page_episodes)},
+        {name:'Комерційні звернення у вікні спостереження',value:auditCount(counts.qualifying_episodes)},
+        {name:'Оглянуто звернень на цій сторінці',value:auditCount(counts.page_episodes)},
         {name:'Актуальні розбори',value:auditCount(counts.observed_audits)},
         {name:'Розбору ще немає',value:auditCount(counts.missing_audit)},
         {name:'Потрібне оновлення',value:auditCount(counts.stale_audit)},
@@ -4739,13 +4739,13 @@ body.bot-drawer-open{overflow:hidden;}
         return rows.length?tableSection(title,rows,[['name','Тема'],['reported','Зі слів клієнта'],['possible','Можливе пояснення']]):'<p class="bot-stats-detail-module-meta">'+esc(title)+': причин ще не встановлено за доступними даними.</p>';
       };
       const page=report.pagination||{};
-      const pageNote=page.has_more?'Показано обмежену сторінку покупок; поза нею є ще записи.':'Показано доступні покупки у вікні спостереження.';
+      const pageNote=page.has_more?'Показано обмежену сторінку звернень; поза нею є ще записи.':'Показано доступні звернення у вікні спостереження.';
       const facts=report.observed_facts||{};
       const factRows=[{name:'Зафіксовані зупинки шляху',value:auditCount(facts.recorded_dropoffs)},{name:'Зупинки без подальшої відповіді',value:auditCount(facts.silence_dropoffs)},{name:'Повернення після зупинки',value:auditCount(facts.recovered_dropoffs)},{name:'Спостережуваний час відповіді',value:facts.reply_latency_status==='observed'&&facts.reply_latency_seconds!==null&&facts.reply_latency_seconds!==undefined?auditCount(facts.reply_latency_seconds)+' с · '+auditCount(facts.reply_latency_sample)+' спостережень':'Не виміряно'}];
       const scope=report.scope||{};
-      const dates=scope.since&&scope.until_exclusive?'Вікно за датою початку покупки: '+fmtDateTime(scope.since)+' — '+fmtDateTime(scope.until_exclusive)+' (кінцева дата не включена).':'Дати вікна спостереження не визначено.';
+      const dates=scope.since&&scope.until_exclusive?'Вікно за датою початку звернення: '+fmtDateTime(scope.since)+' — '+fmtDateTime(scope.until_exclusive)+' (кінцева дата не включена).':'Дати вікна спостереження не визначено.';
       const bounds=scope.window_bounded?' Для цього розбору період обмежено '+auditCount(scope.maximum_days)+' днями.':'';
-      return '<section class="bot-stats-analysis-card" data-conversion-audit-stats="'+esc(report.schema_version||'1')+'"><div class="bot-stats-section-head"><h3 class="bot-stats-section-title">Розбір рішень клієнтів</h3><span class="bot-stats-section-meta">факти та пояснення окремо</span></div><p class="bot-stats-detail-module-meta">Підтверджені покупки вимірюються у звіті вище. Нижче — покриття розборів; усі причини, стани й оплати стосуються лише оглянутої сторінки. Це не конверсія та не доведений вплив причини. Одна покупка може мати кілька пояснень.</p>'+tableSection('Покриття спостереження',coverage,[['name','Що відомо'],['value','Кількість']])+tableSection('Спостережувані факти',factRows,[['name','Подія'],['value','Кількість або час']])+'<p class="bot-stats-detail-module-meta">Мовчання не доводить причину відмови; відсутність підтвердженої покупки ще не означає остаточну втрату.</p>'+renderCauses('no_confirmed_purchase','Підтвердженої покупки поки немає')+renderCauses('confirmed_purchase','Є підтверджена покупка')+'<p class="bot-stats-detail-module-meta">'+esc(pageNote)+' Невідомі значення не замінюються нулями.</p><details class="bot-stats-disclosure" data-stats-disclosure="conversion-audit-limits"><summary>Межі спостереження</summary><p class="bot-stats-detail-module-meta">'+esc(dates+bounds)+' Сторінка впорядкована за останніми покупками, не є випадковою вибіркою та не описує всю аудиторію. Аналіз не віднімає клієнтів без розбору від загальної кількості.</p></details></section>';
+      return '<section class="bot-stats-analysis-card" data-conversion-audit-stats="'+esc(report.schema_version||'1')+'"><div class="bot-stats-section-head"><h3 class="bot-stats-section-title">Розбір рішень клієнтів</h3><span class="bot-stats-section-meta">факти та пояснення окремо</span></div><p class="bot-stats-detail-module-meta">Підтверджені покупки вимірюються у звіті вище. Нижче — покриття розборів; усі причини, стани й оплати стосуються лише оглянутої сторінки. Це не конверсія та не доведений вплив причини. Одне звернення може мати кілька пояснень.</p>'+tableSection('Покриття спостереження',coverage,[['name','Що відомо'],['value','Кількість']])+tableSection('Спостережувані факти',factRows,[['name','Подія'],['value','Кількість або час']])+'<p class="bot-stats-detail-module-meta">Мовчання не доводить причину відмови; відсутність підтвердженої покупки ще не означає остаточну втрату.</p>'+renderCauses('no_confirmed_purchase','Підтвердженої покупки поки немає')+renderCauses('confirmed_purchase','Є підтверджена покупка')+'<p class="bot-stats-detail-module-meta">'+esc(pageNote)+' Невідомі значення не замінюються нулями.</p><details class="bot-stats-disclosure" data-stats-disclosure="conversion-audit-limits"><summary>Межі спостереження</summary><p class="bot-stats-detail-module-meta">'+esc(dates+bounds)+' Сторінка впорядкована за останніми зверненнями, не є випадковою вибіркою та не описує всю аудиторію. Аналіз не вилучає звернення без розбору із загальної кількості.</p></details></section>';
     }
     function renderFollowupEffectiveness(rows){
       if(!(rows||[]).length)return '';
