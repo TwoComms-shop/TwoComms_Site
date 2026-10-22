@@ -62,16 +62,28 @@ class KnowledgeCustomerJourneyQATests(TransactionTestCase):
         self.published_hoodie()
         session = IgCommerceSelectionSession.objects.get(client=self.customer, open_slot=1)
         before = session.lines
-        reply = ("Наші поточні худі: 90% бавовни / 10% поліестеру, близько 320 г/м². "
+        reply = ("Наші поточні худі: 90% бавовни / 10% поліестеру. Щільність залежить від конкретної основи. "
             "Наші поточні худі радимо прати при 30°C за рекомендаціями догляду, без агресивної хімії.")
         result, http = self.answer(["А худі?", "Який склад і щільність?", "А як їх прати?"], reply)
         self.assertEqual(result.state, "completed", result.reasons)
         self.assertEqual(http.call_count, 1)
         self.assertIn("90%", self.prompt)
-        self.assertIn("320", self.prompt)
+        self.assertIn("Щільність залежить від конкретної основи", self.prompt)
+        self.assertNotIn("320 г/м²", self.prompt)
         self.assertEqual(self.revision.action_receipts["response_coverage"]["remaining"], [])
+        from management.models import IgFollowUpTask
+        self.assertFalse(IgFollowUpTask.objects.filter(client=self.customer,
+            reason="revision_case:product_information_review").exists())
         session.refresh_from_db()
         self.assertEqual(session.lines, before)
+
+    def test_hoodie_category_density_cannot_reuse_unconfirmed_320_gsm(self):
+        self.published_hoodie()
+        reply = "Наші поточні худі мають щільність близько 320 г/м²."
+        result, http = self.answer(["Яка щільність ваших худі?"], reply)
+        self.assertTrue(any("unverified_product_material" in decision.reason_codes for decision in self.decisions), result.reasons)
+        http.assert_not_called()
+        self.assertNotIn(reply, self.sent_text)
 
     def test_current_tee_owner_quality_answer_survives_delivery(self):
         self.select_tee()

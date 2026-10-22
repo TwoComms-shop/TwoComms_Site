@@ -66,10 +66,10 @@ class ProductSizeGuideResolverTests(TestCase):
         guide = resolve_product_size_guide(product)
 
         self.assertEqual(guide["source"], "product_override")
-        self.assertEqual(guide["guide_key"], "basic_tshirt")
+        self.assertEqual(guide["guide_key"], "hoodie")
         self.assertEqual(guide["size_grid"].pk, self.override_grid.pk)
-        self.assertEqual([row["size"] for row in guide["rows"]], ["S", "M", "L", "XL", "XXL"])
-        self.assertEqual(guide["rows"][-1]["display_size"], "2XL")
+        self.assertEqual(guide["rows"], [])
+        self.assertEqual(guide["image_url"], "")
 
     def test_catalog_default_uses_first_active_grid_by_order(self):
         SizeGrid.objects.create(
@@ -93,7 +93,8 @@ class ProductSizeGuideResolverTests(TestCase):
         self.assertEqual(guide["source"], "catalog_default")
         self.assertEqual(guide["guide_key"], "hoodie")
         self.assertEqual(guide["size_grid"].pk, self.catalog_default_grid.pk)
-        self.assertEqual(guide["rows"][0]["size"], "XS")
+        self.assertEqual(guide["rows"], [])
+        self.assertIn("підтверджених числових замірів", str(guide["notes"][-1]))
 
     def test_catalog_option_values_define_resolved_sizes_and_display_labels(self):
         option = CatalogOption.objects.create(
@@ -278,6 +279,13 @@ class ProductDetailSizeGuideViewTests(TestCase):
             catalog=self.hoodie_catalog,
             name="Hoodie size guide",
             description="Structured hoodie guide",
+            guide_data={
+                "columns": [{"key": "size", "label": "Розмір"},
+                            {"key": "length", "label": "Length"},
+                            {"key": "width", "label": "Width"}],
+                "rows": [{"size": "M", "length": "99", "width": "88"}],
+                "intro": "Порівняйте заміри зі своїм худі. Заміри виробу в сантиметрах.",
+            },
             is_active=True,
             order=0,
         )

@@ -18,6 +18,47 @@ from management import tests_ig_revision_live as live_fixtures
 
 
 class ReplyTruthSeamTests(SimpleTestCase):
+    def test_configuration_prepositions_are_grammar_and_preserve_the_real_fit(self):
+        context = ReplyTruthContext(allowed_fits=("regular",), source_chosen_fits=("regular",),
+            allowed_sizes=("L",), allowed_colors=("black",))
+        for text in (
+            "You selected regular fit for the «Правил немає» T-shirt. Which size do you need?",
+            "The regular fit with these sleeves is comfortable.",
+            "The fit of the T-shirt is described on its page.",
+            "I can help find a size for your hoodie.",
+            "The color of this print needs no selection change.",
+        ):
+            with self.subTest(text=text):
+                result = validate_reply_truth(text, context=context)
+                self.assertTrue(result.valid, result.reasons)
+        for text in (
+            "You selected oversize fit for the T-shirt.",
+            "The oversize fit with these sleeves is comfortable.",
+            "Fit: for.", "Fit=with.", "Selected fit of the T-shirt.",
+            "Size: for.", "Selected size for the hoodie.",
+            "Color: of.", "Selected color with the print.",
+            "Fit oversize.", "Size XL.", "Color blue.",
+        ):
+            with self.subTest(text=text):
+                self.assertIn("configuration_mismatch", validate_reply_truth(text, context=context).reasons)
+        self.assertIn("configuration_mismatch", validate_reply_truth(
+            "The regular fit for this T-shirt.", context=ReplyTruthContext()).reasons)
+
+    def test_regular_description_matches_only_the_evidenced_classic_fit(self):
+        for actual in ("classic", "regular"):
+            context = ReplyTruthContext(allowed_fits=(actual,), source_chosen_fits=(actual,))
+            for text in ("You selected regular fit for the T-shirt.",
+                         "Fit regular.", "Fit classic."):
+                with self.subTest(actual=actual, text=text):
+                    result = validate_reply_truth(text, context=context)
+                    self.assertTrue(result.valid, result.reasons)
+            for text in ("You selected oversize fit for the T-shirt.", "Fit: unknown."):
+                with self.subTest(actual=actual, text=text):
+                    self.assertIn("configuration_mismatch", validate_reply_truth(text, context=context).reasons)
+        self.assertIn("configuration_mismatch", validate_reply_truth(
+            "You selected regular fit for the hoodie.",
+            context=ReplyTruthContext(allowed_fits=("oversize",), source_chosen_fits=("oversize",))).reasons)
+
     def test_second_person_acceptance_and_candidate_approval_need_hiring_authority(self):
         for text in ("Ви прийняті на роботу.", "Вы приняты на работу.",
                      "Ваша кандидатура схвалена.", "Ваша кандидатура одобрена.",

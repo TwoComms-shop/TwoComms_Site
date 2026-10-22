@@ -102,7 +102,13 @@ function recommendTshirtSize({ height, weight, fit, availableSizes = null } = {}
   const candidates = availabilityProvided ? normalizedAvailable : profile.sizes;
   if (!candidates.length) return { ok: false, error: 'availability' };
 
-  const indexedCandidates = candidates.map((size) => ({ size, index: profile.sizes.indexOf(size) }));
+  // Availability must not turn a rough fit estimate into a different size band.
+  // Keep the neighbouring choices when the target is absent, but do not offer
+  // a distant catalogue size as either the recommendation or its alternative.
+  const indexedCandidates = candidates
+    .map((size) => ({ size, index: profile.sizes.indexOf(size) }))
+    .filter((candidate) => Math.abs(candidate.index - targetIndex) <= 1);
+  if (!indexedCandidates.length) return { ok: false, error: 'availability' };
   indexedCandidates.sort((left, right) => {
     const distance = Math.abs(left.index - targetIndex) - Math.abs(right.index - targetIndex);
     return distance || right.index - left.index;
@@ -124,7 +130,7 @@ function recommendTshirtSize({ height, weight, fit, availableSizes = null } = {}
       ? (alternative.index < selected.index ? 'tighter' : 'looser')
       : '',
     limitReached: targetIndex >= selected.index
-      && Math.max(...indexedCandidates.map((candidate) => candidate.index)) === selected.index,
+      && Math.max(...candidates.map((size) => profile.sizes.indexOf(size))) === selected.index,
   };
 }
 
@@ -1821,6 +1827,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const attribute = `error${key.charAt(0).toUpperCase()}${key.slice(1)}`;
       error.textContent = form.dataset[attribute] || '';
       error.hidden = false;
+      sizeOutput.textContent = '—';
+      summary.textContent = '';
+      if (alternative) alternative.textContent = '';
+      if (limit) limit.textContent = '';
+      result.hidden = true;
+      result.style.display = 'none';
       result.classList.remove('is-ready');
     };
     const displaySize = (size) => ({ XXL: '2XL', XXXL: '3XL' }[size] || size);
@@ -1842,6 +1854,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
       error.hidden = true;
       error.textContent = '';
+      result.hidden = false;
+      result.style.display = '';
       sizeOutput.textContent = displaySize(recommendation.size);
       const fitCopy = recommendation.fit === 'oversize'
         ? form.dataset.copyOversize
@@ -1855,6 +1869,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         heightUnit,
         weightUnit,
       });
+      if (recommendation.size !== recommendation.targetSize && form.dataset.copyNearby) {
+        summary.textContent += ` ${form.dataset.copyNearby}`;
+      }
       if (alternative) {
         const relationCopy = recommendation.alternativeRelation === 'tighter'
           ? form.dataset.copyAlternativeTighter

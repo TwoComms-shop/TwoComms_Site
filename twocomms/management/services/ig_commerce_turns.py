@@ -137,6 +137,24 @@ def _contracted_size_negation(before):
     return ""
 
 
+def _information_request_preference(segment, position):
+    """A spec request names its subject; an explicit choice owns its clause."""
+    from management.services.ig_product_inquiries import _SPEC
+
+    requests = list(re.finditer(r"\b(?:уточн\w*|підкаж\w*|подскаж\w*|check|clarify|tell)\b", segment, re.I))
+    if not requests or not _SPEC.search(segment):
+        return False
+    preceding = [match for match in requests if match.start() <= position]
+    request = preceding[-1] if preceding else requests[0]
+    choices = list(re.finditer(
+        r"\b(?:беру|купую|куплю|замовляю|заказываю|выбираю|обираю|хочу|want|buy|order|choose|select"
+        r"|додай\w*|добав\w*|замін\w*|замен\w*|змін\w*|измен\w*|add|replace|change)\b", segment, re.I))
+    choices = [match for match in choices if not _negated_action(segment[:match.start()])]
+    if preceding:
+        return not any(request.end() <= match.start() <= position for match in choices)
+    return not any(match.start() < request.start() for match in choices)
+
+
 def _source_size(text: str) -> str:
     """A chosen size, with explicit corrections winning over rejected mentions."""
     original = text
@@ -146,6 +164,8 @@ def _source_size(text: str) -> str:
     for match in candidates:
         start, end = _preference_segment(text, match.start())
         segment = text[start:end].casefold()
+        if _information_request_preference(segment, match.start() - start):
+            continue
         if "?" in segment or _is_quoted_preference(text, match.start(), match.end()):
             continue
         if re.search(r"\b(?:який|какой|which|what)\b|\b(?:є|есть|available|have)\b", segment):
@@ -244,6 +264,8 @@ def _find_prefix_value(text: str, words: dict[str, str]) -> str:
     for start, end, value in candidates:
         segment_start, segment_end = _preference_segment(lowered, start)
         segment = lowered[segment_start:segment_end]
+        if _information_request_preference(segment, start - segment_start):
+            continue
         if "?" in segment or _is_quoted_preference(lowered, start, end):
             continue
         if re.search(r"(?:описани|description|карточк|характеристик)\w*", segment):

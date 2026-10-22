@@ -1,6 +1,7 @@
-from copy import deepcopy
+import json
 
 from django.core.management.base import BaseCommand
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 
 from storefront.models import Catalog, CatalogOption, CatalogOptionValue, Product, SizeGrid
@@ -127,7 +128,8 @@ class Command(BaseCommand):
         )
 
     def _upsert_size_grid(self, profile_key, catalog, config):
-        guide_data = deepcopy(SIZE_GUIDE_PRESETS[profile_key])
+        # gettext_lazy metadata must be materialized before JSONField storage.
+        guide_data = json.loads(json.dumps(SIZE_GUIDE_PRESETS[profile_key], cls=DjangoJSONEncoder))
         guide_data["profile_key"] = profile_key
         description = guide_data.get("intro", "")
 

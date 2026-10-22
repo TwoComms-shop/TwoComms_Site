@@ -31,7 +31,6 @@ class CommunicationPolicyContracts(SimpleTestCase):
     def test_direct_service_offer_is_truthful_and_does_not_require_external_contact(self):
         body = reviewed_scenario_values("collaboration")["body"]
         for clause in (
-            "customer_support_service",
             "Подякуй за конкретно запропоновану допомогу",
             "віртуальна помічниця, доступна 24/7",
             "люди команди розглядають нестандартні питання",
@@ -44,6 +43,40 @@ class CommunicationPolicyContracts(SimpleTestCase):
         ):
             with self.subTest(clause=clause):
                 self.assertIn(clause, body)
+
+    def test_direct_service_routing_is_source_owned_without_service_identifiers_in_the_playbook(self):
+        from management.services.bot_sales_classifier import extract_collaboration_brief
+        from management.services.ig_business_cooperation import recruitment_service_for_sources
+
+        body = reviewed_scenario_values("collaboration")["body"]
+        # Routing remains native code's responsibility. The customer-prose
+        # playbook must not supply internal identifiers that can be echoed.
+        for text in (
+            "Можу відповідати на повідомлення клієнтів вашого бренду в Instagram Direct.",
+            "Хочу работать оператором Instagram Direct. Могу отвечать на сообщения ваших клиентов.",
+            "I can answer your customers' messages in Instagram Direct.",
+        ):
+            with self.subTest(text=text):
+                native = recruitment_service_for_sources([{"role": "user", "message_id": 1, "text": text}])
+                brief = extract_collaboration_brief(text)
+                self.assertTrue(native["employment_service_offer"])
+                self.assertEqual(native["hiring_status"], "unknown")
+                self.assertEqual(brief["primary_subtype"], native["subtype"])
+                self.assertNotIn(native["subtype"], body)
+        self.assertNotIn("collaboration_review", body)
+        self.assertIn("повідомлення, товари, розміри чи доставка", body)
+        self.assertIn("не описуй внутрішні сервіси", body)
+        from management.services.ig_policy_publication import (
+            DEFAULT_INSTRUCTION_BUDGET_CHARS, SNAPSHOT_SCHEMA_VERSION, select_policy_snapshot,
+        )
+        values = reviewed_scenario_values("collaboration")
+        snapshot = {"schema_version": SNAPSHOT_SCHEMA_VERSION, "instructions": [
+            {**values, "id": "instruction:1", "source_id": 1},
+        ]}
+        selected = select_policy_snapshot(snapshot, client_tags={"collaboration"},
+            active_triggers={"collaboration"}, required_scenarios=("collaboration",))
+        self.assertEqual(selected["required_ids"], ["instruction:1"])
+        self.assertLessEqual(len(selected["rendered_text"]), DEFAULT_INSTRUCTION_BUDGET_CHARS)
 
     def test_objection_stays_specific_and_approved_fact_authority_is_preserved(self):
         body = reviewed_scenario_values("objection")["body"]

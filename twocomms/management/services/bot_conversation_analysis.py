@@ -35,6 +35,7 @@ from management.models import (
 from management.services.bot_payment_truth import client_has_confirmed_purchase
 from management.services.call_ai_analysis import gemini_generate_json
 from management.services.ig_funnel_reset import current_message_floor
+from management.services.ig_conversion_audit import CONVERSION_AUDIT_PROMPT_FRAGMENT
 
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ SYSTEM_PROMPT = """Ти аналізуєш Instagram-діалог для вну�
 - repeat_intent: порожній об'єкт або {kind, confidence, evidence_message_ids}, де
   kind є explicit_more|reorder|gift|another_recipient, confidence >= 0.70, а
   evidence_message_ids містить лише повідомлення клієнта з явним повторним наміром.
-Не давай порад клієнту і не генеруй відповідь для відправлення."""
+Не давай порад клієнту і не генеруй відповідь для відправлення.""" + "\n\n" + CONVERSION_AUDIT_PROMPT_FRAGMENT
 
 ANALYSIS_V2_PROMPT_FRAGMENT = """
 
@@ -632,7 +633,7 @@ def _message_state_for_fingerprint(client_id: int, watermark: int) -> list[dict]
     ]
 
 
-def _fingerprint_for_truth(client_id: int, watermark: int, truth_state: dict) -> str:
+def _fingerprint_for_truth(client_id: int, watermark: int, truth_state: dict, *, reply_review_context=None, audit_enabled=None) -> str:
     payload = {
         "client_id": client_id,
         "watermark": int(watermark or 0),
@@ -640,6 +641,21 @@ def _fingerprint_for_truth(client_id: int, watermark: int, truth_state: dict) ->
         "truth_state": truth_state,
         "message_state": _message_state_for_fingerprint(client_id, watermark),
     }
+    # Existing empty snapshots retain their original hash. Adding an optional
+    # diagnostic field must not initiate historical provider work by itself.
+    if audit_enabled is None:
+        prior = (IgConversationAnalysisSnapshot.objects.filter(client_id=client_id)
+                 .exclude(analysis_model="rules").order_by("-id")
+                 .values_list("conversion_audit", flat=True).first())
+        audit_enabled = isinstance(prior, dict) and prior.get("schema_version") == 1
+    if audit_enabled:
+        from management.services.ig_analysis_reply_review import build_reply_review_context
+
+        if reply_review_context is None:
+            owner = IgClient.objects.get(pk=client_id)
+            reply_review_context = build_reply_review_context(owner, watermark,
+                boundary=_analysis_source_boundary(owner, watermark))
+        payload["reply_review_digest"] = reply_review_context["digest"]
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -969,7 +985,7 @@ def _capture_analysis_memory(client, watermark):
 
 
 def _analysis_prompt_payload(*, watermark, transcript, truth_state, memory, memory_metadata,
-                             truth_current=True, source_boundary=None):
+                             truth_current=True, source_boundary=None, response_review_context=None):
     """The actual request carries a dated snapshot and explicit unknown truth."""
     payload = {"watermark_message_id": watermark, "conversation": transcript,
         "memory_snapshot": memory_metadata,
@@ -981,6 +997,8 @@ def _analysis_prompt_payload(*, watermark, transcript, truth_state, memory, memo
     if source_boundary is not None:
         payload["conversation_event_boundary"] = {key: source_boundary[key]
             for key in ("namespace", "event_at", "message_id")}
+    if response_review_context is not None:
+        payload["response_review_context"] = response_review_context
     if truth_current:
         payload.update(verified_payment=truth_state["verified_payment"], truth_state=truth_state)
     else:
@@ -1266,7 +1284,7 @@ def _decimal_01(value, default: str) -> Decimal:
     return max(Decimal("0"), min(Decimal("1"), parsed)).quantize(Decimal("0.0001"))
 
 
-def _normalize(parsed: dict, by_id: dict[int, dict], *, verified_payment: bool) -> dict:
+def _normalize(parsed: dict, by_id: dict[int, dict], *, verified_payment: bool, response_review_context=None) -> dict:
     parsed = parsed if isinstance(parsed, dict) else {}
     valid_types = {value for value, _label in IgConversationAnalysisSnapshot.InteractionType.choices}
     valid_bands = {value for value, _label in IgConversationAnalysisSnapshot.Band.choices}
@@ -1403,6 +1421,9 @@ def _normalize(parsed: dict, by_id: dict[int, dict], *, verified_payment: bool) 
         # Спостереження менеджера не є повторним наміром клієнта: інакше
         # manager-only рядок відкривав би новий комерційний епізод.
         repeat_intent = {}
+    from management.services.ig_conversion_audit import normalize_conversion_audit
+
+    conversion_audit = normalize_conversion_audit(parsed.get("conversion_audit"), by_id, response_review_context)
     return {
         "interaction_type": boundary.interaction_type,
         "score_band": boundary.score_band,
@@ -1411,6 +1432,7 @@ def _normalize(parsed: dict, by_id: dict[int, dict], *, verified_payment: bool) 
         "evidence": evidence,
         "uncertainties": list(dict.fromkeys(boundary.uncertainties))[:20],
         "repeat_intent": repeat_intent,
+        "conversion_audit": conversion_audit,
         # Покриття ролей і версія детермінованої політики зберігаються разом зі
         # знімком: читач більше не мусить перечитувати транскрипт, щоб дізнатися,
         # чиї слова стоять за висновком.
@@ -1773,11 +1795,14 @@ def _process_claim(
     if not _analysis_truth_is_current(client, watermark, expected_boundary=source_boundary):
         return _finish_skip(job.pk, token, watermark, claimed_revision, "historical_event_boundary",
             timezone.now(), int(job.claim_generation or 0))
+    from management.services.ig_analysis_reply_review import audit_scope, build_reply_review_context, review_observations
+
+    reply_review_context = build_reply_review_context(client, watermark, boundary=source_boundary)
     result = gemini_generate_json(
         _analysis_system_prompt(),
         json.dumps(_analysis_prompt_payload(watermark=watermark, transcript=transcript,
             truth_state=initial_truth_state, memory=memory, memory_metadata=memory_metadata,
-            source_boundary=source_boundary),
+            source_boundary=source_boundary, response_review_context=reply_review_context),
             ensure_ascii=False, default=str),
         role="management",
         max_output_tokens=4096,
@@ -1907,8 +1932,22 @@ def _process_claim(
             return "superseded"
         verified_payment = bool(final_truth_state["verified_payment"])
         normalized = _normalize(
-            result.get("parsed"), by_id, verified_payment=verified_payment
+            result.get("parsed"), by_id, verified_payment=verified_payment,
+            response_review_context=reply_review_context,
         )
+        latest_reply_context = build_reply_review_context(client, watermark, boundary=source_boundary)
+        audit = normalized.get("conversion_audit") or {}
+        if latest_reply_context["digest"] != reply_review_context["digest"]:
+            # The existing interpretation can remain valid while a concurrent
+            # send makes its response diagnosis obsolete. Keep those separate.
+            audit = {}
+            audit_coverage = "response_context_changed"
+        else:
+            audit_coverage = reply_review_context["coverage"]
+        audit = {"schema_version": 1, "motivation": [], "readiness_evidence": [],
+                 "nonconversion_reasons": [], **audit,
+                 "_source_scope": audit_scope(reply_review_context),
+                 "_response_review": review_observations(reply_review_context, coverage=audit_coverage)}
         repeat_intent = normalized["repeat_intent"]
         repeat_intent_snapshot = (
             {
@@ -1926,6 +1965,7 @@ def _process_claim(
             client.pk,
             watermark,
             final_truth_state,
+            reply_review_context=reply_review_context, audit_enabled=True,
         )
         snapshot, snapshot_created = IgConversationAnalysisSnapshot.objects.get_or_create(
             dedupe_key=(
@@ -1941,6 +1981,7 @@ def _process_claim(
                 "evidence": normalized["evidence"],
                 "uncertainties": normalized["uncertainties"],
                 "repeat_intent": repeat_intent_snapshot,
+                "conversion_audit": audit,
                 "commercial_episode": commercial_episode,
                 "analysis_model": model,
                 "analysis_prompt_version": ANALYSIS_PROMPT_VERSION,

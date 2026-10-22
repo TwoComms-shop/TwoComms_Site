@@ -75,6 +75,12 @@ jobs:
             management.tests_ig_manager_case_continuity_20261022 \
             management.tests_ig_live_burst_fairness_20261022 \
             management.tests_ig_size_aliases_20261022 \
+            management.tests_ig_product_weight_20261022 \
+            management.tests_ig_standard_funnel_20261022 \
+            management.tests_ig_size_grid_authority_20261022 \
+            management.tests_ig_conversion_audit_schema_20261022 \
+            management.tests_ig_conversion_audit_analysis_20261022 \
+            management.tests_ig_conversion_audit_stats_20261022 \
             management.tests_ig_reply_truth_seams_20261022 \
             management.tests_ig_communication_policy_20261022 \
             management.tests_ig_manu_context_budget_20261021 \
@@ -123,9 +129,13 @@ jobs:
             management.tests_ig_fulfillment_stock_api \
             management.tests_ig_mariadb_runner \
             --settings=test_settings_no_network_non_dtf --noinput --parallel 1
+      - name: Run size guide authority regressions
+        working-directory: twocomms
+        run: |
+          python manage.py test storefront.tests.test_product_size_guides storefront.tests.test_size_guide_authority_20261022 --settings=test_settings_no_network_non_dtf --noinput --parallel 1
       - name: Run live conversation UI regressions
         run: |
-          node --test tests/js/management-bot-client-list.test.js tests/js/management-bot-live-sync.test.js tests/js/management-bot-chat-reading.test.js tests/js/management-bot-conversation-scroll.test.js
+          node --test tests/js/management-bot-client-list.test.js tests/js/management-bot-live-sync.test.js tests/js/management-bot-chat-reading.test.js tests/js/management-bot-conversation-scroll.test.js tests/js/management-bot-conversion-audit.test.js twocomms/twocomms_django_theme/static/js/product-detail.test.js
       - name: Exercise production-like static pipeline
         run: python scripts/run_static_gate.py --output static-gate.json
       - name: Build sanitized non-DTF coverage inventory

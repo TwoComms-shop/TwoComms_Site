@@ -1740,6 +1740,95 @@ print(json.dumps({
             ("management.tests_ig_daemon_progress.MariaDbLeaseContractTests",),
         )
 
+    def test_legacy_conversion_coverage_is_preserved_when_dialogue_work_moves(self):
+        self.assertEqual(
+            self.runner.SUITES["conversion-context"],
+            (
+                "management.tests_ig_manu_catalog_locale_20261021",
+                "management.tests_ig_manu_catalog_poll_20261021",
+                "management.tests_ig_manu_customer_pool_mariadb_20261021",
+                "management.tests_ig_manu_purpose_poll_20261021",
+                "management.tests_ig_manu_console_faults_20261021",
+                "management.tests_ig_manu_customer_pool_20261021",
+                "management.tests_ig_manu_deadline_successor_20261021",
+                "management.tests_ig_manu_queue_fairness_20261021",
+                "management.tests_ig_manu_recruitment_20261021",
+                "management.tests_ig_operator_reply_drafts",
+                "management.tests_ig_manu_context_budget_20261021",
+                "management.tests_ig_manu_business_delivery_20261021",
+                "management.tests_ig_manu_deadline_20261021",
+                "management.tests_ig_manu_deadline_policy_20261021",
+                "management.tests_ig_manu_finalization_faults_20261021",
+                "management.tests_ig_manu_language_20261021",
+                "management.tests_ig_manu_liveness_20261021",
+                "management.tests_ig_manu_manager_wait_20261021",
+                "management.tests_ig_manu_recipient_20261021",
+                "management.tests_ig_manu_timing_authority_20261021",
+                "management.tests_ig_conversion_mariadb",
+                "finance.tests_migration_storage",
+                "management.tests_ig_rate_handoff_qa_20261020",
+                "management.tests_ig_ingress_reply_liveness",
+                "management.tests_ig_opaque_inbound",
+                "management.tests_ig_unanswered_obligations",
+                "management.tests_ig_checkout_journey_qa_20261020",
+                "management.tests_ig_handoff_journey_qa_20261020",
+                "management.tests_ig_knowledge_journey_qa_20261020",
+                "management.tests_ig_policy_fault_ack",
+                "management.tests_ig_fulfillment_stock_api.FulfillmentStockApiTests.test_native_receipt_rewrite_and_delete_are_denied_and_privacy_purge_preserves_inventory",
+                "management.tests_ig_restock_delivery.NativeRestockDeliveryTests.test_ninety_day_subscription_expiry_cannot_be_extended_by_runtime_cache",
+            ),
+        )
+
+    def test_dialogue_quality_contains_all_new_dialogue_and_planned_audit_modules(self):
+        modules = self.runner.SUITES["dialogue-quality"]
+        expected = {
+            "management.tests_ig_communication_policy_20261022",
+            "management.tests_ig_conversation_activity",
+            "management.tests_ig_conversion_audit_analysis_20261022",
+            "management.tests_ig_conversion_audit_schema_20261022",
+            "management.tests_ig_conversion_audit_stats_20261022",
+            "management.tests_ig_product_weight_20261022",
+            "management.tests_ig_live_burst_fairness_20261022",
+            "management.tests_ig_live_conversation_contract_20261022",
+            "management.tests_ig_live_identity_echo_20261022",
+            "management.tests_ig_manager_case_continuity_20261022",
+            "management.tests_ig_reply_truth_seams_20261022",
+            "management.tests_ig_size_aliases_20261022",
+            "management.tests_ig_size_grid_authority_20261022",
+            "management.tests_ig_standard_funnel_20261022",
+            "storefront.tests.test_size_guide_authority_20261022",
+        }
+        self.assertEqual(set(modules), expected)
+        self.assertEqual(len(modules), len(expected))
+        self.assertEqual(self.runner._validate_suite("dialogue-quality"), modules)
+        discovered = {
+            "management." + path.stem
+            for path in (PROJECT_ROOT / "twocomms/management").glob("tests_ig_*20261022.py")
+        }
+        self.assertFalse(discovered - expected)
+
+    def test_dialogue_quality_runs_the_complete_native_command_and_cleanup_contract(self):
+        admin = FakeAdmin()
+        command = FakeCommandRunner()
+        result = self.runner.run_gate(
+            server_mode="external",
+            suite="dialogue-quality",
+            admin=admin,
+            command_runner=command,
+            project_root=PROJECT_ROOT,
+            environ={"MARIADB_ADMIN_PASSWORD": "root-secret"},
+            output=io.StringIO(),
+        )
+        test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
+        self.assertEqual(test_calls, [[
+            sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
+            *self.runner.SUITES["dialogue-quality"],
+            "--settings=test_settings_mariadb", "--noinput", "--keepdb",
+        ]])
+        self.assertEqual(result["suite"], "dialogue-quality")
+        self.assertEqual([call[0] for call in admin.calls][-4:],
+                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+
     def test_follow_ugc_suite_verifies_latest_schema_before_cleanup(self):
         admin = FakeAdmin()
         evidence = io.StringIO()

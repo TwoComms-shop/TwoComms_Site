@@ -37,13 +37,22 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
             "fail-fast": False,
             "max-parallel": 5,
             "matrix": {"suite": ["lifecycle", "checkout-concurrency", "follow-ugc-concurrency",
-                "lease-concurrency", "conversion-context"]},
+                "lease-concurrency", "conversion-context", "dialogue-quality"]},
         })
         self.assertEqual(self.suite_job["runs-on"], "ubuntu-24.04")
         self.assertEqual(self.suite_job["timeout-minutes"], 30)
         self.assertIn("mariadb", self.suite_job["services"])
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         self.assertNotIn("continue-on-error", self.source)
+
+    def test_every_native_matrix_entry_has_a_runner_suite_and_coverage_is_not_duplicated(self):
+        from scripts.run_mariadb_gate import SUITES
+
+        matrix = self.suite_job["strategy"]["matrix"]["suite"]
+        self.assertEqual(len(matrix), 6)
+        self.assertEqual(len(set(matrix)), len(matrix))
+        self.assertTrue(all(SUITES[name] for name in matrix))
+        self.assertFalse(set(SUITES["dialogue-quality"]) & set(SUITES["conversion-context"]))
 
     def test_lifecycle_check_rejects_failed_cancelled_and_skipped_matrix(self):
         aggregate = self.workflow["jobs"]["lifecycle"]
@@ -91,6 +100,11 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
             "twocomms/orders/promo_reservations.py",
             "twocomms/storefront/models.py",
             "twocomms/storefront/migrations/0095_promocode_guest_ugc.py",
+            "twocomms/storefront/services/size_guide_authority.py",
+            "twocomms/storefront/services/size_guides.py",
+            "twocomms/storefront/views/product.py",
+            "twocomms/storefront/tests/test_size_guide_authority_20261022.py",
+            "twocomms/product_catalog/size_grid_services.py",
             "tests/test_mariadb_workflow_contract.py",
         ):
             self.assertIn(path, self.source)

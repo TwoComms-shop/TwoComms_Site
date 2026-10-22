@@ -3,6 +3,7 @@ from copy import deepcopy
 from django.utils.translation import gettext_lazy as _
 
 from storefront.models import CatalogOption
+from storefront.services.size_guide_authority import is_unverified_legacy_hoodie_seed
 
 
 DEFAULT_SIZE_SETS = {
@@ -30,26 +31,13 @@ SIZE_GUIDE_PRESETS = {
         ],
         "title": _("Худі"),
         "eyebrow": "Hoodie fit guide",
-        "intro": _("Заміри зняті з виробу. Порівнюйте їх зі своїм худі, яке вже добре сидить по корпусу."),
+        "intro": _("Порівнюйте заміри зі своїм худі, яке вже добре сидить по корпусу."),
         "columns": [
             {"key": "size", "label": _("Розмір")},
             {"key": "length", "label": _("Довжина")},
             {"key": "width", "label": _("Ширина")},
         ],
-        "rows": [
-            {"size": "XS", "display_size": "XS", "length": "54", "width": "52"},
-            {"size": "S", "display_size": "S", "length": "58", "width": "56"},
-            {"size": "M", "display_size": "M", "length": "67", "width": "60"},
-            {"size": "L", "display_size": "L", "length": "70", "width": "64"},
-            {"size": "XL", "display_size": "XL", "length": "73", "width": "68"},
-            {"size": "XXL", "display_size": "XXL", "length": "78", "width": "72"},
-        ],
-        "legend": [
-            {"label": "Length", "description": _("довжина по центру спини без урахування резинки")},
-            {"label": "Width", "description": _("ширина виробу по корпусу")},
-        ],
         "notes": [
-            _("Можлива похибка вимірювання: ±2 см."),
             _("Якщо хочете більш вільну посадку, закладайте запас по ширині корпусу."),
         ],
         "fit_notes": [
@@ -310,7 +298,31 @@ def _size_values_from_guide(guide):
 
 
 def _build_structured_guide(profile_key, source, size_grid=None, guide_data=None):
+    guide_data = guide_data if isinstance(guide_data, dict) else {}
     payload = deepcopy(SIZE_GUIDE_PRESETS.get(profile_key, {}))
+    incompatible_hoodie_source = False
+    measurement_authority = "configured" if guide_data else "unavailable"
+    if profile_key == "hoodie":
+        # A named/image-only grid does not establish numeric measurements.
+        # Use the same explicit cells and validation boundary as the bot.
+        from django.core.exceptions import ValidationError
+        from product_catalog.size_grid_services import normalize_size_grid_payload
+
+        raw = guide_data if isinstance(guide_data, dict) else {}
+        # A catalog display projection may already have removed the raw seed
+        # cells/provenance. Preserve its restrictive authority marker too.
+        legacy_seed = (raw.get("measurement_authority") == "legacy_seed_unverified"
+                       or is_unverified_legacy_hoodie_seed(raw))
+        declared = detect_size_profile(raw=raw.get("profile_key") or getattr(size_grid, "name", ""))
+        incompatible_hoodie_source = bool(declared and declared != "hoodie")
+        try:
+            guide_data = {} if incompatible_hoodie_source or legacy_seed else normalize_size_grid_payload(raw)
+        except (ValidationError, TypeError, ValueError):
+            guide_data = {}
+        measurement_authority = "legacy_seed_unverified" if legacy_seed else "configured" if guide_data else "unavailable"
+        if not guide_data:
+            payload.update(columns=[], rows=[], legend=[])
+            payload["notes"] = [_("Для цього худі ще немає підтверджених числових замірів. Напишіть свій зріст і вагу — допоможемо з вибором.")]
     if guide_data:
         payload.update({key: value for key, value in guide_data.items() if value not in (None, "", [], {})})
 
@@ -323,6 +335,8 @@ def _build_structured_guide(profile_key, source, size_grid=None, guide_data=None
         notes.insert(0, description)
 
     image_payload = _serialize_image_payload(size_grid)
+    if incompatible_hoodie_source:
+        image_payload = {"image_url": "", "image_alt": "", "image_width": 0, "image_height": 0}
     sizes = _size_values_from_guide({"rows": rows}) or get_default_sizes_for_profile(profile_key)
 
     guide = {
@@ -330,6 +344,7 @@ def _build_structured_guide(profile_key, source, size_grid=None, guide_data=None
         "guide_key": profile_key,
         "source": source,
         "source_label": SOURCE_LABELS[source],
+        "measurement_authority": measurement_authority,
         "eyebrow": payload.get("eyebrow") or SOURCE_LABELS[source],
         "title": payload.get("title") or _("Розмірна сітка"),
         "intro": payload.get("intro", ""),
@@ -398,7 +413,8 @@ def _build_global_fallback(product=None):
 
 def resolve_product_size_guide(product):
     size_grid, source = _resolve_size_grid_source(product)
-    guide_data = deepcopy(getattr(size_grid, "guide_data", {}) or {})
+    raw_guide_data = getattr(size_grid, "guide_data", {}) or {}
+    guide_data = deepcopy(raw_guide_data) if isinstance(raw_guide_data, dict) else {}
 
     raw_profile = " ".join(
         filter(
@@ -411,6 +427,8 @@ def resolve_product_size_guide(product):
         )
     )
     profile_key = detect_size_profile(product, raw=raw_profile)
+    if detect_size_profile(product) == "hoodie":
+        profile_key = "hoodie"
 
     if guide_data and (guide_data.get("columns") or guide_data.get("rows")):
         return _build_structured_guide(profile_key or detect_size_profile(product), source, size_grid=size_grid, guide_data=guide_data)
@@ -489,7 +507,7 @@ def resolve_product_size_context(product, requested_size=None):
                 if row["size"] in sizes
             }
             guide = _build_structured_guide(
-                size_grid.get("profile_key") or detect_size_profile(product),
+                "hoodie" if detect_size_profile(product) == "hoodie" else size_grid.get("profile_key") or detect_size_profile(product),
                 "product_override",
                 size_grid=selected_comparison["guide"].get("size_grid"),
                 guide_data=size_grid,
@@ -536,7 +554,9 @@ def build_public_size_guide_blocks(size_grids=None):
     extras = []
 
     for grid in size_grids:
-        profile_key = detect_size_profile(raw=" ".join(filter(None, [grid.name, grid.description, getattr(getattr(grid, "catalog", None), "name", ""), getattr(getattr(grid, "catalog", None), "slug", "")])))
+        raw_guide = getattr(grid, "guide_data", {})
+        declared_profile = raw_guide.get("profile_key", "") if isinstance(raw_guide, dict) else ""
+        profile_key = detect_size_profile(raw=" ".join(filter(None, [declared_profile, grid.name, grid.description, getattr(getattr(grid, "catalog", None), "name", ""), getattr(getattr(grid, "catalog", None), "slug", "")])))
         if profile_key and profile_key not in matched:
             matched[profile_key] = grid
             continue
@@ -560,6 +580,7 @@ def build_public_size_guide_blocks(size_grids=None):
             profile_key,
             "catalog_default",
             size_grid=matched[profile_key],
+            guide_data=getattr(matched[profile_key], "guide_data", {}) or {},
         )
         blocks.append(block)
 

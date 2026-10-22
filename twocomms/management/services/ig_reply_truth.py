@@ -812,6 +812,18 @@ def _positive_configuration_value(sentence: str, match: re.Match) -> str:
         return ""
     if match.group("selected") or match.group("separator"):
         return claimed
+    if _normalize(claimed) in {"for", "with", "of"}:
+        # A noun followed by a preposition is descriptive grammar, not an
+        # option named "for". Preserve a real pre-nominal fit assertion:
+        # "oversize fit for..." still has to match the captured authority.
+        if match.re is _FIT_RE:
+            preceding_fit = re.search(
+                r"\b(regular|classic|oversize|slim|relaxed|loose|fitted|standard)\s+$",
+                sentence[:match.start()], re.I,
+            )
+            if preceding_fit:
+                return preceding_fit.group(1)
+        return ""
     local_tail = re.split(r"[,;.!?]", sentence[match.end():], maxsplit=1)[0]
     if _CONFIGURATION_DESCRIPTION_RE.search(local_tail[:120]):
         return ""
@@ -824,6 +836,10 @@ def _configuration_axis_value(axis: str, value) -> str:
         # Unknown/numeric values retain their literal identity. They never
         # collapse to an empty token that could match an unrelated size.
         return _normalize(normalize_size_value(value))
+    if axis == "fit":
+        # The native catalogue code "classic" and its English description
+        # "regular" identify the same cut; oversize remains a separate value.
+        return {"regular": "classic"}.get(_normalize(value), _normalize(value))
     return _normalize(value)
 
 
@@ -1264,6 +1280,11 @@ def _product_statement_assertions(sentence, assertions, *, inherit_category=Fals
     garments = {key for key, pattern in _GARMENT_WORDS.items() if pattern.search(sentence)}
     result = []
     for row in assertions:
+        # A valid public-policy capability can answer its own policy topic
+        # without authorizing garment specifications. Only these reviewed
+        # base/category schemas carry material, density and quality authority.
+        if row.get("schema") not in {"approved-base-assertion.v1", "approved-category-assertion.v1"}:
+            continue
         if garments and garments != {row.get("garment")}:
             continue
         if row.get("scope_kind") == "current_category":

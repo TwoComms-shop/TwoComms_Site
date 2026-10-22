@@ -356,8 +356,26 @@ def _fit_label(product, fit_code: str, lang: str) -> str:
 
 
 def _guide_copy(product, fit_code: str, lang: str) -> dict[str, str]:
+    from storefront.services.size_guides import detect_size_profile
+
     title = _plain_text(getattr(product, "title", ""))
     label = _fit_label(product, fit_code, lang)
+    profile = detect_size_profile(product)
+    if profile != "basic_tshirt":
+        if lang == "ru":
+            garment = "худи" if profile == "hoodie" else "изделия"
+            return {"alt": f"Таблица размеров {garment} «{title}»",
+                "caption": f"Размерная сетка {garment} «{title}»",
+                "note": "Сравнивайте подтверждённые замеры с удобной вещью, учитывая название замера и единицы. Если замеров нет, напишите рост и вес — поможем с выбором."}
+        if lang == "en":
+            garment = "hoodie" if profile == "hoodie" else "garment"
+            return {"alt": f"{garment.title()} size chart for {title}",
+                "caption": f"{garment.title()} size guide for {title}",
+                "note": "Compare confirmed measurements with a comfortable garment, using the same measurement and units. If measurements are unavailable, share your height and weight for help choosing a size."}
+        garment = "худі" if profile == "hoodie" else "виробу"
+        return {"alt": f"Таблиця розмірів {garment} «{title}»",
+            "caption": f"Розмірна сітка {garment} «{title}»",
+            "note": "Порівнюйте підтверджені заміри зі зручною річчю, враховуючи назву заміру та одиниці. Якщо замірів немає, напишіть зріст і вагу — допоможемо з вибором."}
     if lang == "ru":
         garment = {
             "classic": "классической футболки",
@@ -391,9 +409,14 @@ def _guide_copy(product, fit_code: str, lang: str) -> dict[str, str]:
 
 
 def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str) -> dict:
+    from storefront.services.size_guides import detect_size_profile
+    from storefront.services.size_guide_authority import is_unverified_legacy_hoodie_seed
+
     decorated = deepcopy(guide or {})
+    profile = detect_size_profile(product)
+    legacy_seed = is_unverified_legacy_hoodie_seed(getattr(grid, "guide_data", {}) or {})
     localized = GUIDE_LOCALIZATION.get(lang)
-    if localized:
+    if localized and profile == "basic_tshirt":
         decorated["title"] = localized.get(f"{fit_code}_title", decorated.get("title", ""))
         decorated["intro"] = localized.get(f"{fit_code}_intro", decorated.get("intro", ""))
         decorated["columns"] = [
@@ -414,9 +437,7 @@ def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str)
             image_height = int(getattr(image, "height", 0) or 0)
         except (OSError, ValueError):
             image_url = ""
-    from storefront.services.size_guides import detect_size_profile
-
-    is_tshirt = detect_size_profile(product) == "basic_tshirt"
+    is_tshirt = profile == "basic_tshirt"
     used_static_oversize = not image_url and is_tshirt and fit_code == "oversize"
     used_static_classic = not image_url and is_tshirt and fit_code == "classic"
     if used_static_oversize:
@@ -428,8 +449,21 @@ def _decorate_guide(product, grid, guide: dict | None, fit_code: str, lang: str)
         image_width = 993
         image_height = 292
     copy = _guide_copy(product, fit_code, lang)
+    disclosure = {
+        "uk": "Для цього худі ще немає підтверджених числових замірів. Напишіть свій зріст і вагу — допоможемо з вибором.",
+        "ru": "Для этого худи пока нет подтверждённых числовых замеров. Напишите свой рост и вес — поможем с выбором.",
+        "en": "Confirmed numerical measurements for this hoodie are not available yet. Share your height and weight for help choosing a size.",
+    }
+    if legacy_seed:
+        decorated.update(rows=[], columns=[], legend=[], notes=[], fit_notes=[],
+            measurement_authority="legacy_seed_unverified", intro=disclosure[lang])
+        copy["note"] = disclosure[lang]
     decorated.update(
         {
+            "garment_profile": profile,
+            "comparison_intro": copy["note"],
+            "measurement_label": ({"uk": "Підбір розміру", "ru": "Подбор размера", "en": "Size help"} if legacy_seed
+                else {"uk": "Розмірна сітка", "ru": "Размерная сетка", "en": "Size guide"})[lang],
             "image_url": image_url,
             "image_width": image_width,
             "image_height": image_height,
@@ -589,13 +623,19 @@ def build_size_grid_comparison(product, variants=None, lang: str = "uk") -> list
         return guide_cache[grid.id]
 
     def effective_rows(grid, option_key, variant=None):
+        from storefront.services.size_guide_authority import is_unverified_legacy_hoodie_seed
+
         guide = normalized_guide(grid)
         if guide is None:
             return []
         fit_code = _fit_code(option_key)
+        legacy_seed = is_unverified_legacy_hoodie_seed(grid.guide_data or {})
         rows = []
         for source_row in guide["rows"]:
-            row = deepcopy(source_row)
+            # Keep these sizes sellable, while the historical seed cells must
+            # not leak back into the public availability payload as measurements.
+            row = ({key: source_row[key] for key in ("size", "display_size") if key in source_row}
+                if legacy_seed else deepcopy(source_row))
             size = normalize_size_value(row.get("size"))
             product_rule = product_rule_map.get((option_key, size))
             enabled = product_rule.is_enabled if product_rule is not None else True

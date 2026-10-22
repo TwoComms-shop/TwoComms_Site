@@ -5564,6 +5564,7 @@ class IgConversationAnalysisSnapshot(models.Model):
     evidence = models.JSONField(default=list, blank=True)
     uncertainties = models.JSONField(default=list, blank=True)
     repeat_intent = models.JSONField(default=dict, blank=True)
+    conversion_audit = models.JSONField(default=dict, blank=True)
     commercial_episode = models.ForeignKey(
         "management.IgCommercialEpisode",
         null=True,

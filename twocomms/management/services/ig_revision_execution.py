@@ -652,7 +652,8 @@ class RevisionFinalizationResult:
     sent_parts: int = 0
 
 
-def _whole_sent_proof(revision, effects):
+def _whole_sent_proof(revision, effects, *, source_rows=None):
+    """Same receipt proof with optional complete ordered source model rows."""
     from management.services.ig_revision_outbox import _digest
 
     completed, _debt, reason = _completion_decision(effects)
@@ -665,8 +666,11 @@ def _whole_sent_proof(revision, effects):
             for row in sources)):
         return False, "delivery_plan_proof_invalid"
     source_ids = {row["message_id"] for row in sources}
-    actual_sources = list(revision.sources.order_by("ordinal", "id").values(
-        "message_id", "source_namespace", "role", "message__client_id"))
+    actual_sources = (list(revision.sources.order_by("ordinal", "id").values(
+        "message_id", "source_namespace", "role", "message__client_id")) if source_rows is None else [
+            {"message_id": row.message_id, "source_namespace": row.source_namespace,
+                "role": row.role, "message__client_id": row.message.client_id}
+            for row in source_rows])
     if (len(source_ids) != len(sources) or len(actual_sources) != len(sources)
         or any(actual["message_id"] != captured["message_id"]
             or actual["source_namespace"] != captured.get("source_namespace")

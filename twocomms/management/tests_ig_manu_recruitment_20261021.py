@@ -206,9 +206,13 @@ class NativeRecruitmentTests(TransactionTestCase):
         self.assertEqual(http.call_count, 1, outcome.reasons)
         self.assertEqual(outcome.state, "completed", outcome.reasons)
         import json
+        from management.models import GeminiRequest, IgFollowUpTask
         payload = json.dumps(self.generation_calls[0], ensure_ascii=False)
         self.assertIn(values["body"], payload)
-        self.assertIn("customer_support_service", payload)
-        from management.models import GeminiRequest
+        task = IgFollowUpTask.objects.get(reason="revision_case:collaboration_review")
+        self.assertEqual(task.manager_context["cooperation_kind"], "recruitment_service")
+        self.assertEqual(task.manager_context["sources"][0]["message_id"], self.source.pk)
+        delivered = self.revision.delivery_effects.get().payload["message"]["text"]
+        self.assertNotRegex(delivered, r"collaboration_review|customer_support_service")
         manifest = GeminiRequest.objects.get().policy_manifest
         self.assertIn(f"instruction:{instruction.pk}", manifest["instruction_selection"]["required_policy"]["required_ids"])

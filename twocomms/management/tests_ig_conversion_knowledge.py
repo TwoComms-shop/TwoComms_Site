@@ -44,7 +44,8 @@ class ScopedOwnerKnowledgeTests(SimpleTestCase):
         for locale in ("uk", "ru", "en"):
             facts = {row.key: row for row in approved_public_facts(locale)}
             self.assertIn("90%", facts["current_hoodie_bases"].public_text)
-            self.assertIn("320", facts["current_hoodie_bases"].public_text)
+            self.assertNotIn("320", facts["current_hoodie_bases"].public_text)
+            self.assertTrue(facts["current_hoodie_bases"].review_status.startswith("reviewed"))
             self.assertIn("220", facts["current_tshirt_bases"].public_text)
             self.assertNotIn("210", facts["current_tshirt_bases"].public_text)
             self.assertIn("owner:2026-10-18", facts["current_care"].source_ref)
@@ -73,7 +74,7 @@ class ScopedOwnerKnowledgeTests(SimpleTestCase):
                 self.assertFalse(assertion["checkout_authority"])
 
     def test_hoodie_composition_density_material_care_and_quality_answer_directly(self):
-        for question, number in (("Який склад худі?", "90%"), ("Яка щільність худі?", "320"),
+        for question, number in (("Який склад худі?", "90%"), ("Яка щільність худі?", "залежить"),
                                  ("Яка тканина худі?", "пенье"), ("Як прати худі?", "30"),
                                  ("Яка якість худі?", "100")):
             with self.subTest(question=question):

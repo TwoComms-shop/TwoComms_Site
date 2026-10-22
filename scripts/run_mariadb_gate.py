@@ -94,11 +94,26 @@ SUITES = {
         "management.tests_ig_assisted_restock_followup.NativeAssistedRestockFollowupTests."
         "test_real_owned_photos_in_all_wait_agreement_keep_shared_context_inside_24_reads",
     ),
-    "conversion-context": (
+    # Keep the October 22 dialogue work separate from the legacy conversion
+    # gate, whose native run already approaches the per-job timeout.
+    "dialogue-quality": (
+        "management.tests_ig_communication_policy_20261022",
+        "management.tests_ig_conversation_activity",
+        "management.tests_ig_conversion_audit_analysis_20261022",
+        "management.tests_ig_conversion_audit_schema_20261022",
+        "management.tests_ig_conversion_audit_stats_20261022",
+        "management.tests_ig_product_weight_20261022",
         "management.tests_ig_live_burst_fairness_20261022",
         "management.tests_ig_live_conversation_contract_20261022",
+        "management.tests_ig_live_identity_echo_20261022",
         "management.tests_ig_manager_case_continuity_20261022",
-        "management.tests_ig_conversation_activity",
+        "management.tests_ig_reply_truth_seams_20261022",
+        "management.tests_ig_size_aliases_20261022",
+        "management.tests_ig_size_grid_authority_20261022",
+        "management.tests_ig_standard_funnel_20261022",
+        "storefront.tests.test_size_guide_authority_20261022",
+    ),
+    "conversion-context": (
         "management.tests_ig_manu_catalog_locale_20261021",
         "management.tests_ig_manu_catalog_poll_20261021",
         "management.tests_ig_manu_customer_pool_mariadb_20261021",

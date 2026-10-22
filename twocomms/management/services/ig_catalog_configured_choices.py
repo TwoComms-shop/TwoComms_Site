@@ -110,10 +110,13 @@ def size_measurements(grid, *, product_id, variant_id=None, option_key="", allow
     import re
     from django.core.exceptions import ValidationError
     from product_catalog.size_grid_services import normalize_size_grid_payload
+    from storefront.services.size_guide_authority import is_unverified_legacy_hoodie_seed
 
     if grid is None:
         return {}
     raw = getattr(grid, "guide_data", {}) or {}
+    if is_unverified_legacy_hoodie_seed(raw):
+        return {}
     if (not isinstance(raw, dict) or not isinstance(raw.get("rows"), list)
         or not isinstance(raw.get("columns"), list) or len(raw["rows"]) > MAX_SIZES
         or len(raw["columns"]) > 12):

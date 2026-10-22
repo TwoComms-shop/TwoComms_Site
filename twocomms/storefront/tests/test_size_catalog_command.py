@@ -72,7 +72,10 @@ class EnsureDefaultSizeCatalogsCommandTests(TestCase):
         tshirt_grid = SizeGrid.objects.get(catalog=tshirt_catalog, name="Basic tee size guide")
 
         self.assertEqual(hoodie_grid.guide_data.get("profile_key"), "hoodie")
+        self.assertFalse(hoodie_grid.guide_data.get("rows"))
+        self.assertIsInstance(hoodie_grid.guide_data.get("title"), str)
         self.assertEqual(tshirt_grid.guide_data.get("profile_key"), "basic_tshirt")
+        self.assertTrue(tshirt_grid.guide_data.get("rows"))
 
         self.assertEqual(Catalog.objects.filter(slug="hoodie-default").count(), 1)
         self.assertEqual(Catalog.objects.filter(slug="basic-tshirts").count(), 1)

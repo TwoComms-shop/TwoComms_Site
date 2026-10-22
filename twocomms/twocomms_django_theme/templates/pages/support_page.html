@@ -221,8 +221,8 @@
 
     {% if size_guide_blocks.blocks %}
       <section class="support-section-card" id="size-guide-blocks">
-        <span class="support-eyebrow">Confirmed guides</span>
-        <h2 class="support-section-title">{% trans 'Підтверджені сітки по категоріях' %}</h2>
+        <span class="support-eyebrow">Size guides</span>
+        <h2 class="support-section-title">{% trans 'Розмірні сітки по категоріях' %}</h2>
         <div class="support-size-guide-blocks">
           {% for block in size_guide_blocks.blocks %}
             <article class="support-size-guide-block">
@@ -245,7 +245,7 @@
                 {% endif %}
               </div>
 
-              <div class="support-table-wrap">
+              {% if block.rows %}<div class="support-table-wrap">
                 <table class="support-table">
                   <thead>
                     <tr>
@@ -270,7 +270,7 @@
                     {% endfor %}
                   </tbody>
                 </table>
-              </div>
+              </div>{% endif %}
 
               {% if block.notes %}
                 <div class="support-guide-notes">

@@ -222,18 +222,21 @@ def revision_has_newer_source(revision):
     ).exists()
 
 
-def revision_sources_current(revision):
+def revision_sources_current(revision, *, source_rows=None):
     """Compare source identities/content, excluding mutable inspection results.
 
     The frozen bundle alone cannot detect an edit to an existing message ID.
     `_source_payload` retains discovery identity but omits capture/inspection
     projections, so completing a bound image inspection does not stale a reply.
+    Read models may supply the complete ordinal/id-ordered source relation
+    with message/client objects already loaded; all checks remain identical.
     """
     from management.services.ig_turn_revisions import _source_payload
     from management.services.ig_ingress_source_proof import is_current_customer_source
 
     snapshots = (revision.bundle_snapshot or {}).get("sources") or []
-    rows = list(revision.sources.select_related("message__client").order_by("ordinal", "id"))
+    rows = (list(revision.sources.select_related("message__client").order_by("ordinal", "id"))
+        if source_rows is None else list(source_rows))
     if not rows or len(rows) != revision.source_count or len(rows) != len(snapshots):
         return False
     try:

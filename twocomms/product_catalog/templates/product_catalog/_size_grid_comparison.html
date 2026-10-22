@@ -6,7 +6,7 @@
       <h2 class="tc-guide-title" id="size-guide-title-{{ product.id }}">{% trans "Знайдіть свою посадку" %}</h2>
     </div>
     <p class="tc-muted-copy tc-size-comparison__lead">
-      {% trans "Класичний крій починається з S. Порівняйте точні виміри або отримайте підказку за зростом і вагою." %}
+      {{ size_grid_comparison.0.guide.comparison_intro }}
     </p>
   </div>
 
@@ -22,7 +22,7 @@
         data-size-guide-fit="{{ item.fit_code }}"
         data-size-guide-available-sizes="{{ item.available_sizes|join:',' }}">
         <span>{{ item.label }}</span>
-        <small>{% trans 'Точні виміри' %}</small>
+        <small>{{ item.guide.measurement_label }}</small>
       </button>
     {% endfor %}
     {% if size_advisor_enabled %}
@@ -103,7 +103,7 @@
                 </tbody>
               </table>
             </div>
-          {% elif not guide.image_url %}
+          {% elif not guide.image_url and guide.measurement_authority != 'legacy_seed_unverified' %}
             <p class="tc-muted-copy">{% trans "Для цієї посадки ще немає окремої таблиці вимірів. Уточніть розмір у менеджера." %}</p>
           {% endif %}
         {% endwith %}
@@ -133,10 +133,11 @@
         data-copy-alternative-tighter="{% trans 'Щільніша альтернатива:' %}"
         data-copy-alternative-looser="{% trans 'Вільніша альтернатива:' %}"
         data-copy-limit="{% trans 'Це крайній доступний розмір для обраної посадки.' %}"
+        data-copy-nearby="{% trans 'Сусідній доступний розмір: перед вибором звірте виміри з таблицею або напишіть нам.' %}"
         data-error-height="{% trans 'Вкажіть зріст від 145 до 210 см.' %}"
         data-error-weight="{% trans 'Вкажіть вагу від 40 до 160 кг.' %}"
         data-error-fit="{% trans 'Оберіть бажану посадку.' %}"
-        data-error-availability="{% trans 'Для цієї посадки зараз немає доступного розміру. Напишіть нам, і ми допоможемо.' %}"
+        data-error-availability="{% trans 'Серед доступних розмірів не вдалося підібрати близький варіант. Звірте виміри з таблицею або напишіть нам.' %}"
         data-height-unit="{% trans 'см' %}"
         data-weight-unit="{% trans 'кг' %}"
         novalidate>

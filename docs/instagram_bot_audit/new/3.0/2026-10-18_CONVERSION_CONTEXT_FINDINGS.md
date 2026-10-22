@@ -796,3 +796,22 @@ Timeout для ответственности оператора не созда
 ## Дополнительный QA 22.10: live-интерфейс и диалоговые границы
 
 Новые подтверждённые находки и проверяемая реализация собраны в [журнале22.10](2026-10-22_LIVE_UX_DIALOGUE_QA.md). Обнаружены inbound-only сортировка, отсутствие обновления карточки без новых сообщений, задержка сохранения профиля за загрузкой аватара, неверная маркировка manager audio, spoken XXL и отдельные задачи вместо объединённого brief. Независимый review дополнительно выявил stale A→B действия, mobile reading anchor и неподтверждённое принятие на работу. Статус каждой проверки и ограничения приведены в журнале; отсутствие нового исходящего сообщения не заменяется фактом уведомления менеджера.
+
+
+## Дополнение23.10.2026 — подтверждённые стандартные сценарии
+
+1. **Английский фасон:** `regular fit for…` блокировался как несуществующий фасон `for`; отдельный `regular` не закрывал canonical `classic`. Обе ошибки воспроизведены нативной цепочкой, исправлены;10 новых обычных диалогов и204 смежных теста проходят. Это прямой риск остановки тёплого покупателя после выбора фасона.
+2. **Смысл вопроса не равен выбору:** «Уточните, пожалуйста, вес худи» мог менять товар/разделять вопрос запятыми. Добавлены source-bound проверки; вес клиента, масса вещи и GSM различаются. По уточнению владельца обычный ответ о массе — известная политика отсутствия отдельного взвешивания, без менеджера и без числовых догадок.
+3. **Данные основы:** владелец подтвердил, что плотность зависит от основы. Убрана общая власть числа320 для всех худи; состав90/10 и слегкаoversize сохранены.
+4. **Ложные замеры:** read-only MariaDB показала catalog2/grid2 с точным старым программным preset. Публичная страница дополнительно игнорировала actual guide_data; PDPmatrix и бот имели отдельные обходные пути. Общий guard должен применяться во всех потребителях. Показ отсутствия подтверждённой сетки предпочтительнее выдуманной точности; реальные пользовательские замеры сохраняются.
+5. **Калькулятор:** явная категория худи должна исключать формулу футболок даже при T-shirt в названии каталога. Далёкий доступныйS не является рекомендацией вместо расчётногоXXXL; нужна честная невозможность подбора и сброс прежнего результата.
+6. **Причины неконверсии:** анализатор сейчас не видит финальный ответ за своим inputwatermark. Требуется отдельный receipt-backed диагностический контекст в том же вызове, иначе выводы о качестве/скорости последнего ответа недоказательны. Реальная оплаченная конверсия, модельная готовность и предполагаемые причины отказа должны оставаться разными показателями.
+
+Первая UI/reliability-версия34e6d16ed уже выложена и проверена. Последующие исправления и аналитическое расширение требуют отдельной интеграционной проверки/выкладки; актуальный журнал:2026-10-22_LIVE_UX_DIALOGUE_QA.md. Plan90 автоматически не переписывался.
+
+
+### Implemented evidence boundaries for conversion diagnostics — 23 October
+
+The analyzer extension uses the existing call and immutable analysis snapshot, with separate admitted customer quotes and verified SENT-effect diagnostics. It records possible causes without turning silence, an objection, a manager notification, a receipt screenshot or a generated payment link into a lost/paid sale. Runtime source/epoch/namespace/reset/episode checks guard current interpretation. Statistics reconstruct receipt timing from canonical sources/effects rather than stored JSON values and require exact ordered source identity. Independent native tests reproduced and closed edited-source and unrelated-source-array attribution bugs.
+
+Owner-facing readiness remains an uncalibrated AI assessment. Actual paid conversion continues to come from canonical provider/manager/linked paid-order truth and mature cohorts. New reason statistics explicitly identify their 31-day window, selected page (maximum 50 commercial episodes), coverage and unknown states; they cannot establish causal uplift or estimate reasons for unreviewed clients. Older empty snapshots are not automatically replayed or rewritten. This is an observability foundation for later owner-reviewed prompt/knowledge improvements, not autonomous self-training.

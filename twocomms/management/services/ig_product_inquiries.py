@@ -13,7 +13,7 @@ import re
 VERSION = "product-inquiries.v1"
 REVIEW_REASONS = frozenset({"product_configuration_review", "product_information_review"})
 _PRODUCT = re.compile(r"худі|худи|hoodie|футболк\w*|t-?shirt|товар\w*|product|одяг|одежд", re.I)
-_ASK = re.compile(r"\?|\b(?:what|which|have|is|are|can|tell|available)\b|(?:який|яка|какой|какая|есть|чи|підкаж|подскаж|уточн)\w*", re.I)
+_ASK = re.compile(r"\?|\b(?:what|which|have|is|are|can|tell|check|clarify|available)\b|(?:який|яка|какой|какая|есть|чи|підкаж|подскаж|уточн)\w*", re.I)
 _WISH = re.compile(r"\b(?:want|need|choose|хочу|хотів|хотел|потріб\w*|нуж\w*|обира\w*|выбир\w*)\b", re.I)
 _CORRECTION = re.compile(r"\b(?:actually|instead|rather|better|краще|лучше)\b|\b(?:не|not)\s+[^.!?;]{0,40}[,]\s*(?:а|but)\b", re.I)
 _HISTORY = re.compile(r"\b(?:раніше|раньше|ранее|вчера|учора|previously|earlier|formerly|yesterday|used\s+to)\b|(?:минул\w*|прошл\w*|previous|old)\s+(?:замовлен\w*|заказ\w*|order)", re.I)
@@ -24,6 +24,43 @@ _SPEC_ASSERTION = re.compile(r"метал\w*|\bmetal\w*\b|пластик\w*|\bpl
 _PRODUCTION = re.compile(r"зробимо|сделаем|виготов\w*|изготов\w*|відправ\w*|отправ\w*|\b(?:make|manufactur\w*|produce|ship|dispatch)\b", re.I)
 _DESIGN_STORY = re.compile(r"історі\w*|истори\w*|походжен\w*|происхожден\w*|\b(?:story|origin|meaning)\b", re.I)
 _DESIGN = re.compile(r"принт\w*|дизайн\w*|малюн\w*|рисунк\w*|\b(?:print|design|artwork)\b", re.I)
+_WEIGHT = re.compile(r"\b(?:ваг(?:а|и|у|ою)|важ(?:ить|ать|у)|вес(?:а|у|ом|ит|ят)?|weigh(?:t|s|ing)?)\b", re.I)
+_FABRIC_WEIGHT = re.compile(r"\b(?:fabric|textile|cloth)\s+weight\b|\bweight\s+of\s+(?:the\s+)?(?:fabric|textile|cloth)\b|\bваг[аиу]\s+тканин\w*|\bвес(?:а)?\s+ткани\b", re.I)
+_SPEC = re.compile(_SPEC.pattern + "|" + _WEIGHT.pattern + r"|\bсклад\b", re.I)
+_MASS_AMOUNT = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:кг|kg|kilograms?|гр?(?:ам(?:м(?:а|ов|ы)?|ів|а|и)?)?|g(?:rams?)?)(?!\w)(?!\s*/)", re.I)
+
+
+def _garment_weight_requested(text):
+    """A garment mass question, never the customer's body measurements."""
+    fabric_spans = list(_FABRIC_WEIGHT.finditer(str(text or "")))
+    for match in _WEIGHT.finditer(str(text or "")):
+        if any(span.start() <= match.start() < span.end() for span in fabric_spans):
+            continue
+        if re.search(r"\b(?:моя|мою|мої|мой|моего|моим|мене|меня|мені|мне|my|your|body|я|i)\s*$", text[:match.start()], re.I):
+            continue
+        local_before = re.split(r"[,;.!?]|\b(?:а|але|но|but)\b", text[:match.start()], flags=re.I)[-1]
+        local_after = re.split(r"[,;.!?]|\b(?:а|але|но|but)\b", text[match.end():], flags=re.I)[0]
+        if _REJECT.search(local_before) or re.search(r"не\s+(?:цікавить|интересует)\b", local_after, re.I):
+            continue
+        # Body measurements often omit a possessive. A size request plus kg
+        # does not become a garment-mass question through a later hoodie noun.
+        explicit_subject = re.match(r"(?:\s+(?:of|the|this|that|selected|цього|цієї|этого|этой|вибраного|выбранного)){0,4}\s*(?:худі|худи|hoodie|футболк\w*|t-?shirt)\b", text[match.end():], re.I)
+        explicit_subject = explicit_subject or re.search(r"(?:худі|худи|hoodie|футболк\w*|t-?shirt)\s*$", text[:match.start()], re.I)
+        if (not explicit_subject and re.search(r"\d+(?:[.,]\d+)?\s*(?:кг|kg)\b", text, re.I)
+            and re.search(r"розмір\w*|размер\w*|\bsize\b|\bfit\b|зріст|рост|height", text, re.I)):
+            continue
+        return True
+    return False
+
+
+def _inquiry_clauses(text):
+    # Polite commas belong to the same request. Keep their exact source bytes
+    # while retaining ordinary comma/sentence boundaries for unrelated clauses.
+    protected = re.sub(
+        r"\b(?:уточн\w*|підкаж\w*|подскаж\w*|check|clarify|tell)\s*,\s*"
+        r"(?:(?:будь\s+ласка|пожалуйста|please)\s*,\s*)?",
+        lambda match: match.group().replace(",", "\x00"), text, flags=re.I)
+    return (clause.replace("\x00", ",") for clause in re.split(r"[.!;,\n]+|\b(?:але|но|but|а)\b", protected))
 
 
 def _digest(value):
@@ -92,7 +129,7 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
     resolved = []
     language = resolve_own_source_reply_language(sources=owned, profile_language=profile_language)
     from management.services.ig_product_focus import information_subject
-    from management.services.approved_public_facts import _captured_base
+    from management.services.approved_public_facts import _captured_base, _GARMENT_WORDS
 
     for source_index, source in enumerate(owned):
         source_line = active
@@ -105,13 +142,27 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                               or source_line.get("product_id"))
             state = states.get(source_line.get("line_id"), {})
         information_state = state
+        information_line = source_line
+        information_product = source_product
         subject = information_subject(owned[:source_index + 1])
         native_garment = _captured_base(state, "composition")[1]
+        identity_garment = native_garment
+        if not identity_garment:
+            title = str((state.get("product") or {}).get("title") or "")
+            title_garments = {kind for kind, pattern in _GARMENT_WORDS.items() if pattern.search(title)}
+            if len(title_garments) == 1:
+                identity_garment = next(iter(title_garments))
         if subject and (subject.get("status") != "identified" or subject.get("future_base_requested")
                         or subject.get("garment_type") != native_garment):
             # A short follow-up inherits its information subject. Keeping a
             # cart line does not turn its old garment into this question's base.
             information_state = {}
+        if subject and (subject.get("status") != "identified" or subject.get("future_base_requested")
+                        or identity_garment and subject.get("garment_type") != identity_garment):
+            # Missing reviewed base facts are not proof of a different SKU.
+            # A title may preserve identity, but never grants specification facts.
+            information_line = {}
+            information_product = None
         raw = own_reply_text(_current_source_text(source.get("text", "")))
         affirmed_color = _find_prefix_value(raw, _COLOR_WORDS)
         correction = bool(_CORRECTION.search(raw))
@@ -124,7 +175,7 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
         inquiries = [item for item in inquiries if not (item["axis"] in changed
             and item["line_id"] == source_line.get("line_id", "")
             and item["product_id"] == source_product)]
-        for clause in re.split(r"[.!;,\n]+|\b(?:але|но|but|а)\b", raw):
+        for clause in _inquiry_clauses(raw):
             if not clause.strip() or _HISTORY.search(clause):
                 continue
             design_story = bool(_DESIGN_STORY.search(clause) and _DESIGN.search(clause))
@@ -150,6 +201,8 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                                                 or size_state.get("requested_unavailable") == wanted):
                     candidates.append(("size", wanted, "requested_size_unverified"))
             spec = _SPEC.search(clause)
+            if spec and _WEIGHT.fullmatch(spec.group()) and not _garment_weight_requested(clause) and not _FABRIC_WEIGHT.search(clause):
+                spec = None
             # A short composition question needs a product; warehouse/order
             # phrases containing "склад" are deliberately not spec questions.
             ui_button = bool(re.search(r"buttons?", clause, re.I) and re.search(r"click|tap|press|pay|checkout|клік|натис|нажат|оплат", clause, re.I))
@@ -159,19 +212,24 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                 candidates.append(("information", "design_story", "product_fact_unverified"))
             for axis, wanted, reason in candidates:
                 item = {"source_message_id": source["message_id"], "source_digest": source.get("source_digest", ""),
-                        "line_id": source_line.get("line_id", ""), "product_id": source_product,
+                        "line_id": (information_line if axis == "information" else source_line).get("line_id", ""),
+                        "product_id": information_product if axis == "information" else source_product,
                         "axis": axis, "requested_value": wanted, "question": clause.strip()[:500], "reason": reason,
                         "catalog_authority": False, "checkout_authority": False}
                 if axis == "information":
-                    from management.services.approved_public_facts import approved_base_assertion, requested_product_topics
+                    from management.services.approved_public_facts import (
+                        approved_base_assertion, approved_weight_policy_assertion, requested_product_topics,
+                    )
 
                     topics = requested_product_topics(clause.strip())
                     if topics:
                         for topic in topics:
                             qualified = {**item, "requested_topic": topic}
-                            assertion = approved_base_assertion(information_state, question=clause.strip(),
-                                language=language.template_family, topic=topic)
-                            if assertion is not None and assertion["product_id"] == source_product:
+                            assertion = (approved_weight_policy_assertion(question=clause.strip(),
+                                language=language.template_family, product_id=information_product) if topic == "weight"
+                                else approved_base_assertion(information_state, question=clause.strip(),
+                                    language=language.template_family, topic=topic))
+                            if assertion is not None and assertion["product_id"] == information_product:
                                 resolved.append({**qualified, "reason": "approved_product_information", "assertion": assertion})
                             else:
                                 inquiries.append(qualified)
@@ -337,7 +395,10 @@ def inquiry_prompt(disposition):
     approved = ("[SOURCE-BOUND APPROVED PRODUCT ANSWERS]\n" + json.dumps(known, ensure_ascii=False, separators=(",", ":"))
         + "\nAnswer these known questions directly using their exact scope and resolved_text when present, otherwise reviewed assertion text. "
         "These facts need no manager. Preserve owner attribution and care conditions for quality claims. "
-        "They grant no stock, selection, checkout or future-batch authority.") if known else ""
+        "They grant no stock, selection, checkout or future-batch authority."
+        + (" For garment weight, state the reviewed no-weighing policy directly; do not replace garment mass with fabric GSM, "
+           "invent grams, promise a weighing, or request manager review for this routine policy."
+           if any(row.get("requested_topic") == "weight" for row in known) else "")) if known else ""
     if disposition.get("status") != "manager_required":
         return approved
     return approved + ("\n[SOURCE-BOUND PRODUCT INQUIRIES]\n" + json.dumps(disposition, ensure_ascii=False, separators=(",", ":"))
@@ -381,6 +442,23 @@ def validate_inquiry_response(disposition, response):
     factual_reason = validate_approved_product_claims(response.reply_text, assertions)
     if factual_reason:
         return "product_information_unverified"
+    from management.services.ig_reply_language import own_reply_text
+    text = response.reply_text
+    unresolved_weight = any(row.get("requested_topic") == "weight" for row in list(disposition.get("inquiries", ())) + list(disposition.get("resolved_information", ())))
+    if unresolved_weight:
+        # Protect decimal separators while preserving real assertion boundaries.
+        mass_text = re.sub(r"(?<=\d)[.,](?=\d)", "\x00", own_reply_text(text))
+        for sentence in re.findall(r"[^.!?;\n]+[?]?", mass_text):
+            sentence = sentence.replace("\x00", ".")
+            if "?" in sentence or not _MASS_AMOUNT.search(sentence):
+                continue
+            if _WEIGHT.search(sentence) and not _garment_weight_requested(sentence):
+                continue
+            if re.search(r"посилк\w*|посылк\w*|parcel|package|shipping", sentence, re.I) and not _PRODUCT.search(sentence):
+                continue
+            # This capture has no reviewed garment-mass capability. A check
+            # commitment cannot launder guessed grams; GSM and UAH differ.
+            return "product_information_unverified"
     if disposition.get("status") != "manager_required":
         return ""
     control, text = response.control, response.reply_text
@@ -408,6 +486,8 @@ def validate_inquiry_response(disposition, response):
     from management.services.ig_reply_language import own_reply_text
     for clause in re.split(r"[.!;,:\n]+|\b(?:але|но|but)\b", own_reply_text(text)):
         match = _SPEC.search(clause) or _SPEC_ASSERTION.search(clause)
+        if match and _WEIGHT.fullmatch(match.group()) and not _garment_weight_requested(clause):
+            continue
         if information and match and "?" not in clause:
             if any(approved_product_topic_covered(row.get("resolved_topic", row["assertion"]["topic"]), clause, disposition)
                    for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row)):
@@ -450,6 +530,21 @@ def approved_product_topic_covered(topic, reply_text, disposition):
     rows = [row for row in disposition.get("resolved_information", ()) if approved_inquiry_assertion(row)
             and (wanted is None or row.get("resolved_topic", row["assertion"]["topic"]) == wanted
                  or wanted == "material" and row.get("resolved_topic", row["assertion"]["topic"]) == "composition")]
+    if wanted is None:
+        # A generic question still owes every captured fact. Resolve each row
+        # through the same topic-specific policy coverage as an explicit ask.
+        return bool(rows and all(approved_product_topic_covered(
+            row.get("resolved_topic", row["assertion"]["topic"]), reply_text,
+            {**disposition, "resolved_information": [row]}) for row in rows))
+    if rows and wanted in {"weight", "density"}:
+        from management.services.ig_reply_language import own_reply_text
+        text = own_reply_text(reply_text)
+        if wanted == "weight" and all(row["assertion"].get("schema") == "approved-weight-policy-assertion.v1" for row in rows):
+            return bool(re.search(r"не\s+зважуємо|не\s+взвешиваем|(?:do\s+not|don['’]t)\s+weigh", text, re.I)
+                and re.search(r"готов\w*\s+(?:реч\w*|вещ\w*|вироб\w*|издел\w*)|finished\s+(?:garments?|items?|clothes)", text, re.I)
+                and not _MASS_AMOUNT.search(text))
+        if wanted == "density" and all(row["assertion"].get("garment") == "hoodie" and row["assertion"].get("gsm") is None for row in rows):
+            return bool(re.search(r"щільн\w*[^.!?]*залежить[^.!?]*основ|плотност\w*[^.!?]*зависит[^.!?]*основ|density[^.!?]*depends[^.!?]*base", text, re.I))
     return bool(rows and all(approved_product_assertion_covered(reply_text, row["assertion"],
         topic=row.get("resolved_topic")) for row in rows))
 
@@ -501,7 +596,7 @@ def apply_approved_category_context(disposition, category_assertions):
     for row in result.get("resolved_information", ()):
         assertion = row.get("assertion") or {}
         matching = next((proof for proof in proofs if row.get("source_message_id") in proof["subject"]["source_message_ids"]), None)
-        if matching and assertion.get("garment") != matching["garment"]:
+        if matching and assertion.get("scope_kind") != "brand_policy" and assertion.get("garment") != matching["garment"]:
             # Rebind an earlier captured native answer when the inherited
             # information subject proves it belonged to another category.
             pending.append({key: value for key, value in row.items() if key not in {"assertion", "resolved_text", "resolved_topic"}})

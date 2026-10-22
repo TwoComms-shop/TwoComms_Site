@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const vm = require('node:vm');
 
 const productDetailSource = fs.readFileSync(require.resolve('./product-detail.js'), 'utf8');
 
@@ -143,6 +144,102 @@ test('size advisor uses exact option availability and supports catalogued 3XL', 
     availableSizes: ['S', 'M', 'L', 'XL', 'XXL', 'XXXL'],
   });
   assert.equal(catalogued3xl.size, 'XXXL');
+});
+
+test('size advisor rejects distant availability and never offers distant alternatives', () => {
+  for (const fit of ['classic', 'oversize']) {
+    assert.deepEqual(recommendTshirtSize({
+      height: 205, weight: 130, fit, availableSizes: ['S', 'M', 'UNKNOWN'],
+    }), { ok: false, error: 'availability' });
+  }
+  assert.deepEqual(recommendTshirtSize({
+    height: 150, weight: 45, fit: 'classic', availableSizes: ['XXL', '3XL'],
+  }), { ok: false, error: 'availability' });
+  const exact = recommendTshirtSize({
+    height: 180, weight: 80, fit: 'classic', availableSizes: ['S', 'L', '3XL'],
+  });
+  assert.equal(exact.size, 'L');
+  assert.equal(exact.alternative, '');
+  assert.equal(exact.limitReached, false);
+  const adjacent = recommendTshirtSize({
+    height: 205, weight: 130, fit: 'classic', availableSizes: ['S', '2XL', 'not-a-size'],
+  });
+  assert.equal(adjacent.size, 'XXL');
+  assert.equal(adjacent.targetSize, 'XXXL');
+  assert.equal(adjacent.alternative, '');
+  assert.equal(adjacent.limitReached, true);
+  assert.deepEqual(recommendTshirtSize({
+    height: 180, weight: 80, fit: 'classic', availableSizes: ['unknown', '6XL'],
+  }), { ok: false, error: 'availability' });
+});
+
+test('size advisor rejects nonfinite measurements before availability selection', () => {
+  for (const height of [NaN, Infinity, -Infinity, 'Infinity']) {
+    assert.deepEqual(recommendTshirtSize({ height, weight: 80, fit: 'classic', availableSizes: ['L'] }),
+      { ok: false, error: 'height' });
+  }
+  for (const weight of [NaN, Infinity, -Infinity, 'Infinity']) {
+    assert.deepEqual(recommendTshirtSize({ height: 180, weight, fit: 'classic', availableSizes: ['L'] }),
+      { ok: false, error: 'weight' });
+  }
+});
+
+test('actual advisor form removes a previous recommendation after incompatible availability and can recover', () => {
+  const input = (value) => ({ value, addEventListener() {} });
+  const height = input('180'), weight = input('80'), fit = input('classic');
+  const error = { textContent: '', hidden: true };
+  const output = { textContent: '' }, summary = { textContent: '' };
+  const alternative = { textContent: '' }, limit = { textContent: '' };
+  const classes = new Set();
+  const result = { hidden: false, style: {}, classList: {
+    add(name) { classes.add(name); }, remove(name) { classes.delete(name); },
+  }, querySelector(selector) { return ({
+    '[data-size-advisor-size]': output, '[data-size-advisor-summary]': summary,
+    '[data-size-advisor-alternative]': alternative, '[data-size-advisor-limit]': limit,
+  })[selector]; } };
+  let submit;
+  const form = { dataset: { errorAvailability: 'Compare measurements or contact us.',
+    copyClassic: 'Classic fit.', copyNearby: 'Nearby size: compare measurements before choosing.',
+    copyAlternativeTighter: 'Tighter:', copyAlternativeLooser: 'Looser:', copyLimit: 'Available limit.' },
+  querySelector(selector) { return ({ '[data-size-advisor-height]': height,
+    '[data-size-advisor-weight]': weight, '[data-size-advisor-error]': error,
+    'input[name="size_advisor_fit"]:checked': fit })[selector] || null; },
+  querySelectorAll() { return [height, weight]; },
+  addEventListener(type, listener) { if (type === 'submit') submit = listener; } };
+  const comparison = { querySelector(selector) { return selector === '[data-size-advisor-form]' ? form : result; },
+    querySelectorAll() { return []; } };
+  const variant = { available_sizes_by_fit: { classic: ['M', 'L', 'XL'] } };
+  const sandbox = { recommendTshirtSize, resolveAdvisorAvailableSizes, formatAdvisorSummary,
+    currentVariantData: () => variant, selectedOptionValues: () => ({ fit: 'classic' }) };
+  vm.createContext(sandbox);
+  const start = productDetailSource.indexOf('  function initSizeAdvisor(');
+  const end = productDetailSource.indexOf('  function updateSizeGuideAvailability(', start);
+  vm.runInContext(productDetailSource.slice(start, end), sandbox);
+  sandbox.initSizeAdvisor({ container: { dataset: { currentFit: 'classic' } } }, comparison, () => {});
+  const calculate = () => submit({ preventDefault() {} });
+  calculate();
+  assert.equal(output.textContent, 'L');
+  assert.equal(result.hidden, false);
+  assert.ok(classes.has('is-ready'));
+
+  height.value = '205'; weight.value = '130'; variant.available_sizes_by_fit.classic = ['S'];
+  calculate();
+  assert.equal(error.textContent, form.dataset.errorAvailability);
+  assert.equal(error.hidden, false);
+  assert.equal(output.textContent, '—');
+  assert.equal(summary.textContent, '');
+  assert.equal(alternative.textContent, '');
+  assert.equal(limit.textContent, '');
+  assert.equal(result.hidden, true);
+  assert.equal(result.style.display, 'none');
+  assert.equal(classes.has('is-ready'), false);
+
+  variant.available_sizes_by_fit.classic = ['2XL']; calculate();
+  assert.equal(output.textContent, '2XL');
+  assert.equal(error.hidden, true);
+  assert.equal(result.hidden, false);
+  assert.equal(result.style.display, '');
+  assert.match(summary.textContent, /Nearby size: compare measurements before choosing/);
 });
 
 test('size advisor summary uses localized units from the template', () => {

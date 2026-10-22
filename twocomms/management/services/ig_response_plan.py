@@ -29,7 +29,7 @@ _SELECTOR_WORDS = {
 }
 CHOICE_ALIASES = {
     "coyote": ("coyote", "koyote", "койот", "коёт", "койота", "койотовий", "койотовый"),
-    "oversize": ("oversize", "оверсайз"), "classic": ("classic", "класичн", "классическ"),
+    "oversize": ("oversize", "оверсайз"), "classic": ("classic", "regular", "класичн", "классическ"),
     "black": ("black", "чорний", "чорна", "чорне", "чорну", "чорні", "чорного", "чорної",
               "чёрный", "чёрная", "чёрное", "чёрную", "чёрные", "чёрного", "чёрной",
               "черный", "черная", "черное", "черную", "черные", "черного", "черной"),
@@ -414,6 +414,7 @@ def _native_chart_coverage(plan, evidence, reply_text=""):
 def _requested_topics(text, parsed_topics=()):
     """Retain information requests independently from a choice in that source."""
     from management.services.ig_reply_truth import _locally_negated
+    from management.services.ig_product_inquiries import _garment_weight_requested, _FABRIC_WEIGHT
     topics = {"info:" + ("size_chart" if str(topic).split(":", 1)[0] == "size_guide"
         else str(topic).split(":", 1)[0]) for topic in parsed_topics}
     for clause in re.findall(r"[^.!?\n]+[?]?", _unquoted_text(text)):
@@ -446,7 +447,7 @@ def _requested_topics(text, parsed_topics=()):
                 topics.add("info:audience")
         markers = list(re.finditer(
             r"\b(?:скільки|сколько|яка|який|какой|коли|когда|where|when|how|what|чи|ли|tell)\b"
-            r"|\b(?:підкаж|подскаж)", clause, re.I))
+            r"|\b(?:підкаж\w*|подскаж\w*|уточн\w*|check|clarify)", clause, re.I))
         asking = ("?" in clause and not markers) or any(
             not _locally_negated(clause, marker.start()) and not any(
                 negation.end() == len(clause[:marker.start()].rstrip())
@@ -455,9 +456,13 @@ def _requested_topics(text, parsed_topics=()):
         if not asking:
             continue
         matched = presentation or bool(fit_request) or chart_request or status_request or language_request
+        if _FABRIC_WEIGHT.search(clause):
+            topics.add("info:density")
+            matched = True
         for topic, pattern in (
             ("material", r"матеріал|материал|material|склад\b|состав|composition|cotton|бавов|хлоп"),
             ("density", r"щільн|плотност|density|gsm|г/м"),
+            ("weight", r"ваг(?:а|и|у|ою)\b|важ(?:ить|ать)\b|вес(?:а|у|ом|ит|ят)?\b|\bweigh(?:t|s|ing)?\b"),
             ("care", r"прат|стир|догляд|уход|wash|care"),
             ("quality", r"якіст|качеств|quality|тріска|треска|crack"),
             ("payment", _PAYMENT_WORDS.pattern),
@@ -467,7 +472,14 @@ def _requested_topics(text, parsed_topics=()):
             ("recruitment", r"ваканс|праців|работ\w*|робот\w*|staff|job|hiring"),
             ("service", r"власн\w*\s+принт|св(?:о[йяю]|ій)\w*\s+(?:принт|дизайн)|custom|own\s+design|сервіс|сервис|service"),
         ):
-            if re.search(pattern, clause, re.I):
+            if topic == "price":
+                price_matches = list(re.finditer(pattern, clause, re.I))
+                if price_matches and all(_locally_negated(clause, match.start()) or re.search(
+                    r"\b(?:не|not)\s+(?:цікав\w*|интерес\w*|interested(?:\s+in)?)\s*$",
+                    re.split(r"[,;]|\b(?:а|але|но|but)\b", clause[:match.start()], flags=re.I)[-1], re.I)
+                    for match in price_matches):
+                    continue
+            if re.search(pattern, clause, re.I) and (topic != "weight" or _garment_weight_requested(clause)):
                 topics.add("info:" + topic)
                 matched = True
         if "?" in clause and not matched:
@@ -1366,7 +1378,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
             if "payment:claim" in payment_kinds:
                 payment_claim_ids.add(source["message_id"])
         if any(topic in topics for topic in ("info:presentation", "info:price", "info:fit", "info:fit_presentation", "info:audience", "info:size_chart",
-                "info:material", "info:density", "info:care", "info:quality", "info:reply_language", "info:manager_status")):
+                "info:material", "info:density", "info:weight", "info:care", "info:quality", "info:reply_language", "info:manager_status")):
             commerce_present = True
         if topics:
             kinds.extend(topics)

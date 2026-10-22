@@ -14,8 +14,18 @@ import re
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
 
 
-APPROVED_PUBLIC_FACTS_VERSION = "2026-10-21.owner-scoped.2"
+APPROVED_PUBLIC_FACTS_VERSION = "2026-10-22.owner-weight.1"
 SUPPORTED_PUBLIC_FACT_LANGUAGES = ("uk", "ru", "en")
+_WEIGHT_POLICY_TEXTS = {
+    "uk": "Готові речі окремо не зважуємо, тому точного значення ваги немає.",
+    "ru": "Готовые вещи отдельно не взвешиваем, поэтому точного значения веса нет.",
+    "en": "We do not weigh finished garments separately, so we do not have an exact garment weight.",
+}
+_HOODIE_DENSITY_TEXTS = {
+    "uk": "Щільність залежить від конкретної основи.",
+    "ru": "Плотность зависит от конкретной основы.",
+    "en": "Density depends on the specific base.",
+}
 
 
 @dataclass(frozen=True)
@@ -293,6 +303,12 @@ def approved_public_facts(language: str) -> tuple[ApprovedPublicFact, ...]:
             for key, scope, topic, base_keys, translations, boundary in module.FACTS:
                 canonical[key] = ApprovedPublicFact(key, translations[language], scope, boundary,
                     topic, base_keys, module.SOURCE, module.REVIEW, module.VERSION)
+        canonical["finished_garment_weight_policy"] = ApprovedPublicFact(
+            "finished_garment_weight_policy", _WEIGHT_POLICY_TEXTS[language], "brand_finished_garments",
+            "Answer routine garment-weight questions directly. No exact mass is available; do not invent grams, "
+            "substitute fabric GSM for garment mass, promise weighing, or create a manager case for this policy.",
+            topic="weight", source_ref="owner:2026-10-22:finished-garment-weight",
+            review_status="reviewed:owner-brief:2026-10-22", version="2026-10-22.owner-weight.1")
         return tuple(_render_fact(fact) for fact in canonical.values())
     except KeyError as exc:
         raise ValueError(f"unsupported public-fact language: {language}") from exc
@@ -428,16 +444,41 @@ def _captured_base(readiness, question):
 
 def requested_product_topics(question):
     """Separate requested facts; a fabric noun in composition is not a second ask."""
+    from management.services.ig_product_inquiries import _garment_weight_requested, _FABRIC_WEIGHT
+
     topics = set(knowledge_topics([{"text": str(question or "")}]))
+    if _garment_weight_requested(str(question or "")):
+        topics.add("weight")
+    if _FABRIC_WEIGHT.search(str(question or "")):
+        topics.add("density")
+        if not re.search(r"матер[іи]ал\w*|\bmaterial\b|\band\s+(?:the\s+)?fabric\b", str(question), re.I):
+            topics.discard("material")
     if "composition" in topics and "material" in topics:
         if not re.search(r"матер[іи]ал\w*|\band\s+(?:the\s+)?fabric\b|(?:і|и|та)\s+тканин\w*", str(question), re.I):
             topics.discard("material")
-    return tuple(key for key in ("composition", "material", "density", "care", "quality") if key in topics)
+    return tuple(key for key in ("composition", "material", "density", "weight", "care", "quality") if key in topics)
 
 
 def approved_base_assertions(readiness, *, question, language="uk"):
     return tuple(assertion for topic in requested_product_topics(question)
         if (assertion := approved_base_assertion(readiness, question=question, language=language, topic=topic)) is not None)
+
+
+def approved_weight_policy_assertion(*, question, language="uk", product_id=None):
+    """Reviewed weighing policy, with no numerical mass or catalogue proof."""
+    if language not in SUPPORTED_PUBLIC_FACT_LANGUAGES or "weight" not in requested_product_topics(question):
+        return None
+    if product_id is not None and (type(product_id) is not int or product_id <= 0):
+        return None
+    fact = next(row for row in approved_public_facts(language) if row.key == "finished_garment_weight_policy")
+    assertion = {"schema": "approved-weight-policy-assertion.v1", "scope_kind": "brand_policy",
+        "publication_version": APPROVED_PUBLIC_FACTS_VERSION, "fact_key": fact.key,
+        "fact_version": fact.version, "source_ref": fact.source_ref, "review_status": fact.review_status,
+        "topic": "weight", "language": language, "product_id": product_id,
+        "question": str(question)[:500], "text": fact.public_text,
+        "catalog_authority": False, "checkout_authority": False, "selection_authority": False}
+    assertion["digest"] = sha256(json.dumps(assertion, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    return assertion
 
 
 def approved_base_assertion(readiness, *, question, language="uk", topic=None):
@@ -453,6 +494,9 @@ def approved_base_assertion(readiness, *, question, language="uk", topic=None):
     base_key, garment = _captured_base(readiness, str(question or ""))
     topics = requested_product_topics(question)
     topic = next(iter(topics), "") if topic is None else topic if topic in topics else ""
+    if topic == "weight":
+        return approved_weight_policy_assertion(question=question, language=language,
+            product_id=((readiness or {}).get("product") or {}).get("id"))
     if not base_key or not topic or (base_key == "current_tshirt" and topic == "density"):
         return None
     fact_key = ("current_print_quality" if topic == "quality" else "current_care" if topic == "care"
@@ -470,9 +514,10 @@ def approved_base_assertion(readiness, *, question, language="uk", topic=None):
             "en": "This base is " + ("90% cotton / 10% polyester." if garment == "hoodie" else "95% cotton / 5% elastane."),
         }[language]
     elif topic == "density":
-        text = {"uk": f"Щільність цієї основи — близько {base['gsm']} г/м².",
+        text = (_HOODIE_DENSITY_TEXTS[language] if garment == "hoodie" and base.get("gsm") is None else
+            {"uk": f"Щільність цієї основи — близько {base['gsm']} г/м².",
                 "ru": f"Плотность этой основы — около {base['gsm']} г/м².",
-                "en": f"This base is approximately {base['gsm']} g/m²."}[language]
+                "en": f"This base is approximately {base['gsm']} g/m²."}[language])
     elif topic == "material":
         text = {"uk": "Тринитка пенье з флісом." if garment == "hoodie" else "Турецька кулірка пенье, 95% бавовни / 5% еластану.",
                 "ru": "Трёхнитка пенье с флисом." if garment == "hoodie" else "Турецкая кулирка пенье, 95% хлопка / 5% эластана.",
@@ -499,6 +544,10 @@ def approved_assertion_valid(assertion):
     """Reject stale versions/changed payloads before reusing a sealed assertion."""
     if not isinstance(assertion, dict) or assertion.get("publication_version") != APPROVED_PUBLIC_FACTS_VERSION:
         return False
+    if assertion.get("schema") == "approved-weight-policy-assertion.v1":
+        expected = approved_weight_policy_assertion(question=assertion.get("question", ""),
+            language=assertion.get("language"), product_id=assertion.get("product_id"))
+        return expected is not None and expected == assertion
     if assertion.get("schema") == "approved-category-assertion.v1":
         try:
             expected = approved_category_context(assertion.get("subject"),
@@ -573,19 +622,20 @@ def approved_category_context(subject, *, current_catalogue_categories=(), langu
               "ru": "Наши текущие худи" if garment == "hoodie" else "Наши текущие футболки",
               "en": "Our current hoodies" if garment == "hoodie" else "Our current T-shirts"}[language]
     text = {
-        "uk": (prefix + " — унісекс, одна злегка oversize основа: 90% бавовни / 10% поліестеру, тринитка пенье з флісом, близько 320 г/м²."
+        "uk": (prefix + " — унісекс, одна злегка oversize основа: 90% бавовни / 10% поліестеру, тринитка пенье з флісом. " + _HOODIE_DENSITY_TEXTS[language]
                if garment == "hoodie" else prefix + " — унісекс, 95% бавовни / 5% еластану, турецька кулірка пенье; regular — близько 190 г/м², oversize — близько 220 г/м²."),
-        "ru": (prefix + " — унисекс, одна слегка oversize основа: 90% хлопка / 10% полиэстера, трёхнитка пенье с флисом, около 320 г/м²."
+        "ru": (prefix + " — унисекс, одна слегка oversize основа: 90% хлопка / 10% полиэстера, трёхнитка пенье с флисом. " + _HOODIE_DENSITY_TEXTS[language]
                if garment == "hoodie" else prefix + " — унисекс, 95% хлопка / 5% эластана, турецкая кулирка пенье; regular — около 190 г/м², oversize — около 220 г/м²."),
-        "en": (prefix + " are unisex, with one slightly oversize base: 90% cotton / 10% polyester, combed three-thread fleece, approximately 320 g/m²."
+        "en": (prefix + " are unisex, with one slightly oversize base: 90% cotton / 10% polyester, combed three-thread fleece. " + _HOODIE_DENSITY_TEXTS[language]
                if garment == "hoodie" else prefix + " are unisex, 95% cotton / 5% elastane, Turkish combed kulir jersey; regular is approximately 190 g/m² and oversize approximately 220 g/m²."),
     }[language]
     composition = {"uk": "90% бавовни / 10% поліестеру" if garment == "hoodie" else "95% бавовни / 5% еластану",
                    "ru": "90% хлопка / 10% полиэстера" if garment == "hoodie" else "95% хлопка / 5% эластана",
                    "en": "90% cotton / 10% polyester" if garment == "hoodie" else "95% cotton / 5% elastane"}[language]
-    density = {"uk": "близько 320 г/м²" if garment == "hoodie" else "regular — близько 190 г/м², oversize — близько 220 г/м²",
-               "ru": "около 320 г/м²" if garment == "hoodie" else "regular — около 190 г/м², oversize — около 220 г/м²",
-               "en": "approximately 320 g/m²" if garment == "hoodie" else "regular approximately 190 g/m², oversize approximately 220 g/m²"}[language]
+    density = _HOODIE_DENSITY_TEXTS[language].rstrip(".") if garment == "hoodie" else {
+        "uk": "regular — близько 190 г/м², oversize — близько 220 г/м²",
+        "ru": "regular — около 190 г/м², oversize — около 220 г/м²",
+        "en": "regular approximately 190 g/m², oversize approximately 220 g/m²"}[language]
     answers = {"material": text, "composition": prefix + ": " + composition + ".",
                "density": prefix + ": " + density + "."}
     for topic, key in (("care", "current_care"), ("quality", "current_print_quality")):
@@ -607,7 +657,7 @@ def approved_category_context(subject, *, current_catalogue_categories=(), langu
             if item.key in {"current_care", "current_print_quality"} and item.review_status.startswith("reviewed")
             and (base_key in item.base_keys or base_key == "current_tshirt" and "current_tshirt_regular" in item.base_keys)},
         "composition": [list(row) for row in base["composition"]], "gsm": base["gsm"] if garment == "hoodie" else None,
-        "allowed_gsm": [320] if garment == "hoodie" else [190, 220], "product_id": None,
+        "allowed_gsm": [] if garment == "hoodie" else [190, 220], "product_id": None,
         "selection_authority": False, "stock_authority": False, "catalog_authority": False,
         "checkout_authority": False, "payment_authority": False}
     assertion["digest"] = sha256(json.dumps(assertion, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()

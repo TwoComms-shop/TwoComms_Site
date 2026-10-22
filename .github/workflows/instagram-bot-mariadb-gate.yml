@@ -12,6 +12,11 @@ on:
       - "twocomms/orders/models.py"
       - "twocomms/orders/promo_reservations.py"
       - "twocomms/storefront/services/loyalty_rewards.py"
+      - "twocomms/storefront/services/size_guide_authority.py"
+      - "twocomms/storefront/services/size_guides.py"
+      - "twocomms/storefront/views/product.py"
+      - "twocomms/storefront/tests/test_size_guide_authority_20261022.py"
+      - "twocomms/product_catalog/size_grid_services.py"
       - "twocomms/finance/tests_migration_storage.py"
       - "twocomms/storefront/models.py"
       - "twocomms/storefront/migrations/0095_promocode_guest_ugc.py"
@@ -38,6 +43,11 @@ on:
       - "twocomms/orders/models.py"
       - "twocomms/orders/promo_reservations.py"
       - "twocomms/storefront/services/loyalty_rewards.py"
+      - "twocomms/storefront/services/size_guide_authority.py"
+      - "twocomms/storefront/services/size_guides.py"
+      - "twocomms/storefront/views/product.py"
+      - "twocomms/storefront/tests/test_size_guide_authority_20261022.py"
+      - "twocomms/product_catalog/size_grid_services.py"
       - "twocomms/finance/tests_migration_storage.py"
       - "twocomms/storefront/models.py"
       - "twocomms/storefront/migrations/0095_promocode_guest_ugc.py"
@@ -74,6 +84,7 @@ jobs:
           - follow-ugc-concurrency
           - lease-concurrency
           - conversion-context
+          - dialogue-quality
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:67873d30a17f6a9c331f06363b2fa15f38abca415529966d67c84f87f82439fe

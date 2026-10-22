@@ -103,6 +103,22 @@ def _resolve_og_availability_flag(product) -> bool:
 # ==================== PRODUCT VIEWS ====================
 
 def _is_tshirt_product(product):
+    category = getattr(product, 'category', None)
+    category_slug = str(getattr(category, 'slug', '') or '').strip().lower()
+    if category_slug in {'tshirts', 't-shirts', 'tshirt', 't-shirt', 'futbolki'}:
+        return True
+    if category_slug in {
+        'hoodie', 'hoodies', 'hudi', 'khudi', 'long-sleeve', 'longsleeve',
+        'long-sleeves', 'sweatshirt', 'sweatshirts', 'pants', 'trousers',
+        'shorts', 'socks', 'cap', 'caps', 'accessory', 'accessories',
+        'jacket', 'jackets', 'outerwear', 'bag', 'bags', 'custom-print',
+    }:
+        return False
+    # Explicit garment categories outrank fuzzy words in a shared catalog or
+    # product title. Unknown/legacy categories retain their original fallback.
+    category_text = f"{getattr(category, 'name', '')} {category_slug}".lower()
+    if re.search(r'(^|[^a-z0-9а-яіїєґ])(?:hoodies?|худі|худи|long[ -]?sleeves?|лонгслів\w*|лонгслив\w*|sweatshirts?|світшот\w*|свитшот\w*)(?=$|[^a-z0-9а-яіїєґ])', category_text):
+        return False
     candidates = [
         getattr(product, 'title', ''),
         getattr(getattr(product, 'category', None), 'name', ''),

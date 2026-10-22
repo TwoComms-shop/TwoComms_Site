@@ -82,7 +82,10 @@ class ApprovedPublicFactsTests(SimpleTestCase):
         approved = "\n".join(f.body for f in approved_public_facts("uk"))
         self.assertIn("regular — близько 190 г/м²", approved)
         self.assertIn("oversize — близько 220 г/м²", approved)
-        self.assertIn("близько 320 г/м²", approved)
+        self.assertNotIn("320 г/м²", approved)
+        self.assertIn("Щільність залежить від конкретної основи", approved)
+        from management.knowledge.bases import BASES
+        self.assertIsNone(BASES["current_hoodie"]["gsm"])
         self.assertNotIn("210–220", approved)
         from management.services.approved_public_facts import approved_base_assertion
         self.assertIsNone(approved_base_assertion(

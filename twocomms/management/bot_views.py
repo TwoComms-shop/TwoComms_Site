@@ -4871,9 +4871,10 @@ def _with_latest_interaction(queryset):
     )
 
 
-def _client_potential_payload(c, latest_analysis, *, latest_message_id=None) -> dict:
+def _client_potential_payload(c, latest_analysis, *, latest_message_id=None, include_conversion_audit=False) -> dict:
     """Evidence-bound purchase potential, independent from payment/order truth."""
     from .ig_bot_models import IgClient, IgConversationAnalysisSnapshot
+    from .services.ig_conversion_audit_stats import conversion_audit_payload
 
     current_episode = getattr(c, "current_commercial_episode", None)
     from management.services.ig_funnel_reset import current_message_floor
@@ -4962,6 +4963,7 @@ def _client_potential_payload(c, latest_analysis, *, latest_message_id=None) -> 
             "uncertainties": [],
             "metric_label": POTENTIAL_METRIC_LABEL,
             "metric_note": _potential_metric_note(c),
+            "conversion_audit": conversion_audit_payload(latest_analysis, c, fresh=False, state="policy", load=include_conversion_audit),
         }
 
     if not latest_analysis:
@@ -4989,6 +4991,7 @@ def _client_potential_payload(c, latest_analysis, *, latest_message_id=None) -> 
             "uncertainties": ["analysis_missing"],
             "metric_label": POTENTIAL_METRIC_LABEL,
             "metric_note": _potential_metric_note(c),
+            "conversion_audit": conversion_audit_payload(None, c, fresh=False),
         }
 
     watermark = int(latest_analysis.last_analyzed_message_id or 0)
@@ -5047,6 +5050,7 @@ def _client_potential_payload(c, latest_analysis, *, latest_message_id=None) -> 
         )[:20],
         "metric_label": POTENTIAL_METRIC_LABEL,
         "metric_note": _potential_metric_note(c),
+        "conversion_audit": conversion_audit_payload(latest_analysis, c, fresh=fresh, state=state, load=include_conversion_audit),
     }
 
 
@@ -5450,6 +5454,7 @@ def _client_card(c, *, follow_settings=None, follow_now=None, source_selection=N
         "analysis_uncertainties": latest_analysis.uncertainties if latest_analysis else [],
         "analysis_at": latest_analysis.analyzed_at.isoformat() if latest_analysis else "",
         "potential": potential,
+        "analysis_conversion_audit": potential.get("conversion_audit", {}),
         "manager_action_required": bool(getattr(c, "has_manager_action", False)) or bool(response_debt["required"]),
         "response_debt": response_debt,
         "attention_snapshot": attention,
@@ -6244,6 +6249,21 @@ def bot_client_detail_api(request, client_id):
     episodes = None if poll_only else client_episode_payload(c)
     if not poll_only:
         _apply_canonical_journey_purchase_labels(journey, episodes)
+        selected_episode = (journey or {}).get("viewed_episode") or {}
+        if selected_episode.get("id"):
+            from management.services.ig_conversion_audit_stats import conversion_audit_payload
+
+            selected_snapshot = IgConversationAnalysisSnapshot.objects.filter(
+                client=c, commercial_episode_id=selected_episode["id"],
+            ).order_by("-pk").first()
+            selected_current = selected_episode["id"] == c.current_commercial_episode_id
+            selected_fresh = bool(selected_current and selected_snapshot
+                and int(selected_snapshot.last_analyzed_message_id or 0)
+                    >= int(getattr(c, "latest_conversation_message_id", 0) or 0))
+            selected_episode["conversion_audit"] = conversion_audit_payload(
+                selected_snapshot, c, fresh=selected_fresh,
+                state="current" if selected_fresh else "stale" if selected_current else "historical",
+            )
     if request.GET.get("journey_only") == "1":
         return JsonResponse({"success": True, "journey": journey})
 
@@ -6726,6 +6746,7 @@ def bot_client_detail_api(request, client_id):
         c,
         current_analysis_snapshot(c),
         latest_message_id=last_message_id,
+        include_conversion_audit=True,
     )
     from management.ig_bot_models import HumanReplyCommand
     human_commands = [
@@ -6800,6 +6821,7 @@ def bot_client_detail_api(request, client_id):
         },
         "potential": potential,
         "commercial_episodes": episodes,
+        "analysis_conversion_audit": potential.get("conversion_audit", {}),
         "payment": payment_workspace,
         "fulfillment": fulfillment_workspace,
         "review": {
@@ -8468,6 +8490,21 @@ def bot_stats_api(request):
         "requires_successful_bot_reply": False,
         "qualification": "own_observed_commercial_inquiry",
     }
+    from management.services.ig_conversion_audit_stats import build_conversion_audit_stats
+
+    try:
+        audit_cursor_raw = request.GET.get("conversion_before_episode_id")
+        audit_limit_raw = request.GET.get("conversion_limit", "50")
+        if (len(request.GET.getlist("conversion_before_episode_id")) > 1
+            or len(request.GET.getlist("conversion_limit")) > 1
+            or not str(audit_limit_raw).isdigit()
+            or (audit_cursor_raw is not None and not str(audit_cursor_raw).isdigit())):
+            raise ValueError("invalid_pagination")
+        conversion_audit_stats = build_conversion_audit_stats(since=since, until=until,
+            before_episode_id=int(audit_cursor_raw) if audit_cursor_raw is not None else None,
+            limit=int(audit_limit_raw))
+    except ValueError:
+        return JsonResponse({"success": False, "error": "Некоректні межі огляду комерційних епізодів."}, status=400)
     revenue_deals = payment_deals.filter(verified_payment_q())
     revenue_rows = list(
         revenue_deals.values(
@@ -8655,6 +8692,7 @@ def bot_stats_api(request):
         "ads": ad_rows,
         "funnel": funnel_analytics["steps"],
         "conversion_cohorts": conversion_cohorts,
+        "conversion_audit_stats": conversion_audit_stats,
         "funnel_meta": {
             "source": "event_cohort",
             "backfilled": funnel_analytics["backfilled"],
