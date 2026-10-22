@@ -12,6 +12,7 @@ from management.services import bot_conversation_analysis as analysis
 from management.services.ig_analysis_reply_review import build_reply_review_context, public_conversion_audit
 from management.services.ig_revision_outbox import claim_next_effect, mark_provider_started, finish_effect
 from management import tests_ig_revision_delivery as delivery
+from management.tests_ig_manu_fixture_helpers import setup_revision_delivery_fixture
 
 
 @override_settings(IG_ANALYSIS_V2_MODE="off", IG_ANALYSIS_MATERIALITY_MODE="off",
@@ -22,7 +23,7 @@ class ConversionAuditAnalyzerTests(TransactionTestCase):
 
     def setUp(self):
         self.enterContext(patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"}))
-        delivery.RevisionDeliveryTests.setUp(self)
+        setup_revision_delivery_fixture(self)
         self.settings.ig_user_id = "owner-1"
         self.settings.analysis_reconcile_after = timezone.now() - timedelta(days=1)
         self.settings.save(update_fields=["ig_user_id", "analysis_reconcile_after"])

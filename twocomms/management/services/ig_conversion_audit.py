@@ -31,13 +31,26 @@ Optional conversion_audit extends this SAME analysis; do not add customer replie
 "evidence":[{"message_id":124,"quote":"exact own customer quote"}],
 "diagnostic_refs":[],"counterevidence":[]}]}
 At most 3 motivations and 3 reasons, at most 4 references per list; quotes at most 160 characters.
-Use current admitted user evidence only. A reported_by_customer reason requires an exact quote
-explicitly linking refusal to that reason. An objection, silence, unanswered message or elapsed
-time alone never establishes abandonment or its cause. Otherwise label a supported possibility
-hypothesis; omit unsupported reasons or use unknown. Check contrary evidence. Diagnostic refs
-must come from response_review_context's verified SENT records; bot/manager words are not
-customer intent. Timing/handoff suspicions need the corresponding captured diagnostics, not
-invented waits or completed actions. Do not infer personality, income, military status or other
+Keep readiness, recipient motivation and possible service problems separate. Wanting or choosing
+an item is readiness evidence, not proof it is for the customer's own use. Do not default motivation
+to self: customer_stated self requires explicit personal use; if the recipient/purpose is unstated,
+omit motivation or label a supported inference hypothesis. Respect explicit negation of a purpose.
+Use current admitted user evidence only. reported_by_customer means a CUSTOMER-STATED CAUSE OF
+REFUSAL, not merely a customer-stated concern: its one exact evidence quote must contain the
+refusal/stopping decision AND the causal link to that particular reason. Price concern alone stays
+price_objection in the baseline and, if included here, price/hypothesis; never a reported loss cause.
+Silence, an unanswered message or elapsed time alone proves neither abandonment nor its cause.
+Separately review each verified SENT diagnostic against its linked current customer questions and
+already supplied product/size choices. If the observed reply clearly misses a requested answer,
+asks again for supplied information or changes the selected product, record a relevance/product
+HYPOTHESIS with that exact diagnostic ref and supporting customer quote, even without a refusal.
+This describes an observed service risk, NOT a customer-confirmed reason or an abandoned sale.
+Do not skip this comparison merely because the customer has not refused. If SENT coverage is
+unavailable, the reply is unobservable: do not invent its content or a service problem. Check
+counterevidence. Diagnostic refs must come from response_review_context's verified SENT records;
+bot/manager words are not customer intent. SENT alone does not prove a delay problem or completed
+human handoff. Timing/handoff suspicions need the corresponding captured diagnostics, not invented
+waits or completed actions. Do not infer personality, income, military status or other
 sensitive characteristics, even as a hypothesis. Reuse existing readiness fields as uncalibrated
 model estimates, not measured purchase probabilities. Do not create style preferences: explicit
 communication choices already have a deterministic source-bound owner. Findings are internal,
@@ -113,8 +126,10 @@ def _proofs(value, by_id):
         from management.services.ig_reply_language import own_reply_text
         own = own_reply_text(source['text']) if source is not None else ''
         if _REPORTED.search(own):
-            own = '\n'.join(part for part in re.split(r'[.!?;\n]+|\b(?:але|но|but)\b', own, flags=re.I)
-                            if not _REPORTED.search(part))
+            # Mask only the reported clause, retaining punctuation and exact
+            # bytes of independent own clauses for literal quote verification.
+            own = ''.join(' ' * len(part) if _REPORTED.search(part) else part
+                          for part in re.split(r'([.!?;\n]+|\b(?:але|но|but)\b)', own, flags=re.I))
         if (source is None or not isinstance(quote, str) or not quote.strip()
                 or len(quote) > MAX_QUOTE_CHARS or quote not in source['text'] or quote not in own):
             continue

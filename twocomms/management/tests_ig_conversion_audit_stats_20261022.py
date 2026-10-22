@@ -124,6 +124,45 @@ class ConversionAuditStatsTests(TestCase):
         self.assertEqual(result["counts"]["stale_audit"], 1)
         self.assertEqual(result["causes"], [])
 
+    def test_new_admitted_manager_event_stales_statistics_with_canonical_analysis(self):
+        from management.services.bot_conversation_analysis import _analysis_truth_is_current
+
+        client, _, message, _ = self.episode()
+        InstagramBotMessage.objects.create(client=client, sender_id=client.igsid,
+            provider_namespace=message.provider_namespace, role="manager", source="echo",
+            provider_created_at=message.created_at + timedelta(seconds=1),
+            text="Уточнили ціну та запропонували погоджений варіант.")
+        self.assertFalse(_analysis_truth_is_current(client, message.pk))
+        result = self.report()
+        self.assertEqual(result["counts"]["stale_audit"], 1)
+        self.assertEqual(result["counts"]["observed_audits"], 0)
+        self.assertEqual(result["causes"], [])
+
+    def test_delayed_older_user_event_does_not_stale_statistics(self):
+        from management.services.bot_conversation_analysis import _analysis_truth_is_current
+
+        client, _, message, _ = self.episode()
+        InstagramBotMessage.objects.create(client=client, sender_id=client.igsid,
+            provider_namespace=message.provider_namespace, role="user", source="webhook",
+            provider_created_at=message.created_at - timedelta(seconds=1), text="Раніше цікавився.")
+        self.assertTrue(_analysis_truth_is_current(client, message.pk))
+        self.assertEqual(self.report()["counts"]["observed_audits"], 1)
+
+    def test_excluded_manager_events_cannot_stale_statistics(self):
+        from management.services.bot_conversation_analysis import _analysis_truth_is_current
+
+        client, _, message, _ = self.episode()
+        for overrides in ({"source": "manual_refresh"},
+                          {"provider_namespace": "instagram_login:foreign"},
+                          {"sender_id": "foreign"}, {"status": "failed"}):
+            values = {"client": client, "sender_id": client.igsid,
+                "provider_namespace": message.provider_namespace, "role": "manager", "source": "echo",
+                "provider_created_at": message.created_at + timedelta(seconds=1), "text": "Unowned correction"}
+            values.update(overrides)
+            InstagramBotMessage.objects.create(**values)
+        self.assertTrue(_analysis_truth_is_current(client, message.pk))
+        self.assertEqual(self.report()["counts"]["observed_audits"], 1)
+
     def test_foreign_evidence_namespace_epoch_and_reset_fail_closed(self):
         client, episode, message, snapshot = self.episode()
         foreign, _, foreign_message, _ = self.episode()

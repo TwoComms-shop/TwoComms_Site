@@ -820,3 +820,10 @@ Owner-facing readiness remains an uncalibrated AI assessment. Actual paid conver
 ### Critical availability boundary: analysis ownership must not own customer availability
 
 Live supervisor events and daemon stdout exposed a restart amplification path: a process kill leaves the analyzer’s bounded lease, but startup previously refused to start any customer worker while that lease was busy. Renewal loss also stopped the whole process. One observed recovery had at least 127 seconds without a replacement child. The corrected runner acquires and releases this lease inside the analysis worker, preserving all durable generation/frozen-owner checks and permitting customer startup/replies during the wait. A native sealed outbox regression proves a SENT reply while a manual analysis owner remains active. This is independent from classifier/marketing quality: no prompt can repair a stopped customer consumer. Initial SIGKILL attribution remains unavailable; the application coupling is proven and corrected, without claiming an OOM or Meta cause.
+
+
+### 23 October: actual analyzer output and aggregate freshness
+
+Two six-case managed fictional probe batches exposed then verified repairs for incorrect recipient inference, price-objection/abandonment confusion, missing source-to-SENT relevance review and punctuation loss in independent own statements after reported speech. The revised prompt explicitly separates these concepts; the normalizer preserves exact own clauses without admitting quoted manager/foreign/historical evidence. The corrected batch passed all six unchanged strict case assessments. Source-bounded hypotheses remain descriptive and cannot change payment, memory, profile, cart, outreach or funnel outcomes.
+
+The aggregate report also diverged from canonical freshness in both directions (new manager echo versus delayed older customer event). Its source query now shares analyzer admission and event ordering; the evidence window, namespace, reset and episode fences remain required. These are code-backed repairs rather than a claim that silence identifies a lost cause or an AI percentage predicts observed conversion.

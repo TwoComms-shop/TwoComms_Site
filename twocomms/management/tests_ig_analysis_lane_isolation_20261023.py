@@ -239,10 +239,10 @@ class AnalysisLaneIsolationTests(TestCase):
 class CustomerDeliveryDuringBusyAnalysisTests(TransactionTestCase):
     """Compose native sealing/outbox/delivery with a live foreign lane lease."""
     def test_busy_analysis_wait_does_not_block_one_native_sent_receipt(self):
-        from management.tests_ig_revision_delivery import RevisionDeliveryTests
+        from management.tests_ig_manu_fixture_helpers import setup_revision_delivery_fixture
         from management.services.ig_revision_delivery import drain_group, ProviderPartResult
         from management.models import IgRevisionDeliveryEffect
-        RevisionDeliveryTests.setUp(self)
+        setup_revision_delivery_fixture(self)
         manual = lane.acquire_owner(owner_kind="manual")
         registry = progress.WorkerProgressRegistry()
         registry.reset()

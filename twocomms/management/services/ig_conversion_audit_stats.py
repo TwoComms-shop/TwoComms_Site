@@ -7,6 +7,7 @@ to the explicitly selected episode page, not a representative sample/census.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from django.db.models import BigIntegerField, Count, Exists, F, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -142,7 +143,10 @@ def _audit_status(snapshot, episode, messages, namespace, effects):
         or messages[watermark].role not in {"user", "manager"}
         or messages[watermark].provider_namespace != namespace):
         return "unobservable", {}
-    if watermark < int(episode.latest_user_source_id or 0):
+    source = messages[watermark]
+    if episode.latest_source_event_at is not None and (
+        source.provider_created_at or source.created_at, watermark
+    ) < (episode.latest_source_event_at, episode.latest_admitted_source_id):
         return "stale", {}
     refs = _references(value)
     if any(not _owned_message(messages.get(pk), episode, namespace, floor, min(watermark + 1, episode.next_floor))
@@ -264,12 +268,21 @@ def build_conversion_audit_stats(*, since=None, until=None, before_episode_id=No
             Value(0), output_field=BigIntegerField()) + Value(1),
         next_floor=Coalesce(Subquery(next_episode.values("opened_watermark_message_id")[:1]),
             Value(2**63 - 1), output_field=BigIntegerField()))
-    latest_source = InstagramBotMessage.objects.filter(client_id=OuterRef("client_id"), role="user",
-        sender_id=OuterRef("client__igsid"), provider_namespace=namespace,
-        source__in=("webhook", "poll"),
-        pk__gte=OuterRef("reset_floor"), pk__lt=OuterRef("next_floor")).filter(
-        pk__gte=OuterRef("opened_watermark_message_id")).order_by("-pk")
-    page = page.annotate(latest_user_source_id=Subquery(latest_source.values("pk")[:1]))
+    from management.services.bot_conversation_analysis import _analysis_admitted_sources
+
+    # Reuse the analyzer's customer/manager admission policy with correlated
+    # client fields. Provider event order, rather than insertion PK, determines
+    # freshness when a delayed webhook arrives after the analyzed event.
+    client_scope = SimpleNamespace(pk=OuterRef("client_id"), igsid=OuterRef("client__igsid"))
+    latest_source = _analysis_admitted_sources(client_scope, namespace=namespace).filter(
+        pk__gte=OuterRef("reset_floor"), pk__lt=OuterRef("next_floor"),
+    ).filter(pk__gte=OuterRef("opened_watermark_message_id")).annotate(
+        event_at=Coalesce("provider_created_at", "created_at"),
+    ).order_by("-event_at", "-pk")
+    page = page.annotate(
+        latest_admitted_source_id=Subquery(latest_source.values("pk")[:1]),
+        latest_source_event_at=Subquery(latest_source.values("event_at")[:1]),
+    )
     if before_episode_id is not None:
         page = page.filter(pk__lt=before_episode_id)
     episodes = list(page.select_related("client", "intended_order").order_by("-pk")[:limit + 1])

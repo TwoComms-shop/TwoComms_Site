@@ -79,6 +79,7 @@ jobs:
             management.tests_ig_standard_funnel_20261022 \
             management.tests_ig_size_grid_authority_20261022 \
             management.tests_ig_conversion_audit_schema_20261022 \
+            management.tests_ig_conversion_audit_prompt_20261023 \
             management.tests_ig_conversion_audit_analysis_20261022 \
             management.tests_ig_conversion_audit_stats_20261022 \
             management.tests_ig_analysis_lane_isolation_20261023 \

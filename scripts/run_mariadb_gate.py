@@ -108,6 +108,7 @@ SUITES = {
         "management.tests_ig_conversation_activity",
         "management.tests_ig_conversion_audit_analysis_20261022",
         "management.tests_ig_conversion_audit_schema_20261022",
+        "management.tests_ig_conversion_audit_prompt_20261023",
         "management.tests_ig_conversion_audit_stats_20261022",
         "management.tests_ig_product_weight_20261022",
         "management.tests_ig_live_burst_fairness_20261022",
