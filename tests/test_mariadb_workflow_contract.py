@@ -38,7 +38,7 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
             "max-parallel": 5,
             "matrix": {"suite": ["lifecycle", "checkout-concurrency", "follow-ugc-concurrency",
                 "lease-concurrency", "conversion-context", "dialogue-quality", "stock-authority",
-                "stock-authority-consumers"]},
+                "stock-authority-consumers", "selection-idempotence"]},
         })
         self.assertEqual(self.suite_job["runs-on"], "ubuntu-24.04")
         self.assertEqual(self.suite_job["timeout-minutes"], 30)
@@ -50,9 +50,12 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         from scripts.run_mariadb_gate import STOCK_AUTHORITY_ACCEPTANCE_LABELS, SUITES
 
         matrix = self.suite_job["strategy"]["matrix"]["suite"]
-        self.assertEqual(len(matrix), 8)
+        self.assertEqual(len(matrix), 9)
         self.assertEqual(len(set(matrix)), len(matrix))
         self.assertTrue(all(SUITES[name] for name in matrix))
+        self.assertEqual(SUITES["selection-idempotence"],
+                         ("management.tests_ig_revision_selection_noop_20261023",))
+        self.assertFalse(set(SUITES["selection-idempotence"]) & set(SUITES["dialogue-quality"]))
         self.assertFalse(set(SUITES["dialogue-quality"]) & set(SUITES["conversion-context"]))
         self.assertFalse(set(SUITES["stock-authority"]) & set(SUITES["dialogue-quality"]))
         self.assertFalse(set(SUITES["stock-authority"]) & set(SUITES["stock-authority-consumers"]))
@@ -63,6 +66,7 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         from scripts.run_mariadb_gate import SUITES
 
         new_modules = {
+            "management.tests_ig_source_cart_catalog",
             "management.tests_ig_stock_authority_20261023",
             "management.tests_ig_stock_catalog_copy_20261023",
             "management.tests_ig_stock_claim_guard_20261023",

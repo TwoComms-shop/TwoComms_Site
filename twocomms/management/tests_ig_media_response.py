@@ -30,6 +30,62 @@ def analysis(*, kind="wearing", sentiment="positive", complaint=False,
 class MediaResponsePolicyTests(SimpleTestCase):
     client = SimpleNamespace(language="uk")
 
+    def test_independent_future_mocha_review_survives_every_media_state_and_replay(self):
+        generated = ('Склад цієї основи: 90% бавовни / 10% поліестеру. '
+            'Щодо кольору мокко — я передам ваше побажання менеджеру, щоб він уточнив можливість.')
+        for source in (None, {}, analysis(understood=False), analysis(sentiment='neutral')):
+            with self.subTest(source=source):
+                first = normalize_media_reply(self.client, generated, media_analysis=source)
+                self.assertTrue(first.startswith(generated), first)
+                self.assertEqual(normalize_media_reply(self.client, first, media_analysis=source), first)
+
+    def test_future_business_review_is_distinct_from_media_forwarding_in_all_locales(self):
+        for text in ('Передам вашу пропозицію щодо співпраці менеджеру.',
+            'Передам ваше запитання менеджеру.',
+            'Передам запит щодо замовлення менеджеру.',
+            'Передам ваш запрос по вакансии менеджеру.',
+            'Передам ваше предложение о сотрудничестве менеджеру.',
+            'I will pass your color request to our manager.',
+            'We will forward your collaboration proposal to our team.',
+            'I will refer your question to a specialist.'):
+            with self.subTest(text=text):
+                self.assertEqual(normalize_media_reply(self.client, text, media_analysis={}), text)
+
+    def test_business_subject_never_exempts_past_media_forwarding_or_guaranteed_contact(self):
+        useful = 'Напишіть, будь ласка, звичайний текст.'
+        for sentence in ('Передала запит про колір менеджеру.',
+            'I forwarded your color request to our manager.',
+            'Передам фото кольору мокко менеджеру.',
+            'Передам ваше приватне фото та запит менеджеру.',
+            'I will forward your size request and photo to our manager.',
+            'I will pass your request and attachment to our manager.',
+            'Передам вашу публікацію та запит менеджеру.',
+            'Передам це менеджеру.',
+            'I will pass it to our manager.',
+            "Передам запит менеджеру, він обов'язково напише вам.",
+            'I will pass your request to our manager who will contact you.'):
+            for source in ({}, analysis(understood=False), analysis(sentiment='neutral')):
+                with self.subTest(sentence=sentence, source=source):
+                    result = normalize_media_reply(self.client, sentence + ' ' + useful, media_analysis=source)
+                    self.assertTrue(result.startswith(useful), result)
+                    self.assertNotIn(sentence, result)
+
+    def test_future_business_clause_cannot_preserve_false_media_inspection_or_reward(self):
+        business = 'Передам запит про колір менеджеру.'
+        for false_claim in ('Я бачу ваше фото.', 'На фото ви в нашій футболці.', 'За фото дамо знижку!'):
+            for source in ({}, analysis(understood=False)):
+                with self.subTest(false_claim=false_claim, source=source):
+                    result = normalize_media_reply(self.client, false_claim + ' ' + business, media_analysis=source)
+                    self.assertTrue(result.startswith(business), result)
+                    self.assertNotIn(false_claim, result)
+        mixed = 'Я бачу фото кольору мокко і передам запит менеджеру.'
+        self.assertNotIn(mixed, normalize_media_reply(self.client, mixed, media_analysis={}))
+
+    def test_social_only_media_still_does_not_gain_business_handoff_intent(self):
+        text = 'Дякуємо! Передам вашу пропозицію щодо співпраці менеджеру.'
+        result = normalize_media_reply(self.client, text, media_analysis=analysis(), social_only=True)
+        self.assertNotIn('Передам', result)
+
     def test_neutral_question_is_preserved_without_known_positive_sentiment(self):
         source = analysis(sentiment="neutral")
         generated = "Вас цікавить розмір чи посадка футболки?"

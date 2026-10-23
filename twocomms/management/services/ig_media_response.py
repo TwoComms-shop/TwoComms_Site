@@ -18,6 +18,24 @@ _HANDOFF = re.compile(
     r"(?:менедж|фахів|спеціалі|специал).{0,45}(?:зв.яж|свяж|відпові|ответ|напиш)|"
     r"(?:forward|refer|pass(?:ed)?|sent).{0,45}(?:manager|team|specialist)|"
     r"(?:manager|team|specialist).{0,45}(?:contact|reply|respond)", re.I)
+_FUTURE_HANDOFF = re.compile(
+    r"\b(?:передам|передамо|передадим|відправимо|отправим)\b|"
+    r"\b(?:i|we)\s+(?:will|shall)\s+(?:forward|refer|pass|send)\b", re.I)
+_BUSINESS_SUBJECT = re.compile(
+    r"\b(?:колір|кольор(?:у|і|ом|и|ів)|цвет(?:а|е|ом|у|ов|ы)?|colou?rs?|"
+    r"розмір(?:у|і|ом|и|ів)?|размер(?:а|е|ом|у|ов|ы)?|sizes?|fits?|посадк(?:а|и|у|ою|е)|крій|крой|"
+    r"наявн(?:ість|ості)|наличи(?:е|я|ю|ем|и)|availability|матеріал(?:у|і|ом|и|ів)?|материал(?:а|е|ом|у|ов|ы)?|materials?|"
+    r"товар(?:у|і|ом|и|ів|а|е|ов|ы)?|продукт(?:у|і|ом|и|ів|а|е|ов|ы)?|products?|models?|"
+    r"запит(?:у|і|ом|и|ів)?|запитан(?:ня|ні|ню|ням|ь)|запрос(?:а|е|ом|у|ов|ы)?|питан(?:ня|ні|ню|ням|ь)|вопрос(?:а|е|ом|у|ов|ы)?|"
+    r"пропозиц(?:ія|ії|ію|ією)|предложени(?:е|я|ю|ем|и|й)|побажан(?:ня|ні|ню|ням|ь)|пожелани(?:е|я|ю|ем|и|й)|"
+    r"співпрац(?:я|і|ю|ею)|сотрудничеств(?:о|а|у|ом|е)|вакансі(?:я|ї|ю|єю)|ваканси(?:я|и|ю|ей)|"
+    r"замовлен(?:ня|ні|ню|ням|ь)|заказ(?:а|е|ом|у|ов|ы)?|requests?|questions?|proposals?|offers?|"
+    r"collaborations?|cooperation|vacanc(?:y|ies)|orders?)\b", re.I)
+_OTHER_MEDIA_REFERENCE = re.compile(
+    r"вкладен|вложен|публікац|публикац|сторі[сз]?|сторис|\b(?:attachments?|posts?|stories|story|reels?)\b", re.I)
+_MANAGER_CONTACT = re.compile(
+    r"(?:менедж|команд|фахів|спеціалі|специал).{0,45}(?:зв.яж|свяж|відпові|ответ|напиш)|"
+    r"(?:manager|team|specialist).{0,45}(?:contact|reply|respond)", re.I)
 _RETRY_PROMISE = re.compile(
     r"(?:перевір|провер|переглян|посмотр|спроб|попроб|check|review|try).{0,35}"
     r"(?:пізніше|позже|знов|снова|ще\s+раз|later|again)|"
@@ -109,6 +127,21 @@ def _media_kinds(values):
         if kind in {"audio", "image", "video"}:
             kinds.add(kind)
     return kinds
+
+
+def _future_business_handoff(sentence):
+    """A business intention is not a media-forwarding or completion receipt.
+
+    The surrounding caller still owns business/source/action validation. No
+    model control or media observation supplies authority through this filter.
+    """
+    handoffs = list(_HANDOFF.finditer(sentence))
+    future = list(_FUTURE_HANDOFF.finditer(sentence))
+    return bool(handoffs and _BUSINESS_SUBJECT.search(sentence)
+        and all(any(intent.start() <= match.start() < intent.end() for intent in future) for match in handoffs)
+        and not (_OTHER_MEDIA_REFERENCE.search(sentence) or _MANAGER_CONTACT.search(sentence)
+            or _INSPECTION.search(sentence) or _MEDIA_DESCRIPTION.search(sentence)
+            or any(pattern.search(sentence) for pattern in _MEDIA_KIND_WORDS.values())))
 
 
 def media_limitation_reply(client, *, media_kinds=()):
@@ -249,7 +282,7 @@ def normalize_media_reply(client, generated, *, media_analysis=None, social_only
     sentences = re.split(r"(?<=[.!?])\s+", text) if text else []
     kept = []
     for sentence in sentences:
-        unsafe = bool(_HANDOFF.search(sentence) or _RETRY_PROMISE.search(sentence)
+        unsafe = bool((_HANDOFF.search(sentence) and (social_only or not _future_business_handoff(sentence))) or _RETRY_PROMISE.search(sentence)
             or _OUR_CLOTHES.search(sentence) or _MEDIA_REWARD.search(sentence))
         unsafe |= bool(_INSPECTION.search(sentence) and (
             not understood or (reaction["incomplete"] and _ALL_MEDIA.search(sentence))))

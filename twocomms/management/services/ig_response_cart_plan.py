@@ -207,7 +207,8 @@ def _scoped_request_tokens(text, *, choices, title="", extra_words=()):
     allowed = set("а чи є в у цей це ця цієї цього його її ще і та який яка наявності наявність розмір розмірі "
         "есть ли это эта этот этой этого его её размер размере наличии наличие и какая "
         "is are do you have this that my the selected it its in of for size stock available availability "
-        "худі худи hoodie футболка футболки t shirt tshirt товар товара товару позиція позиції позиция item one".split())
+        "худі худи hoodie футболка футболки t shirt tshirt товар товара товару позиція позиції позиция item one "
+        "колір кольорі кольору кольором цвет цвете цвета цветом color colour".split())
     allowed.update(extra_words)
     return tuple(words) if words and all(word in allowed for word in words) else ()
 

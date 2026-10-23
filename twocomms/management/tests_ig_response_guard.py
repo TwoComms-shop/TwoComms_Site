@@ -211,3 +211,38 @@ class ResponseGuardTests(SimpleTestCase):
         for text in ('"controls":[]', "only JSON true", "never use false, null", "lead_manager", "paylink accepts only full or prepay", "all four fields are required", "Never put bracket commands", "Do not repeat a kind"):
             with self.subTest(text=text):
                 self.assertIn(text, instruction)
+
+    def test_price_instruction_separates_reporting_from_fresh_selection(self):
+        instruction = structured_response_instruction()
+        for text in ('exact supplied normalized configuration price',
+                     'a quote does not require selection controls',
+                     'fresh source-backed choice explicitly authorized by the response plan',
+                     'requires product and its required configuration fields',
+                     'Do not reapply already-canonical choices',
+                     'manager:true only when authorized', 'nor proves availability'):
+            with self.subTest(text=text):
+                self.assertIn(text, instruction)
+        self.assertNotIn('include product plus every known', instruction)
+
+    def test_independent_known_price_and_pending_review_need_no_selection_controls(self):
+        from decimal import Decimal
+        context = ReplyTruthContext(authorized_prices=(Decimal('900.00'),),
+            allowed_sizes=('XXL',), source_chosen_sizes=('XXL',),
+            allowed_fits=('classic',), allowed_colors=('black',))
+        guard = ProviderResponseGuard(context_factory=lambda _controls, _text: context)
+        candidate = {'reply_text': 'The hoodie costs 900 UAH. I will check availability in size XXL with our manager.',
+            'controls': [{'kind': 'price_quoted', 'value': '900.00'}, {'kind': 'manager', 'value': True}]}
+        original = deepcopy(candidate)
+        self.assertTrue(guard.validate(candidate).valid, guard.last_reasons)
+        self.assertEqual(set(guard.response.control), {'price_quoted', 'manager'})
+        self.assertEqual(Decimal(guard.response.control['price_quoted']), Decimal('900.00'))
+        self.assertEqual(candidate, original)
+        wrong_price = {**candidate, 'reply_text': candidate['reply_text'].replace('900', '1000')}
+        self.assertIn('unverified_price', guard.validate(wrong_price).reason_codes)
+        fresh_selection = {'reply_text': 'You selected this hoodie in size XXL, classic fit, black, quantity 1.',
+            'controls': [{'kind': 'product', 'value': 7}, {'kind': 'size', 'value': 'XXL'},
+                {'kind': 'fit', 'value': 'classic'}, {'kind': 'color_variant_id', 'value': 8},
+                {'kind': 'qty', 'value': 1}]}
+        self.assertTrue(guard.validate(fresh_selection).valid, guard.last_reasons)
+        self.assertEqual(guard.response.control,
+            {'product': '7', 'size': 'XXL', 'fit': 'classic', 'color_variant_id': '8', 'qty': '1'})

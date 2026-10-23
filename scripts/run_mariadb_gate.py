@@ -30,6 +30,7 @@ DEFAULT_SUITE = "lifecycle"
 # Partition the complete acceptance list by module ownership; growing full
 # modules remain covered without duplicating native transaction cleanup.
 STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
+    "management.tests_ig_source_cart_catalog",
     "management.tests_ig_stock_authority_20261023",
     "management.tests_ig_stock_catalog_copy_20261023",
     "management.tests_ig_stock_claim_guard_20261023",
@@ -178,10 +179,16 @@ SUITES = {
         "management.tests_ig_live_identity_echo_20261022",
         "management.tests_ig_manager_case_continuity_20261022",
         "management.tests_ig_reply_truth_seams_20261022",
+        "management.tests_ig_response_guard",
+        "management.tests_ig_media_response",
+        "management.tests_bot_catalog",
         "management.tests_ig_size_aliases_20261022",
         "management.tests_ig_size_grid_authority_20261022",
         "management.tests_ig_standard_funnel_20261022",
         "storefront.tests.test_size_guide_authority_20261022",
+    ),
+    "selection-idempotence": (
+        "management.tests_ig_revision_selection_noop_20261023",
     ),
     # Both stock jobs retain the same timeout and require verified cleanup.
     "stock-authority": tuple(label for label in STOCK_AUTHORITY_ACCEPTANCE_LABELS

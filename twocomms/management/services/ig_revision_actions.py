@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -193,6 +194,164 @@ def _selection_matches(client, control: Mapping) -> bool:
     return True
 
 
+def _fenced_source_selection_frame(client, revision, proposal, authority):
+    """Read the immutable current source frame; never derive a new choice."""
+    from management.models import IgCommerceSelectionSession
+    from management.services.ig_response_cart_fence import check_source_cart_authority
+    from management.services.ig_response_cart_plan import source_line_preferences
+    from management.services.ig_revision_cart_binding import stable_checkout_source_capture
+
+    capture = proposal.get("source_cart_capture")
+    bindings = [row for row in authority.fact_bindings
+                if row.get("claim") == CLAIM_SOURCE_PREFERENCES
+                and isinstance(row.get("selector"), Mapping)
+                and "source_cart_fence" in row["selector"]]
+    if not bindings:
+        return None
+    if not isinstance(capture, dict) or len(bindings) != 1:
+        raise _ActionRollback("source_selection_capture_invalid")
+    fence = bindings[0]["selector"]["source_cart_fence"]
+    stable = stable_checkout_source_capture(capture)
+    if (not isinstance(fence, dict) or stable is None
+        or capture.get("capture_digest") != fence.get("capture_digest")
+        or _digest(stable) != fence.get("semantic_capture_digest")):
+        raise _ActionRollback("source_selection_capture_invalid")
+    session = IgCommerceSelectionSession.objects.select_for_update().filter(
+        pk=capture.get("session_id"), client_id=client.pk, open_slot=1, state="open",
+        commercial_episode_id=client.current_commercial_episode_id,
+    ).first()
+    if session is None or not check_source_cart_authority(client, fence, revision=revision).ready:
+        raise _ActionRollback("source_selection_capture_invalid")
+    snapshot = session.snapshot()
+    index = snapshot.get("active_index")
+    rows = capture.get("lines") or []
+    matches = [row for row in rows if row.get("line_id") == capture.get("active_line_id")
+               and row.get("index") == index]
+    if len(matches) != 1 or type(index) is not int or not 0 <= index < len(session.lines or []):
+        raise _ActionRollback("source_selection_capture_invalid")
+    row, current = matches[0], session.lines[index]
+    preferences = source_line_preferences(capture, row)
+    if not preferences:
+        raise _ActionRollback("source_selection_capture_invalid")
+    return capture, row, current, preferences, session, snapshot, fence
+
+
+def _confirmed_source_control_conflict(frame, control):
+    """Catalog compatibility cannot contradict a confirmed customer choice.
+
+    Unknown/provisional fields keep the existing catalog/native authorizer;
+    this boundary does not infer missing wishes or grant selection authority.
+    """
+    if frame is None:
+        return ""
+    capture, row, _, preferences, _, _, _ = frame
+    values = preferences.get("values") or {}
+    fields = row.get("fields") or {}
+    evidence = preferences.get("evidence") or {}
+
+    def confirmed(field):
+        return ((fields.get(field) or {}).get("status") == "confirmed"
+                and field in values and field in evidence)
+
+    for key, field in (("product", "product_id"), ("size", "size"),
+                       ("fit", "fit_option_code"), ("qty", "quantity"),
+                       ("options", "option_values")):
+        if key not in control or not confirmed(field):
+            continue
+        actual, expected = control[key], values[field]
+        if key == "size":
+            from product_catalog.size_grid_services import normalize_size_value
+            from management.services.ig_commerce_turns import _canonical_source_size
+            actual, expected = (_canonical_source_size(normalize_size_value(value))
+                                for value in (actual, expected))
+        elif key == "fit":
+            from management.services.ig_commerce_turns import _FIT_WORDS
+            actual, expected = (_FIT_WORDS.get(_normalize(value), _normalize(value))
+                                for value in (actual, expected))
+        elif key == "options":
+            actual = dict(item.split("=", 1) for item in actual)
+        if actual != expected:
+            return "source_selection_control_conflict:" + key
+    if "variant" in control and confirmed("color"):
+        from productcolors.models import ProductColorVariant
+        from management.services.ig_source_cart_catalog import _color_matches
+        from management.services.ig_catalog_choice_actions import admitted_native_color_variants
+        variant = ProductColorVariant.objects.filter(pk=control["variant"],
+            product_id=control["product"]).select_related("color").first()
+        native = admitted_native_color_variants(capture, [row]).get(row["line_id"])
+        if (variant is None or not _color_matches(values["color"], variant)
+            or (native is not None and (native.get("status") != "verified"
+                or variant.pk != native.get("variant_id")))):
+            return "source_selection_control_conflict:color"
+    return ""
+
+
+def _unchanged_source_selection(client, revision, proposal, authority, control, *, source_frame=None):
+    """Recognize an existing choice without enriching its source-owned head.
+
+    A catalog selector alone never proves a prior choice. In particular a
+    newly resolved source wish still needs the ordinary durable product pin.
+    """
+    from management.services.ig_commerce_projection import _legacy_line
+    if int(client.current_product_id or 0) != control["product"] or control.get("options"):
+        return None
+    frame = source_frame or _fenced_source_selection_frame(client, revision, proposal, authority)
+    if frame is None:
+        return None
+    capture, row, current, preferences, session, snapshot, fence = frame
+    values = preferences.get("values") or {}
+    needed = {"product_id", *({"size"} if "size" in control else ()),
+              *({"fit_option_code"} if "fit" in control else ()),
+              *({"quantity"} if "qty" in control else ()),
+              *({"color"} if "variant" in control else ())}
+    if any((row.get("fields", {}).get(key) or {}).get("status") != "confirmed"
+           or key not in values or key not in (preferences.get("evidence") or {}) for key in needed):
+        return None
+    from product_catalog.size_grid_services import normalize_size_value
+    from management.services.ig_commerce_turns import _canonical_source_size, _FIT_WORDS
+    fit = lambda value: _FIT_WORDS.get(_normalize(value), _normalize(value))
+    if (values["product_id"] != control["product"]
+        or ("size" in control and _canonical_source_size(normalize_size_value(values["size"]))
+            != _canonical_source_size(normalize_size_value(control["size"])))
+        or ("fit" in control and fit(values["fit_option_code"]) != fit(control["fit"]))
+        or ("qty" in control and values["quantity"] != control["qty"])):
+        return None
+    # Except for a missing legacy variant ID, every durable selected value
+    # must already reproduce the original active line. Never bootstrap it.
+    legacy = _legacy_line(client, session.generation)
+    for key in ("product_id", "size", "color", "quantity", "fit_option_code", "option_values", "pay_type"):
+        empty = {} if key == "option_values" else ""
+        if (current.get(key) or empty) != (legacy.get(key) or empty):
+            return None
+    if (current.get("color_variant_id") and legacy.get("color_variant_id")
+        and current["color_variant_id"] != legacy["color_variant_id"]):
+        return None
+    if "variant" in control:
+        from productcolors.models import ProductColorVariant
+        from management.services.ig_source_cart_catalog import _color_matches, MAX_VARIANTS
+        from management.services.ig_catalog_choice_actions import admitted_native_color_variants
+        if any(value and value != control["variant"]
+               for value in (current.get("color_variant_id"), legacy.get("color_variant_id"))):
+            return None
+        variants = list(ProductColorVariant.objects.filter(product_id=control["product"])
+                        .select_related("color").order_by("pk")[:MAX_VARIANTS + 1])
+        if len(variants) > MAX_VARIANTS:
+            return None
+        native = admitted_native_color_variants(capture, [row]).get(row["line_id"])
+        variants = [variant for variant in variants if _color_matches(values["color"], variant)
+                    and (native is None or (native.get("status") == "verified"
+                         and variant.pk == native.get("variant_id")))]
+        if len(variants) != 1 or variants[0].pk != control["variant"]:
+            return None
+    return {
+        "selection_session": {"session_id": session.pk, "before": snapshot, "after": snapshot},
+        "no_op": {"schema": "unchanged-source-selection.v1",
+                  "source_capture_digest": capture["capture_digest"],
+                  "source_cart_binding_digest": fence["binding_digest"],
+                  "active_line_id": row["line_id"]},
+    }
+
+
 def apply_revision_selection_actions(
     revision_id: int,
     revision_token: str,
@@ -307,6 +466,26 @@ def apply_revision_selection_actions(
                 )
                 if recorded_after is None:
                     raise _ActionRollback("action_receipt_invalid")
+                if receipt.get("outcome") == "no_op":
+                    if (receipt.get("changed_fields") != []
+                        or receipt.get("after_authority") != before_projection):
+                        raise _ActionRollback("action_receipt_invalid")
+                    replay_readiness = pre_winner_readiness(
+                        revision.pk, revision_token, settings_id=settings_obj.pk,
+                        settings_permission_epoch=settings_permission_epoch, publication=publication,
+                        fact_bindings=authority.fact_bindings, offer_bindings=authority.offer_bindings,
+                        fact_checker=fact_checker, offer_checker=offer_checker, now=now,
+                    )
+                    if not replay_readiness.ready:
+                        raise _ActionRollback("readiness:" + ",".join(replay_readiness.reasons))
+                    unchanged = _unchanged_source_selection(client, revision, proposal, authority, control)
+                    if (unchanged is None or receipt.get("no_op") != unchanged["no_op"]
+                        or receipt.get("selection_session") != unchanged["selection_session"]):
+                        raise _ActionRollback("action_receipt_stale")
+                    return RevisionSelectionActionResult(
+                        applied=True, already_applied=True,
+                        post_action_claims=(CLAIM_CATALOG_CONFIGURATION,), post_action_authority=authority,
+                    )
                 from management.services.ig_revision_commerce import selected_session_receipt_current
 
                 if not selected_session_receipt_current(client, receipt.get("selection_session") or {}):
@@ -359,6 +538,31 @@ def apply_revision_selection_actions(
             if not readiness.ready:
                 raise _ActionRollback(
                     "readiness:" + ",".join(readiness.reasons)
+                )
+            source_frame = _fenced_source_selection_frame(client, revision, proposal, authority)
+            conflict = _confirmed_source_control_conflict(source_frame, control)
+            if conflict:
+                raise _ActionRollback(conflict)
+            unchanged = _unchanged_source_selection(client, revision, proposal, authority, control,
+                                                    source_frame=source_frame)
+            if unchanged is not None:
+                receipt = {
+                    "schema_version": 1, "action": ACTION_CLIENT_CONFIGURATION_UPDATE,
+                    "outcome": "no_op", "source_message_id": int(source_message_id),
+                    "generation_request_id": request_id,
+                    "generation_proposal_digest": generation_proposal_digest,
+                    "input_digest": input_digest, "changed_fields": [],
+                    **unchanged, "before_authority": before_projection,
+                    "after_authority": deepcopy(before_projection), "recorded_at": now.isoformat(),
+                }
+                if len(_canonical(receipt)) > MAX_ACTION_RECEIPT_BYTES:
+                    raise _ActionRollback("action_receipt_too_large")
+                revision.action_receipts = {**(revision.action_receipts or {}),
+                                           ACTION_CLIENT_CONFIGURATION_UPDATE: receipt}
+                revision.save(update_fields=["action_receipts", "updated_at"])
+                return RevisionSelectionActionResult(
+                    applied=True, post_action_claims=(CLAIM_CATALOG_CONFIGURATION,),
+                    post_action_authority=authority,
                 )
             if not bot_orders.pin_product(client, control["product"]):
                 raise _ActionRollback("product_pin_failed")

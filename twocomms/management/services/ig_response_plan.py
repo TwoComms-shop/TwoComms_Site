@@ -52,8 +52,16 @@ def _additional_color_choice_aliases():
     # Finite adjective forms for the remaining source-parser color families.
     # These are acknowledgements of a wish, never catalogue/physical authority.
     ru = ("ый", "ая", "ое", "ые", "ую", "ого", "ой", "ых", "ыми", "ым", "ом", "ому")
-    uk = ("ий", "а", "е", "і", "у", "ого", "ої", "их", "ими", "им", "ому", "ою")
+    uk = ("ий", "а", "е", "і", "у", "ого", "ої", "их", "ими", "им", "ому", "ою", "ій")
     families = {
+        "black": (("чорн", uk), ("черн", ru), ("чёрн", ru)),
+        "white": (("біл", uk), ("бел", ru)),
+        "blue": (("син", ("ій", "я", "є", "і", "ю", "ього", "ьої", "іх", "іми", "ім", "ьому", "ьою",
+                         "ий", "яя", "ее", "ие", "юю", "его", "ей", "их", "ими", "им", "ем", "ему")),),
+        "pink": (("рожев", uk), ("розов", ru)),
+        "grey": (("сір", uk), ("сер", ru)),
+        "green": (("зелен", ru + uk), ("зелён", ru)),
+        "coyote": (("койотов", ru + uk),),
         "olive": (("оливков", ru + uk),),
         "purple": (("фиолетов", ru), ("фіолетов", uk)),
         "beige": (("бежев", ru + uk),),
@@ -63,7 +71,7 @@ def _additional_color_choice_aliases():
         "yellow": (("желт", ru), ("жёлт", ru), ("жовт", uk)),
         "brown": (("коричнев", ru + uk),),
     }
-    return {color: tuple(dict.fromkeys((color, *(("violet",) if color == "purple" else ()),
+    return {color: tuple(dict.fromkeys((*CHOICE_ALIASES.get(color, ()), color, *(("violet",) if color == "purple" else ()),
         *(root + suffix for root, suffixes in roots for suffix in suffixes))))
         for color, roots in families.items()}
 
@@ -864,7 +872,7 @@ def _pending_stock_answer_covered(plan, text, source_message_id):
         if _scoped_request_tokens(clause, choices=captured["choices"], title=title, extra_words=(
             "i", "we", "will", "shall", "am", "also", "check", "checking", "verify", "verifying",
             "with", "our", "manager", "уточню", "уточнимо", "перевірю", "перевіримо", "проверю", "проверим",
-            "менеджера", "менеджером", "менеджеру", "у", "з", "с", "для", "вас", "наразі")):
+            "менеджера", "менеджером", "менеджеру", "у", "з", "с", "для", "вас", "наразі", "зараз")):
             return True
     return False
 
@@ -937,6 +945,95 @@ def _current_color_check_commitment(plan, text, value):
                     "колір", "кольору", "кольорі", "цвет", "цвета", "цвете", "color", "colour", "your", "request", "possibility", "fulfil", "fulfill")):
             return True
     return False
+
+
+def _approved_base_wish_anchors(plan, response):
+    """Bind an own published base answer to its exact captured pending wish.
+
+    This grants only clause ownership and garment acknowledgement. The native
+    inquiry receipt, catalogue and fulfillment gates retain their authority.
+    """
+    from management.services.approved_public_facts import approved_assertion_valid, _GARMENT_WORDS
+    from management.services.ig_product_inquiries import _digest, cart_identity, validate_inquiry_response
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_reply_truth import approved_product_assertion_covered, _has_positive_claim
+    from management.services.ig_response_cart_plan import scoped_claim_clauses
+    captured = plan.product_information
+    if (plan.plan_gap or len(plan.line_plans) != 1 or captured.get("status") != "manager_required"
+        or plan.source_cart_capture.get("status") != "captured"
+        or plan.source_cart_capture.get("coverage_complete") is not True
+        or captured.get("reason") != "product_configuration_review"
+        or captured.get("digest") != _digest({key: value for key, value in captured.items()
+            if key not in {"digest", "snapshot_digest"}})
+        or captured.get("cart_identity") != cart_identity(plan.source_cart_capture)
+        or validate_inquiry_response(captured, response)):
+        return ()
+    inquiries = captured.get("inquiries") or ()
+    refs = captured.get("source_refs") or ()
+    if (len(inquiries) != 1 or len(refs) > 32
+        or any(not isinstance(row, dict) for row in refs)):
+        return ()
+    inquiry = inquiries[0]
+    product_id, source_id = inquiry.get("product_id"), inquiry.get("source_message_id")
+    digest, value = inquiry.get("source_digest"), inquiry.get("requested_value")
+    if (inquiry.get("axis") != "color" or type(product_id) is not int or product_id <= 0
+        or type(source_id) is not int or not re.fullmatch(r"[a-f0-9]{64}", str(digest or ""))
+        or not isinstance(value, str) or not 0 < len(value) <= 80
+        or not any(row.get("message_id") == source_id and row.get("source_digest") == digest for row in refs)):
+        return ()
+    rows = [line.as_dict() for line in plan.line_plans if line.line_id == inquiry.get("line_id")]
+    if len(rows) != 1:
+        return ()
+    row = rows[0]
+    if (plan.source_cart_capture.get("active_line_id") != row["line_id"]
+        or row["choices"].get("product_id") != product_id or row["configuration"].get("product_id") != product_id):
+        return ()
+    garment = row["choices"].get("garment_type")
+    if row["evidence"].get("garment_type", {}).get("source_message_id") != source_id:
+        return ()
+    obligations = [item for item in plan.obligations if item.get("kind") == "garment_type"
+        and item.get("line_id") == row["line_id"] and item.get("source_message_id") == source_id
+        and item.get("value") == garment
+        and item.get("evidence", {}).get("source_message_id") == source_id
+        and item.get("evidence", {}).get("source_digest") == row["evidence"].get("garment_type", {}).get("source_digest")
+        and re.fullmatch(r"[a-f0-9]{64}", str(item.get("evidence", {}).get("source_digest") or ""))]
+    if not garment or not obligations:
+        return ()
+    text = own_reply_text(response.reply_text)
+    if any(key != garment and pattern.search(text) for key, pattern in _GARMENT_WORDS.items()):
+        return ()
+    if re.search(r"\b(?:customer|client|manager|bot|assistant|клієнт\w*|клиент\w*|менеджер\w*)\s+(?:said|wrote|напис\w*|сказ\w*)\b", text, re.I):
+        return ()
+    # A typed manager control alone is insufficient: the same own sentence
+    # must positively forward this exact color wish for a possibility check.
+    forwarding = re.compile(r"\bя\s+передам\b|\b(?:i|we)\s+will\s+(?:forward|pass)\b", re.I)
+    committed = _current_color_check_commitment(plan, text, value)
+    for sentence in re.findall(r"[^.!?;\n]+[?]?", text):
+        if ("?" not in sentence and re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", sentence, re.I)
+            and re.search(r"менедж\w*|\bmanager\b", sentence, re.I)
+            and _has_positive_claim(forwarding, sentence)
+            and re.search(r"можлив\w*|возможн\w*|possibilit\w*", sentence, re.I)
+            and not re.search(r"\b(?:не|not|never|no)\b", sentence, re.I)):
+            committed = True
+    if not committed:
+        return ()
+    normalize = lambda value: re.sub(r"\s+", " ", str(value)).strip(" .!\n").casefold()
+    clauses = scoped_claim_clauses(_unquoted_text(response.reply_text))
+    result = []
+    for assertion in captured.get("base_context_assertions", ()):
+        if (assertion.get("schema") != "approved-base-assertion.v1"
+            or assertion.get("topic") != "composition" or assertion.get("product_id") != product_id
+            or assertion.get("garment") != garment or not approved_assertion_valid(assertion)):
+            continue
+        # Use the reviewed published answer itself, never naked percentages or
+        # a guessed single-cart anaphora. Quotes, negation and foreign subjects
+        # cannot equal this positive own clause.
+        for clause in clauses:
+            if (normalize(clause) == normalize(assertion.get("text"))
+                and approved_product_assertion_covered(clause, assertion, topic="composition")):
+                result.append({"line_id": row["line_id"], "source_message_id": source_id,
+                    "garment": garment, "clause": clause})
+    return tuple(result)
 
 
 def _topic_covered(kind, response, plan, *, source_message_id=None):
@@ -1165,8 +1262,11 @@ class ResponsePlan:
         identity = (selected_title_text(response.reply_text, self.configuration.get("product_title", ""))
             if len(self.line_plans) == 1 else response.reply_text)
         plain_identity = _unquoted_text(identity)
+        base_anchors = _approved_base_wish_anchors(self, response)
         for sentence in scoped_claim_clauses(plain_identity):
             matches = matching_line_ids(sentence, self.line_plans)
+            if not matches:
+                matches = tuple({row["line_id"] for row in base_anchors if row["clause"] == sentence})
             if not matches and plain_identity == identity:
                 active = self.source_cart_capture.get("active_line_id")
                 owner = anaphoric_price_reply_line_id(sentence, self.line_plans, active_line_id=active,
@@ -1188,6 +1288,33 @@ class ResponsePlan:
             if not validate_reply_truth(sentence, context=candidate_context).valid:
                 return "response_plan_line_claim_unverified"
         return ""
+
+    def answered_product_assertions(self, response, context):
+        """Reviewed facts actually answered in an own, uniquely bound clause.
+
+        The final aggregate guard calls this only after every clause passed
+        validate_multiline_claims; unused facts from sibling lines stay out.
+        """
+        from management.services.approved_public_facts import approved_assertion_valid
+        from management.services.ig_reply_language import own_reply_text
+        from management.services.ig_reply_truth import approved_product_assertion_covered
+        from management.services.ig_response_cart_plan import matching_line_ids, scoped_claim_clauses
+        contexts = self.line_truth_contexts(context)
+        anchors = _approved_base_wish_anchors(self, response)
+        answered = {}
+        for clause in scoped_claim_clauses(own_reply_text(_unquoted_text(response.reply_text))):
+            if _NEGATED_CHOICE_RE.search(clause):
+                continue
+            owners = matching_line_ids(clause, self.line_plans)
+            if not owners:
+                owners = tuple({row["line_id"] for row in anchors if row["clause"] == clause})
+            if len(owners) != 1:
+                continue
+            for assertion in contexts[owners[0]].approved_product_assertions:
+                if (approved_assertion_valid(assertion)
+                    and approved_product_assertion_covered(clause, assertion)):
+                    answered[assertion["digest"]] = assertion
+        return tuple(answered.values())
 
     def truth_context(self, context):
         # Source preferences authorize only acknowledgement of a wish. They
@@ -1537,6 +1664,7 @@ class ResponsePlan:
             clauses[self.focused_candidate_line_id] = list(scoped_claim_clauses(_unquoted_text(response.reply_text)))
         admitted = admitted_checkout_line_ids(checkout_cart_binding, self.source_cart_capture, local=local)
         chart_ids = _native_chart_coverage(self, catalog_media_evidence, response.reply_text)
+        base_anchors = _approved_base_wish_anchors(self, response)
         covered, remaining = [], []
         rows = {line.line_id: line.as_dict() for line in self.line_plans}
         selector = self.next_selector_line
@@ -1549,6 +1677,9 @@ class ResponsePlan:
             done = False
             if kind in {"unclassified", "garment_type"} and _superseded_color_wish_covered(self, response,
                     obligation["source_message_id"], current_garment=kind == "garment_type"):
+                done = True
+            elif kind == "garment_type" and any(row["source_message_id"] == obligation["source_message_id"]
+                    and row["line_id"] == line_id and row["garment"] == obligation.get("value") for row in base_anchors):
                 done = True
             elif obligation["id"] in chart_ids:
                 done = True

@@ -83,6 +83,7 @@ jobs:
             management.tests_ig_conversion_audit_analysis_20261022 \
             management.tests_ig_conversion_audit_stats_20261022 \
             management.tests_ig_stock_authority_20261023 \
+            management.tests_ig_source_cart_catalog \
             management.tests_ig_stock_catalog_copy_20261023 \
             management.tests_ig_stock_claim_guard_20261023 \
             management.tests_ig_stock_request_scope_20261023 \
@@ -97,6 +98,10 @@ jobs:
             management.tests_ig_payment_observation_worker \
             management.tests_ig_memory_lifecycle \
             management.tests_ig_reply_truth_seams_20261022 \
+            management.tests_ig_revision_selection_noop_20261023 \
+            management.tests_ig_response_guard \
+            management.tests_ig_media_response \
+            management.tests_bot_catalog \
             management.tests_ig_communication_policy_20261022 \
             management.tests_ig_manu_context_budget_20261021 \
             management.tests_ig_manu_business_delivery_20261021 \

@@ -14,7 +14,7 @@ from management.tests_ig_restock_subscriptions import _RestockFixture
 
 
 class StockPromptBoundaryTests(SimpleTestCase):
-    def test_checkout_projection_retains_choices_price_and_accounting_without_physical_labels(self):
+    def test_checkout_projection_retains_choices_price_without_internal_inventory(self):
         from management.services.ig_client_state_card import checkout_prompt_value
         for stock in (0, 100):
             with self.subTest(stock=stock):
@@ -27,13 +27,13 @@ class StockPromptBoundaryTests(SimpleTestCase):
                 self.assertEqual(value, before)
                 self.assertEqual(rendered["product"], before["product"])
                 self.assertEqual(rendered["color"]["selected"], "black")
-                self.assertEqual(rendered["color"]["options"], [{"name": "Black", "accounting_stock": stock, "variant_id": 3}])
+                self.assertEqual(rendered["color"]["options"], [{"name": "Black", "variant_id": 3}])
                 self.assertEqual(rendered["size"], {"selected": "M",
                     "checkout_eligible_values": before["size"]["available"],
                     "checkout_disabled_values": before["size"]["disabled"],
                     "checkout_ineligible_request": before["size"]["requested_unavailable"]})
 
-    def test_pending_observation_is_accounting_but_exact_manager_decision_is_unchanged(self):
+    def test_ledger_input_is_private_and_exact_manager_decision_is_unchanged(self):
         from management.services.ig_fulfillment_context import fulfillment_prompt_value
         for stock in (0, 100):
             with self.subTest(stock=stock):
@@ -53,9 +53,80 @@ class StockPromptBoundaryTests(SimpleTestCase):
                 line = rendered["current_request"]["lines"][0]
                 self.assertEqual(line["preferences"], {"size": "M", "color": "мокко"})
                 self.assertNotIn("observation", line)
-                self.assertEqual(line["accounting_observation"], {
-                    "accounting_status": observation["status"], "accounting_reason": observation["reason"],
-                    "physical_quantity": stock, "free_quantity": stock, "size_cap": stock})
+                self.assertNotIn("accounting_observation", line)
+
+    def test_unreviewed_prompt_has_no_manager_confirmation_or_internal_inventory(self):
+        import json
+        from management.services.ig_client_state_card import CapturedClientState, _slot, render_client_state_prompt
+        for stock in (0, 100):
+            with self.subTest(stock=stock):
+                value = {"status": "pending", "decision": None,
+                    "current_request": {"lines": [{"line_id": "selected",
+                        "target": {"product_id": 7, "size": "M", "quantity": 1},
+                        "preferences": {"values": {"size": "M", "color": "мокко"}},
+                        "observation": {"status": "available" if stock else "unavailable",
+                            "reason": "physical_stock_available" if stock else "insufficient_free_stock",
+                            "physical_quantity": stock, "free_quantity": stock, "size_cap": stock}}],
+                        "customer_requirements": [{"source_id": 3, "raw_quote": "Чи є M?"}]}}
+                raw = {"status": "captured", "digest": "a" * 64, "slots": {
+                    "fulfillment.review": _slot(value, status="confirmed", authority="verified_manager_review",
+                        mandatory=True, validity="valid")}}
+                state = CapturedClientState(json.dumps(raw, ensure_ascii=False).encode())
+                before, digest = state.as_dict(), state.digest
+                rendered = render_client_state_prompt(state, budget=2400)
+                self.assertFalse(rendered.oversized)
+                row = next(json.loads(line) for line in rendered.text.splitlines() if line.startswith('{'))
+                self.assertEqual((row["status"], row["authority"]), ("pending", "pending_manager_review"))
+                self.assertIsNone(row["value"]["decision"])
+                self.assertNotIn("confirmation_semantics", row)
+                line = row["value"]["current_request"]["lines"][0]
+                self.assertEqual(line["target"], value["current_request"]["lines"][0]["target"])
+                self.assertEqual(line["preferences"]["values"], {"size": "M", "color": "мокко"})
+                self.assertNotIn("observation", line)
+                self.assertNotIn("accounting_observation", line)
+                self.assertNotIn("physical_quantity", json.dumps(row))
+                self.assertEqual(state.as_dict(), before)
+                self.assertEqual(state.digest, digest)
+                self.assertEqual(rendered.capture_digest, digest)
+
+    def test_unavailable_or_stale_review_slots_never_render_manager_confirmation(self):
+        import json
+        from management.services.ig_client_state_card import CapturedClientState, _slot, render_client_state_prompt
+        for status, reason in (("unknown", "fulfillment_review_absent"),
+                ("stale", "fulfillment_purchase_changed"), ("stale", "fulfillment_review_expired"),
+                ("unknown", "fulfillment_scope_unavailable")):
+            with self.subTest(reason=reason):
+                raw = {"status": "captured", "digest": "a" * 64, "slots": {"fulfillment.review":
+                    _slot({"status": "reviewed", "decision": {"lines": [{"availability": "available", "checked_quantity": 1}]}},
+                        status=status, reason=reason, authority="verified_manager_review", validity="unknown")}}
+                state = CapturedClientState(json.dumps(raw).encode())
+                before = state.as_dict()
+                rendered = render_client_state_prompt(state, budget=2400)
+                self.assertNotIn("fulfillment.review", rendered.included)
+                self.assertNotIn('"authority":"verified_manager_review"', rendered.text)
+                self.assertEqual(state.as_dict(), before)
+
+    def test_verified_review_keeps_checked_quantity_and_timing_authority(self):
+        import json
+        from management.services.ig_client_state_card import CapturedClientState, _slot, render_client_state_prompt
+        for availability in ("available", "wait"):
+            with self.subTest(availability=availability):
+                line = {"line_id": "selected", "availability": availability, "checked_quantity": 1,
+                    "preparation": {"min_days": 1, "max_days": 3, "unit": "calendar"}}
+                if availability == "wait":
+                    line["base_arrival"] = {"min_days": 7, "max_days": 7, "unit": "calendar",
+                        "anchor_at": "2026-10-23T10:00:00+03:00"}
+                value = {"status": "reviewed", "current_request": {"lines": []},
+                    "decision": {"id": 9, "lines": [line]}}
+                raw = {"status": "captured", "digest": "a" * 64, "slots": {"fulfillment.review":
+                    _slot(value, status="confirmed", authority="verified_manager_review", mandatory=True, validity="valid")}}
+                state = CapturedClientState(json.dumps(raw).encode())
+                before = state.as_dict()
+                rendered = render_client_state_prompt(state, budget=2400)
+                row = next(json.loads(text) for text in rendered.text.splitlines() if text.startswith('{'))
+                self.assertEqual((row["status"], row["authority"]), ("confirmed", "verified_manager_review"))
+                self.assertEqual(row["value"]["decision"], value["decision"])
+                self.assertEqual(state.as_dict(), before)
 
     def test_catalogue_price_and_configuration_keep_zero_and_positive_accounting_local(self):
         from decimal import Decimal
@@ -71,6 +142,11 @@ class StockPromptBoundaryTests(SimpleTestCase):
                 for known in ("Black", "variant_id=3", "900 грн", "classic=M/L", f"обліковий stock={stock}"):
                     self.assertIn(known, text)
                 self.assertNotIn("на складі", text)
+                customer_text = format_variant_pricing(rows, include_inventory=False)
+                for known in ("Black", "variant_id=3", "900 грн", "classic=M/L"):
+                    self.assertIn(known, customer_text)
+                self.assertNotIn("stock", customer_text)
+                self.assertEqual(rows, before)
 
     def test_shared_catalogue_encoding_keeps_accounting_counts_local_and_lossless(self):
         from decimal import Decimal
@@ -90,6 +166,103 @@ class StockPromptBoundaryTests(SimpleTestCase):
         for stock in range(40):
             self.assertIn(f"variant_id={stock + 1}, @C", encoded)
             self.assertIn(f", обліковий stock={stock})", encoded)
+
+
+@override_settings(IG_FULFILLMENT_REVIEWS_ENABLED=True, IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True,
+    IG_TURN_CONTEXT_MODE="unified", IG_CLIENT_STATE_PROMPT_TOKENS=2400,
+    GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class NativeStockPromptInputTests(_RestockFixture, TestCase):
+    def setUp(self):
+        from management.tests_ig_source_cart_catalog import SourceCartCatalogTests
+        original = SourceCartCatalogTests.setUp
+        def catalog_before_sources(case):
+            original(case)
+            case.category.name, case.category.slug = "Худі", "hoodies"
+            case.category.save(update_fields=["name", "slug"])
+            case.products[0].price = case.variants[0].price_override = 900
+            case.products[0].save(update_fields=["price"])
+            case.variants[0].save(update_fields=["price_override"])
+        with patch.object(SourceCartCatalogTests, "setUp", catalog_before_sources):
+            super().setUp()
+        self.settings.ai_enabled = True
+        self.settings.save(update_fields=["ai_enabled"])
+        self.canonical("Хочу худі Restock Aurora, кількість 1, розмір M, колір black, крій classic")
+
+    def capture_model_input(self, question, stock):
+        import json
+        from management.services import instagram_bot as bot
+        from management.services.call_ai_analysis import CallAIAnalysisError
+        from management.services.ig_revision_live import RevisionGenerationBoundary
+        from management.services.ig_revision_media import collect_revision_media
+        from management.services.ig_turn_integration import prepare_revision_turn_context
+        from management.services.ig_product_inquiries import inquiry_prompt
+        self.variant.stock = self.rule.stock = stock
+        self.variant.save(update_fields=["stock"])
+        self.rule.save(update_fields=["stock"])
+        source = self.source(question)
+        revision, token = self.revision(source)
+        reviews.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
+        collection = collect_revision_media(revision.pk, token)
+        boundary = RevisionGenerationBoundary(revision, token, self.settings, self.binding, has_images=False)
+        prepared = prepare_revision_turn_context(revision, generation_boundary=boundary,
+            collection=collection, settings_row=self.settings, publication=self.binding, now=self.now)
+        before = prepared.state.as_dict()
+        captured = []
+        def transport(payload, **kwargs):
+            captured.append(deepcopy(payload))
+            raise CallAIAnalysisError("offline prompt capture")
+        with patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=transport) as model, \
+                patch.object(bot, "_provider_http", side_effect=AssertionError("prompt capture cannot deliver")) as http:
+            bot.gemini_generate(self.settings, list(prepared.history), client=self.client_row,
+                routing_decision=prepared.context.decision, generation_boundary=boundary,
+                turn_note=prepared.context.turn_note + "\n" + inquiry_prompt(boundary.product_inquiries),
+                memory_note=prepared.context.memory_note,
+                context_note=prepared.context.context_note, captured_client_state=prepared.state,
+                captured_dynamic_notes=prepared.dynamic_notes, captured_turn_text=prepared.current_text,
+                captured_policy_tags=prepared.policy_inputs.tags,
+                captured_knowledge_language=prepared.policy_inputs.knowledge_language,
+                captured_knowledge_selectors=prepared.policy_inputs.knowledge_selectors,
+                request_context_metadata=prepared.request_metadata, turn_media_binding=collection.binding,
+                turn_media_context=[], deadline_at=revision.overall_deadline - timedelta(seconds=5))
+        self.assertEqual(model.call_count, 1)
+        http.assert_not_called()
+        self.assertEqual(prepared.state.as_dict(), before)
+        payload = captured[0]
+        system = payload["system_instruction"]["parts"][0]["text"]
+        self.assertIn(question, json.dumps(payload, ensure_ascii=False))
+        product_line = next(line for line in system.splitlines() if line.startswith(f"• id={self.product.pk} |"))
+        for known in ("Restock Aurora", "900 грн", "Black", "classic=M/L"):
+            self.assertIn(known, product_line)
+        self.assertNotRegex(product_line, r"\bstock\s*=|\bcheckout_status\s*=|на складі")
+        rows = [json.loads(line) for line in system.splitlines() if line.startswith('{')]
+        cart = next(row["value"] for row in rows if row.get("slot") == "current.source_cart")
+        columns, selected = cart["field_columns"], cart["lines"][0]["values"]
+        for key, value in (("product_id", self.product.pk), ("size", "M"), ("color", "black"), ("fit_option_code", "classic")):
+            self.assertEqual(selected[columns.index(key)], value)
+        for row in rows:
+            if row.get("slot") == "fulfillment.review":
+                self.assertEqual((row["status"], row["authority"]), ("pending", "pending_manager_review"))
+                for inventory in ("accounting_observation", "physical_stock_available", "physical_quantity", "free_quantity", "size_cap"):
+                    self.assertNotIn(inventory, json.dumps(row))
+            if row.get("has_product"):
+                self.assertEqual(row["size"]["selected"], "M" if stock else "")
+                for color in row.get("color", {}).get("options", []):
+                    self.assertNotIn("stock", color)
+                    self.assertNotIn("accounting_stock", color)
+        return system, before
+
+    def test_zero_ledger_model_input_keeps_m_without_accounting_claims(self):
+        system, canonical = self.capture_model_input("Чи є це худі в розмірі M у наявності?", 0)
+        self.assertIn("observation", str(canonical["slots"]["fulfillment.review"]["value"]))
+
+    def test_positive_ledger_known_price_model_input_has_no_physical_confirmation(self):
+        _, canonical = self.capture_model_input("Чи є це худі в розмірі M у наявності та яка його ціна?", 100)
+        self.assertEqual(canonical["slots"]["fulfillment.review"]["value"]["status"], "pending")
+
+    def test_unlisted_color_model_input_keeps_exact_wish_and_configured_choices(self):
+        system, _ = self.capture_model_input("Хочу це худі кольору мокко.", 100)
+        self.assertIn("мокко", system)
+        self.assertIn("requested_color_unverified", system)
 
 
 @override_settings(IG_FULFILLMENT_REVIEWS_ENABLED=True, IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True,

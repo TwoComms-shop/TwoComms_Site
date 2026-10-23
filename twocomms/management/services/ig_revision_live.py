@@ -423,7 +423,8 @@ def _captured_reply_truth(plan, response, context, *, revision=None):
         context = replace(context, **{
             key: tuple(dict.fromkeys(value for item in scoped for value in getattr(item, key)))
             for key in keys
-        })
+        }, approved_product_assertions=tuple(context.approved_product_assertions)
+            + plan.answered_product_assertions(response, context))
     else:
         context = plan.truth_context(context)
     return validate_reply_truth(response.reply_text, context=context)

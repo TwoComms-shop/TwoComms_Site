@@ -267,7 +267,7 @@ def resolve_product_pricing(
     }
 
 
-def format_variant_pricing(rows: list[dict]) -> str:
+def format_variant_pricing(rows: list[dict], *, include_inventory: bool = True) -> str:
     """Compact variant matrix for the system prompt."""
 
     grouped: dict[int, list[dict]] = {}
@@ -310,7 +310,8 @@ def format_variant_pricing(rows: list[dict]) -> str:
                 detail += "; фасони/розміри: " + "; ".join(sized_fits)
         if reasons:
             detail += ", причина: " + "; ".join(reasons)
-        stock = int(options[0].get("stock") or 0)
-        detail += f", обліковий stock={stock}"
+        if include_inventory:
+            stock = int(options[0].get("stock") or 0)
+            detail += f", обліковий stock={stock}"
         rendered.append(f"{color} (variant_id={variant_id}, {detail})")
     return ", ".join(rendered)

@@ -92,11 +92,13 @@ class SourceCartCatalogTests(TestCase):
         self.assertEqual((first["recipient_id"], first["size"], first["qty"]), ("self", "M", 1))
         self.assertEqual((second["recipient_id"], second["size"], second["qty"]), ("friend", "L", 2))
 
-    def test_size_rule_stock_zero_blocks_price_and_spec(self):
+    def test_size_rule_stock_zero_retains_price_but_blocks_spec_and_readiness(self):
         VariantSizeRule.objects.create(variant=self.variants[0], fit_code="classic", size="M", is_enabled=True, stock=0)
         result = resolve_source_cart_catalog(self.capture())
         self.assertFalse(result.complete)
-        self.assertEqual(result.contexts_by_line["line-0"].authorized_prices, ())
+        # Owner contract: accounting zero is no longer a price suppressor;
+        # exact catalogue price is independent of physical fulfillment review.
+        self.assertEqual(result.contexts_by_line["line-0"].authorized_prices, (Decimal("790.00"),))
         self.assertNotIn("line-0", result.item_specs_by_line)
 
     def test_hard_query_budget_discards_all_partial_authority(self):

@@ -1802,6 +1802,9 @@ print(json.dumps({
             "management.tests_ig_live_identity_echo_20261022",
             "management.tests_ig_manager_case_continuity_20261022",
             "management.tests_ig_reply_truth_seams_20261022",
+            "management.tests_ig_response_guard",
+            "management.tests_ig_media_response",
+            "management.tests_bot_catalog",
             "management.tests_ig_size_aliases_20261022",
             "management.tests_ig_size_grid_authority_20261022",
             "management.tests_ig_standard_funnel_20261022",
@@ -1817,32 +1820,33 @@ print(json.dumps({
         self.assertFalse(discovered - expected)
 
     def test_dialogue_quality_runs_the_complete_native_command_and_cleanup_contract(self):
-        admin = FakeAdmin()
-        command = FakeCommandRunner()
-        result = self.runner.run_gate(
-            server_mode="external",
-            suite="dialogue-quality",
-            admin=admin,
-            command_runner=command,
-            project_root=PROJECT_ROOT,
-            environ={"MARIADB_ADMIN_PASSWORD": "root-secret"},
-            output=io.StringIO(),
-        )
-        test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
-        self.assertEqual(test_calls, [[
-            sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
-            *self.runner.SUITES["dialogue-quality"],
-            "--settings=test_settings_mariadb", "--noinput", "--keepdb",
-        ]])
-        self.assertEqual(result["suite"], "dialogue-quality")
-        self.assertEqual([call[0] for call in admin.calls][-4:],
-                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+        self.assertEqual(self.runner._validate_suite("selection-idempotence"),
+                         ("management.tests_ig_revision_selection_noop_20261023",))
+        for suite in ("dialogue-quality", "selection-idempotence"):
+            with self.subTest(suite=suite):
+                admin = FakeAdmin()
+                command = FakeCommandRunner()
+                result = self.runner.run_gate(
+                    server_mode="external", suite=suite, admin=admin,
+                    command_runner=command, project_root=PROJECT_ROOT,
+                    environ={"MARIADB_ADMIN_PASSWORD": "root-secret"},
+                    output=io.StringIO(),
+                )
+                test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
+                self.assertEqual(test_calls, [[
+                    sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
+                    *self.runner.SUITES[suite],
+                    "--settings=test_settings_mariadb", "--noinput", "--keepdb",
+                ]])
+                self.assertEqual(result["suite"], suite)
+                self.assertEqual([call[0] for call in admin.calls][-4:],
+                                 ["drop_user", "drop_database", "verify_cleanup", "close"])
 
     def test_stock_authority_covers_current_rules_and_bounded_existing_consumers(self):
         labels = (self.runner._validate_suite("stock-authority")
                   + self.runner._validate_suite("stock-authority-consumers"))
         self.assertEqual(len(labels), len(set(labels)))
-        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 46)
+        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 47)
         self.assertEqual(set(labels), set(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS))
         self.assertEqual(len(self.runner.STOCK_AUTHORITY_CORE_MODULES), 9)
         self.assertEqual(set(self.runner.SUITES["stock-authority"]),
@@ -1851,6 +1855,7 @@ print(json.dumps({
                        "request_scope_20261023"):
             self.assertIn("management.tests_ig_stock_" + suffix, labels)
         self.assertIn("management.tests_ig_palette_intent_20261023", labels)
+        self.assertIn("management.tests_ig_source_cart_catalog", labels)
         self.assertIn("management.tests_ig_standard_funnel_qa", labels)
         for module in ("fulfillment_reviews", "fulfillment_timing", "fulfillment_truth",
                        "fulfillment_delivery", "fulfillment_checkout", "fulfillment_stock_api",

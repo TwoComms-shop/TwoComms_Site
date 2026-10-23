@@ -709,7 +709,7 @@ def client_state_admin_payload(state: CapturedClientState):
 
 
 def checkout_prompt_value(readiness):
-    """Label eligibility/accounting in the prompt without changing captured truth."""
+    """Render checkout choices; internal counts remain in captured truth only."""
     value = deepcopy(readiness)
     if not isinstance(value, dict):
         return value
@@ -723,8 +723,9 @@ def checkout_prompt_value(readiness):
     color = value.get("color")
     if isinstance(color, dict):
         for row in color.get("options") or []:
-            if isinstance(row, dict) and "stock" in row:
-                row["accounting_stock"] = row.pop("stock")
+            if isinstance(row, dict):
+                row.pop("stock", None)
+                row.pop("accounting_stock", None)
     return value
 
 
@@ -791,6 +792,18 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
             if key == "fulfillment.review":
                 from management.services.ig_fulfillment_context import fulfillment_prompt_value
                 projected["value"] = fulfillment_prompt_value(slot["value"])
+                if (slot.get("authority") != "verified_manager_review"
+                        or slot.get("validity") != "valid"
+                        or projected["value"].get("status") != "reviewed"
+                        or not isinstance(projected["value"].get("decision"), dict)
+                        or not projected["value"]["decision"]):
+                    # "confirmed" authenticates the capture, not a manager's
+                    # absent decision. Do not attribute pending ledger input
+                    # to a verified physical-availability review in the model.
+                    pending = projected["value"].get("status") == "pending"
+                    projected["status"] = "pending" if pending else "unknown"
+                    projected["authority"] = "pending_manager_review" if pending else "none"
+                    projected.pop("confirmation_semantics", None)
                 # These are capture authentication/audit bookkeeping, not
                 # customer deadlines or manager preparation/availability.
                 # The immutable state and dispatch guards retain them all;

@@ -55,9 +55,7 @@ class TradeRequirementExtractionTests(SimpleTestCase):
         rendered = fulfillment_prompt_value(value)
         self.assertEqual(value, before)
         expected_lines = deepcopy(lines)
-        observation = expected_lines[0].pop("observation")
-        expected_lines[0]["accounting_observation"] = {
-            "accounting_status": observation["status"], "accounting_reason": observation["reason"]}
+        expected_lines[0].pop("observation")
         self.assertEqual(rendered["current_request"]["lines"], expected_lines)
         self.assertEqual(rendered["current_request"]["customer_requirements"], requirements)
         self.assertNotIn("lines", rendered)
@@ -123,11 +121,10 @@ class NativeFulfillmentPromptBudgetTests(_RestockFixture, TestCase):
             for actual, original in zip(value["current_request"]["lines"], request.envelope["lines"], strict=True):
                 for key in ("line_id", "recipient_id", "target"):
                     self.assertEqual(actual[key], original[key])
-                accounting = deepcopy(original["observation"])
-                for key in ("status", "reason"):
-                    if key in accounting:
-                        accounting["accounting_" + key] = accounting.pop(key)
-                self.assertEqual(actual["accounting_observation"], accounting)
+                self.assertNotIn("observation", actual)
+                self.assertNotIn("accounting_observation", actual)
+                if status != "reviewed":
+                    self.assertEqual((block["status"], block["authority"]), ("pending", "pending_manager_review"))
                 for key in ("values", "evidence", "cleared"):
                     self.assertEqual(actual["preferences"].get(key), original["preferences"].get(key))
             if status == "reviewed":

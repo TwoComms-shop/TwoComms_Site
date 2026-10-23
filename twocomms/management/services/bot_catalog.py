@@ -15,10 +15,9 @@ import logging
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
-from django.db.models import Sum
 
-CACHE_KEY = "ig_bot_catalog_ctx_physical_boundary_v2"
-CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_physical_boundary_v2"
+CACHE_KEY = "ig_bot_catalog_ctx_customer_facts_v3"
+CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_customer_facts_v3"
 CACHE_TTL = 600          # 10 хв
 # Збій build-у кешується на дуже короткий час: знімок мусить швидко оновитись
 # після відновлення, а не жити ті самі 10 хвилин, що й валідний каталог.
@@ -100,7 +99,6 @@ def _build(*, compact: bool = False) -> str:
 
     # Кольори + залишки + службові IDs по варіантах одним запитом.
     variants_by_product: dict[int, list[object]] = {}
-    stock_by_product: dict[int, int] = {}
     fp_by_product: dict[int, list[str]] = {}
     variants = list(
         ProductColorVariant.objects.filter(product_id__in=ids)
@@ -109,7 +107,6 @@ def _build(*, compact: bool = False) -> str:
     )
     for v in variants:
         variants_by_product.setdefault(v.product_id, []).append(v)
-        stock_by_product[v.product_id] = stock_by_product.get(v.product_id, 0) + int(v.stock or 0)
         bv = (v.metadata or {}).get("bot_vision") or {}
         seg = (bv.get("summary") or bv.get("print_subject") or "").strip()
         if seg:
@@ -149,7 +146,7 @@ def _build(*, compact: bool = False) -> str:
         except Exception:
             pass
         fps = fp_by_product.get(p.id, [])
-        variants_s = format_variant_pricing(pricing["configurations"])
+        variants_s = format_variant_pricing(pricing["configurations"], include_inventory=False)
         colors_s = ("; кольори: " + variants_s) if variants_s else ""
         has_variant_size_contract = any(
             row.get("has_compatible_size_contract")
@@ -177,20 +174,11 @@ def _build(*, compact: bool = False) -> str:
             continue
 
         cat = getattr(p.category, "name", "") or ""
-        stock = stock_by_product.get(p.id, 0)
-        # Э3.7: формулировку наличия даёт ЕДИНЫЙ resolver, а не самостоятельное
-        # суммирование `stock` здесь. Иначе каталог и checkout снова начнут
-        # расходиться, и клиент прочитает «під замовлення» там, где checkout
-        # считает вариант доступным (или наоборот). Агрегированный `stock`
-        # остаётся диагностикой для оператора.
-        avail = _availability_label(p.id, aggregate_stock=stock)
         fp_s = (" | принт: " + "; ".join(fps[:3])) if fps else ""
-        # `stock` у рядку варіанта показуємо лише коли він додатний: нуль у цьому
-        # проєкті означає «облік не ведеться», і модель читала його як «немає».
         url = f"{SITE}/product/{p.slug}/"
         lines.append(
             f"• id={p.id} | {p.title} — {price_label}{disc} [{cat}]"
-            f"{colors_s}{avail}{fits_s}{fp_s} | {url}"
+            f"{colors_s}{fits_s}{fp_s} | {url}"
         )
 
     price_rule = (
@@ -212,24 +200,6 @@ def _build(*, compact: bool = False) -> str:
         return text
     text, _dropped = truncate_catalog_lines(lines, limit=MAX_CHARS)
     return text + price_rule
-
-
-def _availability_label(product_id: int, *, aggregate_stock: int) -> str:
-    """Expose resolver eligibility and accounting without a physical-stock claim."""
-    try:
-        from management.services.ig_offer_resolver import (
-            OfferStatus,
-            resolve_product_presentation,
-        )
-
-        resolution = resolve_product_presentation(product_id)
-    except Exception:
-        logger.debug("offer resolver unavailable for product %s", product_id, exc_info=True)
-        return ", наявність уточнюємо"
-    status = {OfferStatus.IN_STOCK: "in_stock", OfferStatus.MADE_TO_ORDER: "made_to_order",
-        OfferStatus.UNAVAILABLE: "unavailable"}.get(resolution.status, "unknown")
-    return (f", обліковий stock={aggregate_stock}, checkout_status={status} "
-        "(фізичну наявність не підтверджує)")
 
 
 def _log_catalog_truncation(dropped: int, total: int, limit: int) -> None:

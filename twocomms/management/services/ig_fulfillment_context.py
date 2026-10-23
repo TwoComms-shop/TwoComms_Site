@@ -165,9 +165,9 @@ def fulfillment_manifest(slot):
 def fulfillment_prompt_value(value):
     """Present captured facts once; retain signed audit material in the DTO.
 
-    No customer requirement, line, inventory fact, decision or shipping/consent
-    term is shortened. Envelope columns, source authentication and permission
-    fences are validated by their server owners, not interpreted by the model.
+    No customer requirement, line, manager decision or shipping/consent term is
+    shortened. Ledger inputs remain in the immutable DTO, not the
+    customer model's claim context. Server owners validate authentication.
     """
     result = deepcopy(value)
     for key in ("can_decide", "decision_mode", "decision_recorded", "decision_blocked_reason", "source_excerpts"):
@@ -185,15 +185,10 @@ def fulfillment_prompt_value(value):
                 "sources", "source_refs", "cart_identity", "source_scope", "reply_language"):
             request.pop(key, None)
         for line in request.get("lines") or []:
-            if "observation" in line:
-                # The resolver observation is signed input to the review,
-                # distinct from its later typed manager decision below.
-                observation = line.pop("observation")
-                if isinstance(observation, dict):
-                    for key in ("status", "reason"):
-                        if key in observation:
-                            observation["accounting_" + key] = observation.pop(key)
-                line["accounting_observation"] = observation
+            # The model answers from the typed decision, never its accounting
+            # inputs (which may disagree with accessible unrecorded supply).
+            line.pop("observation", None)
+            line.pop("accounting_observation", None)
             for key in ("inventory_digest", "configuration_digest"):
                 line.pop(key, None)
             preferences = line.get("preferences")
@@ -204,6 +199,9 @@ def fulfillment_prompt_value(value):
                         "source_namespace", "session_id", "generation", "revision", "line_id",
                         "recipient_id", "active_index"):
                     preferences.pop(key, None)
+    for line in result.get("lines") or []:
+        line.pop("observation", None)
+        line.pop("accounting_observation", None)
     decision = result.get("decision")
     if isinstance(decision, dict):
         if decision.get("request_digest") == result.get("request_digest"):

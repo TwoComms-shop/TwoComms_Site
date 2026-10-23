@@ -292,6 +292,14 @@ class NativeCombinedStockPriceSeamTests(TransactionTestCase):
             'The Restock Aurora hoodie costs 900 UAH. I will check availability in size XXL with our manager.',
             controls=[{'kind': 'manager', 'value': True}, {'kind': 'price_quoted', 'value': 900}]))
 
+    def test_normalized_decimal_string_price_control_preserves_native_quote_authority(self):
+        controls = [{'kind': 'manager', 'value': True}, {'kind': 'price_quoted', 'value': '900.00'}]
+        self.assert_complete(*self.answer(
+            'Is this hoodie in size XXL available, and what is the price?',
+            'The Restock Aurora hoodie costs 900 UAH. I will check availability in size XXL with our manager.',
+            controls=controls))
+        self.assertEqual(self.parsed['controls'], controls)
+
     def test_foreign_or_reported_pending_check_cannot_inherit_current_line(self):
         for check in (
             'I will check availability in size L with our manager.',

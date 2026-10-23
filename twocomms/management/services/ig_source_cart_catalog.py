@@ -84,7 +84,7 @@ def _color_matches(wish, variant):
     return any(re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", label, re.I) for alias in aliases)
 
 
-def _size_blocked(variant, size, fit):
+def _size_blocked(variant, size, fit, *, include_ledger=True):
     """Mirror general/specific rule precedence using the prepared relation."""
     if variant is None or not size:
         return False
@@ -93,17 +93,17 @@ def _size_blocked(variant, size, fit):
     general = next((row for row in reversed(rows) if not row.fit_code), None)
     specific = next((row for row in reversed(rows) if row.fit_code == fit), None) if fit else None
     rule = specific or general
-    return bool(rule and (not rule.is_enabled or (rule.stock is not None and rule.stock <= 0)))
+    return bool(rule and (not rule.is_enabled or (include_ledger and rule.stock is not None and rule.stock <= 0)))
 
 
-def _config_matches(row, *, fit, options, size, variant):
+def _config_matches(row, *, fit, options, size, variant, include_ledger=True):
     if fit and row.get("fit_code") != fit:
         return False
     if any(row.get("option_values", {}).get(key) != value for key, value in options.items()):
         return False
     if size and row.get("has_compatible_size_contract") and size not in row.get("compatible_sizes", ()):
         return False
-    return not _size_blocked(variant, size, fit)
+    return not _size_blocked(variant, size, fit, include_ledger=include_ledger)
 
 
 def resolve_source_cart_catalog(capture, *, _catalog_readback=None):
@@ -284,6 +284,20 @@ def _resolve(capture, *, _catalog_readback=None):
         exact = bool(state.get("applicability_known") and not state.get("missing") and selected_variant
             and selected_variant.pk in allowed_variants and selected_configs)
         if not exact:
+            # A source-owned exact configuration can have a known unit price
+            # while its physical availability still needs manager review.
+            # Keep every readiness/spec/checkout gate above unchanged. Only
+            # this read-only price projection ignores accounting stock; an
+            # explicitly disabled size or option remains excluded.
+            if selected_variant and not color_gap and fit and size:
+                priced = [config for config in pricing[product_id]["configurations"]
+                    if config.get("variant_id") == selected_variant.pk
+                    and config.get("has_compatible_size_contract")
+                    and _config_matches(config, fit=fit, options=options, size=size,
+                        variant=selected_variant, include_ledger=False)]
+                prices = sorted({config["price"] for config in priced})
+                if len(priced) == 1 and len(prices) == 1:
+                    authority["prices"] = [str(prices[0])]
             gaps.append({"line_id": line_id, "reason": "source_cart_catalog_configuration_unready"})
             continue
         # Resolve again against the exact selectors, reusing the prepared graph.
