@@ -1,5 +1,8 @@
 # QA23 — Gemini, сообщения, карточки и контекст клиента
 
+**Срез23.10.2026, QA23.** Выпуск приложения `f42832a9bcc2a7cf47b2dbf67d9f6ac42cdfda5a` закоммичен и отправлен в main. Локальные gates, Django CI и все9MariaDB suites+aggregate пройдены. f428 выложен штатным git pull; процесс/10lanes/77source pins/8static assets проверены. Actual-Gemini серия завершена: 10 логических сценариев, 8 результатов, 2 неисполненных semantic проверки; ошибки и оставшиеся контракты приведены ниже. Это не полный PASS модели и не доказательство Direct-доставки. Это единый причинный реестр21группы: закрытая часть, оставшийся контракт и доказательность перечислены отдельно. Текст отдельных finding описывает исходный воспроизведённый дефект; статус реализации см. таблицу в конце.
+
+
 Дата: 23.10.2026. Оркестратор — текущий чат; 10 отдельных направлений QA. Исходный код проверялся от `e953afcb196b455da47e98998f6a49fc67f87e6a` (main). Это новый общий реестр, а не изменение плана90, который ведётся в другом окне. В конце фиксируются фактические проверки и SHA исправлений. До появления такой записи «исправляется» не означает «в production».
 
 ## Как читать доказательства
@@ -25,19 +28,19 @@
 
 ## F01 · Словесное количество теряется в явном добавлении
 
-**P1, CONFIRMED component; ограниченное исправление в работе.** `добавьте две футболки`, `додайте дві футболки`, `add two t-shirts` → ADD без quantity → reducer создаёт1. Контроль с цифрой2 даёт2. В `ig_commerce_turns.py:486–495` первоначальный `_line_quantity` распознаёт цифры; `ig_commerce_state.py:183` имеет default1. Canonical identity reparse omission не исправляет. Source facts/обязанности ответа также теряют заявленное количество.
+**P1, CONFIRMED component; ограниченное исправление включено в f428; границы ниже.** `добавьте две футболки`, `додайте дві футболки`, `add two t-shirts` → ADD без quantity → reducer создаёт1. Контроль с цифрой2 даёт2. В `ig_commerce_turns.py:486–495` первоначальный `_line_quantity` распознаёт цифры; `ig_commerce_state.py:183` имеет default1. Canonical identity reparse omission не исправляет. Source facts/обязанности ответа также теряют заявленное количество.
 
 UI честно пишет «За замовчуванням» (`ig_commerce_scope.js:86–90`, `ig_commerce_projection.py:1041`); **ошибочная оплаченная накладная не доказана**. Исправление: ограниченные числительные у explicit ADD+garment, без глобальной замены слов. Обязательно сохранить «два XL» как XXL, product titles, отрицания/цитаты/альтернативы. Acceptance: фактический canonical parser/reducer и inbound дают2 с источником. `худи / чёрное / две / нет одну` — отдельная контекстная задача F04.
 
 ## F02 · Новый получатель наследует чужой размер
 
-**P1, CONFIRMED component; ограниченное исправление в работе.** При self/M/classic просьба «ещё одну такую же для сестры» (UA/RU/EN) создаёт ещё self/M/classic. Для друга existing safeguard очищает size/fit. Причина — неполный recipient grammar (`ig_commerce_turns.py:387,433`), а copy safeguard (`ig_commerce_state.py:199`) срабатывает только при распознанной смене получателя.
+**P1, CONFIRMED component; ограниченное исправление включено в f428; границы ниже.** При self/M/classic просьба «ещё одну такую же для сестры» (UA/RU/EN) создаёт ещё self/M/classic. Для друга existing safeguard очищает size/fit. Причина — неполный recipient grammar (`ig_commerce_turns.py:387,433`), а copy safeguard (`ig_commerce_state.py:199`) срабатывает только при распознанной смене получателя.
 
 Исправление: обычные роли сестра/брат и gift dative; неоднозначных получателей не превращать в self. Скопировать дизайн допустимо, размер другого человека требует его собственного основания. Историческая memory уже знает sister/gift, но не имеет current-cart authority (`ig_memory_timeline_consumers.py:17,68`). Acceptance включает recipient-specific cleared size/fit, сохранённый product, self и friend controls, отказ/цитату/нескольких получателей. Никакого нового вопроса владельцу не нужно.
 
 ## F03 · Исправление без запятой удаляет и правильный цвет
 
-**P2, CONFIRMED component; ограниченное исправление в работе.** `не черное а белое`, `не чорне а біле`, `not black but white` убирают black и не добавляют white. Запятая исправляет результат. `_find_prefix_value` захватывает положительный RHS как отрицание; typed correction требует запятую (`ig_commerce_turns.py:287–290,528`). Downstream спрашивает цвет повторно, хотя ответ уже дан.
+**P2, CONFIRMED component; ограниченное исправление включено в f428; границы ниже.** `не черное а белое`, `не чорне а біле`, `not black but white` убирают black и не добавляют white. Запятая исправляет результат. `_find_prefix_value` захватывает положительный RHS как отрицание; typed correction требует запятую (`ig_commerce_turns.py:287–290,528`). Downstream спрашивает цвет повторно, хотя ответ уже дан.
 
 Acceptance: colour-only correction сохраняет replacement и его source; uncertainty, quoted history, OR и negated commands не становятся выбором. Замена «не худи а футболку» требует также инвалидации exact SKU/configuration и не должна закрываться только изменением regex цвета.
 
@@ -49,7 +52,7 @@ Acceptance: colour-only correction сохраняет replacement и его sour
 
 ## F05 · B2B-ассортимент попадает в личную корзину
 
-**P1, CONFIRMED parser/helper + видимый UI; ограниченная изоляция в работе.** Точный SHOP_REQUEST из `tests_ig_business_cooperation.py:14–20` классифицируется business=true, purchase=false, fields={color:black}. `_apply_field_updates` создаёт fresh line:0 qty1 или перекрашивает существующую retail white/M/qty2 в black (`ig_commerce_state.py:437–441,1075`). Дополнительная garment-ветка `:958–960` тоже не требует retail intent. Inbound применяет parse до анализа (`ig_revision_commerce.py:161–164`).
+**P1, CONFIRMED parser/helper + видимый UI; ограниченная изоляция включена в f428; оставшиеся границы ниже.** Точный SHOP_REQUEST из `tests_ig_business_cooperation.py:14–20` классифицируется business=true, purchase=false, fields={color:black}. `_apply_field_updates` создаёт fresh line:0 qty1 или перекрашивает существующую retail white/M/qty2 в black (`ig_commerce_state.py:437–441,1075`). Дополнительная garment-ветка `:958–960` тоже не требует retail intent. Inbound применяет parse до анализа (`ig_revision_commerce.py:161–164`).
 
 23.10 в authenticated UI URBAN действительно показывает «Модель ще не обрана / Для себе / Чорний /1 за замовчуванням». Это подтверждает симптом интерфейса; изменение уже существовавшей реальной корзины URBAN не утверждается.
 
@@ -65,7 +68,7 @@ Acceptance: colour-only correction сохраняет replacement и его sour
 
 **P2, CONFIRMED component; исправление среднего размера.** На приложенном скриншоте после classic/oversize клиент пишет «Скиньте приклади, будь ласка», а получает обычные design cards. Текущий `fit_consultation_request` смотрит current bundle и требует fit/audience words (`ig_fit_consultation.py:94–127`): exact UA/RU/EN короткие продолжения дают `{}`. Более того, явный fit-photo request при focus={} проходит validator, а `prepare_fit_illustration` возвращает unhandled (`ig_product_inquiry_presentation.py:156`, `ig_fit_consultation.py:380–382`). Затем обычный SHOW_PRODUCTS превращается в SKU cards (`ig_revision_live.py:1747`).
 
-Это причинно согласуется со скриншотом; **исторический полный runtime и новый provider/SENT отказ не воспроизведены**. Нельзя исправить глобальным «приклади=посадка»: бывают примеры дизайнов/custom. Нужно receipt-backed continuation binding и category-level fit consultation без принудительного выбора дизайна. Подписать cut/illustration, сохранять независимый assortment intent. Focused-SKU защита и blank previews уже существуют, не создавать вторую систему.
+Это причинно согласуется со скриншотом. Новый managed synthetic run с действительно включённой antecedent history воспроизвёл raw переход от classic/oversize к generic SKU cards; native validator отклонил candidate по unverified_price, delivery effects=0. Исторический полный runtime и customer-visible SENT отказ по-прежнему не воспроизведены. Нельзя исправить глобальным «приклади=посадка»: бывают примеры дизайнов/custom. Нужно receipt-backed continuation binding и category-level fit consultation без принудительного выбора дизайна. Подписать cut/illustration, сохранять независимый assortment intent. Focused-SKU защита и blank previews уже существуют, не создавать вторую систему.
 
 ## F08 · Крупный план выбирается обложкой карточки
 
@@ -79,7 +82,7 @@ Acceptance: colour-only correction сохраняет replacement и его sour
 
 **P1, CONFIRMED assembler/coverage; полный native send не доказан.** `rank_candidates` production caller найден только в owned-URL compatibility (`ig_product_references.py:125`), нормальная SHOW_PRODUCTS-ветка им не ограничена. `prepare_catalog_choice_presentations:329–345` принимает published IDs без сравнения с requested garment; `ig_response_plan:1115–1116` считает info:presentation покрытой при любом show_products. Pure actual-source probe: request hoodie, valid shirt ID → accepted+covered.
 
-`tests_ig_palette_intent_20261023:136–141` сам предварительно ранжирует и вставляет IDs в mock Gemini; это проверяет доставку правильной подборки, не отклонение неправильной. Compact live catalog ещё и убирает category (`bot_catalog:160–174`, `instagram_bot:8995,10045`).
+`tests_ig_palette_intent_20261023:136–141` сам предварительно ранжирует и вставляет IDs в mock Gemini; это проверяет доставку правильной подборки, не отклонение неправильной. Compact native catalog не передаёт per-product garment/category mapping (`bot_catalog:160–174`, `instagram_bot:8995,10045`).
 
 Решение M: captured browsing subject → eligible candidates → controls validation → presentation coverage по принятому релевантному предмету. Отрицательный native тест должен предложить реальный published, но неверный тип/тему без prefilter в mock. Не ослаблять stock/selection/payment proofs. Это конкретизация существующего P4-1/40E, а не новый параллельный каталог.
 
@@ -91,13 +94,13 @@ Acceptance: colour-only correction сохраняет replacement и его sour
 
 ## F11 · Действие менеджера «Продовжити policy» не может исполниться
 
-**P2, SOURCE CONFIRMED; ограниченное исправление в работе.** Configuration/information cases создаются SKIPPED/EVENT с пустым event_payload (`ig_revision_intents.py:607–615`), но detail serializer даёт continue_url (`bot_views.py:6509–6525`). Handler закономерно возвращает event_boundary_missing (`bot_followups:1363–1372,1733–1734`). Нажатие не даёт decision и не отвечает клиенту.
+**P2, SOURCE CONFIRMED; ограниченное исправление включено в f428; границы ниже.** Configuration/information cases создаются SKIPPED/EVENT с пустым event_payload (`ig_revision_intents.py:607–615`), но detail serializer даёт continue_url (`bot_views.py:6509–6525`). Handler закономерно возвращает event_boundary_missing (`bot_followups:1363–1372,1733–1734`). Нажатие не даёт decision и не отвечает клиенту.
 
 Исправление: исключить эти две причины из generic continuation, сохранить уже существующие source navigation/decision/private answer workflows. Не подделывать event payload и не считать задачу ответом. Тест serializer + полноценные existing review controls.
 
 ## F12 · Подпанель не обновляется и источник черновика не объясняется
 
-**P2, SOURCE CONFIRMED; ограниченное исправление в работе.** Assisted controller загружается только при created (`bot.html:2569–2594`): same-client full refresh сохраняет старую no-request/approval панель. Обновление должно перезагружать clean/idle controller на принятом detail render, сохраняя dirty, busy, pending/UNKNOWN и A→B fences.
+**P2, SOURCE CONFIRMED; ограниченное исправление включено в f428; границы ниже.** Assisted controller загружается только при created (`bot.html:2569–2594`): same-client full refresh сохраняет старую no-request/approval панель. Обновление должно перезагружать clean/idle controller на принятом detail render, сохраняя dirty, busy, pending/UNKNOWN и A→B fences.
 
 Отдельный симптом `openFulfillmentReply:2658–2665`: при unsaved A draft запрос ответа наB молча фокусируетA. Текст/пины сохранять правильно, но менеджеру нужно явное объяснение сохранить/отменить прежнюю черновую работу. Автоматическая неверная отправка не доказана. Acceptance — parent-mount regression и заметный feedback, без второй редакторской системы.
 
@@ -107,13 +110,13 @@ Acceptance: colour-only correction сохраняет replacement и его sour
 
 ## F14 · Анализ причин и предпочтений теряет область отрицания
 
-**P2, CONFIRMED normalizer; малый fix причины в работе.** Source «Не беру, не через ціну. Ціна підходить.» принимался как price/reported_by_customer/high: `_reported_cause` отрезал negation перед causal connector (`ig_conversion_audit:215–219`). Исправление проверяет polarity самого connector. UA/RU/EN, affirmative price/real size/counterevidence/unknown controls обязательны.
+**P2, CONFIRMED normalizer; малый fix причины включён в f428; глубокая часть открыта.** Source «Не беру, не через ціну. Ціна підходить.» принимался как price/reported_by_customer/high: `_reported_cause` отрезал negation перед causal connector (`ig_conversion_audit:215–219`). Исправление проверяет polarity самого connector. UA/RU/EN, affirmative price/real size/counterevidence/unknown controls обязательны.
 
 **Открытая более глубокая часть:** exact substring quote не гарантирует истинность мотива. Source «Не на подарунок, беру для себе.» + quote «подарунок» принимает gift/high; обратный пример даёт self/high (`ig_conversion_audit:119–143,201–205,247–258`). Нужна source-context проверка вокруг occurrences, а не только model-selected excerpt. Не доказано, что живой Gemini действительно выбрал такие отрывки. Причины потерь — гипотезы, пока клиент сам их не назвал; молчание не доказывает цену/ошибку бота.
 
 ## F15 · Явные просьбы о стиле общения теряются либо меняют смысл
 
-**P2, CONFIRMED extraction; ограниченный fix в работе.** «Пожалуйста, не коротко, а подробно» даёт[], «Пиши коротко і покажи принти» теряет brevity из-за `_ART`, «Не пиши коротко, но эмодзи можно» может дать emoji=omit из-за45char negative window (`ig_communication_preferences:35–84`). Raw current text ещё видит Gemini; доказанный дефект — durable preference, не фактический неудачный SENT.
+**P2, CONFIRMED extraction; ограниченный fix включён в f428; оставшиеся границы ниже.** «Пожалуйста, не коротко, а подробно» даёт[], «Пиши коротко і покажи принти» теряет brevity из-за `_ART`, «Не пиши коротко, но эмодзи можно» может дать emoji=omit из-за45char negative window (`ig_communication_preferences:35–84`). Raw current text ещё видит Gemini; доказанный дефект — durable preference, не фактический неудачный SENT.
 
 Fix — target/clause-scoped communication grammar, quoted/reported/art-only exclusions, corrections; не создавать психотипы по дизайну или военной тематике. Дружелюбие: сначала полезный ответ, естественная длина, один нужный вопрос; юмор лишь уместный положительный conversational cue, без жалоб/оплаты/травмы/сроков. Identity не выдумывать: если спросили, Соломія — виртуальная помощница. Эффект на конверсию нужно измерять, не обещать10% или 10/10.
 
@@ -135,17 +138,25 @@ Fix — target/clause-scoped communication grammar, quoted/reported/art-only exc
 
 ## F19 · Вопрос без пунктуации исчезает рядом с выбором размера
 
-**P1, CONFIRMED actual parser+plan+coverage; ограниченный fix в работе.** Source «L як прати» даёт size=L и obligations=[size]. Size-only «Ваш розмір L зафіксувала.» получает complete/remaining=[]. Аналогично «L а состав», «L какая ткань», «L яка тканина». Вариант «L яка щільність» сохраняет density. `_requested_topics` не узнаёт як/какая и cloth nouns, а fallback unclassified не добавляется при уже найденном size (`ig_response_plan:574,1871`).
+**P1, CONFIRMED actual parser+plan+coverage; ограниченный fix включён в f428; оставшиеся границы ниже.** Source «L як прати» даёт size=L и obligations=[size]. Size-only «Ваш розмір L зафіксувала.» получает complete/remaining=[]. Аналогично «L а состав», «L какая ткань», «L яка тканина». Вариант «L яка щільність» сохраняет density. `_requested_topics` не узнаёт як/какая и cloth nouns, а fallback unclassified не добавляется при уже найденном size (`ig_response_plan:574,1871`).
 
 Разбиение тех же слов на [«L», «як прати»] даёт второй unclassified debt: один смысл по-разному обрабатывается из-за границы сообщений. Ошибочный SENT не доказан; доказано, что actual coverage может пропустить независимый вопрос. Acceptance: size-only incomplete; source-backed care/material/price answer покрывает тот же intent в1/2/3 sources без ненужного manager debt. Сохранить quoted titles/negation/finished mass vs human weight.
 
-**ОТКРЫТО: связанный material gap.** «Це бавовна?» имеет material obligation, но selectors `_SPEC`/`approved_public_facts._TOPICS` не выбирают fibre words; действительный base_context composition не учитывается материалом в coverage. Рассмотренный локальный fallback отклонён при независимой проверке: UK reconstruction не совпадает с RU/EN assertion; canonical per-line child не получает readiness. Этот дополнительный код полностью убран до выпуска. Нужен общий exact product/base/locale/source contract с native per-line тестами; текущая правка F19 улучшает распознавание вопроса, не объявляет всю material coverage закрытой.
+**ОТКРЫТО: связанный material gap.** «Це бавовна?» имеет material obligation, но selectors `_SPEC`/`approved_public_facts._TOPICS` не выбирают fibre words; действительный base_context composition не учитывается материалом в coverage. Рассмотренный локальный fallback отклонён при независимой проверке: UK reconstruction не совпадает с RU/EN assertion; canonical per-line child не получает readiness. Этот дополнительный код полностью убран до выпуска. Нужен общий exact product/base/locale/source contract с native per-line тестами; текущая правка F19 улучшает распознавание вопроса, не объявляет всю material coverage закрытой. Дополнительно actual Gemini выдал «плотного трикотажа с начёсом, отлично сохраняет тепло» без выбранного факта о составе/начёсе, и неизменённый native guard принял ответ. Значит downstream factual validation тоже требует доработки: не только число GSM/цена, но и конкретные материал/подкладка/свойства должны иметь источник. Глобально запрещать слова о качестве или придумывать новую основу нельзя; нужны source-backed assertions и honest unknown.
 
 ## F20 · Недоступное вложение: receipt и semantic waiting пока различаются
 
 **PARTIAL / acceptance gap, не доказанная тишина.** `record_unavailable_media_reply` имеет source/media bindings и origin=media_unavailable (`ig_revision_input:242`), но deterministic coverage в live2088 предусмотрена для иных origins. Clarification может быть SENT/processed, а `response_obligation` формально ещё ждёт semantic coverage. Lane health исключает processed, unanswered collector начинает с существующих debt tasks — поэтому нельзя заявлять, что это автоматически создаёт ложный alert каждому клиенту.
 
 Acceptance: resend request должен честно подтверждать получение и waiting-on-customer, не сообщать, что картинка изучена, не порождать replay; отдельно проверить ранее существовавший debt. Полноценное Gemini visual понимание чужого/размытого изображения требует actual media-capable запроса, не текста с описанием картинки.
+
+## F21 · После сброса UI продолжает показывать категорию старого анализа
+
+**P2, SOURCE + production/UI CONFIRMED; отдельный rollout consumer gap.** При разрешённом владельцем сбросе только testclient5 @zainllw0w стандартный `reset_funnel` создал audit2/floor3376/new episode212. Backend stage=new, language пуст, memory_summary и sales_context пусты, прежние142 сообщения сохранены. Fresh authenticated UI правильно показывает memory0/signals0, но «Стан клієнта: Інтерес до товару» взят из snapshot2973 от15.10, watermark3373/episode135.
+
+Это не generic default: `bot.html` показывает interaction_type_label, `_client_card` берёт latest analysis без reset floor в legacy ветке (`bot_views.py:_client_card`). Production `materiality_mode=off`, `selector_enforced=false`; защищённый current selector поэтому не используется. Данные сброса сами корректны. Старый label не доказывает утечку canonical cart: projection исключает session не из current episode, нет post-reset sources → lines=[]; «позиції не вдалося підтвердити» — общий empty/unavailable UI текст. Исторические tasks/deals остаются историей по контракту, не новой покупкой.
+
+Acceptance: reset/read view не подаёт pre-reset interaction/intent как актуальное; gated selector/rollout и все другие consumers рассматриваются согласованно. Автоматически включать feature flag на production ради UI нельзя. Проверка shared Gemini generation не нашла переноса old snapshot в prompt/routing/allowed actions: `ig_turn_capture:283–300,411–448,533–555,631`, `ig_turn_intelligence:373–377,416–429`, `ig_turn_intent:315–325,417–426`, `ig_client_state_card:680–688` используют текущие source/reset/episode proofs. Однако глобально называть дефект только UI нельзя: `bot_followups:531,579` читает `current_analysis_snapshot→legacy_snapshot` без floor при off (`ig_analysis_materiality:383–413`), и старые support/B2B enums у других клиентов могут подавлять optional followups. Product_interest client5 не входит в suppression и не даёт send permission; FollowCTA также требует24h/current episode/watermark (`ig_follow_cta:329–339`). Включение selector требует materiality shadow + selector enforce (`ig_analysis_materiality:46–69`); одного freshness flag недостаточно. F21 остаётся открытым до согласованной правки readers и регрессий. Нового бизнес-вопроса владельцу не требуется.
 
 ## Исторические находки: что уже закрыто и что нельзя переоткрывать
 
@@ -179,14 +190,14 @@ Acceptance: resend request должен честно подтверждать п
 
 Психотипы, доход, военный статус и личные обстоятельства не достраиваются по дизайну/аватару/скорости печати. Для адаптации достаточно явно запрошенных языка/краткости/эмодзи, фактических вопросов и подтверждённых shopping preferences. Дороговизна не повод спорить с клиентом или унижать конкурентов: отвечать на конкретное сомнение проверяемыми материалом/замерами/фото, затем предложить подходящий разрешённый шаг. A/B эффект стиля и причинное влияние на оплату должны измеряться отдельно от observed conversation audit.
 
-## Реестр QA и выпуска (обновляется до завершения)
+## Реестр выполненного QA и выпуска
 
 - 10 направлений: media/cards; turns/cart; B2B memory; contextual UX; ad/categories; analyzer/funnel; prompt/naturalness; delivery/resilience; historical/refactor; native Gemini harness.
 - Первичные пробы — actual-source component extraction под project Python -B с deny write/network/sqlite; не production fixtures.
 - Быстрые fixes имеют непересекающееся владение: turns; commerce_state; communication_preferences; conversion_audit; bot_views/template. Root владеет CI enrollment, двумя Markdown, интеграцией и release.
-- Actual provider tests: **ещё не выполнены на момент создания файла**; новый finite budget/input manifest обязателен. Прошлые grants не переиспользуются.
+- Actual provider tests выполнены по новому конечному grant; результаты и ограничения в отдельном разделе ниже. Прошлые grants не переиспользованы.
 - Публичный stress-test большим числом людей — следующий этап, не выполнен этим component QA.
-- 23.10 владелец подтвердил вход в тестовый @zainllw0w и затем попросил работать через bot interface. Его тестовый сброс разрешён; другие клиенты/платежи/история не удаляются. Фактический reset и его область будут записаны отдельно.
+- 23.10 владелец подтвердил вход в тестовый @zainllw0w и затем попросил работать через bot interface. Его тестовый сброс разрешён; другие клиенты/платежи/история не удаляются. Фактический reset и его область подтверждены ниже.
 
 ### Реализованные малые исправления перед общим gate
 
@@ -200,8 +211,62 @@ Acceptance: resend request должен честно подтверждать п
 | F15 | preference target coordination/negative correction, включая positive emoji suffix | language precedence F16 не менялась; нет speculative psychology и новых prompt простыней |
 | F19 малая часть | punctuation-free care/material/price вопросы не исчезают рядом с size | cotton selector/base coverage открыта; одно распознавание не делает неизвестный факт подтверждённым |
 
-Focused owner gates: parser151tests/3 ожидаемых SQLite skips; B2B63unique tests с3native fake-SENT continuity checks; UI6Django +9JS files; conversion schema21; preferences26; terse questions48. Эти числа пересекаются и **не суммируются**. Root UI135/135,0skip и runner/workflow79/79 прошли. Первый общий77-source/91-label gate прерван root с exit130 при пересмотре material fallback: это **не PASS**. Начат новый полный gate на повторно зафиксированном V2 source.
+Focused owner gates: parser151tests/3 ожидаемых SQLite skips; B2B63unique tests с3native fake-SENT continuity checks; UI6Django +9JS files; conversion schema21; preferences26; terse questions48. Эти числа пересекаются и **не суммируются**. Root UI135/135,0skip и runner/workflow79/79 прошли. Первый общий77-source/91-label gate прерван root с exit130 при пересмотре material fallback: это **не PASS**. Повторный полный V2 gate завершён успешно; точные результаты ниже.
 
 Независимый review до выпуска также нашёл и закрыл регрессию positive emoji suffix. Никакие неудачные captures/aborted tests не переименованы в успешные. Существующий `CartSourceFallbackTests.test_languages_use_the_same_line_scope_and_only_one_requested_selector` отдельно не проходит и на исходном HEAD: fixture задаёт UA source, но ожидает RU/EN из profile; test file не менялся. Это не доказанный регресс новых recipient labels.
 
-**Root V2 общий gate: PASS1506/1506,539.224s,91labels,12 ожидаемых backend skips.** Все77 source hashes совпали до/после. После него удалена одна пустая строка EOF только в новом тесте terse_questions; AST тождественен, остальные76 hashes неизменны. Исходный tested freeze сохранён отдельно, новый freeze честно содержит эту test-only нормализацию; focused terse gate повторяется. Application source после полного прогона не менялся. Static pipeline PASS:1974 asset files/571manifest entries/4compressor entries; Django system check без ошибок.
+**Root V2 общий gate: PASS1506/1506,539.224s,91labels,12 ожидаемых backend skips.** Все77 source hashes совпали до/после. После него удалена одна пустая строка EOF только в новом тесте terse_questions; AST тождественен, остальные76 hashes неизменны. Исходный tested freeze сохранён отдельно, новый freeze честно содержит эту test-only нормализацию; focused terse gate повторён:48/48,7.031s. Application source после полного прогона не менялся. Static pipeline PASS:1974 asset files/571manifest entries/4compressor entries; Django system check без ошибок.
+
+**Тестовый сброс выполнен и проверен.** После сбоев подтверждения в browser tool root вызвал тот же штатный сервис только для exact client5+username guard, reason=`qa23_owner_authorized_test_account_only_reset`; внешние HTTP запрещены. Audit2/floor3376/episode212;142 сообщения до=после, память/контекст пусты, paused=false/takeover=false, новых provider вызовов0. Fresh bot UI показывает пустую память. Скрин `/private/tmp/twc-qa23-root/test-account-reset-ui.png`; immutable transcript/financial truth не удалялись. Старая классификация UI отдельно учтена F21. Повторные браузерные попытки без подтверждённой серверной записи не считаются успешным сбросом.
+
+
+### Выпуск f428 и CI
+
+- [Django CI39944867398](https://github.com/TwoComms-shop/TwoComms_Site/actions/runs/39944867398) — success на exact f428. Workflow contracts, Instagram/context regressions, size/UI/static checks выполнены; опциональный full-smoke capture в этом push-job пропущен, не назван новым полным проходом всего проекта.
+- [MariaDB CI39944867300](https://github.com/TwoComms-shop/TwoComms_Site/actions/runs/39944867300) — все9suites и aggregate success. Для каждого скачан sanitized artifact и проверен `cleanup=verified`; live MariaDB не была тестовой БД.
+- Supported SSH git pull main→f428, check/migrate(no new)/collectstatic/compress/reload выполнены. Policy publication7/hash и epoch11 не менялись. Первый немедленный runtime read поймал cold-start lanes-not-ready и сохранён как неуспешная проверка; последующий полный proof: main+10healthy, maintenanceoff, checkout/supervisor/actualchild=f428,77frozen paths и8static digests совпадают. Health/probe HTTP запрещён:0provider calls. Локальный Python3.14.6/Django6.1, фактический productionPython3.14.8/Django6.1 явно записан, не скрыт.
+- Authenticated bot UI перезагружен: client5 @zainllw0w выбран, память пустая, обе изменённые JS загружены с новыми hashed URLs и query pins. Screenshot `/private/tmp/twc-qa23-root/postdeploy-bot-ui.png`, DOM proof `postdeploy-browser-proof.json`. Нового Direct inbound/SENT этим screenshot не доказано.
+- При позднем чтении UI подпись уже была «Лише інформація». Ранее подтверждённый F21 legacy reader остаётся открытым, но утверждать, что экран непрерывно показывал один старый label, нельзя.
+
+
+## Настоящий Gemini: результаты серии 3c26564c
+
+Серия `3c26564c349d41d8a601cdeacf77c7a3` выполнена root ровно один раз после f428 deploy/runtime proof. Manifest SHA256 `bb6d4023cef77a2e7b4682f3d6f310c51f067e43994793b64e647c5b6830fe63`: 475 source pins, 31 package pins, 77 root paths. Два финальных capture7/8 дали одинаковые 10 native payload hashes; предыдущие невалидные/нефинальные captures сохранены. Новый grant: 10 logical, 60 секунд на logical, максимум 3 dispatch admissions; оставшийся бюджет не переиспользован.
+
+Gateway — настоящий `gemini_generate_text`, role=management/lane=analysis, client/source/reply IDs=null, обычная production accounting MariaDB. Meta transport запрещён. Synthetic conversations/catalog/publication локальные, в live БД клиентские fixtures не создавались. Сохранены неизменённый gateway result, точный текст перед native JSON parser, accounting graph и hashes. Это не raw HTTP-body и не утверждение, что synthetic policy publication/management routing полностью совпадают с текущим customer_chat.
+
+**Исполнение:** 10 logical attempted, 11 `provider_started_at`, 8 вернувшихся результатов. Семь chat-кандидатов: шесть `gemini-3.5-flash-lite`, один `gemini-3.6-flash`; успешный analyzer — `gemini-3.5-flash-lite`. Cancelled-before-dispatch rows не считаются provider вызовами. Нулевые usage counters у timeouts не означают нулевую стоимость. Изолированный unchanged native replay: все 7 chat candidates проверены, один analyzer нормализован, без proposal/outbox/Meta effects. Его exit1 отражает два unavailable candidates, а не переименован в полный PASS.
+
+| Сценарий | Оценка смысла сырого ответа | Native replay | Что это доказывает |
+|---|---|---|---|
+| Три сообщения: себе M×1, другу L×2 | PARTIAL: числа верны; получатели не проговорены, focused clarification отсутствует | REJECT: unverified_price + unverified_availability | Исправление explicit quantities не закрывает contextual burst F04. Merge получателей/ошибочный заказ не доказаны |
+| «Скиньте приклади» после classic/oversize | FAIL: обычные Aurora Black/Pink с ценами и show_products1,2 | REJECT: unverified_price | Actual модель проигнорировала antecedent посадок; F07. Запрет случайных карточек нельзя заменить одной price-защитой |
+| Только фото Aurora на худи | FAIL: «немає худі…в наявності…лише футболки» | REJECT: price + availability | Missing-photo request превращён в неподтверждённое отсутствие товара; F09/F19. В fixture ID2 — hoodie, изображений нет |
+| 50 чёрных худи с логотипом для компании | PASS по routing/relevance: wholesale handoff, manager=true, без retail CTA/цены/твёрдого срока | VALID | «Ми передали» допустимо только при выполнении downstream case/notification contract до отправки. Этот replay намеренно effects не выполняет, external alert/SENT не доказаны |
+| Ранее футболки; теперь только худи | FAIL: оба ID названы худи и предложены вместе | REJECT: price + availability | F09: нет per-ID garment mapping и eligibility gate. Не доказано, что guard пропустил эти карточки |
+| Английский + кириллическое внешнее название + Friday | PARTIAL: правильные EN/custom/неуверенный срок, но нет уточнения reference | VALID | Язык не сломан в этом sample. Это не воспроизведение живого @manuenggist и не подтверждение реального срочного заказа |
+| Кратко, RU, без emoji: тёплое ли худи | FAIL: выдуманы «плотного трикотажа с начёсом, отлично сохраняет тепло» | VALID | Подтверждён upstream source + downstream factual gap F19. Выбран только unconfirmed_bases; approved спецификации отсутствуют |
+| Analyzer: «дякую, я подумаю» после цены | UNASSESSED: результата нет | Не выполнялся без candidate | 25.214s read timeout + 12.871s HTTP503 UNAVAILABLE + 16.328s timeout; следующий dispatch остановлен конечным cap. Это availability/timeout, не доказанная ошибка мысли/JSON |
+| Analyzer: «задорого, тому поки не купуватиму» | PARTIAL: верная price-причина; ошибочная self-мотивация из «Для мене це задорого» | Normalizer сохраняет reported price, понижает self до hypothesis/low | Защита от unsupported motive сработала. Raw lost/0/confidence1/uncertainties[] не удовлетворяет нашему критерию явной осторожности; постоянный уход клиента этим не доказан |
+| Чужое размытое inline image | UNASSESSED: нет provider candidate | Не выполнялся | Nonlive enforce отклонил все кандидаты до dispatch: estimator_uncalibrated, 0 started. Accounting_guard_not_observed сохранён. Никакого обхода admission/подмены медиа текстом не было |
+
+Семантическая оценка 7 chat: 1 PASS / 2 PARTIAL / 4 FAIL; отдельно server validator принял 3 и отклонил 4. Эти числа не складываются в общий процент качества: набор целенаправленно проверяет трудные границы, выборка мала, production traffic и conversion effect не измерялись.
+
+**Важная причинная связь F09:** actual compact catalog даёт `id2 | Aurora —1290 | Pink…` и `id1 | Aurora —790 | Black…`, без category/garment/slug или легенды. Garment words есть в остальном prompt, но mapping конкретных ID отсутствует. Fixture DB знает id1=tshirt, id2=hoodie; модель не получила этого различия и стала угадывать. Значит исправлять нужно producer→capture→validation→coverage, а не объявлять ошибкой лишь «Gemini не понял». Реальные названия часто сами содержат тип вещи, но это не замена явному типу и не гарантия для будущего каталога. Тематические коллекции F10 отдельно ещё не подключены.
+
+**Длительности logical gateway:** шесть быстрых chat 1.544–2.495s, сложный burst 17.446s; analyzer success 5.396s, failed analyzer 54.861s. Это не полное время ingress→SENT и не SLA customer_chat. Analysis lane не должна блокировать живую очередь; provider timeouts требуют своей диагностики, не бесконечного replay.
+
+**Артефакты (private, не добавлены в Git):** `/private/tmp/twc-qa23-gemini-20261023/run-index-3c26564c349d41d8a601cdeacf77c7a3.json`, `raw-*`, `accounting-*`, `provider-candidate-text-*`; hashes проверены после SSH transfer. Local native replay: `actual-native-replay-3c26564c.log`, `capture-replay-actual-3c26564c-*.json`; aggregate runtime/model proof: `/private/tmp/twc-qa23-root/`. Raw failures не исправлены/не пересэмплированы ради зелёного результата.
+
+### Следующий инженерный gate
+
+1. F07/F09/F10/F19: один согласованный контракт предмета запроса, garment/collections, purpose media, source-backed material facts и semantic coverage. Проверить настоящий скомпилированный prompt и отрицательный candidate без предварительного выбора правильных IDs в mock.
+2. F04/F06/F16: contextual burst/recipient/quantity, structured B2B и собственное языковое предпочтение; сохранять reset/source/payment/stock authority. Не маскировать UI старую неверную память.
+3. F17/F20/F21: multipart receipt, unavailable-media waiting и legacy reset readers. Не превращать manager task/clarification/generated text в SENT или полученный substantive answer.
+4. Visual QA заблокирован калибровкой nonlive media admission: выполнить отдельный разрешённый контракт калибровки и новый review/grant, не обходить guard. Затем actual foreign/blurred image, ad carousel и живой Direct test только на @zainllw0w.
+5. После ответов на owner brief уточнить план приоритетов. Публичный multi-user stress, положительные/неуместные шутки и прямой вопрос о virtual identity этой серией не закрыты. Plan90 не менялся; работа того окна не объявлена завершённой.
+
+
+Финальная независимая сверка документов не нашла расхождений между описанными counts, raw outputs и native replay. Дополнительно два модуля, впервые импортированные replay (`ig_revision_intents.py`, `ig_analysis_roles.py`), проверены root на побайтовое совпадение с Git blobs f428; их исходные hashes не были частью 420 pre-capture imports. Оригинальный manifest не переписан задним числом. Все 31 package pins и исходные native imports сохранены. Финальный private review: `actual-native-review-3c26564c349d41d8a601cdeacf77c7a3.json`, SHA256 `7be75fee2e15a593d13547b9339f9fc1577cd2d3de609e2a368509ae0cfbb2ff`.
+
+Сводка статуса: малые исправления находятся в production f428; остальные подтверждённые gaps имеют доказательства, зависимости и следующий gate. Этот аудит не объявляет идеальными все сценарии, не гарантирует рост конверсии и не завершает чужой implementation plan. Финальная синхронизация документов выполняется отдельным docs-only successor commit без изменения проверенных application bytes.
