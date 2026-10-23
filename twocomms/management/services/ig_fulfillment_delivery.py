@@ -30,21 +30,21 @@ HOLD_REASONS = {"waiting_window", "quiet_hours", "pending_inbound", "permission_
 KYIV = ZoneInfo("Europe/Kyiv")
 COPY = {
     "uk": {"intro": "Менеджер перевірив позиції:", "available": "у наявності", "unavailable": "немає в наявності",
-        "wait": "очікуємо", "clarify": "потрібне уточнення", "preparation": "підготовка", "dispatch": "відправка",
+        "wait": "очікуємо", "clarify": "потрібне уточнення", "preparation": "підготовка", "dispatch": "відправка", "base_arrival": "прибуття основи до нас",
         "calendar": "календ. дн.", "business": "роб. дн.", "from": "від", "number": "поз.", "same_day": "у день перевірки",
         "arrival": "Це строки підготовки/відправки, не гарантія дати прибуття.",
         "deadline": "Потрібну вам дату ще слід звірити з доставкою.",
         "split": "Хочете обговорити окремі відправлення? Умови доставки погодимо до оформлення.",
         "clarification": "Уточнімо деталі перед оформленням.", "alternative": "Заміни погодимо окремо."},
     "ru": {"intro": "Менеджер проверил позиции:", "available": "в наличии", "unavailable": "нет в наличии",
-        "wait": "ожидаем", "clarify": "нужно уточнение", "preparation": "подготовка", "dispatch": "отправка",
+        "wait": "ожидаем", "clarify": "нужно уточнение", "preparation": "подготовка", "dispatch": "отправка", "base_arrival": "поступление основы к нам",
         "calendar": "календ. дн.", "business": "раб. дн.", "from": "от", "number": "поз.", "same_day": "в день проверки",
         "arrival": "Это сроки подготовки/отправки, не гарантия даты прибытия.",
         "deadline": "Нужную вам дату ещё следует сверить с доставкой.",
         "split": "Хотите обсудить отдельные отправления? Условия доставки согласуем до оформления.",
         "clarification": "Уточним детали перед оформлением.", "alternative": "Замены согласуем отдельно."},
     "en": {"intro": "Our manager checked the items:", "available": "available", "unavailable": "unavailable",
-        "wait": "awaiting availability", "clarify": "clarification needed", "preparation": "preparation", "dispatch": "dispatch",
+        "wait": "awaiting availability", "clarify": "clarification needed", "preparation": "preparation", "dispatch": "dispatch", "base_arrival": "base arrival to us",
         "calendar": "calendar days", "business": "business days", "from": "from", "number": "item", "same_day": "on the check date",
         "arrival": "Preparation/dispatch timings do not guarantee an arrival date.",
         "deadline": "Your required date still needs to be checked against delivery.",
@@ -143,7 +143,7 @@ def render_manager_update(projection, *, copy_version=1):
             if not row or row.get("availability") not in {"available", "unavailable", "wait", "clarify"}:
                 return ""
             facts = [copy[row["availability"]]]
-            for phase in ("preparation", "dispatch"):
+            for phase in ("base_arrival", "preparation", "dispatch"):
                 timing = _timing(row.get(phase), phase, copy)
                 if timing:
                     facts.append(timing)
@@ -159,6 +159,14 @@ def render_manager_update(projection, *, copy_version=1):
         # delivery warning. Any stated timing or customer deadline does.
         has_timing = any(row.get("preparation") or row.get("dispatch") for row in decisions)
         suffix = []
+        if any(row.get("base_arrival") for row in decisions):
+            suffix.append({"uk": "Це прибуття основи до нас; строк підготовки та відправки погодимо окремо.",
+                "ru": "Это поступление основы к нам; сроки подготовки и отправки согласуем отдельно.",
+                "en": "This is the base reaching us; preparation and dispatch timings are separate."}.get(locale, "Preparation and dispatch timings are separate."))
+        if decision.get("waiting_acceptance_required") is True:
+            suffix.append({"uk": "Чи згодні ви зачекати на цих умовах? Сповіщення про наявність не означає згоди чекати.",
+                "ru": "Согласны ли вы подождать на этих условиях? Уведомление о наличии не означает согласия ждать.",
+                "en": "Do you agree to wait on these terms? Restock notifications do not mean agreement to wait."}.get(locale, "Do you agree to wait on these terms?"))
         requirements = request.get("customer_requirements") or []
         has_deadline = any(isinstance(hint, dict) and hint.get("date_status") in {"resolved", "past", "needs_clarification"}
                 and hint.get("supersession_hint") != "withdrawn" for hint in requirements)

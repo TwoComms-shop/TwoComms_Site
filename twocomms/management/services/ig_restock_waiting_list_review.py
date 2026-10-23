@@ -208,7 +208,7 @@ def normalize_decisions(value, request, now):
     if (not isinstance(value, list) or any(not isinstance(row, dict) for row in value) or len(value) != len(expected)
         or {row.get("line_id") for row in value} != set(expected)):
         raise ValueError("decision_line_coverage_invalid")
-    allowed = {"line_id", "availability", "checked_quantity", "preparation", "dispatch", "alternative", "clarification", "supply_basis", "source_location"}
+    allowed = {"line_id", "availability", "checked_quantity", "preparation", "dispatch", "alternative", "clarification", "supply_basis", "source_location", "base_arrival"}
     clean = []
     for row in value:
         item = expected[row["line_id"]]["target"]
@@ -225,6 +225,8 @@ def normalize_decisions(value, request, now):
         if row["availability"] == "available" and (not observation["configuration_digest"]
             or type(checked) is not int or checked < item["quantity"] or basis not in {"warehouse_checked", "accessible_unrecorded"}):
             raise ValueError("physical_availability_unverified")
+        base_arrival = reviews._base_arrival(row.get("base_arrival"),
+            availability=row["availability"], basis=basis, now=now)
         notes = {}
         for key in ("source_location", "clarification", "alternative"):
             value = row.get(key, "")
@@ -235,7 +237,8 @@ def normalize_decisions(value, request, now):
             "checked_quantity": checked, "supply_basis": basis, "configuration_digest": observation["configuration_digest"],
             "accounting_recount_required": item["item_kind"] == "catalog_apparel" and row["availability"] == "available" and observation["status"] != "available",
             "preparation": reviews._timing(row.get("preparation"), now), "dispatch": reviews._timing(row.get("dispatch"), now),
-            "inventory_digest": reviews.inventory_digest(observation), **notes})
+            "inventory_digest": reviews.inventory_digest(observation),
+            **({"base_arrival": base_arrival} if base_arrival is not None else {}), **notes})
     return clean, None
 
 

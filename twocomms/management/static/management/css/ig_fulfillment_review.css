@@ -1,6 +1,21 @@
 .ig-fulfillment{--fr-border:#293345;--fr-muted:#a5b1c5;min-width:0;max-width:100%;color:#e5eaf4;font-size:12px;line-height:1.5;}
 .ig-fulfillment *{box-sizing:border-box;min-width:0;}
 .ig-fulfillment [hidden]{display:none!important;}
+.bot-stock-review-entry{flex:0 0 auto;margin:10px 0;border:1px solid #48516c;border-left:3px solid #a78bfa;border-radius:10px;background:#111a29;min-width:0;max-width:100%;overflow-wrap:anywhere;}
+.bot-stock-review-summary{display:grid;gap:4px;padding:11px 13px;cursor:pointer;list-style:none;color:#e2e8f7;}
+.bot-stock-review-summary::-webkit-details-marker{display:none;}
+.bot-stock-review-summary strong{font-size:12px;line-height:1.4;}
+.bot-stock-review-items,.bot-stock-review-question{font-size:11px;line-height:1.5;color:#b3c0d4;}
+.bot-stock-review-question{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.bot-stock-review-open{font-size:11px;line-height:1.5;color:#c8b6fb;text-decoration:underline;}
+.bot-stock-review-entry[open]>.bot-stock-review-summary{border-bottom:1px solid #33415b;}
+.bot-stock-review-entry>.ig-fulfillment{padding:12px;max-height:min(60vh,580px);overflow-y:auto;overscroll-behavior:contain;}
+.bot-stock-review-summary:focus-visible{outline:2px solid #a78bfa;outline-offset:3px;border-radius:8px;}
+.ig-fr-availability-presets{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0;}
+.ig-fr-availability-presets [aria-pressed="true"]{background:#4a3a78;border-color:#a78bfa;color:#fff;}
+.ig-fr-source-questions{margin-top:8px;border-top:1px solid var(--fr-border);}
+.ig-fr-source-question{margin:4px 0 9px;padding-left:9px;border-left:2px solid #536583;overflow-wrap:anywhere;}
+.ig-fr-source-question a{color:#c5b9f7;font-size:11px;}
 .ig-fulfillment h3{margin:0;font-size:15px;line-height:1.4;}
 .ig-fulfillment h4{margin:0;font-size:12px;}
 .ig-fulfillment p{margin:5px 0;overflow-wrap:anywhere;}

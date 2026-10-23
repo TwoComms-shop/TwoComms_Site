@@ -26,7 +26,7 @@ _DESIGN_STORY = re.compile(r"історі\w*|истори\w*|походжен\w*
 _DESIGN = re.compile(r"принт\w*|дизайн\w*|малюн\w*|рисунк\w*|\b(?:print|design|artwork)\b", re.I)
 _WEIGHT = re.compile(r"\b(?:ваг(?:а|и|у|ою)|важ(?:ить|ать|у)|вес(?:а|у|ом|ит|ят)?|weigh(?:t|s|ing)?)\b", re.I)
 _FABRIC_WEIGHT = re.compile(r"\b(?:fabric|textile|cloth)\s+weight\b|\bweight\s+of\s+(?:the\s+)?(?:fabric|textile|cloth)\b|\bваг[аиу]\s+тканин\w*|\bвес(?:а)?\s+ткани\b", re.I)
-_SPEC = re.compile(_SPEC.pattern + "|" + _WEIGHT.pattern + r"|\bсклад\b", re.I)
+_SPEC = re.compile(_SPEC.pattern + "|" + _WEIGHT.pattern + r"|\bсклад\b|нач[іеё]с\w*|п[іо]дклад\w*|\b(?:lining|fleece)\b", re.I)
 _MASS_AMOUNT = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:кг|kg|kilograms?|гр?(?:ам(?:м(?:а|ов|ы)?|ів|а|и)?)?|g(?:rams?)?)(?!\w)(?!\s*/)", re.I)
 
 
@@ -85,6 +85,10 @@ def _color(value):
 
 
 def _known_color(wanted, state):
+    # Source preference authority is not a catalogue color witness. A draft
+    # without a proven product may carry its own wish in the allowed vocabulary.
+    if type((state.get("product") or {}).get("id")) is not int or state["product"]["id"] <= 0:
+        return False
     color = state.get("color") or {}
     if (color.get("verified_resolution") is True and type(color.get("selected_variant_id")) is int
         and color["selected_variant_id"] > 0 and _color(color.get("resolved_choice")) == wanted):
@@ -92,6 +96,48 @@ def _known_color(wanted, state):
     options = color.get("options") or []
     return any(_color(row.get("name") or row.get("label") or row.get("color") or "") == wanted
                for row in options if isinstance(row, dict))
+
+
+def _freeform_color_wishes(clause):
+    """Bounded explicit color labels preserve wishes, never selection IDs."""
+    if _REJECT.search(clause) or (not _PRODUCT.search(clause) and re.search(r"кнопк\w*|buttons?|інтерфейс|интерфейс|interface", clause, re.I)):
+        return []
+    word = r"[^\W\d_]+(?:['’ʼ-][^\W\d_]+)*"
+    label = r"(?:кольор(?:у|ом)?|колір|цвет(?:а|ом)?|colou?r)"
+    excluded = {"цей", "ця", "цього", "такий", "такой", "this", "that", "мені", "мне", "my", "your", "для", "на",
+        "є", "інший", "другой", "another", "was", "of", "for", "does", "please", "the", "a", "any", "у", "в", "як", "как", "будь-який"}
+
+    def candidate(value, start):
+        if (value.casefold() in excluded or _ASK.fullmatch(value) or _WISH.fullmatch(value) or _PRODUCT.fullmatch(value)
+            or re.fullmatch(r"яко\w*|які|како\w*|каки\w*|какую|мож\w*|покаж\w*|show|do|will|would|should", value, re.I)
+            or _NEGATED.search(clause[:start])):
+            return None
+        return _color(value)
+
+    values = []
+    for match in re.finditer(r"(?<!\w)" + label + r"(?!\w)", clause, re.I):
+        # A whole singular label owns at most one adjacent value. In particular,
+        # a plural suffix is never a name, and an actual forward value wins
+        # over a preceding garment noun or request verb.
+        forward = re.match(r"(?:\s*[:=]\s*|\s+)(?P<name>" + word + r")(?!\w)", clause[match.end():])
+        canonical = candidate(forward.group("name"), match.end() + forward.start("name")) if forward else None
+        if canonical is None:
+            backward = re.search(r"(?<!\w)(?P<name>" + word + r")\s+$", clause[:match.start()])
+            canonical = candidate(backward.group("name"), backward.start("name")) if backward else None
+        if canonical and canonical not in values:
+            values.append(canonical)
+    return values
+
+
+def _sole_color_wish(text, wanted):
+    """Conservative witness: no independent question, pickup or SKU text."""
+    if "?" in text or _freeform_color_wishes(text) != [wanted]:
+        return False
+    remainder = re.sub(r"(?<!\w)" + re.escape(wanted) + r"(?!\w)", "", text, flags=re.I)
+    remainder = re.sub(r"(?<!\w)(?:кольор(?:у|ом)?|колір|цвет(?:а|ом)?|colou?r)(?!\w)", "", remainder, flags=re.I)
+    remainder = _PRODUCT.sub("", _WISH.sub("", remainder))
+    remainder = re.sub(r"\b(?:я|мені|мне|i|a|the|this|in)\b", "", remainder, flags=re.I)
+    return not remainder.strip(" \t\r\n.!,:;—–-")
 
 
 def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=None, profile_language="uk"):
@@ -102,7 +148,7 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
     from management.services.ig_reply_language import own_reply_text, resolve_own_source_reply_language
 
     rows = list(sources or [])
-    empty = {"schema": VERSION, "status": "blocked", "reason": "", "inquiries": [], "resolved_information": [], "base_context_assertions": [], "source_refs": [],
+    empty = {"schema": VERSION, "status": "blocked", "reason": "", "inquiries": [], "resolved_information": [], "superseded_color_wishes": [], "base_context_assertions": [], "source_refs": [],
              "cart_identity": cart_identity(cart_capture), "locale": ""}
     if (not rows or len(rows) > 32 or any(not isinstance(row, dict) for row in rows)
         or any(type(row.get("message_id")) is not int or not isinstance(row.get("text", ""), str)
@@ -127,6 +173,8 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                   or ((active.get("fields") or {}).get("product_id") or {}).get("value"))
     inquiries = []
     resolved = []
+    superseded = []
+    source_by_id = {row["message_id"]: row for row in owned}
     language = resolve_own_source_reply_language(sources=owned, profile_language=profile_language)
     from management.services.ig_product_focus import information_subject
     from management.services.approved_public_facts import _captured_base, _GARMENT_WORDS
@@ -170,11 +218,16 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
         changed = set()
         if _source_size(raw):
             changed.add("size")
-        if _find_prefix_value(raw, _COLOR_WORDS) or _withdrawn_preference(raw, _COLOR_WORDS):
+        freeform_choice = any(_freeform_color_wishes(clause) and (
+            _WISH.search(clause) or _CORRECTION.search(clause) and "?" not in clause)
+            for clause in _inquiry_clauses(raw))
+        if _find_prefix_value(raw, _COLOR_WORDS) or _withdrawn_preference(raw, _COLOR_WORDS) or freeform_choice:
             changed.add("color")
-        inquiries = [item for item in inquiries if not (item["axis"] in changed
+        previous_questions = [*inquiries, *resolved]
+        dropped = [item for item in inquiries if item["axis"] in changed
             and item["line_id"] == source_line.get("line_id", "")
-            and item["product_id"] == source_product)]
+            and item["product_id"] == source_product]
+        inquiries = [item for item in inquiries if item not in dropped]
         for clause in _inquiry_clauses(raw):
             if not clause.strip() or _HISTORY.search(clause):
                 continue
@@ -191,13 +244,20 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                     wanted = _color(match.group())
                     if not _known_color(wanted, state) and (source_product or wanted in {"olive", "purple", "beige", "burgundy", "orange"}):
                         candidates.append(("color", wanted, "requested_color_unverified"))
+            for wanted in _freeform_color_wishes(clause):
+                if not _known_color(wanted, state) and not any(axis == "color" and value == wanted for axis, value, _reason in candidates):
+                    candidates.append(("color", wanted, "requested_color_unverified"))
             size_state = state.get("size") or {}
-            available = {_canonical_source_size(str(value)) for value in size_state.get("available") or []}
+            # Disabled catalogue labels still identify a real size. Stock and
+            # checkout restrictions cannot turn that label into a custom-size
+            # question; the independent physical review retains availability.
+            catalog_sizes = {_canonical_source_size(str(value)) for value in
+                [*(size_state.get("available") or []), *(size_state.get("disabled") or [])]}
             for match in _SIZE_RE.finditer(clause):
                 if _NEGATED.search(clause[:match.start()]):
                     continue
                 wanted = _canonical_source_size(match.group())
-                if wanted not in available and (available or wanted in {"XXS", "XXXS", "XXXL", "4XL", "5XL"}
+                if wanted not in catalog_sizes and (catalog_sizes or wanted in {"XXS", "XXXS", "XXXL", "4XL", "5XL"}
                                                 or size_state.get("requested_unavailable") == wanted):
                     candidates.append(("size", wanted, "requested_size_unverified"))
             spec = _SPEC.search(clause)
@@ -237,11 +297,35 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
                 if not any((row["source_message_id"], row["axis"], row["requested_value"]) ==
                            (item["source_message_id"], axis, wanted) for row in inquiries):
                     inquiries.append(item)
+        current_colors = [row for row in inquiries if row["source_message_id"] == source["message_id"]
+            and row["axis"] == "color" and row["product_id"] == source_product
+            and row["line_id"] == source_line.get("line_id", "")]
+        if freeform_choice and len(current_colors) == 1 and type(source_product) is int and source_product > 0:
+            current = current_colors[0]
+            for previous in dropped:
+                previous_source = source_by_id.get(previous["source_message_id"], {})
+                previous_text = own_reply_text(_current_source_text(previous_source.get("text", "")))
+                if (len(superseded) >= 16 or previous["axis"] != "color"
+                    or not isinstance(previous["line_id"], str) or not 0 < len(previous["line_id"]) <= 80
+                    or previous["source_message_id"] <= 0
+                    or previous["source_message_id"] >= current["source_message_id"]
+                    or sum(row["source_message_id"] == previous["source_message_id"] for row in previous_questions) != 1
+                    or any(not isinstance(row["source_digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", row["source_digest"])
+                           for row in (previous, current))
+                    or any(len(row["requested_value"]) > 80 for row in (previous, current))
+                    or not _sole_color_wish(previous_text, previous["requested_value"])):
+                    continue
+                superseded.append({"axis": "color", "line_id": previous["line_id"], "product_id": source_product,
+                    "previous_source_message_id": previous["source_message_id"], "previous_source_digest": previous["source_digest"],
+                    "previous_value": previous["requested_value"], "current_source_message_id": current["source_message_id"],
+                    "current_source_digest": current["source_digest"], "current_value": current["requested_value"],
+                    "previous_source_sole_color_wish": True})
     language = resolve_own_source_reply_language(sources=owned, profile_language=profile_language)
     if len(inquiries) + len(resolved) > 256:
         return {**empty, "source_refs": source_refs(owned), "gap": "product_inquiry_question_bound"}
     result = {**empty, "status": "manager_required" if inquiries else "none", "inquiries": inquiries,
               "resolved_information": resolved,
+              "superseded_color_wishes": superseded,
               "source_refs": source_refs(owned), "locale": language.template_family,
               "reason": ("product_configuration_review" if any(item["axis"] != "information" for item in inquiries)
                          else "product_information_review" if inquiries else "")}
@@ -352,8 +436,13 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
         active_id = active_id or next(iter(readiness), "")
         if active_id in readiness:
             color = readiness[active_id].get("color") or {}
+            wish = _color(response_plan.choices.get("color"))
+            selected = next((option for option in color.get("options") or () if isinstance(option, dict)
+                and option.get("variant_id") == color.get("selected_variant_id")), {})
+            selected_name = selected.get("name") or color.get("selected")
             if (readiness[active_id].get("applicability_known") is True
-                and type(color.get("selected_variant_id")) is int and color["selected_variant_id"] > 0):
+                and type(color.get("selected_variant_id")) is int and color["selected_variant_id"] > 0
+                and wish and _color(selected_name) == wish):
                 color.update(resolved_choice=response_plan.choices.get("color"), verified_resolution=True)
         capability = ProductInquiryCapture(revision.snapshot_digest, json.dumps(source_refs(sources), sort_keys=True),
             json.dumps(capture, sort_keys=True), json.dumps(readiness, sort_keys=True), revision.client.language,

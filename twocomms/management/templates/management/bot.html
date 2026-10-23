@@ -11,7 +11,7 @@
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_media_lifecycle.css' %}?v=private-media-v1">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_memory_card.css' %}?v=memory-presentation-v1">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/ig_decision_trace.css' %}?v=decision-evidence-v1"><link rel="stylesheet" href="{% static 'management/ig_quality_observations.css' %}?v=decision-evidence-v1">{% endif %}
-{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=9853821fcf8b"><link rel="stylesheet" href="{% static 'management/css/ig_restock_waiting_list.css' %}?v=2708668079fa">{% endif %}
+{% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_fulfillment_review.css' %}?v=96220075cadb"><link rel="stylesheet" href="{% static 'management/css/ig_restock_waiting_list.css' %}?v=2708668079fa">{% endif %}
 {% if bot_can_view_pii %}<link rel="stylesheet" href="{% static 'css/management-ig-split-shipping.css' %}?v=c3949ee0d051">{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<link rel="stylesheet" href="{% static 'management/css/ig_assisted_commerce.css' %}?v=79f864b3f503"><link rel="stylesheet" href="{% static 'management/css/ig_assisted_partial.css' %}?v=8e908d88ef84">{% endif %}
 <style>
@@ -971,6 +971,8 @@ div.bot-client-ava{display:grid;place-items:center;font-weight:800;color:#8b97b3
 .bot-signal{display:inline-flex;align-items:center;gap:5px;background:#11151f;border:1px solid #1e2430;border-radius:999px;padding:4px 8px;margin:3px;font-size:11px;color:#aeb8c7;}
 .bot-mem{background:#15110a;border:1px solid #3a2e16;border-radius:10px;padding:9px 11px;font-size:12px;color:#d8c08a;margin:10px 0;}
 .bot-deal{font-size:12px;color:#aeb8c7;background:#11151f;border:1px solid #1a2030;border-radius:9px;padding:7px 10px;margin:5px 0;}
+.bot-configuration-review-shortcuts .bot-stock-review-summary{width:100%;border:0;background:transparent;text-align:left;font:inherit;}
+.bot-configuration-review-shortcuts .bot-stock-review-summary+.bot-stock-review-summary{border-top:1px solid #33415b;}
 .bot-empty{color:#7e889a;font-size:13px;text-align:center;padding:40px 10px;}
 
 /* ---- Payment review drawer ---- */
@@ -1934,7 +1936,7 @@ body.bot-drawer-open{overflow:hidden;}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
-{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=f336cbcc83fe"></script><script src="{% static 'management/js/ig_restock_waiting_list.js' %}?v=0b0a6641df1c"></script>{% endif %}
+{% if bot_can_view_pii %}<script src="{% static 'management/js/ig_fulfillment_review.js' %}?v=57746dc75bdb"></script><script src="{% static 'management/js/ig_restock_waiting_list.js' %}?v=0b0a6641df1c"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'js/management-ig-split-shipping.js' %}?v=e749772c9099"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/js/ig_assisted_commerce.js' %}?v=0a2aee9a669c"></script><script src="{% static 'management/js/ig_assisted_partial.js' %}?v=369002f1ad35"></script>{% endif %}
 {# bot_conversation_scroll.js is injected as a plain URL to survive stale static manifests. #}
@@ -2543,7 +2545,7 @@ body.bot-drawer-open{overflow:hidden;}
     let sizeCorrectionController=null,sizeCorrectionClientId=null,sizeCorrectionRoot=null,sizeCorrectionDisclosure=null;
     let commerceScopeController=null,commerceScopeRoot=null,commerceScopeClientId=null,commerceScopeOrderId=null,commerceScopeEnvelope=null,commerceScopeRequest=0,commerceScopeAbort=null;
     let decisionTraceController=null,decisionTraceClientId=null,decisionTraceDisclosure=null;
-    let fulfillmentReviewController=null,fulfillmentReviewRoot=null;
+    let fulfillmentReviewController=null,fulfillmentReviewRoot=null,fulfillmentReviewEntry=null,fulfillmentReviewEntryKey='';
     let restockWaitingController=null,restockWaitingRoot=null;
     let splitShippingController=null,splitShippingRoot=null,splitShippingClientId=null;
     let assistedCommerceController=null,assistedCommerceRoot=null,assistedCommerceClientId=null,assistedPartialController=null,assistedPartialRoot=null;
@@ -2632,7 +2634,12 @@ body.bot-drawer-open{overflow:hidden;}
         fulfillmentReviewController=window.IgFulfillmentReview.create(fulfillmentReviewRoot,{
           csrfToken:csrf,
           canOperate:{% if bot_can_operate %}true{% else %}false{% endif %},
+          observeDirty:true,
+          onStateChange:()=>placeFulfillmentReview(),
           onSaved:savedId=>{if(restockWaitingController&&restockWaitingController.clientId===Number(savedId))return restockWaitingController.load();},
+          sourceUrl:fulfillmentSourceUrl,
+          onSource:(clientId,messageId)=>{if(Number(activeId)!==Number(clientId))return;ClientContextDrawer.close(null,{persist:false});requestedMessageId=messageId;const messages=document.getElementById('bot-msgs'),older=conversationEl.querySelector('[data-older-messages]');if(messages&&older)void revealRequestedMessage(messages,older);},
+          onCompose:openFulfillmentReply,
           onOpenProposal:(proposalId,state)=>{CheckoutProposals.select(proposalId,state);activate('orders',true);},
           url:clientId=>{
             const url='{% url "management_bot_fulfillment_review_api" 0 %}'.replace('/clients/0/','/clients/'+String(clientId)+'/');
@@ -2641,8 +2648,50 @@ body.bot-drawer-open{overflow:hidden;}
           }
         });
       }
-      contextEl.appendChild(fulfillmentReviewRoot);if(!contextPreservedRoots.has(fulfillmentReviewRoot))fulfillmentReviewController.render(id);
+      if(!fulfillmentReviewRoot.parentNode)contextEl.appendChild(fulfillmentReviewRoot);if(!contextPreservedRoots.has(fulfillmentReviewRoot))fulfillmentReviewController.render(id);placeFulfillmentReview();
       {% endif %}
+    }
+    function fulfillmentSourceUrl(clientId,messageId){
+      if(!Number.isSafeInteger(Number(clientId))||Number(clientId)<=0||!Number.isSafeInteger(Number(messageId))||Number(messageId)<=0)return '';
+      const url=new URL(window.location.href);url.search='';url.hash='';url.searchParams.set('section','clients');url.searchParams.set('client_id',String(clientId));url.searchParams.set('message_id',String(messageId));return url.pathname+url.search;
+    }
+    function openFulfillmentReply(clientId,messageId){
+      if(Number(activeId)!==Number(clientId)||!humanDocumentsController||Number(humanDocumentsClientId)!==Number(clientId))return;
+      ClientContextDrawer.open(null);humanDocumentsDisclosure.open=true;
+      if(!humanDocumentsController.hasUnsavedChanges()){
+        const updated=humanDocumentsController.update({clientId,contextMessageId:messageId,csrf,baseUrl:'{% url "management_bot_clients_api" %}'.replace(/clients\/$/,''),onRefresh:()=>{if(Number(activeId)===Number(clientId))void detail(clientId);}});
+        if(updated)humanDocumentsRoot.querySelector('[data-action="new"]')?.click();
+      }
+      humanDocumentsRoot.querySelector('textarea')?.focus({preventScroll:true});
+    }
+    function placeFulfillmentReview(){
+      if(!fulfillmentReviewController||!fulfillmentReviewRoot)return;
+      const state=fulfillmentReviewController.context||{},review=state.review||{};
+      const matching=Number(state.clientId)===Number(activeId)&&Number(state.clientId)===Number(convId);
+      const pending=matching&&state.canOperate===true&&review.can_decide===true&&review.decision_mode==='initial'&&review.status==='pending'&&Boolean(review.request_id)&&Boolean(review.request_digest);
+      const focus=fulfillmentReviewRoot.contains(document.activeElement)?document.activeElement:null;
+      const messages=document.getElementById('bot-msgs');const reading=window.TwcBotChatReading?.capture(messages,{documentScrolled:conversationIsDocumentScrolled(messages)});
+      if(pending){
+        if(!fulfillmentReviewEntry){fulfillmentReviewEntry=node('details','bot-stock-review-entry');fulfillmentReviewEntry.dataset.stockReviewEntry='';}
+        const key=String(state.clientId)+':'+review.request_id+':'+review.request_digest;
+        if(key!==fulfillmentReviewEntryKey){
+          fulfillmentReviewEntryKey=key;fulfillmentReviewEntry.replaceChildren();fulfillmentReviewEntry.open=false;
+          const summary=node('summary','bot-stock-review-summary');summary.appendChild(node('strong','','Потрібна перевірка наявності та строків'));
+          const labels=(review.lines||[]).slice(0,3).map(line=>{const target=line.target||{};return [line.display_label||line.label||'Позиція',target.color_label||target.color,target.size,target.fit_label||target.fit].filter(Boolean).join(' · ');});summary.appendChild(node('span','bot-stock-review-items',labels.join('; ')));
+          const source=(review.source_excerpts||[]).slice(-1)[0];summary.appendChild(node('span','bot-stock-review-question',source?.text||'Відкрийте перевірку, щоб звірити точні позиції та джерела.'));
+          summary.appendChild(node('span','bot-stock-review-open','Відкрити перевірку'));fulfillmentReviewEntry.appendChild(summary);
+        }
+        const head=conversationEl.querySelector('.bot-conversation-head');if(head&&fulfillmentReviewEntry.parentNode!==conversationEl)head.after(fulfillmentReviewEntry);
+        if(fulfillmentReviewRoot.parentNode!==fulfillmentReviewEntry){if(typeof fulfillmentReviewEntry.moveBefore==='function'&&fulfillmentReviewRoot.isConnected)fulfillmentReviewEntry.moveBefore(fulfillmentReviewRoot,null);else fulfillmentReviewEntry.appendChild(fulfillmentReviewRoot);}
+        if(state.dirty||focus)fulfillmentReviewEntry.open=true;
+      }else{
+        if(fulfillmentReviewRoot.parentNode!==contextEl){if(typeof contextEl.moveBefore==='function'&&fulfillmentReviewRoot.isConnected)contextEl.moveBefore(fulfillmentReviewRoot,null);else contextEl.appendChild(fulfillmentReviewRoot);}
+        if(fulfillmentReviewEntry?.parentNode)fulfillmentReviewEntry.remove();
+      }
+      if(matching&&state.draftStale){setGlobalFeedback('Перевірку вже змінено або опрацьовано. Ваші незбережені поля залишено в «Контексті»; відкиньте їх перед новим рішенням.','error');if(globalFeedback)globalFeedback.dataset.source='fulfillment-draft';}
+      else if(globalFeedback?.dataset.source==='fulfillment-draft'){setGlobalFeedback('');delete globalFeedback.dataset.source;}
+      if(focus&&fulfillmentReviewRoot.contains(focus)&&fulfillmentReviewRoot.isConnected)focus.focus({preventScroll:true});
+      if(reading&&!reading.atBottom)window.TwcBotChatReading.restore(messages,reading);
     }
     function clearDecisionTrace(){
       if(decisionTraceController)decisionTraceController.clear();
@@ -3400,6 +3449,7 @@ body.bot-drawer-open{overflow:hidden;}
       if(reading&&!reading.atBottom)window.TwcBotChatReading.restore(messages,reading);
     }
     function renderConversation(d){
+      const fulfillmentFocus=fulfillmentReviewRoot?.contains(document.activeElement)?document.activeElement:null;
       const c=d.client;const sameClient=Number(convId)===Number(c.id);const previousMessages=sameClient&&window.TwcBotChatReading?document.getElementById('bot-msgs'):null;const readingFocus=previousMessages?.contains(document.activeElement)?document.activeElement:null;const reading=window.TwcBotChatReading&&window.TwcBotChatReading.capture(previousMessages,{documentScrolled:conversationIsDocumentScrolled(previousMessages)});const previousOldest=convOldestId;const previousHasOlder=convHasOlder;const summaryWasOpen=sameClient&&Boolean(conversationEl.querySelector('.bot-chat-summary')?.open);if(cancelConversationPin){cancelConversationPin();cancelConversationPin=null;}const active=d.review&&d.review.active;conversationEl.replaceChildren();const head=node('header','bot-conversation-head');const meta=node('div','bot-conversation-meta');const titleRow=node('div','bot-conversation-title-row');titleRow.append(node('div','bot-conversation-title',c.name||c.username||c.igsid||'Клієнт'),renderFollowIndicator(c.follow||d.follow||{},c.id));meta.append(titleRow,node('div','bot-conversation-sub',[c.username?('@'+c.username):c.igsid,c.phone,c.ad_title?('Реклама: '+c.ad_title):''].filter(Boolean).join(' · ')));const linkedOrderBadge=linkedOrderContextBadge(c);if(linkedOrderBadge)meta.append(linkedOrderBadge);const actions=node('div','bot-conversation-actions');const back=node('button','bot-head-action bot-mobile-back','‹ Клієнти');back.type='button';back.addEventListener('click',()=>{setMobilePane('list');const activeRow=listEl.querySelector('.bot-client-row.active');if(activeRow){activeRow.scrollIntoView({block:'center'});activeRow.focus({preventScroll:true});}});const sections=node('button','bot-head-action bot-mobile-sections','Розділи');sections.type='button';sections.addEventListener('click',()=>{setMobilePane('list');tabsEl.scrollIntoView({block:'start'});tabsEl.querySelector('[aria-selected=true]')?.focus({preventScroll:true});});actions.append(back,sections);if(active&&active.approval&&active.approval.needs_action){const review=node('button','bot-head-action needs-action',active.approval.state==='needs_order_resolution'?'Прив’язати замовлення':'Перевірити оплату');review.type='button';review.addEventListener('click',()=>PaymentReviewDrawer.open(active,review));actions.appendChild(review);}const assignments=d.orders&&d.orders.assignments||[];const assignmentAction=node('button','bot-head-action icon','⇄');assignmentAction.type='button';assignmentAction.title='Прив’язати або відв’язати замовлення';assignmentAction.setAttribute('aria-label','Відкрити прив’язку замовлень');assignmentAction.addEventListener('click',()=>OrderAssignmentDrawer.open(d,assignmentAction));actions.appendChild(assignmentAction);const advanced=node('button','bot-head-action bot-context-action','Контекст');advanced.type='button';advanced.title='Показати або приховати контекст клієнта';advanced.setAttribute('aria-label','Показати або приховати контекст клієнта');advanced.setAttribute('aria-controls','bot-client-drawer');advanced.setAttribute('data-client-context-toggle','');advanced.setAttribute('aria-expanded',String(ClientContextDrawer.isOpen()));advanced.addEventListener('click',()=>ClientContextDrawer.toggle(advanced));actions.appendChild(advanced);const identityStatus=node('div','bot-conversation-identity-status');identityStatus.appendChild(node('span','bot-stage-chip '+stageCls(c.stage),conversationStageLabel(d)));if(linkedOrderBadge)identityStatus.appendChild(linkedOrderBadge);meta.appendChild(identityStatus);const title=titleRow.querySelector('.bot-conversation-title');title.title=title.textContent;head.append(avatar(c,46),meta,actions);conversationEl.appendChild(head);
       renderReplyDebt(c.response_debt,c.id);
       if(!reconcileReplyDebt(c.id,c.response_debt)?.required)renderAttentionStatus(c.attention_snapshot);
@@ -3416,7 +3466,7 @@ body.bot-drawer-open{overflow:hidden;}
       if(!(d.messages||[]).length&&!messages.children.length)messages.appendChild(node('div','bot-empty','У переписці ще немає повідомлень.'));conversationEl.appendChild(messages);
       const syncLatest=()=>{latest.hidden=messages.scrollHeight-messages.scrollTop-messages.clientHeight<60;};if(messages._chatScrollListener)messages.removeEventListener('scroll',messages._chatScrollListener);messages._chatScrollListener=syncLatest;messages.addEventListener('scroll',syncLatest,{passive:true});
       bindAvatarFallback(conversationEl,c.name||c.username||c.igsid);convId=c.id;convPollFailures=0;convLastId=sameClient?Math.max(convLastId,d.last_message_id||0):d.last_message_id||0;const keepsOlder=previousMessages&&previousOldest&&(previousOldest<Number(d.oldest_message_id||Infinity));convOldestId=keepsOlder?previousOldest:d.oldest_message_id||0;convHasOlder=keepsOlder?previousHasOlder:Boolean(d.has_older);older.hidden=!convHasOlder;older.disabled=Boolean(olderMessagesRequest&&Number(olderMessagesClient)===Number(c.id));if(readingFocus)(messages.contains(readingFocus)?readingFocus:messages).focus({preventScroll:true});
-      if(requestedMessageId){void revealRequestedMessage(messages,older);}else if(reading&&!reading.atBottom){requestAnimationFrame(()=>{if(!requestedMessageId&&messages.isConnected)window.TwcBotChatReading.restore(messages,reading);syncLatest();});}else scrollConversationToBottom(messages,true);requestAnimationFrame(syncLatest);
+      if(requestedMessageId){void revealRequestedMessage(messages,older);}else if(reading&&!reading.atBottom){requestAnimationFrame(()=>{if(!requestedMessageId&&messages.isConnected)window.TwcBotChatReading.restore(messages,reading);syncLatest();});}else scrollConversationToBottom(messages,true);requestAnimationFrame(syncLatest);placeFulfillmentReview();renderConfigurationReviewShortcuts(d);if(fulfillmentFocus&&fulfillmentReviewRoot?.contains(fulfillmentFocus)&&fulfillmentReviewRoot.isConnected)fulfillmentFocus.focus({preventScroll:true});
 
     }
     let evidenceGeneration=0;
@@ -3489,9 +3539,51 @@ body.bot-drawer-open{overflow:hidden;}
     function isFollowupDeliveryReview(item){
       return Boolean(item&&(item.human_reply_resolution_url||item.resolution_url)&&Array.isArray(item.allowed_outcomes)&&item.allowed_outcomes.length);
     }
-    function visibleFollowups(items){
+    function configurationReviewTasks(items,clientId){
+      if(!Number.isSafeInteger(Number(clientId))||Number(clientId)<=0)return [];
+      const seen=new Set();return (Array.isArray(items)?items:[]).filter(item=>{
+        const review=item?.manager_review,taskId=Number(item?.id),sources=review?.source_message_ids;
+        if(!review||review.state!=='pending'||review.actionable!==true||review.type!=='product_configuration_review'||item.reason!=='revision_case:product_configuration_review'||item.kind!=='manager_task'||['completed','cancelled'].includes(item.status)||!Number.isSafeInteger(taskId)||taskId<=0||Number(review.client_id)!==Number(clientId)||Number(review.task_id)!==taskId||!Array.isArray(sources)||!sources.length||sources.length>32||!sources.every(id=>Number.isSafeInteger(id)&&id>0)||seen.has(taskId))return false;
+        seen.add(taskId);return true;
+      }).slice(0,8);
+    }
+    function renderConfigurationReviewShortcuts(d){
+      const clientId=Number(d.client?.id);if(!Number.isSafeInteger(clientId)||clientId<=0||clientId!==Number(activeId)||clientId!==Number(convId))return;
+      let root=conversationEl.querySelector('[data-configuration-review-shortcuts]');
+      const tasks=configurationReviewTasks(d.followups,clientId);
+      if(!tasks.length){if(root){const messages=document.getElementById('bot-msgs'),reading=window.TwcBotChatReading?.capture(messages,{documentScrolled:conversationIsDocumentScrolled(messages)});root.remove();if(reading&&!reading.atBottom)window.TwcBotChatReading.restore(messages,reading);}return;}
+      const key=JSON.stringify([clientId,tasks.map(item=>[item.id,item.manager_review.question,item.manager_review.source_message_ids])]);
+      if(root?.dataset.reviewKey===key)return;
+      const messages=document.getElementById('bot-msgs'),reading=window.TwcBotChatReading?.capture(messages,{documentScrolled:conversationIsDocumentScrolled(messages)});
+      if(!root){root=node('section','bot-stock-review-entry bot-configuration-review-shortcuts');root.dataset.configurationReviewShortcuts='';root.setAttribute('aria-label','Перевірка параметрів товару');}
+      const focusedTask=root.contains(document.activeElement)?document.activeElement?.dataset.configurationReviewTask:null;
+      root.dataset.reviewKey=key;root.replaceChildren();
+      tasks.forEach(item=>{
+        const taskId=Number(item.id),button=node('button','bot-stock-review-summary');button.type='button';button.dataset.configurationReviewTask=String(taskId);
+        button.append(node('strong','','Потрібна перевірка параметрів товару'),node('span','bot-stock-review-question',String(item.manager_review.question||'').slice(0,500)),node('span','bot-stock-review-open','Відкрити запит у контексті →'));
+        button.addEventListener('click',()=>{
+          if(!button.isConnected||Number(activeId)!==clientId||Number(convId)!==clientId)return;
+          const row=contextEl.querySelector('[data-followup-id="'+taskId+'"]');if(!row)return;
+          ClientContextDrawer.open(button);
+          requestAnimationFrame(()=>{if(button.isConnected&&row.isConnected&&Number(activeId)===clientId&&Number(convId)===clientId){row.scrollIntoView({block:'center'});row.focus({preventScroll:true});}});
+        });root.appendChild(button);
+      });
+      const head=conversationEl.querySelector('.bot-conversation-head');if(head&&root.parentNode!==conversationEl)head.after(root);
+      if(focusedTask)root.querySelector('[data-configuration-review-task="'+focusedTask+'"]')?.focus({preventScroll:true});
+      if(reading&&!reading.atBottom)window.TwcBotChatReading.restore(messages,reading);
+    }
+    function renderConfigurationReviewSources(row,item,clientId){
+      if(!configurationReviewTasks([item],clientId).length)return;
+      const sources=node('div','bot-assignment-actions');
+      [...new Set(item.manager_review.source_message_ids)].forEach(messageId=>{
+        const link=node('a','bot-mini-btn','До запиту #'+messageId);link.href=fulfillmentSourceUrl(clientId,messageId);
+        link.addEventListener('click',event=>{event.preventDefault();if(!link.isConnected||Number(activeId)!==Number(clientId)||Number(convId)!==Number(clientId))return;ClientContextDrawer.close(null,{persist:false});requestedMessageId=messageId;const messages=document.getElementById('bot-msgs'),older=conversationEl.querySelector('[data-older-messages]');if(messages&&older)void revealRequestedMessage(messages,older);});sources.appendChild(link);
+      });row.appendChild(sources);
+    }
+    function visibleFollowups(items,clientId){
       const allFollowups=Array.isArray(items)?items:[];const deliveryReviews=[];const ordinary=[];
-      allFollowups.forEach(item=>{(isFollowupDeliveryReview(item)?deliveryReviews:ordinary).push(item);});
+      const configurationIds=new Set(configurationReviewTasks(allFollowups,clientId).map(item=>Number(item.id))),seen=new Set();
+      allFollowups.forEach(item=>{if(configurationIds.has(Number(item.id))){if(seen.has(Number(item.id)))return;seen.add(Number(item.id));deliveryReviews.push(item);}else (isFollowupDeliveryReview(item)?deliveryReviews:ordinary).push(item);});
       return deliveryReviews.concat(ordinary.slice(0,Math.max(0,8-deliveryReviews.length)));
     }
     function appendCapturedCheckoutOrder(row,key,item){
@@ -3613,8 +3705,10 @@ body.bot-drawer-open{overflow:hidden;}
       });}else{memoryRoot.appendChild(node('div','bot-hint','Пам’ять тимчасово недоступна. Перезавантажте сторінку.'));}
       {% endif %}
       if((d.signals||[]).length||d.patterns){const analysis=section(contextEl,'Аналіз');const details=node('details','bot-analysis-disclosure');const summary=node('summary','', 'Сигнали та патерни · '+(d.signals||[]).length);details.appendChild(summary);const body=node('div','bot-analysis-body');body.appendChild(node('div','bot-hint','Сигнали показують події діалогу, але самі по собі не підтверджують оплату.'));const counts=(d.patterns||{}).message_counts||{};if(Object.keys(counts).length)body.appendChild(node('div','bot-hint','У поточному епізоді: клієнт '+(counts.customer||0)+' · менеджер '+(counts.manager||0)+' · агент '+(counts.agent||0)));(d.signals||[]).slice(0,18).forEach(signal=>body.appendChild(node('span','bot-signal',(signal.type_label||humanLabel(signalLabels,signal.type,'Інший сигнал'))+' ×'+signal.count+(signal.latest_value?(': '+signal.latest_value):''))));details.appendChild(body);analysis.appendChild(details);}
-      if((d.followups||[]).length){const followups=section(contextEl,'Заплановані контакти',d.followups.length);visibleFollowups(d.followups).forEach(item=>{const row=node('div','bot-deal','#'+item.id+' · '+humanLabel(followupKindLabels,item.kind)+' · '+(item.status_label||humanLabel(followupStatusLabels,item.status))+' · '+relativeTime(item.due_at,{due:true}));if(item.reason)row.appendChild(node('div','bot-hint',item.reason_label||humanLabel(followupReasonLabels,item.reason,item.reason)));if(item.message_text)row.appendChild(node('div','bot-mem',item.message_text));renderFollowupResolution(row,item,id);renderFollowupContinuation(row,item,id);followups.appendChild(row);});}
+      if((d.followups||[]).length){const followups=section(contextEl,'Заплановані контакти',d.followups.length);visibleFollowups(d.followups,id).forEach(item=>{const row=node('div','bot-deal','#'+item.id+' · '+humanLabel(followupKindLabels,item.kind)+' · '+(item.status_label||humanLabel(followupStatusLabels,item.status))+' · '+relativeTime(item.due_at,{due:true}));row.dataset.followupId=String(item.id);row.tabIndex=-1;if(item.reason)row.appendChild(node('div','bot-hint',item.reason_label||humanLabel(followupReasonLabels,item.reason,item.reason)));if(item.message_text)row.appendChild(node('div','bot-mem',item.message_text));renderConfigurationReviewSources(row,item,id);renderFollowupResolution(row,item,id);renderFollowupContinuation(row,item,id);followups.appendChild(row);});}
       if((d.deals||[]).length){const deals=section(contextEl,'Угоди',d.deals.length);d.deals.slice(0,8).forEach(item=>deals.appendChild(node('div','bot-deal','#'+item.id+' · '+humanLabel(dealStatusLabels,item.status)+' · '+item.amount+' грн'+(item.order_id?(' · замовлення №'+item.order_id):''))));}
+      placeFulfillmentReview();
+      renderConfigurationReviewShortcuts(d);
     }
     const assignmentOperationId=()=>window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+Math.random();
     async function linkAssignment(id,identifier,button,feedbackEl){

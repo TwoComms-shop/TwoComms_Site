@@ -1,3 +1,4 @@
+import ast
 import io
 import json
 import os
@@ -1834,6 +1835,63 @@ print(json.dumps({
             "--settings=test_settings_mariadb", "--noinput", "--keepdb",
         ]])
         self.assertEqual(result["suite"], "dialogue-quality")
+        self.assertEqual([call[0] for call in admin.calls][-4:],
+                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+
+    def test_stock_authority_covers_current_rules_and_bounded_existing_consumers(self):
+        labels = self.runner._validate_suite("stock-authority")
+        self.assertEqual(len(labels), len(set(labels)))
+        for suffix in ("authority_20261023", "catalog_copy_20261023", "claim_guard_20261023",
+                       "request_scope_20261023"):
+            self.assertIn("management.tests_ig_stock_" + suffix, labels)
+        self.assertIn("management.tests_ig_palette_intent_20261023", labels)
+        self.assertIn("management.tests_ig_standard_funnel_qa", labels)
+        for module in ("fulfillment_reviews", "fulfillment_timing", "fulfillment_truth",
+                       "fulfillment_delivery", "fulfillment_checkout", "fulfillment_stock_api",
+                       "fulfillment_requirements", "restock_waiting_list_api", "restock_context",
+                       "restock_waiting_list_context", "restock_consent_boundary", "restock_subscriptions"):
+            self.assertIn("management.tests_ig_" + module, labels)
+        for boundary in (
+            "fulfillment_reuse.NativeInvitationReviewReuseTests.test_quantity_amendment_cannot_borrow_original_checked_quantity",
+            "fulfillment_reuse.NativeInvitationReviewReuseTests.test_privacy_erasure_cannot_authorize_reuse",
+            "fulfillment_stock_sync.NativeFulfillmentStockSyncTests.test_real_preview_is_readonly_and_no_dialogue_decision_changes_stock",
+            "fulfillment_stock_sync.NativeFulfillmentStockSyncTests.test_same_operation_replays_receipt_without_adding_capacity_or_another_checkout",
+            "fulfillment_stock_sync.NativeFulfillmentStockSyncTests.test_two_real_customer_recounts_of_one_unit_have_one_checkout_winner",
+            "fulfillment_integration.FulfillmentNativeIntegrationTests.test_api_permission_foreign_case_csrf_and_digest_cas_do_not_write_decisions",
+            "restock_waiting_list.NativeRestockWaitingListTests.test_actual_all_checked_rows_send_once_without_creating_stock_reservation_or_order",
+            "restock_waiting_list.NativeRestockWaitingListTests.test_source_edit_invalidates_accepted_list_without_a_provider_call",
+            "restock_waiting_list.NativeRestockWaitingListTests.test_expired_physical_manager_check_is_rechecked_at_actual_socket_boundary",
+        ):
+            self.assertIn("management.tests_ig_" + boundary, labels)
+
+        for label in labels:
+            parts = label.split(".")
+            source = PROJECT_ROOT / "twocomms" / parts[0] / (parts[1] + ".py")
+            with self.subTest(label=label):
+                self.assertTrue(source.is_file())
+                if len(parts) == 4:
+                    tree = ast.parse(source.read_text())
+                    case = next(node for node in tree.body
+                                if isinstance(node, ast.ClassDef) and node.name == parts[2])
+                    self.assertIn(parts[3], [node.name for node in case.body
+                                            if isinstance(node, ast.FunctionDef)])
+
+    def test_stock_authority_uses_the_native_gate_command_and_verified_cleanup(self):
+        admin = FakeAdmin()
+        command = FakeCommandRunner()
+        result = self.runner.run_gate(
+            server_mode="external", suite="stock-authority", admin=admin,
+            command_runner=command, project_root=PROJECT_ROOT,
+            environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=io.StringIO(),
+        )
+        test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
+        self.assertEqual(test_calls, [[
+            sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
+            *self.runner.SUITES["stock-authority"],
+            "--settings=test_settings_mariadb", "--noinput", "--keepdb",
+        ]])
+        self.assertEqual(result["suite"], "stock-authority")
+        self.assertEqual(result["cleanup"], "verified")
         self.assertEqual([call[0] for call in admin.calls][-4:],
                          ["drop_user", "drop_database", "verify_cleanup", "close"])
 

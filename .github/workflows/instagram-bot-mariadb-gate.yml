@@ -85,6 +85,7 @@ jobs:
           - lease-concurrency
           - conversion-context
           - dialogue-quality
+          - stock-authority
     services:
       mariadb:
         image: mariadb:11.4.12@sha256:67873d30a17f6a9c331f06363b2fa15f38abca415529966d67c84f87f82439fe

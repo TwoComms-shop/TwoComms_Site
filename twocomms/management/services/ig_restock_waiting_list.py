@@ -258,9 +258,9 @@ def capture_target(client, source, *, now):
                 raise ValueError("waiting_list_item_unverified")
             preferences = restock._quantity_basis(preferences, line)
             observation = resolve_source_interest(preferences, now=now).as_dict()
-            if observation.get("status") == "available":
-                continue
-            if observation.get("status") != "unavailable":
+            # Accounting-positive rows are still part of the customer's ALL
+            # request. Only the physical manager decision confirms availability.
+            if observation.get("status") not in {"available", "unavailable"}:
                 raise ValueError("waiting_list_manager_source_required")
             sources = restock._selection_sources(preferences, client, source.provider_namespace)
             if not sources:

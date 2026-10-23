@@ -810,13 +810,15 @@ class StructuredWorkerAuthorityBoundaryTests(TestCase):
                 self.assertNotIn(claim, delivered)
 
     def test_authority_claims_with_application_evidence_are_preserved(self):
+        from management.tests_ig_stock_claim_guard_20261023 import reviewed_projection
+
         client = self._client("claim-evidence")
         with patch(
             "management.services.bot_payment_truth.current_payment_confirmation",
             return_value={"confirmed": True},
         ), patch(
-            "management.services.instagram_bot._has_exact_stock_evidence",
-            return_value=True,
+            "management.services.ig_fulfillment_reviews.fulfillment_review_projection",
+            return_value=reviewed_projection(),
         ), patch(
             "management.services.ig_reply_authority.build_reply_truth_context",
             return_value=ReplyTruthContext(payment_confirmed=True),
@@ -824,7 +826,7 @@ class StructuredWorkerAuthorityBoundaryTests(TestCase):
             _source, handled, delivered = self._run(
                 client,
                 {
-                    "reply_text": "Оплата підтверджена. Товар є в наявності.",
+                    "reply_text": "Оплата підтверджена. Black hoodie L є в наявності.",
                     "controls": [],
                 },
                 suffix="claim-evidence",
@@ -832,7 +834,7 @@ class StructuredWorkerAuthorityBoundaryTests(TestCase):
             )
 
         self.assertEqual(handled, 1)
-        self.assertEqual(delivered, "Оплата підтверджена. Товар є в наявності.")
+        self.assertEqual(delivered, "Оплата підтверджена. Black hoodie L є в наявності.")
 
     def test_negated_authority_status_is_not_treated_as_verified_claim(self):
         replies = (

@@ -136,6 +136,50 @@ def _lines(cart, watermark, now):
     return lines
 
 
+def _unverified_configuration_inquiries(revision, cart, source_ids):
+    """Reuse native inquiry capture; an old selected SKU cannot answer a new wish."""
+    from management.services.ig_product_inquiries import capture_product_inquiries, product_inquiries_for_revision
+    from management.services.ig_response_plan import capture_response_plan
+    rows = [row for row in (revision.bundle_snapshot or {}).get("sources") or []
+        if row.get("message_id") in source_ids]
+    def relevant(item):
+        if item.get("source_message_id") not in source_ids:
+            return False
+        axis = item.get("axis")
+        if axis in {"color", "size"}:
+            # A zero-count M/black wish can still be this exact selected SKU.
+            # It needs physical review, not another configuration inquiry.
+            from management.services.ig_product_inquiries import _color
+            from management.services.ig_commerce_turns import _canonical_source_size
+            line = next((line for line in cart.get("lines") or []
+                if line.get("line_id") == item.get("line_id")), {})
+            selected = ((line.get("fields") or {}).get(axis) or {}).get("value") or line.get(axis)
+            normalize = _color if axis == "color" else _canonical_source_size
+            if selected and normalize(str(selected)) == normalize(str(item.get("requested_value") or "")):
+                return False
+            return True
+        return bool(axis == "information" and re.search(
+            r"нач[іеё]с|п[іо]дклад|lining|fleece", item.get("question") or "", re.I))
+    # The first pure pass is only a candidate screen, with no claim that an
+    # omitted catalogue is unknown. Actual classification reuses its existing
+    # fresh catalogue capability; ordinary stock/price questions pay no read.
+    screen = capture_product_inquiries(rows, cart_capture=cart, profile_language=revision.client.language)
+    if not any(relevant(item) for item in screen.get("inquiries") or []):
+        return []
+    plan = capture_response_plan(revision.client, revision=revision, source_cart_capture=cart)
+    actual = product_inquiries_for_revision(revision, response_plan=plan)
+    return [item for item in actual.get("inquiries") or [] if relevant(item)]
+
+
+def _explicit_configuration_change(inquiry):
+    # A comparison/knowledge question does not withdraw a chosen black item.
+    # Only an own explicit changed requirement can supersede the old scope.
+    text = str(inquiry.get("question") or "")
+    return bool("?" not in text and re.search(
+        r"\b(?:хочу|потріб\w*|обира\w*|выбира\w*|замість|вместо|instead|choose|want|need)\b", text, re.I)
+        and not re.search(r"дізнат\w*|знат\w*|узнат\w*|\b(?:know|if|maybe|perhaps)\b|можливо|возможно", text, re.I))
+
+
 def build_fulfillment_callback(request, action, *, version=0):
     """Compact signed intent; actual actor and native notification receipt gate apply."""
     if action not in CALLBACK_ACTIONS or type(version) is not int or not 0 <= version <= 9999:
@@ -374,15 +418,21 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         # Partial product selection is not an out-of-stock incident. Automatic
         # checks start only after an exact target exists; an explicit customer
         # timing/availability question can still request clarification.
-        unavailable = any(line["target"] and line["observation"].get("status") != "available" for line in lines)
         source_ids = {row.pk for row in source_rows}
         selection_requested = any(proof.get("source_message_id") in source_ids for line in lines
             for proof in line["preferences"].get("evidence", {}).values())
+        notification_optin_requested = any(is_restock_interest(row.text) for row in source_rows)
         availability_requested = any((re.search(r"(?:наявн|налич|доступн|availab|in\s+stock)", row.text, re.I) and "?" in row.text)
             or is_restock_interest(row.text)
             for row in source_rows)
-        exact_available = all(line["target"] and line["configuration_digest"]
-            and line["observation"].get("status") == "available" for line in lines)
+        if len(lines) == 1 and lines[0]["target"] and lines[0]["configuration_digest"]:
+            from management.services.ig_response_cart_plan import stock_question
+            selected = lines[0]
+            values = selected["preferences"].get("values") or {}
+            labels = selected["observation"].get("labels") or {}
+            availability_requested = availability_requested or any(stock_question(row.text,
+                size=selected["target"].get("size", ""), color=values.get("color") or labels.get("color", ""),
+                title=labels.get("product", "")) for row in source_rows)
         prior = Request.objects.filter(client=client, source__isnull=False).order_by(
             "-created_at", "-source_id", "-pk").first()
         if (history_reason and prior and _verified(prior, "request")
@@ -404,14 +454,27 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
                 return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
                     "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
                     "pure": False, "reason": "unchanged_hard_deadline"}
-        prior_requirements = bool(availability_requested and exact_available and not explicit
-            and prior and _verified(prior, "request")
-            and prior.envelope.get("cart_identity") == _cart_identity(cart)
-            and any(_context_requirements([hint]) or hint.get("request_detected") or hint.get("custom_print_hint")
-                for hint in prior.envelope.get("customer_requirements", []))
-            and not _current_reason(prior, settings_obj, now=now, current_source_cart=cart))
-        if not explicit and not (unavailable and (selection_requested or availability_requested)) and not (
-                availability_requested and (not exact_available or prior_requirements)):
+        # Ledger quantity is an observation, never physical availability
+        # authority. A customer's exact selection or stock question requires
+        # the same scoped manager check for positive, zero and unknown counts.
+        physical_confirmation_requested = availability_requested or (
+            selection_requested and any(line["target"] and line["configuration_digest"] for line in lines))
+        inquiries = (_unverified_configuration_inquiries(revision, cart, source_ids)
+            if availability_requested or selection_requested else [])
+        if any(_explicit_configuration_change(item) or re.search(
+                r"наявн|налич|доступн|availab|in\s+stock", item.get("question") or "", re.I)
+                for item in inquiries):
+            # The existing product-configuration/information review owns the
+            # exact unlisted wish. Do not create a physical check for the old
+            # selected SKU and accidentally answer another colour/lining.
+            return {"created": False, "reason": "desired_configuration_requires_review", "pure": False}
+        if not explicit and not physical_confirmation_requested:
+            if (prior and _verified(prior, "request")
+                    and prior.envelope.get("cart_identity") == _cart_identity(cart)
+                    and not _current_reason(prior, settings_obj, now=now, current_source_cart=cart)):
+                return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
+                    "request_digest": prior.envelope_hmac, "pure": False,
+                    "reason": "existing_physical_review"}
             return {"created": False, "reason": "no_review_requirement", "pure": False}
         # A new availability question keeps an earlier deadline only through
         # its original sealed sources and an identical purchase selection.
@@ -425,6 +488,25 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
                 "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
                 "pure": False, "reason": "unchanged_customer_requirements"}
+        if (prior and not explicit and (not notification_optin_requested or (
+                    prior.source_id == max(row.pk for row in source_rows) and prior.revision_id == revision.pk))
+                and not changes_requirement and _verified(prior, "request")
+                and prior.envelope.get("cart_identity") == _cart_identity(cart)
+                and prior.created_at <= now <= prior.created_at + FRESHNESS
+                and not _current_reason(prior, settings_obj, now=now, current_source_cart=cart)):
+            previous_lines = prior.envelope.get("lines") or []
+            previous_by_id = {line["line_id"]: line for line in previous_lines}
+            same_configuration = len(previous_by_id) == len(lines) and all(
+                line["line_id"] in previous_by_id
+                and all(previous_by_id[line["line_id"]].get(key) == line.get(key)
+                    for key in ("target", "configuration_digest")) for line in lines)
+            previous_decision = Decision.objects.filter(request=prior).order_by("-version").first()
+            if same_configuration and (previous_decision is None or not _decision_reason(
+                    prior, previous_decision, now=now, current_source_cart=cart)):
+                return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
+                    "request_digest": prior.envelope_hmac,
+                    "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
+                    "pure": False, "reason": "unchanged_physical_confirmation"}
         if not history_reason and prior and _verified(prior, "request") and prior.envelope.get("cart_identity") == _cart_identity(cart) and not changes_requirement:
             from management.models import IgCustomerTurnRevision, InstagramBotMessage
             inherited = []
@@ -485,7 +567,7 @@ def prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
 
 
 def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_checked=False,
-        _deadline_hold=False, _deadline_hold_line_ids=()):
+        _deadline_hold=False, _deadline_hold_line_ids=(), _source_excerpts=None):
     """Two bounded actual-row reads, including every inherited revision source."""
     from django.db.models import Q
     from management.models import IgTurnRevisionSource, InstagramBotMessage
@@ -581,6 +663,23 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
                         affected_line_ids=_deadline_hold_line_ids):
                     return "requirements_superseded"
             continue
+        if not _deadline_hold:
+            # Screen without queries. Neutral/price continuations must not add
+            # source-by-source reads to the existing bounded state capture.
+            from management.services.ig_product_inquiries import capture_product_inquiries
+            candidate = capture_product_inquiries([{"message_id": row.pk, "role": "user", "text": row.text,
+                "provider_created_at": row.provider_created_at.isoformat(), "source_digest": ""}],
+                cart_capture=cart, profile_language=client.language)
+            changed_configuration = any(item.get("axis") in {"color", "size"}
+                and _explicit_configuration_change(item) for item in candidate.get("inquiries") or [])
+            if changed_configuration:
+                frozen = row.revision_sources.select_related("revision").order_by("-revision_id").first()
+                if frozen:
+                    from management.services.ig_purpose_sources import owned_source
+                    owned, _ = owned_source(frozen.revision, row, settings_obj, require_head=False)
+                    if owned and any(_explicit_configuration_change(item) for item in
+                            _unverified_configuration_inquiries(frozen.revision, cart, {row.pk})):
+                        return "requirements_superseded"
         updated_context = _context_requirements([hint])
         if (hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") != "none"
                 or any(captured_context.get(key) != value for key, value in updated_context.items())):
@@ -593,11 +692,16 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
             _source_payload(row, ordinal=0)) for row in rows]
         if signature(later) != signature(list(later_query[:17])):
             return "review_source_read_conflict"
+    if _source_excerpts is not None:
+        _source_excerpts.extend({"message_id": item["body"]["message_id"],
+            "text": item["body"]["text"][:350],
+            "event_at": item["body"]["provider_created_at"],
+            "truncated": len(item["body"]["text"]) > 350} for item in second)
     return ""
 
 
 def _current_reason(request, settings_obj, *, now, current_source_cart=None, _settings_fresh=False,
-        _deadline_hold=False, _deadline_hold_line_ids=()):
+        _deadline_hold=False, _deadline_hold_line_ids=(), _source_excerpts=None):
     from management.services.ig_purpose_sources import owned_source, latest_customer_source
     from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_reply_boundary import capture_reply_permission
@@ -642,12 +746,13 @@ def _current_reason(request, settings_obj, *, now, current_source_cart=None, _se
     if current_source_cart is not None:
         reason = _batch_cart_sources_reason(request, settings_obj, current_source_cart, now=now,
             _permission_checked=True, _deadline_hold=_deadline_hold,
-            _deadline_hold_line_ids=_deadline_hold_line_ids)
+            _deadline_hold_line_ids=_deadline_hold_line_ids, _source_excerpts=_source_excerpts)
         if reason:
             return reason
         return "" if _cart_identity(current_source_cart) == data["cart_identity"] else "selection_changed"
     cart = capture_current_selection_lines(client.pk, now=now)
-    reason = _batch_cart_sources_reason(request, settings_obj, cart, now=now, _permission_checked=True)
+    reason = _batch_cart_sources_reason(request, settings_obj, cart, now=now, _permission_checked=True,
+        _source_excerpts=_source_excerpts)
     if reason:
         return reason
     return "" if _cart_identity(cart) == data["cart_identity"] else "selection_changed"
@@ -666,6 +771,16 @@ def _timing(value, now):
             raise ValueError("timing_anchor_invalid")
         return deepcopy(value)
     return {**value, "anchor_at": now.isoformat()}
+
+
+def _base_arrival(value, *, availability, basis, now):
+    """Incoming physical bases, distinct from preparation and dispatch."""
+    if value is None:
+        return None
+    if (availability != "wait" or basis != "incoming_confirmed"
+            or not isinstance(value, dict) or set(value) != {"min_days", "max_days", "unit"}):
+        raise ValueError("base_arrival_scope_invalid")
+    return _timing(value, now)
 
 
 def normalize_deadline_review(value, request):
@@ -715,7 +830,7 @@ def _decisions(value, request, now):
         raise ValueError("decision_line_coverage_invalid")
     result = []
     for row in rows:
-        if not isinstance(row, dict) or set(row) - {"line_id", "availability", "checked_quantity", "preparation", "dispatch", "alternative", "clarification", "supply_basis", "source_location"}:
+        if not isinstance(row, dict) or set(row) - {"line_id", "availability", "checked_quantity", "preparation", "dispatch", "alternative", "clarification", "supply_basis", "source_location", "base_arrival"}:
             raise ValueError("decision_schema_invalid")
         availability = row.get("availability")
         if availability not in {"available", "unavailable", "wait", "clarify"}:
@@ -733,6 +848,10 @@ def _decisions(value, request, now):
             or configuration.get("status") != "valid" or configuration.get("target") != target or not target
             or type(checked) is not int or checked < target.get("quantity", 1000)):
             raise ValueError("physical_availability_unverified")
+        if row.get("base_arrival") is not None and (not target or configuration.get("status") != "valid"
+                or configuration.get("target") != target):
+            raise ValueError("base_arrival_configuration_unverified")
+        base_arrival = _base_arrival(row.get("base_arrival"), availability=availability, basis=basis, now=now)
         clean = {}
         for name in ("alternative", "clarification", "source_location"):
             text = row.get(name, "")
@@ -744,7 +863,8 @@ def _decisions(value, request, now):
             "accounting_recount_required": availability == "available" and observed.get("status") != "available",
             "configuration_digest": configuration.get("configuration_digest", ""),
             "preparation": _timing(row.get("preparation"), now), "dispatch": _timing(row.get("dispatch"), now),
-            "inventory_digest": inventory_digest(observed), **clean})
+            "inventory_digest": inventory_digest(observed),
+            **({"base_arrival": base_arrival} if base_arrival is not None else {}), **clean})
     if split is not None:
         if not isinstance(split, dict) or set(split) != {"groups", "extra_delivery_amount", "payer", "feasible"}:
             raise ValueError("split_offer_schema_invalid")
@@ -847,7 +967,7 @@ def _apply_fulfillment_decision(request_id, *, actor, expected_request_digest, o
             def without_check_anchors(rows):
                 rows = deepcopy(rows)
                 for row in rows or []:
-                    for field in ("preparation", "dispatch"):
+                    for field in ("base_arrival", "preparation", "dispatch"):
                         if isinstance(row.get(field), dict):
                             row[field].pop("anchor_at", None)
                 return rows
@@ -864,6 +984,7 @@ def _apply_fulfillment_decision(request_id, *, actor, expected_request_digest, o
             {"request_digest": request.envelope_hmac, "decision_input_digest": _digest(decisions_by_line), "decided_at": now.isoformat(), "lines": lines,
                 "split_offer": split, "arrival_guaranteed": False, "order_authority": False,
                 "stock_authority": False, "payment_authority": False,
+                **({"waiting_acceptance_required": True} if any(line["availability"] == "wait" for line in lines) else {}),
                 **({"deadline_review": deadline_review} if deadline_review is not None else {})})
         task = request.task
         task.manager_approval_status = "approved"
@@ -927,8 +1048,69 @@ def _decision_reason(request, decision, *, now, _catalog_readback=None, current_
     return ""
 
 
+def _waiting_acceptance(request, decision, cart, update, settings_obj, *, now):
+    from management.models import InstagramBotMessage
+    from management.services.ig_purpose_sources import owned_source
+    from management.services.ig_fulfillment_requirements import _customer_text
+    proposed = {"state": "proposed", "accepted": False, "source_refs": []}
+    if not decision.envelope.get("waiting_acceptance_required") or not cart or not update:
+        return proposed
+    watermark = cart.get("source_watermark") or (cart.get("fence") or {}).get("source_watermark") or {}
+    cutoff = watermark.get("message_id")
+    if type(cutoff) is not int or _cart_identity(cart) != request.envelope.get("cart_identity"):
+        return proposed
+    rows = list(InstagramBotMessage.objects.filter(client_id=request.client_id, sender_id=request.client.igsid,
+        role="user", pk__gt=request.envelope["source_id"], pk__lte=cutoff,
+        provider_namespace=request.envelope["source_namespace"], source__in=("webhook", "poll"),
+        provider_created_at__gt=update.sent_at, provider_created_at__lte=now).exclude(status="failed").order_by("-provider_created_at", "-pk")[:17])
+    if len(rows) > 16:
+        return proposed
+    for row in rows:
+        raw = row.text or ""
+        if len(raw) > 1000 or re.search(r"[?？]", raw):
+            continue
+        text, hypothetical = _customer_text(raw)
+        # Quoted/reported/hypothetical instructions and a plain restock opt-in
+        # do not choose this manager's exact waiting proposal.
+        if hypothetical or text.strip() != raw.strip() or re.search(
+                r"\b(?:said|says|told|wrote|сказ\w*|каж\w*|говор\w*|напис\w*|якщо|если|if|maybe|можливо|возможно)\b", raw, re.I):
+            continue
+        waiting = bool(re.search(r"\b(?:wait|waiting|чекати|чекатиму|почекаю|зачекаю|ждать|подожду|дождусь)\b", text, re.I))
+        plain_refusal = bool(row.reply_to_provider_message_id == update.provider_message_id
+            and re.fullmatch(r"(?:no|ні|нет)[.! ]*", text.strip(), re.I))
+        if not waiting and not plain_refusal:
+            continue
+        frozen = row.revision_sources.select_related("revision").order_by("-revision_id").first()
+        owned, _ = owned_source(frozen.revision, row, settings_obj, require_head=False) if frozen else (None, "")
+        if not owned:
+            continue
+        if plain_refusal:
+            return proposed
+        if re.search(r"\b(?:не|ні|нет|not|no|never|won[’']?t|don[’']?t|нехочу|відмов\w*|отказ\w*)\b", text, re.I):
+            return proposed
+        # Only an unqualified acknowledgement accepts the whole proposal.
+        # A different duration, first-item-only scope or extra condition is a
+        # counteroffer requiring another scoped discussion, never acceptance.
+        affirmative = bool(re.fullmatch(
+            r"(?:(?:yes|так|да)[, ]+)?(?:"
+            r"(?:I|we)(?:[’']ll|\s+(?:will|can|agree\s+to))\s+wait(?:\s+on\s+these\s+terms)?|"
+            r"(?:я\s+)?(?:почекаю|зачекаю|чекатиму|подожду|дождусь)(?:\s+(?:на\s+цих\s+умовах|на\s+этих\s+условиях))?|"
+            r"(?:я\s+)?(?:згоден|згодна|согласен|согласна)\s+(?:зачекати|чекати|подождать|ждать)"
+            r"(?:\s+(?:на\s+цих\s+умовах|на\s+этих\s+условиях))?)[.! ]*", text.strip(), re.I))
+        if affirmative and row.reply_to_provider_message_id == update.provider_message_id:
+            return {"state": "accepted", "accepted": True, "source_refs": [{"kind": "message",
+                "id": row.pk, "event_at": row.provider_created_at.isoformat(), "digest": owned[2]["digest"]}],
+                "request_digest": request.envelope_hmac, "decision_digest": decision.envelope_hmac}
+        # A newer explicit waiting counteroffer replaces the earlier consent;
+        # do not continue scanning to resurrect agreement to the old terms.
+        return proposed
+    return proposed
+
+
 def _projection(request, settings_obj, *, now, current_source_cart=None, _catalog_readback=None):
-    base = {"version": 1, "captured_at": now.isoformat(), "status": "none", "request_digest": "", "current_request": None, "decision": None}
+    base = {"version": 1, "captured_at": now.isoformat(), "status": "none", "request_digest": "", "current_request": None, "decision": None,
+        "can_decide": False, "decision_mode": "none", "decision_recorded": False,
+        "decision_blocked_reason": "request_missing", "source_excerpts": []}
     if not request:
         return base
     settings_obj = _settings(settings_obj)
@@ -939,9 +1121,15 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
         current_source_cart = capture_current_selection_lines(request.client_id, now=now)
     permission_fields = ("pk", "is_enabled", "reply_permission_epoch", "allowed_senders", "ig_user_id", "page_id")
     initial_settings = {key: getattr(settings_obj, key) for key in permission_fields}
-    reason = _current_reason(request, settings_obj, now=now, current_source_cart=current_source_cart, _settings_fresh=True)
+    # Read the actual persisted head once, including when the request itself
+    # later proves stale. Processed status must not pretend no decision exists.
+    decision = Decision.objects.filter(request=request).order_by("-version").first()
+    base["decision_recorded"] = bool(decision)
+    source_excerpts = []
+    reason = _current_reason(request, settings_obj, now=now, current_source_cart=current_source_cart,
+        _settings_fresh=True, _source_excerpts=source_excerpts)
     if reason:
-        return {**base, "status": "stale", "reason": reason}
+        return {**base, "status": "stale", "reason": reason, "decision_blocked_reason": reason}
     payload = deepcopy(request.envelope)
     if current_source_cart is not None and payload.get("scope") == "cart":
         payload["source_scope"]["source_cart_capture_digest"] = current_source_cart.get("capture_digest")
@@ -949,19 +1137,25 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
     from management.services.ig_fulfillment_requirements import active_hard_requirements, requirement_digest
     active = active_hard_requirements(payload.get("customer_requirements") or [])
     payload["active_hard_requirement_digest"] = requirement_digest(active[-1]) if active else ""
-    base.update(status="pending", request_digest=request.envelope_hmac, current_request=payload)
-    decision = Decision.objects.filter(request=request, created_at__lte=now).order_by("-version").first()
+    base.update(status="pending", request_digest=request.envelope_hmac, current_request=payload,
+        source_excerpts=source_excerpts, can_decide=True, decision_mode="initial", decision_blocked_reason="")
+    # Expired/future/invalid persisted heads never reopen an initial form.
     if decision:
+        base.update(can_decide=False, decision_mode="none", decision_recorded=True,
+            decision_blocked_reason="decision_already_recorded")
         reason = _decision_reason(request, decision, now=now, _catalog_readback=_catalog_readback,
             current_source_cart=current_source_cart)
         if reason:
             base["reason"] = reason
+            base["decision_blocked_reason"] = reason
         else:
+            if (decision.envelope.get("deadline_review") or {}).get("outcome") == "review_pending":
+                base.update(can_decide=True, decision_mode="deadline_resolution", decision_blocked_reason="")
             base.update(status="reviewed", decision={**deepcopy(decision.envelope), "id": str(decision.pk),
                 "version": decision.version, "created_at": decision.created_at.isoformat()})
     from django.db.models import Subquery
     from management.models import InstagramBotSettings
-    latest = Decision.objects.filter(request_id=request.pk, created_at__lte=now).order_by("-version")
+    latest = Decision.objects.filter(request_id=request.pk).order_by("-version")
     final_settings_query = InstagramBotSettings.objects.filter(pk=settings_obj.pk)
     # One fresh statement observes the signed request, its latest decision,
     # owner and settings together. Preserve both read fences while avoiding
@@ -973,17 +1167,19 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
             for key in permission_fields}).first()
     latest_again = (final_request.review_decision_id, final_request.review_decision_version) if final_request and final_request.review_decision_id else None
     if not final_request or not _verified(final_request, "request") or final_request.envelope_hmac != request.envelope_hmac:
-        return {**base, "status": "stale", "decision": None, "reason": "review_read_conflict"}
+        return {**base, "status": "stale", "decision": None, "reason": "review_read_conflict", "can_decide": False, "decision_mode": "none", "decision_blocked_reason": "review_read_conflict", "source_excerpts": []}
     if latest_again != ((decision.pk, decision.version) if decision else None):
-        return {**base, "status": "pending", "decision": None, "reason": "review_read_conflict"}
+        return {**base, "status": "pending", "decision": None, "reason": "review_read_conflict", "can_decide": False, "decision_mode": "none", "decision_blocked_reason": "review_read_conflict", "source_excerpts": []}
     final_settings = {key: getattr(final_request, f"review_settings_{key}") for key in permission_fields}
     if final_settings != initial_settings:
-        return {**base, "status": "stale", "decision": None, "reason": "permission_changed"}
+        return {**base, "status": "stale", "decision": None, "reason": "permission_changed", "can_decide": False, "decision_mode": "none", "decision_blocked_reason": "permission_changed", "source_excerpts": []}
     owner_fields = ("igsid", "reply_permission_epoch", "privacy_erasure_started_at", "current_commercial_episode_id")
     if {key: getattr(final_request.client, key) for key in owner_fields} != {
             key: getattr(request.client, key) for key in owner_fields}:
         return {"version": 1, "captured_at": now.isoformat(), "status": "stale", "current_request": None,
-            "request_digest": "", "decision": None, "reason": "owner_scope_changed"}
+            "request_digest": "", "decision": None, "reason": "owner_scope_changed",
+            "can_decide": False, "decision_mode": "none", "decision_recorded": bool(decision),
+            "decision_blocked_reason": "owner_scope_changed", "source_excerpts": []}
     if payload.get("scope") == "cart" and current_source_cart is not None:
         from management.services.ig_restock_context import capture_restock_interest
         # Presentation consumes the existing verified decision, never runs the
@@ -995,6 +1191,9 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
     # Native receipt is independent of manager approval and of a customer
     # reading the message. Do not leave the staff timeline permanently pending.
     base["customer_update"] = {"state": "absent", "native_receipt_confirmed": False, "sent_at": None}
+    base["customer_waiting"] = {"state": "not_required", "accepted": False, "source_refs": []}
+    if decision and base["status"] == "reviewed" and any(line.get("availability") == "wait" for line in decision.envelope.get("lines") or []):
+        base["customer_waiting"] = {"state": "proposed", "accepted": False, "source_refs": []}
     if decision and base["status"] == "reviewed" and payload.get("scope") == "cart":
         from management.models import IgFollowUpTask
         from management.services.ig_delivery_receipts import normalize_provider_message_id
@@ -1012,6 +1211,9 @@ def _projection(request, settings_obj, *, now, current_source_cart=None, _catalo
                 "cancelled" if update.status in {"cancelled", "skipped"} else "pending",
                 "native_receipt_confirmed": sent,
                 "sent_at": update.sent_at.isoformat() if sent and update.sent_at else None}
+            if sent and base["customer_waiting"]["state"] == "proposed":
+                base["customer_waiting"] = _waiting_acceptance(request, decision, current_source_cart,
+                    update, settings_obj, now=now)
     return base
 
 
@@ -1022,7 +1224,8 @@ def fulfillment_review_projection(client_id, *, now=None, current_source_cart=No
         try:
             query = query.filter(pk=uuid.UUID(str(request_id)))
         except ValueError:
-            return {"version": 1, "status": "none", "current_request": None, "decision": None, "captured_at": now.isoformat()}
+            return {"version": 1, "status": "none", "current_request": None, "decision": None, "captured_at": now.isoformat(), "can_decide": False,
+                "decision_mode": "none", "decision_recorded": False, "decision_blocked_reason": "request_missing", "source_excerpts": []}
     else:
         # Exact-list reviews have their own standing-list panel/context. They
         # must not displace the current CART review in this legacy default

@@ -407,14 +407,14 @@ _GENERIC_HINT = {"uk": "схожі принти", "ru": "похожие прин
 MAX_RELAX_HINTS = 3
 
 _ZERO_HEAD = {
-    "uk": "За таким запитом ({filters}) зараз нічого немає.",
-    "ru": "По такому запросу ({filters}) сейчас ничего нет.",
-    "en": "Nothing matches that request ({filters}) right now.",
+    "uk": "У каталозі не знайшла варіантів за таким запитом ({filters}).",
+    "ru": "В каталоге не нашла вариантов по такому запросу ({filters}).",
+    "en": "I could not find matching options in the catalogue ({filters}).",
 }
 _ZERO_HEAD_NO_FILTERS = {
-    "uk": "За таким запитом зараз нічого немає.",
-    "ru": "По такому запросу сейчас ничего нет.",
-    "en": "Nothing matches that request right now.",
+    "uk": "У каталозі не знайшла відповідних варіантів.",
+    "ru": "В каталоге не нашла подходящих вариантов.",
+    "en": "I could not find matching options in the catalogue.",
 }
 _ZERO_TAIL = {
     "uk": "Можу пошукати так: {hints}. Скажіть, що підходить.",
@@ -883,10 +883,11 @@ def select_page(candidates, ordered_product_ids) -> tuple:
 # це обіцянка, яку ми не виконаємо, і клієнт дізнається про це вже після вибору.
 # Тому джерело набору тут одне: `checkout_readiness()['size']`, той самий, що
 # вирішує, чи можна оформити замовлення. Він уже відняв `_disabled_sizes()`.
+# Це можливість вибору в каталозі, а не підтвердження фізичного залишку.
 _SIZE_SUBTITLE = {
-    "uk": "Оберіть розмір · в наявності: {sizes}",
-    "ru": "Выберите размер · в наличии: {sizes}",
-    "en": "Pick a size · in stock: {sizes}",
+    "uk": "Оберіть розмір із каталогу: {sizes}",
+    "ru": "Выберите размер из каталога: {sizes}",
+    "en": "Pick a catalogue size: {sizes}",
 }
 _SIZE_CARD_TITLE = {
     "uk": "Ваш розмір",
@@ -894,24 +895,24 @@ _SIZE_CARD_TITLE = {
     "en": "Your size",
 }
 _SIZE_QUICK_TEXT = {
-    "uk": "В наявності: {sizes}. Який ваш?",
-    "ru": "В наличии: {sizes}. Какой ваш?",
-    "en": "In stock: {sizes}. Which one is yours?",
+    "uk": "Розміри в каталозі: {sizes}. Який ваш?",
+    "ru": "Размеры в каталоге: {sizes}. Какой ваш?",
+    "en": "Catalogue sizes: {sizes}. Which one is yours?",
 }
 _SIZE_ONE_ONLY = {
-    "uk": "Зараз у наявності лише {size} — беремо його?",
-    "ru": "Сейчас в наличии только {size} — берём его?",
-    "en": "Only {size} is in stock right now — shall we take it?",
+    "uk": "У каталозі для вибору є {size}. Це ваш розмір?",
+    "ru": "В каталоге для выбора есть {size}. Это ваш размер?",
+    "en": "The catalogue offers size {size} for selection. Is that your size?",
 }
 _SIZE_NONE_WITH_DISABLED = {
-    "uk": "Розміри {sizes} зараз вимкнені, інших у сітці немає. Уточню в менеджера і повернуся.",
-    "ru": "Размеры {sizes} сейчас отключены, других в сетке нет. Уточню у менеджера и вернусь.",
-    "en": "Sizes {sizes} are switched off and the grid has no others. I will check with the manager.",
+    "uk": "Розміри {sizes} зараз не можна обрати в каталозі. Можна запросити перевірку потрібного розміру в менеджера.",
+    "ru": "Размеры {sizes} сейчас нельзя выбрать в каталоге. Можно запросить проверку нужного размера у менеджера.",
+    "en": "Sizes {sizes} cannot currently be selected in the catalogue. A manager can check the size you need.",
 }
 _SIZE_NONE = {
-    "uk": "Наявних розмірів у каталозі зараз не видно — уточню і повернуся.",
-    "ru": "Доступных размеров в каталоге сейчас не видно — уточню и вернусь.",
-    "en": "The catalogue does not show sizes in stock right now — I will check and come back.",
+    "uk": "У каталозі не бачу розмірів для вибору. Можна запросити перевірку потрібного розміру в менеджера.",
+    "ru": "В каталоге не вижу размеров для выбора. Можно запросить проверку нужного размера у менеджера.",
+    "en": "No sizes are shown for selection in the catalogue. A manager can check the size you need.",
 }
 
 
@@ -1104,14 +1105,14 @@ _GRID_SUBTITLE = {
     "en": "Measurements: {columns}",
 }
 _GRID_FALLBACK = {
-    "uk": "Надсилаю заміри для крою {fit}. Доступні розміри: {sizes}.",
-    "ru": "Отправляю замеры для кроя {fit}. Доступные размеры: {sizes}.",
-    "en": "Here are the measurements for the {fit} cut. Available sizes: {sizes}.",
+    "uk": "Надсилаю заміри для крою {fit}. Розміри в каталозі: {sizes}.",
+    "ru": "Отправляю замеры для кроя {fit}. Размеры в каталоге: {sizes}.",
+    "en": "Here are the measurements for the {fit} cut. Catalogue sizes: {sizes}.",
 }
 _GRID_FALLBACK_NO_FIT = {
-    "uk": "Надсилаю заміри з таблиці. Доступні розміри: {sizes}.",
-    "ru": "Отправляю замеры из таблицы. Доступные размеры: {sizes}.",
-    "en": "Here are the measurements from the chart. Available sizes: {sizes}.",
+    "uk": "Надсилаю заміри з таблиці. Розміри в каталозі: {sizes}.",
+    "ru": "Отправляю замеры из таблицы. Размеры в каталоге: {sizes}.",
+    "en": "Here are the measurements from the chart. Catalogue sizes: {sizes}.",
 }
 _GRID_UNAVAILABLE = {
     "uk": "Таблиці замірів для цього крою в каталозі немає — уточню в менеджера, а вигадувати заміри не буду.",

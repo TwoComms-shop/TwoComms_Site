@@ -38,7 +38,7 @@ _GARMENT_WORDS = {
 # Match the whole spoken double-XL alias before the single-XL suffix, keeping
 # source offsets and the existing quote/question/negation checks intact.
 _DOUBLE_XL_ALIAS = r"(?:два|дві|две)[^\S\r\n]*(?:[xх][lл]|[іи]кс[^\S\r\n]*[еэ]ль)"
-_SIZE_RE = re.compile(r"(?<!\w)(?:" + _DOUBLE_XL_ALIAS + r"|xxxs|xxs|xs|[xх]{1,3}[lл]|[2-5][xх][lл]|s|m|l|л|м|с|ес|эм|ем|ель|эль|ікс\s*ель|икс\s*эль)(?!\w)", re.I)
+_SIZE_RE = re.compile(r"(?<!\w)(?:" + _DOUBLE_XL_ALIAS + r"|xxxs|xxs|xs|[xх]{1,3}[lл]|[2-5][^\S\r\n]*[xх][lл]|s|m|l|л|м|с|ес|эм|ем|ель|эль|ікс\s*ель|икс\s*эль)(?!\w)", re.I)
 _SIZE_ALIASES = {"л": "L", "м": "M", "с": "S", "ес": "S", "эм": "M", "ем": "M", "ель": "L", "эль": "L", "іксель": "XL", "иксэль": "XL", "2XL": "XXL", "3XL": "XXXL"}
 _SOURCE_WORD_SUFFIXES = {
     "черн": r"(?:ый|ая|ое|ые|ую|ого|ой|ых|ыми|ым|ом|ому)?",
@@ -85,7 +85,7 @@ def _current_source_text(text):
     masked = "".join(visible)
     for match in re.finditer(r"[^.!?;\n,]+[.!?;\n,]?", masked):
         clause = match.group().casefold()
-        if re.search(r"\b(?:не|ні|not|don['’]t|do\s+not)\s+(?:(?:хочу|want\s+to)\s+)?(?:добав\w*|додай\w*|замен\w*|замін\w*|убер\w*|удал\w*|измен\w*|змін\w*|add|remove|delete|replace|change)\b", clause):
+        if re.search(r"\b(?:не|ні|not|don['’]t|do\s+not)\s+(?:(?:хочу|want\s+to)\s+)?(?:добав\w*|додай\w*|замен\w*|замін\w*|убер\w*|удал\w*|измен\w*|змін\w*|add|remove|delete|replace|change|покаж\w*|показ\w*|show)\b", clause):
             visible[match.start():match.end()] = " " * (match.end() - match.start())
             continue
         if re.search(
@@ -141,8 +141,19 @@ def _information_request_preference(segment, position):
     """A spec request names its subject; an explicit choice owns its clause."""
     from management.services.ig_product_inquiries import _SPEC
 
-    requests = list(re.finditer(r"\b(?:уточн\w*|підкаж\w*|подскаж\w*|check|clarify|tell)\b", segment, re.I))
-    if not requests or not _SPEC.search(segment):
+    palette = bool(re.search(r"\b(?:кольор\w*|колір\w*|цвет\w*|colou?rs?|палітр\w*|палитр\w*|palette)\b", segment, re.I))
+    request_words = r"уточн\w*|підкаж\w*|подскаж\w*|check|clarify|tell"
+    garment_subject = bool(_garment_mentions(segment))
+    if palette or garment_subject:
+        # Showing a category's palette names the subject being consulted;
+        # it does not choose that garment for the cart. The choice-position
+        # check below still preserves an actual choice in the same sentence.
+        request_words += r"|покаж\w*|show"
+    if garment_subject:
+        request_words += r"|які|який|какие|какой|what|which"
+    requests = list(re.finditer(r"\b(?:" + request_words + r")\b", segment, re.I))
+    requests = [match for match in requests if not _negated_action(segment[:match.start()])]
+    if not requests or not (_SPEC.search(segment) or palette or garment_subject):
         return False
     preceding = [match for match in requests if match.start() <= position]
     request = preceding[-1] if preceding else requests[0]
@@ -789,6 +800,15 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
         pending = pending or "new_purchase_or_exchange"
 
     garment_type = _find_prefix_value(raw, _GARMENT_WORDS)
+    # Keep a consulted category as a hard catalogue query subject without
+    # promoting it to an affirmed cart choice or a relaxable preference.
+    query_garments = set()
+    preference_text = _preference_source_text(raw)
+    for start, _end, value in _garment_mentions(preference_text):
+        begin, end = _preference_segment(preference_text, start)
+        if _information_request_preference(preference_text[begin:end], start - begin):
+            query_garments.add(value)
+    catalog_garment_type = next(iter(query_garments)) if not garment_type and len(query_garments) == 1 else ""
     recipient, recipient_pending = _recipient(current)
     withdrawals = {
         key: value
@@ -810,7 +830,7 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
     if line_operations or pending_line:
         # A typed operation owns its fields. Scalar copies would otherwise
         # silently update the active line before target resolution.
-        field_updates, withdrawals, recipient, garment_type = {}, {}, "", ""
+        field_updates, withdrawals, recipient, garment_type, catalog_garment_type = {}, {}, "", "", ""
         reset_requested = False
         if line_operations and pending == "multiple_product_links":
             if exact_product_ids == {value for operation in line_operations for value in (operation.exact_product_id, operation.target_product_id) if value}:
@@ -828,6 +848,7 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
         garment_type=garment_type,
         exact_unique_alias=False,
         field_updates=field_updates,
+        catalog_garment_type=catalog_garment_type,
         preference_withdrawals=withdrawals,
         hard=hard,
         semantic_constraints=hard,

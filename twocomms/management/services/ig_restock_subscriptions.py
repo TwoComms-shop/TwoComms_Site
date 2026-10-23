@@ -449,8 +449,8 @@ def _current_target(inv, *, now):
     if not current or _selection_identity(current) != stored:
         return "selection_changed"
     observation = resolve_source_interest(current, now=now).as_dict()
-    if observation.get("target") != inv.target or observation.get("status") != "unavailable":
-        return "target_no_longer_unavailable"
+    if observation.get("target") != inv.target or observation.get("status") not in {"available", "unavailable"}:
+        return "target_configuration_unverified"
     return ""
 
 
@@ -488,7 +488,7 @@ def prepare_request(revision, source, settings_obj=None, now=None):
         list_request = waiting.prepare_request(revision, row, proof, settings_obj, now=now)
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         if isinstance(error, ValueError) and str(error) == "waiting_list_no_unavailable_items":
-            list_request = None  # Every resolved catalog item is already available.
+            list_request = None  # No exact all-items target was captured.
         elif isinstance(error, ValueError) and str(error) in {
             "waiting_list_manager_source_required", "waiting_list_source_cart_unavailable"}:
             # Unknown stock or an unavailable source frame remains with the
@@ -510,8 +510,8 @@ def prepare_request(revision, source, settings_obj=None, now=None):
         # The ordinary response path owns a real manager case and preserves
         # every customer question. Never claim a handoff from this read alone.
         return RestockRequest(False, reason="manager_review_required")
-    if observation.get("status") != "unavailable":
-        return RestockRequest(False, reason="target_available")
+    if observation.get("status") not in {"available", "unavailable"}:
+        return RestockRequest(False, reason="manager_review_required")
     manager_case = _prepare_manager_case(revision, row, proof, captured, settings_obj, now=now)
     if not manager_case:
         return RestockRequest(False, reason="manager_review_required")

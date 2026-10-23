@@ -56,7 +56,7 @@ class AuthorizedAction:
 class TimingAuthority:
     """A source-backed timing fact; durations never grant another domain."""
 
-    domain: Literal["preparation", "dispatch", "carrier_estimate", "arrival_feasibility"]
+    domain: Literal["preparation", "dispatch", "base_arrival", "carrier_estimate", "arrival_feasibility"]
     claim: str = ""
     min_days: int | None = None
     max_days: int | None = None
@@ -586,6 +586,14 @@ _CARRIER_DELIVERY_RE = re.compile(
     r"arrival|arriv\w*|прибут\w*|нова\s+пошта|нов\w*\s+почт\w*|nova\s+poshta",
     re.I,
 )
+_BASE_ARRIVAL_RE = re.compile(
+    r"(?:прибут\w*|прибуд\w*|приїд\w*|прийд\w*|прид\w*|надход\w*|надійд\w*|поступлен\w*|поступит\w*)\s+(?:цієї\s+|этой\s+)?основ\w*|"
+    r"основ\w*\s+(?:прибуд\w*|приїд\w*|прийд\w*|прид\w*|надійд\w*|поступит\w*|очікує\w*|ожидает\w*)|"
+    r"\b(?:bases?|blanks?)\s+(?:arrival|arrives?|is\s+arriving)|\barrival\s+of\s+(?:the\s+)?(?:bases?|blanks?)\b", re.I,
+)
+_UNPARSED_BASE_DURATION_RE = re.compile(
+    r"\bnext\s+week\b|\b(?:через|за|within|in)\s+(?:сім\w*|семь|seven|тиждень|недел\w*|a\s+week)\b", re.I,
+)
 _PREPARATION_RE = re.compile(
     r"підготов\w*|подготов\w*|виготов\w*|изготов\w*|вироб\w*|"
     r"готу\w*|готов\w*|prepar\w*|production|manufactur\w*|\bready\b", re.I,
@@ -697,7 +705,9 @@ _STOCK_NONASSERTION_RE = re.compile(
     r"\b(?:після|после|after)\b[^,;.!?]{0,70}"
     r"(?:підтвердж\w*|подтвержд\w*|confirm\w*|перевір\w*|провер\w*|check\w*)[^,;.!?]*$|"
     r"\b(?:уточню|уточнимо|уточним|уточнить|перевірю|перевіримо|перевірити|"
-    r"проверю|проверим|проверить|check|checking|verify|verifying)\b[^,;.!?]*$", re.I,
+    r"проверю|проверим|проверить|check|checking|verify|verifying)\b[^,;.!?]*$|"
+    r"\bне\s+(?:(?:можу|можемо|могу|можем)\s+)?(?:підтверд\w*|підтвердж\w*|подтверд\w*|подтвержд\w*)\b[^,;.!?]*$|"
+    r"\b(?:cannot|can['’]?t|do\s+not|don['’]?t)\s+confirm\b[^,;.!?]*$", re.I,
 )
 _WHOLE_CART_STOCK_RE = re.compile(
     r"усі\s+(?:обрані\s+|замовлені\s+)?(?:позиції|товари)|"
@@ -709,11 +719,55 @@ _STOCK_QUANTITY_RE = re.compile(
     r"(?<!\d)(\d{1,3})\s*(?:шт\.?|одиниц\w*|единиц\w*|pieces?|units?|items?|"
     r"футболк\w*|худі|худи|(?:t[- ]?)?shirts?|hoodies?)\b|[×x]\s*(\d{1,3})(?!\d)", re.I,
 )
+_STOCK_CLAUSE_BOUNDARY_RE = re.compile(
+    r";|\s+(?:але|но|but|however|and\s+(?:we|it|they)|і\s+ми|и\s+мы)\s+", re.I,
+)
+_STOCK_SUBJECT_RE = re.compile(
+    r"\b(?:товар\w*|продукт\w*|модел\w*|позиці\w*|позици\w*|футболк\w*|худі|худи|"
+    r"розмір\w*|размер\w*|size\w*|products?|items?|models?|hoodies?|t[- ]?shirts?|XS|S|M|L|XL|XXL|XXXL)\b", re.I,
+)
+_BARE_PRODUCT_STOCK_RE = re.compile(
+    r"\b(?:товар\w*|продукт\w*|модел\w*|футболк\w*|худі|худи|products?|items?|models?|hoodies?|t[- ]?shirts?)\b"
+    r"[^,;.!?\n]{0,60}\b(?:є|есть|доступн\w*|available)\b|"
+    r"\b(?:є|есть|доступн\w*|available)\b[^,;.!?\n]{0,60}"
+    r"\b(?:товар\w*|продукт\w*|модел\w*|футболк\w*|худі|худи|products?|items?|models?|hoodies?|t[- ]?shirts?)\b", re.I,
+)
+_CATALOG_EXISTENCE_RE = re.compile(
+    r"\b(?:[ув]\s+каталозі|в\s+каталоге|in\s+(?:our\s+|the\s+)?catalog(?:ue)?)\s+(?:є|есть|are|is|available)\b|"
+    r"\b(?:є|есть|available)\s+(?:[ув]\s+каталозі|в\s+каталоге|in\s+(?:our\s+|the\s+)?catalog(?:ue)?)\b", re.I,
+)
+_NEGATIVE_STOCK_RE = re.compile(
+    r"\bout\s+of\s+stock\b|\bsold\s+out\b|\bunavailable\b|\b(?:not|isn['’]?t)\s+(?:currently\s+)?(?:available|in\s+stock)\b|"
+    r"\b(?:немає|нема|відсутн\w*|отсутств\w*|недоступн\w*)\b|\bнет\b|\bне\s+(?:доступн\w*|наявн\w*|[ву]\s+(?:наявності|наличии))\b", re.I,
+)
+_PHOTO_ABSENCE_RE = re.compile(
+    r"\b(?:немає|нема|нет|відсутн\w*|отсутств\w*|no)\s+(?:(?:окрем\w*|отдельн\w*|confirmed|separate)\s+){0,2}"
+    r"(?:фото\w*|зображен\w*|изображен\w*|photos?|pictures?|images?)\b|"
+    r"\b(?:фото\w*|зображен\w*|изображен\w*|photos?|pictures?|images?)\s+(?:are\s+|is\s+)?(?:unavailable|недоступн\w*|відсутн\w*)\b", re.I,
+)
+_NONPHYSICAL_ABSENCE_RE = re.compile(
+    r"\s+(?:(?:підтверджен\w*|подтвержд[её]н\w*|точн\w*|confirmed|exact)\s+){0,2}"
+    r"(?:замір\w*|вимір\w*|измер\w*|заміров\w*|ваг\w*|вес\w*|даних|данных|інформаці\w*|информаци\w*|measurements?|weight|data|information)\b", re.I,
+)
+_WAIT_STOCK_RE = re.compile(
+    r"\b(?:під|под)\s+замовлен\w*|\bпод\s+заказ\b|\bmade[- ]to[- ]order\b|\bon\s+backorder\b|"
+    r"\b(?:очікуємо|очікує\w*|чекати|ждать|ожидаем|ожидает\w*|awaiting|waiting\s+for)\b"
+    r"[^,;.!?\n]{0,60}(?:основ\w*|надход\w*|поступлен\w*|товар\w*|футболк\w*|худі|худи|stock|supply|base|blank|hoodie|shirt)", re.I,
+)
 
 _NON_CONFIGURATION_VALUES = frozenset({
     "depends", "залежить", "зависит", "впливає", "влияет", "varies",
     "chart", "таблиця", "таблица", "на", "on",
 })
+_AVAILABILITY_CHECK_RE = re.compile(
+    r"\b(?:уточню|уточнимо|перевірю|перевіримо|проверю|проверим|check|checking|verify|verifying)\b|"
+    r"\b(?:cannot|can['’]?t|do\s+not|don['’]?t)\s+confirm\b|"
+    r"\bне\s+(?:(?:можу|можемо|могу|можем)\s+)?(?:підтверд\w*|підтвердж\w*|подтверд\w*|подтвержд\w*)\b|"
+    r"\b(?:needs?|requires?)\s+(?:manager\s+)?(?:verification|checking|to\s+be\s+checked)\b", re.I,
+)
+_AVAILABILITY_CHECK_SUBJECT_RE = re.compile(
+    r"наявн\w*|налич\w*|доступн\w*|availability|available|in\s+stock", re.I,
+)
 _CONFIGURATION_DESCRIPTION_RE = re.compile(
     r"\b(?:залеж\w*|завис\w*|depends?|varies?|"
     r"відрізня\w*|отлича\w*|differ\w*|"
@@ -897,6 +951,21 @@ def _comma_choice_continuation(sentence, clause_start, clause_end):
     return False
 
 
+def _source_owned_availability_check(clause: str) -> bool:
+    """A check may repeat source choices without claiming they are sellable."""
+    return bool(_AVAILABILITY_CHECK_RE.search(clause)
+        and _AVAILABILITY_CHECK_SUBJECT_RE.search(clause)
+        and not _product_availability_claim(clause))
+
+
+def _descriptive_palette_reference(sentence: str, match: re.Match) -> bool:
+    # A catalog aid is not a color named palette. Explicit/selected values
+    # retain the existing configuration parser and source-ownership gates.
+    return bool(match.re is _COLOR_RE and _normalize(match.group("value")) == "palette"
+        and not match.group("selected") and not match.group("separator")
+        and re.match(r"\s+is\s+(?:shown|displayed|listed)\b", sentence[match.end():], re.I))
+
+
 def _is_qualified_standard_dispatch_timing(
     sentence: str,
     timing: str,
@@ -926,6 +995,16 @@ def _is_qualified_standard_dispatch_timing(
 
 
 def _timing_domain(sentence: str) -> str:
+    base_arrival = _BASE_ARRIVAL_RE.search(sentence)
+    if base_arrival:
+        # A base arriving at our workshop does not prove shipment or arrival
+        # to the customer. A neighboring different promise retains its domain.
+        other = _BASE_ARRIVAL_RE.sub("", sentence)
+        if not any(pattern.search(other) for pattern in (
+            _ARRIVAL_RE, _DEADLINE_FEASIBILITY_RE, _CARRIER_DELIVERY_RE,
+            _PREPARATION_RE, _DISPATCH_RE,
+        )):
+            return "base_arrival"
     if _ARRIVAL_RE.search(sentence) or _DEADLINE_FEASIBILITY_RE.search(sentence):
         return "arrival_feasibility"
     if _CARRIER_DELIVERY_RE.search(sentence):
@@ -1018,6 +1097,15 @@ def _typed_timing_allowed(
     for authority in context.timing_authorities:
         if not isinstance(authority, TimingAuthority) or authority.domain != domain:
             continue
+        if domain == "base_arrival":
+            if not authority.source_ref or not authority.line_id or authority.anchor:
+                continue
+            try:
+                anchor = datetime.fromisoformat(authority.anchor_at.replace("Z", "+00:00"))
+                if anchor.tzinfo is None or anchor.utcoffset() is None:
+                    continue
+            except (ValueError, TypeError, AttributeError):
+                continue
         if authority.line_id and (
             not authority.line_label
             or _normalize(authority.line_label) not in _normalize(sentence)
@@ -1091,7 +1179,7 @@ def _legacy_timing_allowed(sentence: str, timing: str, context: ReplyTruthContex
         return False
     # Compatibility for established server timing inputs, with no promotion to
     # arrival feasibility or bare deadline guarantees.
-    if _timing_domain(sentence) == "arrival_feasibility":
+    if _timing_domain(sentence) in {"arrival_feasibility", "base_arrival"}:
         return False
     return _normalize(timing) in {_normalize(value) for value in context.approved_timing_claims}
 
@@ -1100,22 +1188,53 @@ def _subject_token(sentence: str, value: str) -> bool:
     return bool(value and re.search(r"(?<!\w)" + re.escape(_normalize(value)) + r"(?!\w)", _normalize(sentence)))
 
 
-def _product_availability_claim(sentence: str) -> bool:
-    """Positive product stock only; availability checks are not stock facts."""
+def _availability_claim_statuses(sentence: str) -> tuple[str, ...]:
+    """Physical availability, absence and waiting are equally protected facts."""
     # Remove only the photo-existence predicate, preserving positions and all
     # neighboring clauses. A greedy stock regex must not let "є фото oversize"
     # hide a later independent "є розмір M" assertion in the same sentence.
     stock_sentence = _PHOTO_EXISTENCE_RE.sub(lambda match: " " * len(match.group()), sentence)
-    for pattern in (_AVAILABILITY_RE, _EXACT_STOCK_RE):
+    stock_sentence = _PHOTO_ABSENCE_RE.sub(lambda match: " " * len(match.group()), stock_sentence)
+    stock_sentence = _CATALOG_EXISTENCE_RE.sub(lambda match: " " * len(match.group()), stock_sentence)
+    quoted_spans = tuple(_QUOTED_SPAN_RE.finditer(stock_sentence))
+    statuses = []
+    subject = bool(_STOCK_SUBJECT_RE.search(stock_sentence) or _EXACT_STOCK_RE.search(stock_sentence)
+        or re.search(r"\bout\s+of\s+stock\b|\bsold\s+out\b", stock_sentence, re.I))
+    for status, pattern in (("unavailable", _NEGATIVE_STOCK_RE), ("wait", _WAIT_STOCK_RE)):
         for match in pattern.finditer(stock_sentence):
             prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", stock_sentence[:match.start()], flags=re.I)[-1]
+            polite = status == "unavailable" and re.match(
+                r"\s+(?:проблем\w*|за\s+що|за\s+что)\b", stock_sentence[match.end():], re.I,
+            )
+            # A product title such as «Правил немає» names the item. Its
+            # quoted lexical negation is not a statement of physical stock.
+            title_negation = status == "unavailable" and match.group().casefold() in {"немає", "нема", "нет"} and any(
+                quote.start() <= match.start() < quote.end() for quote in quoted_spans)
+            nonphysical = status == "unavailable" and _NONPHYSICAL_ABSENCE_RE.match(stock_sentence[match.end():])
+            if subject and not (polite or title_negation or nonphysical) and not _STOCK_NONASSERTION_RE.search(prefix):
+                if status not in statuses:
+                    statuses.append(status)
+    for pattern in (_AVAILABILITY_RE, _EXACT_STOCK_RE, _BARE_PRODUCT_STOCK_RE):
+        for match in pattern.finditer(stock_sentence):
+            prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", stock_sentence[:match.start()], flags=re.I)[-1]
+            tail = re.split(r"[,;]", stock_sentence[match.end():], maxsplit=1)[0]
+            pending_subject = (re.match(r"(?:наявність|наявності|доступність|наличие|наличия|availability)\b", match.group(), re.I)
+                and _AVAILABILITY_CHECK_RE.search(tail)
+                and not re.search(r"\b(?:є|есть|available)\b|in\s+stock", match.group(), re.I))
             if (
                 not _locally_negated(stock_sentence, match.start())
                 and not _NEGATED_STATUS_RE.search(match.group(0))
                 and not _STOCK_NONASSERTION_RE.search(prefix)
+                and not _NEGATIVE_STOCK_RE.search(match.group(0))
+                and not pending_subject
             ):
-                return True
-    return False
+                if "available" not in statuses:
+                    statuses.append("available")
+    return tuple(statuses)
+
+
+def _product_availability_claim(sentence: str) -> bool:
+    return any(_availability_claim_statuses(clause) for clause in _STOCK_CLAUSE_BOUNDARY_RE.split(sentence))
 
 
 def _availability_line_reference_matches(sentence: str, fact: AvailabilityAuthority) -> bool:
@@ -1144,10 +1263,16 @@ def _availability_scope_matches(sentence: str, fact: AvailabilityAuthority) -> b
     )
 
 
-def _availability_configuration_matches(sentence: str, fact: AvailabilityAuthority) -> bool:
+def _availability_configuration_matches(
+    sentence: str, fact: AvailabilityAuthority, *, expected_availability="available",
+) -> bool:
     # Check explicit labels and familiar free-form values, without allowing a
     # matching product name to hide a different size, fit, color or quantity.
     from management.services.ig_conversation_agreement import _configuration
+    if expected_availability == "unavailable":
+        # "L is not available" negates stock, not the customer's size choice.
+        # Preserve unrelated negations such as "not black" for the parser.
+        sentence = _NEGATIVE_STOCK_RE.sub(lambda match: " " * len(match.group()), sentence)
     stated, ambiguous = _configuration(sentence)
     if ambiguous:
         return False
@@ -1169,9 +1294,22 @@ def _availability_configuration_matches(sentence: str, fact: AvailabilityAuthori
     return all(int(first or second) == fact.quantity for first, second in _STOCK_QUANTITY_RE.findall(sentence))
 
 
-def _manager_availability_matches(sentence: str, context: ReplyTruthContext) -> tuple[AvailabilityAuthority, ...]:
+def _manager_availability_matches(
+    sentence: str, context: ReplyTruthContext, *, expected_availability: str | None = None,
+) -> tuple[AvailabilityAuthority, ...]:
     if context.fulfillment_review_status != "reviewed":
         return ()
+    clauses = [clause for clause in _STOCK_CLAUSE_BOUNDARY_RE.split(sentence)
+        if _availability_claim_statuses(clause)]
+    if len(clauses) > 1:
+        matches = [_manager_availability_matches(clause, context, expected_availability=expected_availability) for clause in clauses]
+        return tuple(dict.fromkeys(fact for group in matches for fact in group)) if all(matches) else ()
+    statuses = _availability_claim_statuses(clauses[0] if clauses else sentence)
+    if len(statuses) > 1 or expected_availability and statuses and statuses != (expected_availability,):
+        return ()
+    # Configuration-only clauses ("color black") inherit their protected
+    # sentence's fact; they do not themselves assert physical availability.
+    expected_availability = expected_availability or (statuses[0] if statuses else "available")
     facts = tuple(fact for fact in context.availability_authorities if isinstance(fact, AvailabilityAuthority))
     if not facts:
         return ()
@@ -1184,11 +1322,14 @@ def _manager_availability_matches(sentence: str, context: ReplyTruthContext) -> 
             return ()
     for fact in named:
         if (
-            fact.availability != "available" or not fact.source_ref
-            or fact.supply_basis not in {"warehouse_checked", "accessible_unrecorded"}
-            or type(fact.checked_quantity) is not int or type(fact.quantity) is not int
-            or not 1 <= fact.quantity <= fact.checked_quantity <= 999
-            or not _availability_configuration_matches(sentence, fact)
+            fact.availability != expected_availability or not fact.source_ref
+            or type(fact.quantity) is not int or not 1 <= fact.quantity <= 99
+            or expected_availability == "available" and (
+                fact.supply_basis not in {"warehouse_checked", "accessible_unrecorded"}
+                or type(fact.checked_quantity) is not int
+                or not fact.quantity <= fact.checked_quantity <= 999
+            )
+            or not _availability_configuration_matches(sentence, fact, expected_availability=expected_availability)
         ):
             return ()
     # Even a partial exact label is ambiguous when another requested line has
@@ -1673,6 +1814,10 @@ def validate_reply_truth(
                 _add(reasons, "unverified_tracking")
 
         for timing_clause in _TIMING_CLAUSE_BOUNDARY_RE.split(sentence):
+            if _timing_domain(timing_clause) == "base_arrival":
+                for literal in _UNPARSED_BASE_DURATION_RE.finditer(timing_clause):
+                    if not _timing_nonclaim(timing_clause, literal.start()):
+                        _add(reasons, "unverified_timing")
             for start in _TIMING_START_RE.finditer(timing_clause):
                 scope = _timing_scope(timing_clause, start.start())
                 domain = _timing_domain(scope)
@@ -1718,9 +1863,7 @@ def validate_reply_truth(
         availability_claim = _product_availability_claim(sentence)
         reviewed_stock_claim = availability_claim
         manager_availability = _manager_availability_matches(sentence, context) if reviewed_stock_claim else ()
-        if context.fulfillment_review_status and reviewed_stock_claim and not manager_availability:
-            _add(reasons, "unverified_availability")
-        elif reviewed_stock_claim and not context.allowed_sizes and not manager_availability:
+        if reviewed_stock_claim and not manager_availability:
             _add(reasons, "unverified_availability")
         if context.agreement_choices and _AGREEMENT_ATTRIBUTION_RE.search(sentence):
             # Natural agreement acknowledgements also use bare values such as
@@ -1754,6 +1897,8 @@ def validate_reply_truth(
             for match in pattern.finditer(sentence):
                 if _locally_negated(sentence, match.start()):
                     continue
+                if _descriptive_palette_reference(sentence, match):
+                    continue
                 claimed = _positive_configuration_value(sentence, match)
                 if not claimed:
                     continue
@@ -1769,7 +1914,9 @@ def validate_reply_truth(
                         break
                 clause = sentence[clause_start:clause_end]
                 effective = set(allowed_values)
-                clause_manager_availability = _manager_availability_matches(clause, context)
+                sentence_statuses = {fact.availability for fact in manager_availability}
+                clause_manager_availability = _manager_availability_matches(clause, context,
+                    expected_availability=next(iter(sentence_statuses)) if len(sentence_statuses) == 1 else None)
                 if clause_manager_availability:
                     from management.services.ig_conversation_agreement import _configuration
                     given, _ = _configuration(claimed)
@@ -1789,6 +1936,10 @@ def validate_reply_truth(
                     and (_CUSTOMER_CHOICE_RE.search(clause)
                         or _comma_choice_continuation(sentence, clause_start, clause_end))):
                     effective.update(_configuration_axis_value(axis, value) for value in source_choices)
+                if _source_owned_availability_check(clause):
+                    # A check repeats the customer's exact request. Catalog
+                    # metadata must not silently substitute another size/color.
+                    effective = {_configuration_axis_value(axis, value) for value in source_choices}
                 if (not _has_positive_claim(_AVAILABILITY_RE, clause)
                     and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)
                     and CORRECTED_REQUIREMENT_RE.search(clause)):

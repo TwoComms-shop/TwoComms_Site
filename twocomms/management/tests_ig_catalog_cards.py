@@ -447,7 +447,8 @@ class SizeChoiceTests(SimpleTestCase):
         self.assertEqual(plan.kind, cards.KIND_SINGLE_CARD)
         card = plan.payload.cards[0]
         self.assertEqual(card.image_url, url)
-        self.assertEqual(card.subtitle, "Оберіть розмір · в наявності: S, M, L")
+        self.assertEqual(card.subtitle, "Оберіть розмір із каталогу: S, M, L")
+        self.assertNotIn("в наявності", card.subtitle)
         self.assertEqual(len(card.buttons), 3)
         self.assertLessEqual(len(card.buttons), templates.MAX_BUTTONS_PER_ELEMENT)
 

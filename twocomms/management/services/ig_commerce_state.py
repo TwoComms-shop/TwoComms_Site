@@ -330,7 +330,12 @@ def _jsonable(value):
 
 
 def _request_payload(request: CommerceTurnRequest) -> dict:
-    return _jsonable(request)
+    payload = _jsonable(request)
+    # Keep existing request/event canonical forms stable when this optional
+    # query-only capability is unused, including historical replay payloads.
+    if not payload.get("catalog_garment_type"):
+        payload.pop("catalog_garment_type", None)
+    return payload
 
 
 def full_cart_purchase_line_ids(before, after, request):
@@ -969,6 +974,8 @@ def apply_turn(
         incoming_query_constraints = dict(request.preferences or {})
         if request.garment_type:
             incoming_query_constraints["garment_type"] = request.garment_type
+        elif request.catalog_garment_type:
+            incoming_query_constraints["garment_type"] = request.catalog_garment_type
         if request.query:
             incoming_query_constraints["query"] = request.query
         if request.purchase_requested:

@@ -779,6 +779,142 @@ def _expand_chart_obligations(rows, source, *, supported_fits=()):
     return result
 
 
+def _capture_pending_stock_questions(client, revision, plan):
+    """Only a current native review proves that this exact stock ask is queued."""
+    from management.services.ig_response_cart_plan import stock_question
+    cart = plan.source_cart_capture
+    lines = cart.get("lines") or []
+    if len(lines) != 1 or cart.get("active_line_id") != lines[0].get("line_id"):
+        return {}
+    selected = {key: value.get("value") for key, value in lines[0].get("fields", {}).items()}
+    ids = {row["source_message_id"] for row in plan.obligations if row["kind"] == "info:question"}
+    candidates = [row for row in revision.bundle_snapshot.get("sources", ())
+        if row.get("message_id") in ids and stock_question(row.get("text"), size=selected.get("size"),
+            color=selected.get("color"), title=plan.configuration.get("product_title", ""))]
+    if not candidates:
+        return {}
+    from management.services.ig_fulfillment_reviews import fulfillment_review_projection
+    from django.utils import timezone
+    projection = fulfillment_review_projection(client.pk, now=timezone.now(), current_source_cart=cart)
+    request = projection.get("current_request") or {}
+    targets = request.get("lines") or []
+    current = [row["message_id"] for row in candidates]
+    if (projection.get("status") != "pending" or projection.get("decision_recorded")
+        or projection.get("reason") or not projection.get("can_decide")
+        or request.get("scope") != "cart" or request.get("client_id") != client.pk
+        or len(targets) != 1 or targets[0].get("target", {}).get("product_id") != selected.get("product_id")
+        or not current):
+        return {}
+    return {"request_id": request["id"], "request_digest": projection["request_digest"],
+        "source_message_ids": current, "line_id": lines[0]["line_id"], "choices": selected,
+        "title": plan.configuration.get("product_title", ""),
+        "readiness": {"product": deepcopy(plan.readiness_snapshot.get("product") or {})}}
+
+
+def _pending_stock_answer_covered(plan, text, source_message_id):
+    captured = plan.pending_stock_questions
+    if source_message_id not in captured.get("source_message_ids", ()):
+        return False
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_reply_truth import (_claim_sentences, _has_positive_claim,
+        _source_owned_availability_check)
+    from management.services.ig_response_cart_plan import _scoped_request_tokens, selected_title_text
+    from management.services.approved_public_facts import _captured_base, _GARMENT_WORDS
+    check = re.compile(r"\b(?:уточню|уточнимо|перевірю|перевіримо|проверю|проверим)\b|"
+        r"\b(?:i|we)\s+(?:(?:will|shall)\s+(?:also\s+)?(?:check|verify)|(?:am|are)\s+(?:checking|verifying))\b", re.I)
+    manager = re.compile(r"менедж\w*|\bmanager\b", re.I)
+    title = str(captured.get("title") or "")
+    identity = selected_title_text(text, title)
+    # A quoted foreign named object or reported answer cannot inherit this
+    # purchase's source choices after its quote delimiters are removed.
+    if _PRODUCT_NAME_QUOTES.search(identity):
+        return False
+    for clause in _claim_sentences(own_reply_text(identity), ()):
+        if ("?" in clause or not _source_owned_availability_check(clause)
+            or not manager.search(clause) or not _has_positive_claim(check, clause)):
+            continue
+        literal = title and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", clause, re.I)
+        if (not literal and any(pattern.search(clause) for pattern in _GARMENT_WORDS.values())
+            and not _captured_base(captured.get("readiness"), clause)[1]):
+            continue
+        if _scoped_request_tokens(clause, choices=captured["choices"], title=title, extra_words=(
+            "i", "we", "will", "shall", "am", "also", "check", "checking", "verify", "verifying",
+            "with", "our", "manager", "уточню", "уточнимо", "перевірю", "перевіримо", "проверю", "проверим",
+            "менеджера", "менеджером", "менеджеру", "у", "з", "с", "для", "вас", "наразі")):
+            return True
+    return False
+
+
+def _superseded_color_wish_covered(plan, response, source_message_id, *, current_garment=False):
+    """A sole old wish is covered only by its proven, acknowledged replacement."""
+    from management.services.ig_product_inquiries import _digest, validate_inquiry_response, inquiry_reply
+    from management.services.ig_reply_language import own_reply_text
+    captured = plan.product_information
+    witnesses = captured.get("superseded_color_wishes")
+    if (not isinstance(witnesses, list) or not 1 <= len(witnesses) <= 16
+        or captured.get("digest") != _digest({key: value for key, value in captured.items()
+            if key not in {"digest", "snapshot_digest"}})
+        or validate_inquiry_response(captured, response)):
+        return False
+    sources = captured.get("source_refs")
+    if (not isinstance(sources, list) or len(sources) > 32 or any(not isinstance(row, dict)
+        or type(row.get("message_id")) is not int
+        or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("source_digest") or "")) for row in sources)):
+        return False
+    refs = {row["message_id"]: row["source_digest"] for row in sources}
+    text = own_reply_text(response.reply_text)
+    server_fallback = response.reply_text.strip() == inquiry_reply(captured).strip()
+    if re.search(r"\b(?:customer|client|manager|bot|assistant|клієнт\w*|клиент\w*|менеджер\w*)\s+(?:said|wrote|напис\w*|сказ\w*)\b", text, re.I):
+        return False
+    for row in witnesses:
+        if (not isinstance(row, dict) or row.get("axis") != "color"
+            or row.get("previous_source_sole_color_wish") is not True
+            or row.get("current_source_message_id" if current_garment else "previous_source_message_id") != source_message_id
+            or type(row.get("previous_source_message_id")) is not int
+            or row.get("previous_source_digest") != refs.get(row["previous_source_message_id"])
+            or type(row.get("current_source_message_id")) is not int
+            or row["current_source_message_id"] <= row["previous_source_message_id"]
+            or row.get("current_source_digest") != refs.get(row["current_source_message_id"])):
+            continue
+        if (type(row.get("product_id")) is not int or row["product_id"] <= 0
+            or not isinstance(row.get("line_id"), str) or not 0 < len(row["line_id"]) <= 80
+            or any(not isinstance(row.get(key), str) or not 0 < len(row[key]) <= 80
+                for key in ("previous_value", "current_value"))):
+            continue
+        matched = any(all(inquiry.get(key) == value for key, value in {
+            "axis": "color", "line_id": row.get("line_id"), "product_id": row.get("product_id"),
+            "source_message_id": row["current_source_message_id"], "source_digest": row["current_source_digest"],
+            "requested_value": row.get("current_value")}.items()) for inquiry in captured.get("inquiries", ()))
+        commitment = _current_color_check_commitment(plan, response.reply_text, row["current_value"]) if matched else False
+        if matched and (server_fallback or commitment or (not current_garment
+                and _acknowledges_choice("color", row["current_value"], text, plan.authority))):
+            return True
+    return False
+
+
+def _current_color_check_commitment(plan, text, value):
+    """A current exact color wish may be repeated in an own manager check."""
+    from management.services.ig_response_cart_plan import selected_title_text, _scoped_request_tokens
+    from management.services.ig_reply_language import own_reply_text
+    from management.services.ig_reply_truth import _claim_sentences, _has_positive_claim
+    identity = selected_title_text(text, value)
+    check = re.compile(r"\b(?:уточню|уточнимо|перевірю|перевіримо|проверю|проверим)\b|"
+        r"\b(?:i|we)\s+will\s+(?:check|verify)\b", re.I)
+    for clause in _claim_sentences(own_reply_text(identity), ()):
+        if ("?" in clause or not re.search(r"менедж\w*|\bmanager\b", clause, re.I)
+            or not re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", clause, re.I)
+            or not _has_positive_claim(check, clause)):
+            continue
+        if _scoped_request_tokens(clause, choices={"color": value},
+                title=plan.configuration.get("product_title", ""), extra_words=(
+                    "уточню", "уточнимо", "перевірю", "перевіримо", "проверю", "проверим",
+                    "i", "we", "will", "check", "verify", "with", "our", "manager", "менеджера", "менеджеру", "менеджером",
+                    "можливість", "виконати", "ваше", "ваш", "побажання", "запит", "ці", "параметри", "для", "цього",
+                    "колір", "кольору", "кольорі", "цвет", "цвета", "цвете", "color", "colour", "your", "request", "possibility", "fulfil", "fulfill")):
+            return True
+    return False
+
+
 def _topic_covered(kind, response, plan, *, source_message_id=None):
     """Require a protected, canonical answer assertion or an admitted handoff.
 
@@ -791,6 +927,8 @@ def _topic_covered(kind, response, plan, *, source_message_id=None):
         _RECRUITMENT_STATUS_RE, _RECRUITMENT_UNCERTAINTY_RE,
     )
     authority = plan.authority
+    if kind == "info:question" and _pending_stock_answer_covered(plan, response.reply_text, source_message_id):
+        return True
     from management.services.ig_product_inquiries import approved_product_topic_covered
     if approved_product_topic_covered(kind, response.reply_text, plan.product_information):
         return True
@@ -850,8 +988,11 @@ def _topic_covered(kind, response, plan, *, source_message_id=None):
         if "?" in clause or (kind in {"info:price", "info:dispatch_timing"} and re.search(
             r"не\s+(?:знаю|знаємо|знаем)|(?:do\s+not|don't)\s+know", clause, re.I)):
             continue
-        if kind == "info:price" and plan.configuration.get("product_id") and re.search(
-            r"ціна|вартість|кошту|цена|стоим|стоит|price|cost", clause, re.I):
+        if kind == "info:price" and plan.configuration.get("product_id"):
+            from management.services.ig_response_cart_plan import single_price_subject
+            if (not re.search(r"ціна|вартість|кошту|цена|стоим|стоит|price|cost", clause, re.I)
+                and not single_price_subject(clause, choices=plan.choices, title=plan.configuration.get("product_title", ""))):
+                continue
             amounts = _MONEY_RE.findall(clause)
             if len(amounts) == 1 and validate_reply_truth(clause, context=context).valid:
                 try:
@@ -904,6 +1045,7 @@ class ResponsePlan:
     product_focus: dict = field(default_factory=dict)
     product_information: dict = field(default_factory=dict)
     business_context: dict = field(default_factory=dict)
+    pending_stock_questions: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -919,6 +1061,8 @@ class ResponsePlan:
             payload["pending_questions"] = deepcopy(self.pending_questions)
         if self.business_context:
             payload["business_context"] = deepcopy(self.business_context)
+        if self.pending_stock_questions:
+            payload["pending_stock_questions"] = deepcopy(self.pending_stock_questions)
         if self.payment_observation or self.payment_claim_source_ids:
             payload.update(payment_observation=self.payment_observation,
                 payment_claim_source_ids=list(self.payment_claim_source_ids))
@@ -983,14 +1127,26 @@ class ResponsePlan:
         """Validate each assertion against its own line; no union authority."""
         if not self.line_plans:
             return ""
-        from management.services.ig_response_cart_plan import matching_line_ids, scoped_claim_clauses
+        from management.services.ig_response_cart_plan import matching_line_ids, scoped_claim_clauses, anaphoric_price_reply_line_id, selected_title_text
         from management.services.ig_reply_truth import validate_reply_truth
         scoped = self.line_truth_contexts(context)
         unbound = replace(context, authorized_prices=(), authorized_price_ranges=(), allowed_sizes=(),
             allowed_fits=(), allowed_colors=(), source_chosen_sizes=(), source_chosen_fits=(),
             source_chosen_colors=(), audited_chosen_sizes=())
-        for sentence in scoped_claim_clauses(_unquoted_text(response.reply_text)):
+        identity = (selected_title_text(response.reply_text, self.configuration.get("product_title", ""))
+            if len(self.line_plans) == 1 else response.reply_text)
+        plain_identity = _unquoted_text(identity)
+        for sentence in scoped_claim_clauses(plain_identity):
             matches = matching_line_ids(sentence, self.line_plans)
+            if not matches and plain_identity == identity:
+                active = self.source_cart_capture.get("active_line_id")
+                owner = anaphoric_price_reply_line_id(sentence, self.line_plans, active_line_id=active,
+                    readiness_by_line={active: self.readiness_snapshot}, obligations=self.obligations)
+                if owner:
+                    matches = (owner,)
+            if not matches and any(_pending_stock_answer_covered(self, sentence, source_id)
+                    for source_id in self.pending_stock_questions.get("source_message_ids", ())):
+                matches = (self.pending_stock_questions["line_id"],)
             candidate_context = scoped[matches[0]] if len(matches) == 1 else unbound
             if len(matches) == 1:
                 row = next(line.as_dict() for line in self.line_plans if line.line_id == matches[0])
@@ -1300,7 +1456,9 @@ class ResponsePlan:
             product_acknowledged = kind == "product_id" and self.choices.get("product_id") and (
                 str(response.control.get("product") or "") == str(self.choices["product_id"])
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
-            done = bool(obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
+            done = bool((kind in {"unclassified", "garment_type"} and _superseded_color_wish_covered(self, response,
+                            obligation["source_message_id"], current_garment=kind == "garment_type"))
+                        or obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
                         or (kind == "garment_type" and obligation["source_message_id"] in inquiry_ids)
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
@@ -1332,6 +1490,15 @@ class ResponsePlan:
             admitted_checkout_line_ids, line_clauses, matching_line_ids,
         )
         clauses = line_clauses(response.reply_text, self.line_plans)
+        from management.services.ig_response_cart_plan import scoped_claim_clauses, anaphoric_price_reply_line_id, selected_title_text
+        active = self.source_cart_capture.get("active_line_id")
+        identity = (selected_title_text(response.reply_text, self.configuration.get("product_title", ""))
+            if len(self.line_plans) == 1 else response.reply_text)
+        for clause in scoped_claim_clauses(identity if _unquoted_text(identity) == identity else ""):
+            owner = anaphoric_price_reply_line_id(clause, self.line_plans, active_line_id=active,
+                readiness_by_line={active: self.readiness_snapshot}, obligations=self.obligations)
+            if owner and clause not in clauses[owner]:
+                clauses[owner].append(clause)
         if self.focused_candidate_line_id:
             from management.services.ig_response_cart_plan import scoped_claim_clauses
 
@@ -1348,7 +1515,10 @@ class ResponsePlan:
         for obligation in self.obligations:
             kind, line_id = obligation["kind"], obligation.get("line_id")
             done = False
-            if obligation["id"] in chart_ids:
+            if kind in {"unclassified", "garment_type"} and _superseded_color_wish_covered(self, response,
+                    obligation["source_message_id"], current_garment=kind == "garment_type"):
+                done = True
+            elif obligation["id"] in chart_ids:
                 done = True
             elif kind.startswith("business:"):
                 done = _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"])
@@ -1365,6 +1535,7 @@ class ResponsePlan:
                 plan = ResponsePlan(row["choices"], row["evidence"], row["scope"], row["configuration"],
                     row["next_selector"], row["authority"], tuple(row["obligations"]),
                     pending_questions=self.pending_questions,
+                    pending_stock_questions=self.pending_stock_questions,
                     product_information={"resolved_information": [item for item in self.product_information.get("resolved_information", ())
                         if item.get("line_id") == line_id],
                         "base_context_assertions": [item for item in self.product_information.get("base_context_assertions", ())
@@ -1569,7 +1740,7 @@ def _capture_payment_context(client, revision, sources, session, line):
     return deepcopy(first), boundary, fence, reason, now.isoformat()
 def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, contexts_by_line, context):
     """Pure attachment, preserving the legacy constructor and single-line API."""
-    from management.services.ig_response_cart_plan import build_cart_response_lines, matching_line_ids, MAX_OBLIGATIONS
+    from management.services.ig_response_cart_plan import build_cart_response_lines, matching_line_ids, anaphoric_price_line_id, MAX_OBLIGATIONS
     business_context, retail_sources = _business_source_partition(sources)
     business_ids = set(business_context.get("evidence_message_ids", ()))
     personal_fields = {row["message_id"]: _personal_choice_fields(row)
@@ -1629,6 +1800,9 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
             obligations.extend({"id": f"{source_id}:{kind}", "kind": kind, "source_message_id": source_id} for kind in sorted(payment_kinds))
         for topic in topics:
             owner = next(iter(owners)) if len(owners) == 1 else None
+            if owner is None and topic == "info:price":
+                owner = anaphoric_price_line_id(source.get("text"), lines,
+                    active_line_id=capture.get("active_line_id"), readiness_by_line=readiness_by_line) or None
             rows = [{"id": f"{source_id}:{owner}:{topic}" if owner else f"{source_id}:{topic}",
                 "kind": topic, "source_message_id": source_id, **({"line_id": owner} if owner else {})}]
             supported = next((line.as_dict()["authority"].get("fits", ()) for line in lines if line.line_id == owner), context.allowed_fits)
@@ -1806,6 +1980,7 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
     if measurements.get("guides"):
         configuration["consultation_measurements"] = measurements
     plan = replace(plan, product_information=information, configuration=configuration)
+    plan = replace(plan, pending_stock_questions=_capture_pending_stock_questions(client, revision, plan))
     from management.services.ig_source_clarification import capture_source_clarifications
     clarifications = capture_source_clarifications(revision, plan.source_cart_capture, plan.obligations)
     if clarifications:

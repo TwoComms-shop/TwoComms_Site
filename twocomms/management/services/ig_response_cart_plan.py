@@ -172,6 +172,103 @@ def matching_line_ids(clause, line_plans):
     return tuple(candidates) if len(candidates) == 1 else ()
 
 
+def selected_title_text(text, title):
+    """Unwrap only literal names present in the captured canonical label."""
+    from management.services.ig_response_plan import _PRODUCT_NAME_QUOTES
+    names = [title] if title else []
+    embedded = list(_PRODUCT_NAME_QUOTES.finditer(title)) if title else []
+    if len(embedded) == 1:
+        names.append(next(value for value in embedded[0].groups() if value is not None))
+    for name in names:
+        text = re.sub(r'["\'«“‘]' + re.escape(name) + r'["\'»”’]', lambda _match: name, text, flags=re.I)
+    return text
+
+
+def _scoped_request_tokens(text, *, choices, title="", extra_words=()):
+    """Closed question vocabulary plus exact source choices; no named fallback."""
+    from management.services.ig_response_plan import _unquoted_text, CHOICE_ALIASES
+    from management.services.ig_reply_language import own_reply_text
+    value = str(text or "").strip()
+    value = selected_title_text(value, title)
+    if not value or len(value) > 1000 or _unquoted_text(value) != value or own_reply_text(value) != value:
+        return ()
+    from management.services.ig_commerce_turns import _SIZE_RE, _canonical_source_size
+    from product_catalog.size_grid_services import normalize_size_value
+    selected_size = _canonical_source_size(normalize_size_value(choices.get("size") or ""))
+    size_spans = re.compile(r"(?<!\w)[2-5]\s+[xх]\s*[lл](?!\w)|" + _SIZE_RE.pattern, re.I)
+    if selected_size:
+        value = size_spans.sub(lambda match: " " if _canonical_source_size(
+            normalize_size_value(match.group())) == selected_size else match.group(), value)
+    for selected in (title, *CHOICE_ALIASES.get(
+            str(choices.get("color") or ""), (str(choices.get("color") or ""),))):
+        if selected:
+            value = re.sub(r"(?<!\w)" + re.escape(selected) + r"(?!\w)", " ", value, flags=re.I)
+    words = re.findall(r"[\w’']+", value.casefold())
+    allowed = set("а чи є в у цей це ця цієї цього його її ще і та який яка наявності наявність розмір розмірі "
+        "есть ли эта этот этой этого его её размер размере наличии наличие и какая "
+        "is are do you have this that my the selected it its in of for size stock available availability "
+        "худі худи hoodie футболка футболки t shirt tshirt товар товара товару позиція позиції позиция item one".split())
+    allowed.update(extra_words)
+    return tuple(words) if words and all(word in allowed for word in words) else ()
+
+
+def stock_question(text, *, size="", color="", title=""):
+    words = _scoped_request_tokens(text, choices={"size": size, "color": color}, title=title)
+    return bool(words and set(words) & {"є", "есть", "наявності", "наявність", "наличии", "наличие", "have", "stock", "available", "availability"})
+
+
+def anaphoric_price_line_id(text, line_plans, *, active_line_id, readiness_by_line):
+    """One active source SKU and a clear price continuation, never a cart default."""
+    if len(line_plans) != 1 or line_plans[0].line_id != active_line_id:
+        return ""
+    row = line_plans[0].as_dict()
+    product_id = row["choices"].get("product_id")
+    if (not product_id or product_id != row["configuration"].get("product_id")
+        or type((row["evidence"].get("product_id") or {}).get("source_message_id")) is not int):
+        return ""
+    words = _scoped_request_tokens(text, choices=row["choices"], title=row["configuration"].get("product_title", ""), extra_words=(
+        "ціна", "вартість", "скільки", "коштує", "цена", "стоимость", "сколько", "стоит",
+        "price", "cost", "what", "what's", "what’s", "how", "much", "does", "and"))
+    if not words or not set(words) & {"ціна", "вартість", "коштує", "цена", "стоимость", "стоит", "price", "cost", "much"}:
+        return ""
+    from management.services.approved_public_facts import _captured_base, _GARMENT_WORDS
+    if any(pattern.search(text) for pattern in _GARMENT_WORDS.values()) and not _captured_base(
+            readiness_by_line.get(active_line_id), text)[1]:
+        return ""
+    return active_line_id
+
+
+def anaphoric_price_reply_line_id(text, line_plans, *, active_line_id, readiness_by_line, obligations):
+    """A plain price answer inherits only its one current, source-owned price ask."""
+    if not any(row.get("kind") == "info:price" and row.get("line_id") == active_line_id for row in obligations):
+        return ""
+    if len(line_plans) != 1 or line_plans[0].line_id != active_line_id:
+        return ""
+    row = line_plans[0].as_dict()
+    return active_line_id if single_price_subject(text, choices=row["choices"],
+        title=row["configuration"].get("product_title", ""),
+        readiness=readiness_by_line.get(active_line_id)) else ""
+
+
+def single_price_subject(text, *, choices, title="", readiness=None):
+    """Subject binding only; the caller still validates every monetary value."""
+    from management.services.ig_reply_truth import _MONEY_RE
+    if "?" in text or not _MONEY_RE.search(text):
+        return False
+    value = _MONEY_RE.sub(" ", text).strip(" .!;:—–-")
+    if not value or re.fullmatch(r"(?:it\s+is|it['’]s|це|это)", value, re.I):
+        return True
+    words = _scoped_request_tokens(value, choices=choices, title=title, extra_words=(
+        "ціна", "вартість", "коштує", "цена", "стоимость", "стоит", "price", "cost", "costs", "it's", "it’s"))
+    if not words or not set(words) & {"ціна", "вартість", "коштує", "цена", "стоимость", "стоит", "price", "cost", "costs"}:
+        return False
+    if readiness is not None:
+        from management.services.approved_public_facts import _captured_base, _GARMENT_WORDS
+        if any(pattern.search(value) for pattern in _GARMENT_WORDS.values()) and not _captured_base(readiness, value)[1]:
+            return False
+    return True
+
+
 def line_clauses(text, line_plans):
     """Identity cannot bleed from a sibling sentence or quoted report."""
     from management.services.ig_response_plan import _unquoted_text

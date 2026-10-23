@@ -283,13 +283,23 @@ class NativeRestockSubscriptionTests(_RestockFixture, TestCase):
         self.assertEqual(result.quick_replies, ())
         self.assertFalse(IgRestockInvitation.objects.exists())
 
-    def test_actual_available_stock_does_not_offer_restock(self):
+    def test_accounting_positive_stock_still_requires_manager_checked_notification(self):
+        # Owner 2026-10-23: an accounting count cannot confirm physical stock.
+        # The prior no-invitation expectation used that count as stock truth.
         self.variant.stock = self.rule.stock = 2
         self.variant.save(update_fields=["stock"])
         self.rule.save(update_fields=["stock", "updated_at"])
-        result, _, _, _ = self.request()
-        self.assertFalse(result.handled)
-        self.assertFalse(IgRestockInvitation.objects.exists())
+        result, source, revision, token = self.request()
+        self.assertTrue(result.handled)
+        invitation = IgRestockInvitation.objects.get(pk=result.invitation_id)
+        self.assertEqual(invitation.target["quantity"], 1)
+        self.assertTrue(restock._invitation_manager_case(invitation))
+        self.assertFalse(IgRestockSubscription.objects.exists())
+        self.sent_card(revision, token, source, result)
+        self.assertTrue(restock.record_delivery(revision.pk, now=self.now))
+        accepted, answer, _, _ = self.reply(invitation)
+        self.assertEqual(accepted.reason, "accept", accepted)
+        self.assertTrue(IgRestockSubscription.objects.filter(accepted_answer__source=answer).exists())
 
     def default_quantity_choice(self):
         self.client_row = IgClient.objects.create(igsid="restock-default-quantity-customer", language="uk", reply_permission_epoch=3)

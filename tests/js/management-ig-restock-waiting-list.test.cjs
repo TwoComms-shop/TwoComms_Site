@@ -110,11 +110,13 @@ test('bounded history explicitly discloses omissions, unknown schema never rende
 
 test('actual bot mount reuses one read-only controller and passes the native exact-review URL',()=>{
   const template=fs.readFileSync(path.join(__dirname,'../../twocomms/management/templates/management/bot.html'),'utf8');
+  const preservedRootsInit=template.match(/^\s*let contextPreservedRoots=new Set\(\);$/m)?.[0];
+  assert.ok(preservedRootsInit,'mount harness requires the actual parent context-preservation state');
   let mount=template.slice(template.indexOf('    function renderRestockWaitingList(id){'),template.indexOf('    function renderFulfillmentReview(id){'));
   assert.ok(mount.length>100);mount=mount.replace('{% if bot_can_operate %}true{% else %}false{% endif %}','true')
     .replace('{% url "management_bot_restock_waiting_list_api" 0 %}','/bot/api/clients/0/restock-waiting-list/').replace(/{%[^%]*%}/g,'');
   const calls=[],created=[],parent={appendChild(root){calls.push({root});}},window={location:{href:'https://manager.test/bot/?section=clients&client_id=99#old'},IgRestockWaitingList:{create(root,options){created.push({root,options});return {render(id){calls.push({id});}};}}};
-  vm.runInNewContext('let restockWaitingRoot=null,restockWaitingController=null;'+mount+'renderRestockWaitingList(12);renderRestockWaitingList(23);',{window,URL,contextEl:parent,node:()=>({})});
+  vm.runInNewContext(preservedRootsInit+'let restockWaitingRoot=null,restockWaitingController=null;'+mount+'renderRestockWaitingList(12);renderRestockWaitingList(23);',{window,URL,contextEl:parent,node:()=>({})});
   assert.equal(created.length,1);assert.deepEqual(calls.filter(call=>call.id).map(call=>call.id),[12,23]);
   assert.equal(created[0].options.url(23),'/bot/api/clients/23/restock-waiting-list/');const review=new URL(created[0].options.reviewUrl(23,REQUEST));
   assert.equal(review.searchParams.get('client_id'),'23');assert.equal(review.searchParams.get('fulfillment_request'),REQUEST);assert.equal(review.hash,'');

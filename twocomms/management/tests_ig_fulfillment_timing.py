@@ -460,8 +460,9 @@ class FulfillmentAvailabilityTests(SimpleTestCase):
         data["current_request"]["lines"][0]["observation"]["stock_available"] = True
         self.rejected("Size M is in stock.", self.context(data))
 
-    def test_ordinary_catalog_case_remains_valid(self):
-        self.valid("Size M is in stock.", ReplyTruthContext(allowed_sizes=("M",)))
+    def test_catalog_size_is_not_physical_stock_but_exact_manager_fact_is(self):
+        self.rejected("Size M is in stock.", ReplyTruthContext(allowed_sizes=("M",)))
+        self.valid("Size M is in stock.", self.context(availability_projection()))
 
     def test_unknown_or_stale_manager_slot_grants_no_dialogue_fact(self):
         for status in ("unknown", "stale"):

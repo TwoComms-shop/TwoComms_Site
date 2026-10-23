@@ -82,6 +82,12 @@ jobs:
             management.tests_ig_conversion_audit_prompt_20261023 \
             management.tests_ig_conversion_audit_analysis_20261022 \
             management.tests_ig_conversion_audit_stats_20261022 \
+            management.tests_ig_stock_authority_20261023 \
+            management.tests_ig_stock_catalog_copy_20261023 \
+            management.tests_ig_stock_claim_guard_20261023 \
+            management.tests_ig_stock_request_scope_20261023 \
+            management.tests_ig_palette_intent_20261023 \
+            management.tests_ig_standard_funnel_qa \
             management.tests_ig_analysis_lane_isolation_20261023 \
             management.tests_ig_analysis_lane \
             management.tests_ig_worker_progress \
@@ -144,7 +150,7 @@ jobs:
           python manage.py test storefront.tests.test_product_size_guides storefront.tests.test_size_guide_authority_20261022 --settings=test_settings_no_network_non_dtf --noinput --parallel 1
       - name: Run live conversation UI regressions
         run: |
-          node --test tests/js/management-bot-client-list.test.js tests/js/management-bot-live-sync.test.js tests/js/management-bot-chat-reading.test.js tests/js/management-bot-conversation-scroll.test.js tests/js/management-bot-conversion-audit.test.js twocomms/twocomms_django_theme/static/js/product-detail.test.js
+          node --test tests/js/management-bot-client-list.test.js tests/js/management-bot-live-sync.test.js tests/js/management-bot-chat-reading.test.js tests/js/management-bot-conversation-scroll.test.js tests/js/management-bot-conversion-audit.test.js tests/js/management-bot-stock-review.test.js tests/js/management-ig-fulfillment-review-reuse.test.cjs tests/js/management-ig-fulfillment-stock-sync.test.cjs tests/js/management-ig-restock-waiting-list.test.cjs twocomms/twocomms_django_theme/static/js/product-detail.test.js
       - name: Exercise production-like static pipeline
         run: python scripts/run_static_gate.py --output static-gate.json
       - name: Build sanitized non-DTF coverage inventory

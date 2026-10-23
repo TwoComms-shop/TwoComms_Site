@@ -71,6 +71,8 @@ def _request_constraints(request: CommerceTurnRequest) -> dict[str, str]:
             constraints[str(key)] = _canonical(value)
     if request.garment_type:
         constraints["garment_type"] = _canonical(request.garment_type)
+    elif request.catalog_garment_type:
+        constraints["garment_type"] = _canonical(request.catalog_garment_type)
     return constraints
 
 

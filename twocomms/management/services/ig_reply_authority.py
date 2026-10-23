@@ -924,11 +924,15 @@ def fulfillment_timing_authorities(projection: Mapping[str, object]) -> tuple[st
     line_labels = tuple((line_id, str(row.get("label") or "").strip()[:240])
         for line_id, row in requested.items())
     result: list[TimingAuthority] = []
-    for domain in ("preparation", "dispatch"):
+    for domain in ("preparation", "dispatch", "base_arrival"):
         domain_facts: list[TimingAuthority] = []
         for line_id, row in reviewed.items():
             timing = row.get(domain)
             if row.get("availability") not in ("available", "wait") or not isinstance(timing, Mapping):
+                continue
+            if domain == "base_arrival" and (
+                row.get("availability") != "wait" or row.get("supply_basis") != "incoming_confirmed"
+            ):
                 continue
             low, high = timing.get("min_days"), timing.get("max_days")
             raw_unit = timing.get("unit")
@@ -940,6 +944,15 @@ def fulfillment_timing_authorities(projection: Mapping[str, object]) -> tuple[st
                     or not unit or anchor not in ("", "after_payment_confirmation")
                     or not payment_anchor and (anchor or not isinstance(anchor_at, str) or not anchor_at)):
                 continue
+            if domain == "base_arrival":
+                if high > 90 or anchor or not isinstance(anchor_at, str):
+                    continue
+                try:
+                    clock = datetime.fromisoformat(anchor_at.replace("Z", "+00:00"))
+                    if timezone.is_naive(clock):
+                        continue
+                except (ValueError, TypeError, OverflowError):
+                    continue
             domain_facts.append(TimingAuthority(
                 domain=domain, min_days=low, max_days=high, unit=unit,
                 anchor=anchor, anchor_at=anchor_at or "", line_id=line_id,
@@ -950,7 +963,7 @@ def fulfillment_timing_authorities(projection: Mapping[str, object]) -> tuple[st
         # A fact about one item does not authorize a whole-order promise. Only
         # a uniform full set can be spoken without an exact item label.
         windows = {(fact.min_days, fact.max_days, fact.unit, fact.anchor, fact.anchor_at) for fact in domain_facts}
-        if len(domain_facts) == len(requested) and len(windows) == 1:
+        if domain != "base_arrival" and len(domain_facts) == len(requested) and len(windows) == 1:
             fact = domain_facts[0]
             result.append(TimingAuthority(
                 domain=domain, min_days=fact.min_days, max_days=fact.max_days,

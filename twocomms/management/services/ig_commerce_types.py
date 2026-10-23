@@ -157,8 +157,14 @@ class CommerceTurnRequest:
     historical_line_id: str = ""
     historical_item_index: int | None = None
     historical_recipient_id: str = ""
+    # A consulted catalogue category restricts retrieval without choosing a
+    # garment for the cart or supplying selected-choice evidence. Appended to
+    # preserve all existing positional constructor arguments.
+    catalog_garment_type: str = ""
 
     def __post_init__(self):
+        if self.catalog_garment_type not in {"", "tshirt", "hoodie"}:
+            raise ValueError("catalog_garment_type_invalid")
         object.__setattr__(self, "line_operations", tuple(self.line_operations))
         for field_name in (
             "field_updates",

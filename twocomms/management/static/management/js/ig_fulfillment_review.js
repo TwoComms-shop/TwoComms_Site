@@ -83,34 +83,39 @@
   const supplyLabels={warehouse_checked:'Перевірено на складі',accessible_unrecorded:'Доступно поза обліком складу',incoming_confirmed:'Підтверджене надходження'};
   function lineTarget(line) {
     const target=line.target||{};
-    return [target.size?('Розмір '+target.size):'',target.color_label||target.color||'',target.fit_label||target.fit||'',hasDisplayLabel(line)&&target.quantity!=null?('Кількість: '+target.quantity):''].filter(Boolean).join(' · ');
+    const values=target.option_values||target.options,options=values&&typeof values==='object'&&!Array.isArray(values)?Object.entries(values).filter(([key,value])=>!(key==='fit'&&(target.fit||target.fit_option_code||target.fit_label))&&typeof value==='string').sort(([a],[b])=>a.localeCompare(b)).slice(0,8).map(([key,value])=>{
+      const label=key==='lining'?'Утеплення':key.slice(0,40),choice=key==='lining'&&value==='fleece'?'Фліс':key==='lining'&&value==='no_fleece'?'Без флісу':value;
+      return label+': '+choice.slice(0,80);
+    }).join(' · '):'';
+    return [target.size?('Розмір '+target.size):'',target.color_label||target.color||'',target.fit_label||target.fit||'',options,hasDisplayLabel(line)&&target.quantity!=null?('Кількість: '+target.quantity):''].filter(Boolean).join(' · ');
   }
   function normalizeReview(data) {
     const current=data&&data.current_request;
     if(!data)return null;
+    const refs=current&&Array.isArray(current.source_refs)&&current.source_refs.length?current.source_refs:current&&current.sources||[];
     return Object.assign({},data,{
       request_id:current&&current.id,
       requirement_sources:current&&current.customer_requirements||[],
       customer_requirements:reduceRequirements(current&&current.customer_requirements),
       lines:current&&current.lines||[],
-      source_refs:current&&current.sources||[],
+      source_refs:refs.length?refs:current&&current.source_id?[{message_id:current.source_id}]:[],
       unavailable:!current||data.status==='none'||data.status==='unavailable'
     });
   }
-  function timingEditor(title, saved) {
+  function timingEditor(title, saved, {baseArrival=false}={}) {
     const root=el('div','ig-fr-timing');root.appendChild(el('h4','',title));
     const grid=el('div','ig-fr-timing-grid');
-    const preset=select([['','Не визначено'],['0','У день перевірки'],['1-3','1–3 дні'],['3','3 дні'],['7','7 днів'],['custom','Свій проміжок']],title+' — термін');
+    const preset=select([['','Не визначено'],['0','У день перевірки'],['1','1 день'],['1-3','1–3 дні'],['3','3 дні'],['7','7 днів'],['custom','Свій проміжок']],title+' — термін');
     const unit=select([['calendar','Календарні дні'],['business','Робочі дні']],title+' — одиниця');
     const anchor=select([['check','Від збереження перевірки'],['after_payment_confirmation','Після підтвердження оплати']],title+' — початок відліку');
     unit.value='calendar';anchor.value='check';
     const range=el('div','ig-fr-range');const min=numeric(title+' — від днів'),max=numeric(title+' — до днів');min.max='90';max.max='90';
     range.append(field('Від, днів',min),field('До, днів',max));range.hidden=true;
-    grid.append(field('Термін',preset),field('Рахуємо',unit),field('Початок відліку',anchor),range);root.appendChild(grid);
-    root.appendChild(el('p','ig-fr-muted','Підготовка та відправка — окремі строки. Перевезення не входить у цей проміжок.'));
+    grid.append(field('Термін',preset),field('Рахуємо',unit));if(!baseArrival)grid.appendChild(field('Початок відліку',anchor));grid.appendChild(range);root.appendChild(grid);
+    root.appendChild(el('p','ig-fr-muted',baseArrival?'Очікуване надходження основи від дня перевірки. Готовність, відправка й прибуття клієнту — окремо.':'Підготовка та відправка — окремі строки. Перевезення не входить у цей проміжок.'));
     preset.addEventListener('change',()=>{range.hidden=preset.value!=='custom';});
     if(saved&&Number.isInteger(saved.min_days)&&Number.isInteger(saved.max_days)){
-      preset.value=saved.min_days===1&&saved.max_days===3?'1-3':saved.min_days===saved.max_days&&[0,3,7].includes(saved.min_days)?String(saved.min_days):'custom';
+      preset.value=saved.min_days===1&&saved.max_days===3?'1-3':saved.min_days===saved.max_days&&[0,1,3,7].includes(saved.min_days)?String(saved.min_days):'custom';
       min.value=saved.min_days;max.value=saved.max_days;range.hidden=preset.value!=='custom';unit.value=saved.unit||'calendar';
       anchor.value=saved.anchor==='after_payment_confirmation'?'after_payment_confirmation':'check';
       if(saved.anchor_at){const date=new Date(saved.anchor_at);if(!Number.isNaN(date.valueOf()))root.appendChild(el('p','ig-fr-muted','Попередній відлік: '+date.toLocaleString('uk-UA')));}
@@ -120,7 +125,7 @@
       let lower,upper;if(preset.value==='custom'){lower=Number(min.value);upper=Number(max.value);if(!min.value||!max.value||!Number.isInteger(lower)||!Number.isInteger(upper)||lower<0||upper<lower||upper>90){min.focus();throw new Error(title+': вкажіть проміжок від 0 до 90 днів.');}}
       else {const values=preset.value.split('-').map(Number);lower=values[0];upper=values[1]||values[0];}
       if(anchor.value==='after_payment_confirmation'&&lower===0&&upper===0){preset.focus();throw new Error(title+': для відліку після оплати вкажіть проміжок днів; «у день перевірки» має іншу підставу.');}
-      return Object.assign({min_days:lower,max_days:upper,unit:unit.value},anchor.value==='after_payment_confirmation'?{anchor:anchor.value}:{});
+      return Object.assign({min_days:lower,max_days:upper,unit:unit.value},!baseArrival&&anchor.value==='after_payment_confirmation'?{anchor:anchor.value}:{});
     }};
   }
   const deadlineOptions={later_domestic_contact:'Отримання пізніше хлопцем або іншою контактною особою в Україні',later_domestic_destination:'Отримання пізніше Новою поштою там, де клієнт перебуватиме в Україні',international_review_required:'Міжнародна доставка: окремо перевірити можливість і вартість'};
@@ -175,18 +180,21 @@
     const allowed=['line_id','availability','checked_quantity','supply_basis','source_location','alternative','clarification'];
     return ((current.decision||{}).lines||[]).map(line=>{
       const result={};allowed.forEach(key=>{if(Object.prototype.hasOwnProperty.call(line,key))result[key]=line[key];});
-      ['preparation','dispatch'].forEach(key=>{const timing=line[key];if(timing){result[key]={min_days:timing.min_days,max_days:timing.max_days,unit:timing.unit};if(timing.anchor==='after_payment_confirmation')result[key].anchor=timing.anchor;}});
+      ['base_arrival','preparation','dispatch'].forEach(key=>{const timing=line[key];if(timing){result[key]={min_days:timing.min_days,max_days:timing.max_days,unit:timing.unit};if(key!=='base_arrival'&&timing.anchor==='after_payment_confirmation')result[key].anchor=timing.anchor;}});
       return result;
     });
   }
   function create(root, options) {
     const canOperate=options.canOperate===true;
     let clientId=null,review=null,generation=0,abort=null,busy=false,dirty=false,pendingOperation=null;
+    let draftStale=false,observedReview=null;
     let stockDraft={},stockDraftRequest=null,stockDirty=false,stockNeedsConfirm=false,stockPending=null,stockUnknown=false,stockResult=null;
     root.classList.add('ig-fulfillment');
     const feedback=el('div','ig-fr-feedback');feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
     function say(text,error){feedback.textContent=text||'';feedback.classList.toggle('is-error',Boolean(error));}
-    function lock(value){busy=value;root.setAttribute('aria-busy',String(value));root.querySelectorAll('button,input,select,textarea').forEach(node=>{node.disabled=value||node.dataset.frDisabled==='true';});}
+    function context(){return {clientId,canOperate,review:draftStale?Object.assign({},observedReview||review,{can_decide:false}):review,busy,dirty:dirty||stockDirty,draftStale};}
+    function notify(){if(typeof options.onStateChange==='function')options.onStateChange(context());}
+    function lock(value){busy=value;root.setAttribute('aria-busy',String(value));root.querySelectorAll('button,input,select,textarea').forEach(node=>{node.disabled=value||node.dataset.frDisabled==='true'||node.dataset.frDraftStale==='true';});notify();}
     function fixedDisabled(node,value){node.dataset.frDisabled=String(Boolean(value));node.disabled=busy||Boolean(value);}
     function stockReason(reason) {
       return ({inventory_allocation_busy:'Інший менеджер оновлює резерв. Залишки не змінено — оновіть картку та повторіть звірку.',catalog_size_item_busy:'Позиції резерву зараз оновлюються. Залишки не змінено — повторіть звірку після оновлення картки.',catalog_size_reservation_busy:'Резерв зараз оновлюється. Залишки не змінено — повторіть звірку після оновлення картки.',insufficient_catalog_size_stock:'Точний розмір уже зайнятий іншим резервом. Перевірте фактичну кількість перед оформленням.',inventory_conflict:'Складський облік зараз оновлюється. Залишки не змінено — перевірте картку перед повтором.',catalog_changed:'Ціна або умови узгодженої пропозиції змінилися. Перевірте їх перед оформленням.',inventory_mapping_unknown:'Спочатку налаштуйте джерело складського обліку для товару.',inventory_mapping_ambiguous:'Складська позиція визначена неоднозначно. Потрібна звірка зв’язків у редакторі товару.',inventory_mapping_unsupported:'Джерело обліку не підтримує цю звірку. Потрібне налаштування товару вручну.',inventory_stock_identity_unknown:'Точну складську позицію не знайдено. Перевірте колір, розмір і зв’язок зі складом.',disabled_size_requires_editor:'Цей розмір вимкнено. Перевірте налаштування розміру в редакторі товару.',exact_size_count_requires_editor:'Для точного розміру не налаштовано облік кількості. Спочатку перевірте редактор товару.',all_lines_require_available:'Для оформлення всього кошика всі позиції мають бути підтверджені як доступні. Позиції, що очікуються або потребують уточнення, автоматично не виключаються.',already_synced:'Для цього рішення звірку вже виконано. Оновіть картку, щоб переглянути створену пропозицію.',preview_changed:'Залишки або резерви змінилися. Перевірте актуальні дані перед підтвердженням.',preview_read_conflict:'Дані складського обліку змінюються. Оновіть картку перед звіркою.',decision_changed:'Рішення менеджера змінилося. Потрібна нова звірка.',manager_review_expired:'Перевірка менеджера втратила актуальність. Потрібна нова перевірка позицій.',selection_changed:'Клієнт змінив кошик. Потрібна перевірка нового вибору.',configuration_changed:'Конфігурація товару змінилася. Потрібна нова перевірка.',decision_unverified:'Підтверджене рішення менеджера недоступне.',request_unverified:'Поточний запит не підтверджено.',request_missing:'Поточний запит на звірку недоступний.',reservation_capture_bound:'Забагато складських резервів для цієї звірки. Потрібна перевірка менеджера складу.',physical_total_below_protected_and_requested:'Загальна фізична кількість не покриває захищені резерви та весь кошик.',physical_size_total_below_protected_and_requested:'Фізична кількість точного розміру не покриває резерви та потрібні позиції.',physical_total_invalid:'Вкажіть цілу фізичну кількість від 0 до 1 000 000.',physical_size_total_invalid:'Кількість розміру має бути цілою та не перевищувати загальний залишок варіанта.',checkout_allocation_failed:'Пропозицію не вдалося підготувати. Звірка залишку не завершена.',actor_forbidden:'Немає дозволу на звірку та оформлення.',operation_conflict:'Ідентифікатор цієї операції вже використано з іншим вмістом. Потрібна звірка результату.'})[reason]||'Звірка для оформлення недоступна. Оновіть картку або перевірте налаштування складського обліку.';
@@ -336,7 +344,7 @@
     function evidence(current) {
       const details=el('details','ig-fr-evidence');details.appendChild(el('summary','','Звідки ці вимоги'));
       const refs=Array.isArray(current.source_refs)?current.source_refs:[];
-      if(refs.length){const list=el('ul');refs.forEach(ref=>{const id=ref.proof_message_id||ref.source_message_id||ref.message_id||ref.id;const text=ref.quote||ref.text||ref.excerpt;list.appendChild(el('li','',(id?'Повідомлення №'+id:'Підтверджене джерело')+(typeof text==='string'?' · '+text:'')));});details.appendChild(list);}
+      if(refs.length){const list=el('ul');refs.forEach(ref=>{if(!ref||typeof ref!=='object')return;const id=sourceMessageId(ref),text=ref.quote||ref.text||ref.excerpt;const row=el('li','',typeof text==='string'?text:'');row.appendChild(sourceLink(id)||el('span','',id?'Повідомлення №'+id:'Підтверджене джерело'));list.appendChild(row);});details.appendChild(list);}
       else details.appendChild(el('p','','Джерела вимог не передані. Наявність і строки потребують перевірки.'));
       if(Array.isArray(current.requirement_sources)&&current.requirement_sources.length){
         const list=el('ul');current.requirement_sources.forEach(item=>{
@@ -353,14 +361,30 @@
       }
       const tech=el('details');tech.appendChild(el('summary','','Технічні ідентифікатори'));tech.appendChild(el('pre','',JSON.stringify({request_id:current.request_id,request_digest:current.request_digest,decision_id:current.decision&&current.decision.id,decision_version:current.decision&&current.decision.version},null,2)));details.appendChild(tech);return details;
     }
-    function draw(current) {
+    function sourceMessageId(ref){const id=Number(ref&&(ref.proof_message_id||ref.source_message_id||ref.message_id||(ref.kind==='message'?ref.id:null)));return Number.isSafeInteger(id)&&id>0?id:null;}
+    function sourceLink(messageId){
+      const ownerClientId=clientId,href=messageId&&options.sourceUrl&&options.sourceUrl(ownerClientId,messageId);if(!href)return null;
+      const link=el('a','','Повідомлення #'+messageId);link.href=href;if(options.onSource)link.addEventListener('click',event=>{event.preventDefault();options.onSource(ownerClientId,messageId);});return link;
+    }
+    function draw(current){try{drawReview(current);}finally{notify();}}
+    function drawReview(current) {
       root.replaceChildren();heading();
       const interest=restockInterest(current&&current.restock_interest,current);if(interest)root.appendChild(interest);
       const unavailable=!current||current.unavailable;
       if(unavailable){if(current&&current.stock_sync&&current.stock_sync.sync_id||stockUnknown&&stockPending)root.appendChild(stockSyncSection(Object.assign({},current||{},{request_id:current&&current.stock_sync&&current.stock_sync.request_id||stockPending&&stockPending.request_id})));root.append(el('p','ig-fr-muted',current&&current.status==='none'?'Активної перевірки наявності чи строків поки немає.':'Поточна перевірка недоступна. Оновіть картку після уточнення вибору.'),feedback);return;}
       const validDecision=current.status==='reviewed'&&current.decision&&current.decision.request_digest===current.request_digest;
-      const finalized=current.status==='reviewed',readOnly=finalized||!canOperate,resolvingDeadline=canResolveDeadline(current);
+      const finalized=current.status==='reviewed',readOnly=finalized||!canOperate||current.can_decide===false,resolvingDeadline=current.can_decide!==false&&canResolveDeadline(current);
       root.appendChild(el('span','ig-fr-status',validDecision?'Перевірено менеджером':current.status==='stale'?'Попередня перевірка втратила актуальність':'Очікує перевірки'));
+      const questions=(Array.isArray(current.source_excerpts)?current.source_excerpts:[]).slice(0,16);
+      if(questions.length){const sources=el('details','ig-fr-source-questions');sources.open=true;sources.appendChild(el('summary','','Запит клієнта'));
+        questions.forEach(source=>{const row=el('div','ig-fr-source-question');row.appendChild(el('p','',safeText(source.text,'')+(source.truncated===true?'…':'')));const link=sourceLink(sourceMessageId(source));if(link)row.appendChild(link);sources.appendChild(row);});root.appendChild(sources);
+      }else{
+        const sourceIds=Array.from(new Set((current.source_refs||[]).map(sourceMessageId).filter(Boolean)));
+        if(sourceIds.length){const sources=el('div','ig-fr-source-questions');sources.appendChild(el('p','ig-fr-muted','Точний запит клієнта — у повідомленні:'));sourceIds.forEach(id=>{const link=sourceLink(id);if(link)sources.appendChild(link);});root.appendChild(sources);}
+      }
+      if(canOperate&&options.onCompose){const sourceId=[...questions,...(current.source_refs||[])].map(sourceMessageId).filter(Boolean).slice(-1)[0],ownerClientId=clientId;if(sourceId)root.appendChild(button('Написати окрему відповідь',()=>options.onCompose(ownerClientId,sourceId)));}
+      if(current.customer_waiting?.state==='proposed')root.appendChild(el('p','ig-fr-muted','Очікування запропоновано. Клієнт ще не погодив цей строк.'));
+      if(current.customer_waiting?.state==='accepted')root.appendChild(el('p','ig-fr-muted','Клієнт погодив очікування за цим запитом.'));
       const history=current.current_request&&current.current_request.deadline_history;
       if(history&&history.status==='incomplete'&&history.needs_customer_clarification===true){
         const notice=el('p','ig-fr-history-clarification','Потрібно уточнити поточний критичний строк у клієнта. Оформлення призупинене до підтвердження строку або його явного відкликання; перевірка наявності не знімає це обмеження.');
@@ -394,6 +418,7 @@
           if(supplyLabels[saved.supply_basis])box.appendChild(el('p','ig-fr-muted',supplyLabels[saved.supply_basis]));
           if(saved.supply_basis==='accessible_unrecorded')box.appendChild(el('p','ig-fr-muted','Менеджер підтвердив доступність поза обліком. Залишки складу цим рішенням не змінювались.'));
           if(saved.source_location)box.appendChild(el('p','ig-fr-muted','Де доступно: '+safeText(saved.source_location,'')));
+          if(saved.base_arrival)box.appendChild(el('p','ig-fr-muted','Очікуване надходження основи: '+timingLabel(saved.base_arrival)));
           box.append(el('p','ig-fr-muted','Готовність товару: '+timingLabel(saved.preparation)),el('p','ig-fr-muted','Відправка: '+timingLabel(saved.dispatch)));
           if(saved.clarification)box.appendChild(el('p','ig-fr-muted',safeText(saved.clarification,'')));
           if(saved.alternative)box.appendChild(el('p','ig-fr-muted','Альтернатива: '+safeText(saved.alternative,'')));
@@ -401,13 +426,15 @@
         }
         const availability=select([['','Оберіть результат'],['available','Є в наявності'],['unavailable','Немає в наявності'],['wait','Потрібно почекати'],['clarify','Потрібне уточнення']],'Наявність — '+safeText(line.label,index+1));
         availability.value=saved.availability||'';
+        const presets=el('div','ig-fr-availability-presets');presets.setAttribute('aria-label','Швидкий вибір результату перевірки');
+        [['available','Є в наявності'],['unavailable','Немає'],['wait','Очікуємо'],['clarify','Уточнити']].forEach(([value,label])=>{const choice=button(label,()=>{availability.value=value;updateAvailability();dirty=true;pendingOperation=null;notify();});choice.dataset.frAvailability=value;choice.setAttribute('aria-pressed','false');presets.appendChild(choice);});box.appendChild(presets);
         const quantity=numeric('Перевірена кількість — '+safeText(line.label,index+1));quantity.min=String(Math.max(1,Number((line.target||{}).quantity)||1));quantity.max='999';if(saved.checked_quantity!=null)quantity.value=saved.checked_quantity;
         const quantityField=field('Перевірена кількість, шт.',quantity);quantityField.hidden=availability.value!=='available';
         const fields=el('div','ig-fr-fields');fields.append(field('Результат перевірки',availability),quantityField);box.appendChild(fields);
         const supplyBasis=select([['','Оберіть підтвердження'],['warehouse_checked','Перевірено на складі'],['accessible_unrecorded','Поза обліком складу']],'Підстава наявності — '+safeText(line.label,index+1));
         const basisField=field('Як підтверджено доступність',supplyBasis);
         const basisHint=el('p','ig-fr-muted');basisHint.setAttribute('aria-live','polite');basisField.appendChild(basisHint);
-        supplyBasis.addEventListener('change',()=>{basisHint.textContent=supplyBasis.value==='accessible_unrecorded'?'Доступність підтверджуєте ви. Залишки у складському обліку не зміняться.':supplyBasis.value==='incoming_confirmed'?'Підтверджене майбутнє надходження. Товар поки не позначається доступним.':'';});
+        supplyBasis.addEventListener('change',()=>{basisHint.textContent=supplyBasis.value==='accessible_unrecorded'?'Доступність підтверджуєте ви. Залишки у складському обліку не зміняться.':supplyBasis.value==='incoming_confirmed'?'Підтверджене майбутнє надходження. Товар поки не позначається доступним.':'';arrival.root.hidden=availability.value!=='wait'||supplyBasis.value!=='incoming_confirmed';});
         const sourceLocation=el('input');sourceLocation.type='text';sourceLocation.maxLength=350;sourceLocation.placeholder='Наприклад, уже у відділенні Нової пошти';
         const locationField=field('Де доступний товар · необов’язково',sourceLocation);
         const supplyFields=el('div','ig-fr-fields ig-fr-extra');supplyFields.append(basisField,locationField);supplyFields.hidden=true;box.appendChild(supplyFields);
@@ -416,17 +443,21 @@
         const clarificationField=field('Пояснення · необов’язково',clarification);clarificationField.classList.add('ig-fr-extra');box.appendChild(clarificationField);
         const alternative=el('input');alternative.type='text';alternative.maxLength=350;alternative.placeholder='Яку іншу позицію можна запропонувати';
         const alternativeField=field('Альтернатива · необов’язково',alternative);alternativeField.classList.add('ig-fr-extra');box.appendChild(alternativeField);
+        const arrival=timingEditor('Очікуване надходження основи',saved.base_arrival,{baseArrival:true});arrival.root.hidden=true;box.appendChild(arrival.root);
         const preparation=timingEditor('Готовність товару',saved.preparation);const dispatch=timingEditor('Відправка товару',saved.dispatch);
         const timings=el('div');timings.append(preparation.root,dispatch.root);timings.hidden=!['available','wait'].includes(availability.value);box.appendChild(timings);
-        availability.addEventListener('change',()=>{
+        function updateAvailability(){
           quantityField.hidden=availability.value!=='available';timings.hidden=!['available','wait'].includes(availability.value);supplyFields.hidden=!['available','wait'].includes(availability.value);
           const incoming=supplyBasis.querySelector('option[value="incoming_confirmed"]');
           if(availability.value==='wait'&&!incoming){const option=el('option','','Підтверджене надходження');option.value='incoming_confirmed';supplyBasis.appendChild(option);}
           else if(availability.value!=='wait'&&incoming){incoming.remove();basisHint.textContent='';}
           clarificationField.firstChild.textContent=availability.value==='clarify'?'Конкретне питання клієнту · обов’язково':'Пояснення або уточнення · необов’язково';
           clarification.required=availability.value==='clarify';
-        });
-        editors.push({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch});lines.appendChild(box);
+          arrival.root.hidden=availability.value!=='wait'||supplyBasis.value!=='incoming_confirmed';
+          presets.querySelectorAll('button').forEach(choice=>choice.setAttribute('aria-pressed',String(choice.dataset.frAvailability===availability.value)));
+        }
+        availability.addEventListener('change',updateAvailability);
+        editors.push({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch,arrival});lines.appendChild(box);
       });form.appendChild(lines);
       const deadline=deadlineEditor(current,canOperate&&(!finalized||resolvingDeadline));if(deadline)form.appendChild(deadline.root);
       const actions=el('div','ig-fr-actions');const submit=el('button','ig-fr-button primary',resolvingDeadline?'Зберегти остаточний висновок':'Зберегти перевірку');submit.type='submit';if(!readOnly||canOperate&&resolvingDeadline)actions.appendChild(submit);form.appendChild(actions);
@@ -438,27 +469,37 @@
       if(validDecision&&(current.stock_sync||{}).eligible===true||current.stock_sync&&current.stock_sync.sync_id||stockUnknown&&stockPending)root.appendChild(stockSyncSection(current));
       else if(!canOperate)root.appendChild(el('p','ig-fr-muted','Доступний перегляд стану. Зберегти перевірку може менеджер із правом керування ботом.'));
       const stock=el('p','ig-fr-stock','Рішення про наявність саме по собі не змінює залишки. Облік оновлюється окремою підтвердженою звіркою.');
+      root.appendChild(el('p','ig-fr-muted','Зберегти перевірку — зафіксувати рішення. Відповідь клієнту та її надсилання перевіряються окремо.'));
       if(options.warehouseUrl){const link=el('a','','Відкрити склад');link.href=options.warehouseUrl;stock.append(' ',link);}root.append(stock,evidence(current));
     }
     async function load(manual) {
       if(busy)return;
-      if(dirty){say('Є незбережена перевірка. Збережіть її або відкиньте, щоб прочитати актуальний запит.');
-        if(!root.querySelector('[data-fr-discard]')){const discard=button('Відкинути зміни й оновити',()=>{dirty=false;pendingOperation=null;load(true);});discard.dataset.frDiscard='';feedback.after(discard);}return;}
+      if(dirty&&(manual||options.observeDirty!==true)){say(draftStale?'Запит уже змінився або опрацьований. Ваші незбережені поля збережено для перегляду; відкиньте їх, щоб прочитати актуальний стан.':'Є незбережена перевірка. Збережіть її або відкиньте, щоб прочитати актуальний запит.');
+        if(!root.querySelector('[data-fr-discard]')){const discard=button('Відкинути зміни й оновити',()=>{dirty=false;draftStale=false;observedReview=null;pendingOperation=null;load(true);});discard.dataset.frDiscard='';feedback.after(discard);}return;}
       if(stockDirty&&!stockUnknown){say('Є незбережений фізичний підрахунок. Завершіть звірку або відкиньте його перед оновленням.');
         if(!root.querySelector('[data-fr-stock-discard]')){const discard=button('Відкинути підрахунок і оновити',()=>{stockDirty=false;stockDraft={};stockPending=null;stockNeedsConfirm=false;load(true);});discard.dataset.frStockDiscard='';feedback.after(discard);}return;}
+      const preserveDraft=dirty;const binding=review&&[review.request_id,review.request_digest];
       const version=++generation;const id=clientId;if(abort)abort.abort();abort=new AbortController();lock(true);if(manual)say('Оновлюємо запит…');
       const readUrl=new URL(options.url(id),global.location.origin);
       if(stockUnknown&&stockPending)readUrl.searchParams.set('request_id',stockPending.request_id);
       try{const response=await fetch(readUrl.toString(),{cache:'no-store',credentials:'same-origin',signal:abort.signal,headers:{'X-Requested-With':'XMLHttpRequest'}});const data=await response.json().catch(()=>({}));
         if(version!==generation)return;
         if(!response.ok||data.success!==true)throw new Error(response.status===401||response.status===403?'Немає доступу до перевірки. Оновіть авторизацію.':'Не вдалося прочитати перевірку виконання.');
-        review=normalizeReview(data.review);draw(review);say('');
+        const next=normalizeReview(data.review);
+        if(preserveDraft){
+          if(!next||!binding||next.request_id!==binding[0]||next.request_digest!==binding[1]||next.can_decide===false){
+            draftStale=true;observedReview=next;root.querySelectorAll('form').forEach(form=>form.querySelectorAll('button,input,select,textarea').forEach(control=>{control.dataset.frDraftStale='true';}));
+            say('Запит змінився або його вже опрацьовано. Незбережені поля залишено; нове рішення з них не надсилається. Відкиньте зміни й оновіть запит.',true);
+            if(!root.querySelector('[data-fr-discard]')){const discard=button('Відкинути зміни й оновити',()=>{dirty=false;draftStale=false;observedReview=null;pendingOperation=null;load(true);});discard.dataset.frDiscard='';feedback.after(discard);}
+          }else{review=next;}
+          notify();
+        }else{draftStale=false;observedReview=null;review=next;draw(review);say('');}
       }catch(error){if(version===generation&&error.name!=='AbortError')say(error.message||'Не вдалося прочитати перевірку.',true);}
       finally{if(version===generation){abort=null;lock(false);const submit=root.querySelector('[type="submit"]');if(submit&&(!review||!review.request_id||!review.request_digest||!review.lines||!review.lines.length))submit.disabled=true;}}
     }
     async function save(editors,deadline) {
-      if(!canOperate||busy||!review||review.status==='reviewed'&&!canResolveDeadline(review))return;let decisions;
-      try{decisions=canResolveDeadline(review)?savedDecisionInputs(review):editors.map(({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch})=>{
+      if(!canOperate||busy||draftStale||!review||review.can_decide===false||review.status==='reviewed'&&!canResolveDeadline(review))return;let decisions;
+      try{decisions=canResolveDeadline(review)?savedDecisionInputs(review):editors.map(({line,availability,quantity,supplyBasis,sourceLocation,clarification,alternative,preparation,dispatch,arrival})=>{
         if(!availability.value){availability.focus();throw new Error('Перевірте наявність кожної позиції окремо.');}
         const result={line_id:line.line_id,availability:availability.value};
         if(availability.value==='available'){
@@ -472,6 +513,7 @@
         if(clarification.value.trim())result.clarification=clarification.value.trim().replace(/\s+/g,' ');
         if(alternative.value.trim())result.alternative=alternative.value.trim().replace(/\s+/g,' ');
         if(['available','wait'].includes(availability.value)){result.preparation=preparation.read();result.dispatch=dispatch.read();}
+        if(availability.value==='wait'&&supplyBasis.value==='incoming_confirmed'){const estimate=arrival.read();if(estimate)result.base_arrival=estimate;}
         return result;
       });if(deadline){const outcome=deadline.read();if(outcome){decisions={lines:decisions,deadline_review:outcome};if((review.decision||{}).split_offer)decisions.split_offer=review.decision.split_offer;}}
       if(!pendingOperation)pendingOperation=operationId();}catch(error){say(error.message,true);return;}
@@ -487,15 +529,15 @@
       }catch(error){if(version===generation)say(error.message||'Не вдалося зберегти перевірку.',true);}
       finally{if(version===generation)lock(false);}
     }
-    return {get clientId(){return clientId;},canLeave(id){
+    return {get clientId(){return clientId;},get context(){return context();},canLeave(id){
       if(Number(clientId)===Number(id)||(!dirty&&!stockDirty&&!stockPending&&!(busy&&pendingOperation)))return true;
       if(stockUnknown)say('Результат звірки залишку ще невідомий. Перевірте результат або повторіть ту саму операцію перед зміною клієнта.',true);
       else if((dirty||stockDirty)&&!busy)load(true);
       return false;
     },render(id){
-      if(Number(clientId)===Number(id)){if(!dirty&&!stockDirty&&!stockPending&&!busy)load(false);return;}
-      generation++;if(abort)abort.abort();clientId=Number(id);review=null;busy=false;dirty=false;pendingOperation=null;stockDraft={};stockDraftRequest=null;stockDirty=false;stockNeedsConfirm=false;stockPending=null;stockUnknown=false;stockResult=null;draw(null);say('Завантажуємо запит…');load(false);
-    },clear(){generation++;if(abort)abort.abort();clientId=null;review=null;busy=false;dirty=false;pendingOperation=null;stockDraft={};stockDraftRequest=null;stockDirty=false;stockNeedsConfirm=false;stockPending=null;stockUnknown=false;stockResult=null;root.replaceChildren();}};
+      if(Number(clientId)===Number(id)){if((!dirty||options.observeDirty===true)&&!stockDirty&&!stockPending&&!busy)load(false);return;}
+      generation++;if(abort)abort.abort();clientId=Number(id);review=null;busy=false;dirty=false;draftStale=false;observedReview=null;pendingOperation=null;stockDraft={};stockDraftRequest=null;stockDirty=false;stockNeedsConfirm=false;stockPending=null;stockUnknown=false;stockResult=null;draw(null);say('Завантажуємо запит…');load(false);
+    },clear(){generation++;if(abort)abort.abort();clientId=null;review=null;busy=false;dirty=false;draftStale=false;observedReview=null;pendingOperation=null;stockDraft={};stockDraftRequest=null;stockDirty=false;stockNeedsConfirm=false;stockPending=null;stockUnknown=false;stockResult=null;root.replaceChildren();notify();}};
   }
   global.IgFulfillmentReview={create};
 })(window);

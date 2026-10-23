@@ -6403,9 +6403,12 @@ def bot_client_detail_api(request, client_id):
     ).values("pk")[:1]
     from management.services.ig_human_reply import HUMAN_REPLY_UNKNOWN_REASON
     followups = []
-    for f in c.followup_tasks.annotate(
+    followup_rows = list(c.followup_tasks.annotate(
         delivery_review_id=Subquery(delivery_review_ids),
-    ).order_by("-created_at", "-id")[:50]:
+    ).order_by("-created_at", "-id")[:50])
+    from management.services.ig_manager_review_projection import manager_review_projections
+    manager_reviews = manager_review_projections(c, followup_rows)
+    for f in followup_rows:
         review_id = getattr(f, "delivery_review_id", None)
         continuation_exists = (
             f.trigger == IgFollowUpTask.Trigger.EVENT
@@ -6415,6 +6418,7 @@ def bot_client_detail_api(request, client_id):
         )
         followups.append({
             "id": f.id,
+            "manager_review": manager_reviews.get(f.pk),
             "kind": f.kind,
             "status": f.status,
             "status_label": (

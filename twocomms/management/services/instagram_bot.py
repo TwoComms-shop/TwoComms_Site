@@ -433,9 +433,9 @@ _UNPROVEN_CLAIM_REPLACEMENT = {
         "en": "I do not see the payment confirmed yet.",
     },
     "stock": {
-        "uk": "Наявність цієї позиції зараз уточнюю.",
-        "ru": "Наличие этой позиции сейчас уточняю.",
-        "en": "I am double-checking availability for this item.",
+        "uk": "Наявність цієї позиції потрібно перевірити з менеджером.",
+        "ru": "Наличие этой позиции нужно уточнить у менеджера.",
+        "en": "We need to check this item's availability with our manager.",
     },
     "order": {
         "uk": "Замовлення ще не оформлене.",
@@ -462,7 +462,7 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 
 def _reply_without_unproven_claims(
-    reply: str, claim_failures, *, locale: str = "uk"
+    reply: str, claim_failures, *, locale: str = "uk", quoted_data=()
 ) -> str:
     """Прибрати речення з недоказаним твердженням, зберігши корисну відповідь.
 
@@ -475,7 +475,7 @@ def _reply_without_unproven_claims(
     patterns = [
         _AUTHORITATIVE_REPLY_CLAIMS[kind]
         for kind in failures
-        if kind in _AUTHORITATIVE_REPLY_CLAIMS
+        if kind in _AUTHORITATIVE_REPLY_CLAIMS and kind != "stock"
     ]
     sentences = [
         part.strip()
@@ -486,6 +486,7 @@ def _reply_without_unproven_claims(
         sentence
         for sentence in sentences
         if not any(_positive_authority_claim(pattern, sentence) for pattern in patterns)
+        and not ("stock" in failures and _stock_claim_sentences(sentence, quoted_data=quoted_data))
     ]
     replacements = [
         _UNPROVEN_CLAIM_REPLACEMENT[kind][locale]
@@ -534,111 +535,67 @@ def _positive_authority_claim(pattern: re.Pattern, reply: str) -> bool:
     return False
 
 
+def _stock_claim_sentences(reply: str, *, quoted_data=()) -> tuple[str, ...]:
+    """Use the shared stock semantics; source quotations grant no stock facts."""
+    from management.services.ig_reply_truth import _claim_sentences, _product_availability_claim
+
+    return tuple(sentence for sentence in _claim_sentences(reply, quoted_data)
+        if _product_availability_claim(sentence))
+
+
 def _catalog_presentation_backs_stock_claim(client, control: dict, reply: str) -> bool:
-    """Чи спирається твердження про наявність на НАШ ЖЕ каталог.
+    """Catalog presentation never promotes warehouse/catalog rows to stock truth."""
+    return _has_exact_stock_evidence(client, control, reply=reply)
 
-    Це виправлення production-дефекту: клієнт спитав «хочу футболку з Харковом»,
-    модель перелічила підходящі футболки, і в цьому тексті співпало
-    `футболк... є`. Точного варіанта на цьому ході ще НЕ вибрано (клієнт лише
-    спитав), тому `_has_exact_stock_evidence` повертав False, і вся корисна
-    відповідь замінювалась технічною фразою про «системні дані», а діалог їхав
-    менеджеру. За два ходи клієнт отримав це двічі підряд.
 
-    Перегляд ходу: перелічити асортимент — це **презентація каталогу**, а не
-    операційне твердження про конкретну одиницю складу. Каталог — наші власні
-    авторитетні дані, і після Э3.7 у нас є resolver, який дає по ним статус.
-    Тому доказом тут виступає саме resolver: якщо згадані товари резолвяться в
-    `in_stock` або `made_to_order`, твердження про наявність підтверджене.
+def _stock_reply_truth_context(client, reply: str, context, *, quoted_data=()):
+    """Refresh only stock authority at each legacy validation boundary."""
+    from dataclasses import replace
+    if quoted_data and _stock_claim_sentences(reply):
+        context = replace(context, quoted_data=tuple(dict.fromkeys((*context.quoted_data, *quoted_data))))
+    if not _stock_claim_sentences(reply, quoted_data=quoted_data):
+        return context
+    from management.services.ig_fulfillment_reviews import fulfillment_review_projection
+    from management.services.ig_reply_authority import fulfillment_availability_authorities
 
-    Fail-closed зберігається: якщо жодного товару в ході ідентифікувати не
-    вдалось або resolver дає `unknown`/`unavailable` — доказу немає.
+    try:
+        projection = fulfillment_review_projection(client.pk)
+        facts = fulfillment_availability_authorities(projection)
+        status = "reviewed" if facts else "pending"
+    except Exception:
+        facts, status = (), "pending"
+    return replace(context, availability_authorities=facts, fulfillment_review_status=status)
+
+
+def _has_exact_stock_evidence(client, control: dict, *, reply: str = "", quoted_data=()) -> bool:
+    """Only a current signed manager review can authorize exact stock prose.
+
+    Allocation and offer resolution remain checkout tools. Their accounting
+    observations, including positive quantities and absent rows, are never a
+    customer-facing physical availability decision.
     """
-    product_ids: list = []
-    raw = control.get("show_products") if isinstance(control, dict) else None
-    if isinstance(raw, str):
-        from management.services.ig_catalog_media import parse_product_ids
-
-        parsed = parse_product_ids(raw)
-        if parsed:
-            product_ids.extend(parsed)
-    pinned = _control_product_id(control) or getattr(client, "current_product_id", None)
-    try:
-        pinned = int(pinned or 0)
-    except (TypeError, ValueError):
-        pinned = 0
-    if pinned:
-        product_ids.append(pinned)
-    if not product_ids:
+    sentences = _stock_claim_sentences(reply, quoted_data=quoted_data)
+    if not sentences:
         return False
     try:
-        from management.services.ig_offer_resolver import OfferStatus, resolve_offer
+        from management.services.ig_reply_truth import ReplyTruthContext, _manager_availability_matches
+
+        context = _stock_reply_truth_context(client, reply, ReplyTruthContext(), quoted_data=quoted_data)
+        if not context.availability_authorities:
+            return False
+        return all(_manager_availability_matches(sentence, context) for sentence in sentences)
     except Exception:
         return False
-    backed = 0
-    for product_id in dict.fromkeys(product_ids):
-        try:
-            resolution = resolve_offer(product_id=product_id)
-        except Exception:
-            return False
-        if resolution.status in {OfferStatus.IN_STOCK, OfferStatus.MADE_TO_ORDER}:
-            backed += 1
-        else:
-            # Хоча б один згаданий товар недоступний або невідомий — не
-            # підтверджуємо весь набір.
-            return False
-    return backed > 0
 
 
-def _has_exact_stock_evidence(client, control: dict) -> bool:
-    """Return true only for a fully identified, allocatable inventory unit."""
-    product_id = _control_product_id(control) or getattr(client, "current_product_id", None)
-    try:
-        product_id = int(product_id or 0)
-    except (TypeError, ValueError):
-        return False
-    if not product_id:
-        return False
-    selection = _checkout_selection_state(client, product_id)
-    try:
-        variant_id = int(
-            control.get("color_variant_id")
-            or selection.get("color_variant_id")
-            or 0
-        )
-        quantity = int(control.get("qty") or getattr(client, "current_qty", 1) or 1)
-    except (TypeError, ValueError):
-        return False
-    size = str(control.get("size") or getattr(client, "current_size", "") or "").strip()
-    fit = str(control.get("fit") or selection.get("fit_option_code") or "").strip()
-    if not variant_id or not size or quantity <= 0:
-        return False
-    try:
-        from management.services.ig_availability import (
-            AllocationSpec,
-            AvailabilityStatus,
-            resolve_allocation,
-        )
-
-        decision = resolve_allocation(
-            AllocationSpec(
-                product_id=product_id,
-                color_variant_id=variant_id,
-                size=size,
-                fit_code=fit,
-                quantity=quantity,
-            )
-        )
-    except Exception:
-        return False
-    return decision.status == AvailabilityStatus.ALLOCATABLE
-
-
-def _authoritative_reply_claim_failures(client, reply: str, control: dict) -> tuple[str, ...]:
-    """Identify positive operational facts that lack application-owned evidence."""
+def _authoritative_reply_claim_failures(client, reply: str, control: dict, *, quoted_data=()) -> tuple[str, ...]:
+    """Identify operational claims lacking the required application evidence."""
     claimed = {
         kind for kind, pattern in _AUTHORITATIVE_REPLY_CLAIMS.items()
-        if _positive_authority_claim(pattern, reply)
+        if kind != "stock" and _positive_authority_claim(pattern, reply)
     }
+    if _stock_claim_sentences(reply, quoted_data=quoted_data):
+        claimed.add("stock")
     if not claimed:
         return ()
     failures = set(claimed)
@@ -650,11 +607,8 @@ def _authoritative_reply_claim_failures(client, reply: str, control: dict) -> tu
                 failures.discard("payment")
         except Exception:
             pass
-    if "stock" in claimed and (
-        _has_exact_stock_evidence(client, control)
-        # Презентація каталогу підтверджується нашими ж даними через resolver
-        # (Э3.7). Без цього будь-який перегляд асортименту втрачав відповідь.
-        or _catalog_presentation_backs_stock_claim(client, control, reply)
+    if "stock" in claimed and _has_exact_stock_evidence(
+        client, control, reply=reply, quoted_data=quoted_data,
     ):
         failures.discard("stock")
     if "order" in claimed:
@@ -7952,6 +7906,8 @@ def _response_validation_fallback(client=None, *, reasons=(), has_images=False) 
                 "uk": "Не вдалося підготувати надійну відповідь обраною вами мовою. Уточніть, будь ласка, головне питання."}[family]
     locale = _assisted_checkout_locale(client) if client is not None else "uk"
     codes = {str(reason or "") for reason in reasons}
+    if codes == {"unverified_availability"}:
+        return _UNPROVEN_CLAIM_REPLACEMENT["stock"].get(locale, _UNPROVEN_CLAIM_REPLACEMENT["stock"]["uk"])
     if "unverified_recruitment" in codes:
         key = "recruitment"
     elif has_images and codes & {
@@ -8013,7 +7969,8 @@ def _provider_reply_truth_context(client, control, reply_text):
         str(reply_text or ""),
         local_control,
     )
-    context = build_reply_truth_context(client, control=resolved_control)
+    context = _stock_reply_truth_context(client, reply_text,
+        build_reply_truth_context(client, control=resolved_control))
     from dataclasses import replace
     from management.services.ig_catalog_category_discovery import category_urls_for_control
     category_urls = category_urls_for_control(resolved_control, client,
@@ -14899,6 +14856,7 @@ def _process_one_inside_reply_boundary(
     live_commerce_fallback = ""
     model_reply_guarded = False
     model_actions_blocked = False
+    stock_review_required = False
     server_generated_urls: list[str] = []
 
     if row.client_id:
@@ -15677,13 +15635,16 @@ def _process_one_inside_reply_boundary(
             row.client if row.client_id else None,
         )
     if reply and row.client_id:
-        claim_failures = _authoritative_reply_claim_failures(row.client, reply, control)
+        claim_failures = _authoritative_reply_claim_failures(
+            row.client, reply, control, quoted_data=(row.text or "",),
+        )
         if claim_failures:
+            stock_review_required = "stock" in claim_failures
             pre_effect_rejection_reasons.extend(
                 {
                     "payment": "unverified_payment",
                     "order": "unverified_order",
-                    "stock": "configuration_mismatch",
+                    "stock": "unverified_availability",
                 }.get(kind, "invalid_response")
                 for kind in claim_failures
             )
@@ -15693,6 +15654,7 @@ def _process_one_inside_reply_boundary(
                 reply,
                 claim_failures,
                 locale=_assisted_checkout_locale(row.client),
+                quoted_data=(row.text or "",),
             )
             log(
                 "warning",
@@ -15732,7 +15694,8 @@ def _process_one_inside_reply_boundary(
         try:
             proposal_truth = validate_reply_truth(
                 reply,
-                context=build_reply_truth_context(row.client, control=control),
+                context=_stock_reply_truth_context(row.client, reply,
+                    build_reply_truth_context(row.client, control=control), quoted_data=(row.text or "",)),
             )
             truth_reasons = proposal_truth.reasons
         except Exception:
@@ -15741,6 +15704,7 @@ def _process_one_inside_reply_boundary(
             [*pre_effect_rejection_reasons, *truth_reasons]
         ))
         if rejection_reasons:
+            stock_review_required = stock_review_required or "unverified_availability" in rejection_reasons
             log(
                 "warning",
                 "reply_truth_pre_effect",
@@ -15754,7 +15718,7 @@ def _process_one_inside_reply_boundary(
             control = {}
             controls_valid = False
             follow_candidate = None
-            needs_manager = False
+            needs_manager = stock_review_required
             model_actions_blocked = True
 
     if reply and row.client_id and _reply_language_mismatch_for_client(row.client, reply):
@@ -15762,7 +15726,7 @@ def _process_one_inside_reply_boundary(
         control = {}
         controls_valid = False
         follow_candidate = None
-        needs_manager = False
+        needs_manager = stock_review_required
         model_actions_blocked = True
         log("warning", "reply_language_pre_effect", "reply_language_mismatch")
 
@@ -16328,16 +16292,17 @@ def _process_one_inside_reply_boundary(
         try:
             final_truth = validate_reply_truth(
                 reply,
-                context=build_reply_truth_context(
+                context=_stock_reply_truth_context(row.client, reply, build_reply_truth_context(
                     row.client,
                     control=control,
                     server_urls=tuple(server_generated_urls),
-                ),
+                ), quoted_data=(row.text or "",)),
             )
             final_reasons = final_truth.reasons
         except Exception:
             final_reasons = ("authority_unavailable",)
         if final_reasons:
+            stock_review_required = stock_review_required or "unverified_availability" in final_reasons
             log(
                 "warning",
                 "reply_truth_final",
@@ -16366,14 +16331,14 @@ def _process_one_inside_reply_boundary(
                 has_images=bool(turn_images),
             )
             control = {}
-            needs_manager = False
+            needs_manager = stock_review_required
             payment_deal = None
             model_actions_blocked = True
 
     if reply and row.client_id and _reply_language_mismatch_for_client(row.client, reply):
         reply = _response_validation_fallback(row.client, reasons=("reply_language_mismatch",))
         control = {}
-        needs_manager = False
+        needs_manager = stock_review_required
         payment_deal = None
         model_actions_blocked = True
         if follow_authorized is not None:

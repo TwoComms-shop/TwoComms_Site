@@ -37,7 +37,7 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
             "fail-fast": False,
             "max-parallel": 5,
             "matrix": {"suite": ["lifecycle", "checkout-concurrency", "follow-ugc-concurrency",
-                "lease-concurrency", "conversion-context", "dialogue-quality"]},
+                "lease-concurrency", "conversion-context", "dialogue-quality", "stock-authority"]},
         })
         self.assertEqual(self.suite_job["runs-on"], "ubuntu-24.04")
         self.assertEqual(self.suite_job["timeout-minutes"], 30)
@@ -49,10 +49,47 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         from scripts.run_mariadb_gate import SUITES
 
         matrix = self.suite_job["strategy"]["matrix"]["suite"]
-        self.assertEqual(len(matrix), 6)
+        self.assertEqual(len(matrix), 7)
         self.assertEqual(len(set(matrix)), len(matrix))
         self.assertTrue(all(SUITES[name] for name in matrix))
         self.assertFalse(set(SUITES["dialogue-quality"]) & set(SUITES["conversion-context"]))
+        self.assertFalse(set(SUITES["stock-authority"]) & set(SUITES["dialogue-quality"]))
+
+    def test_stock_authority_has_native_and_existing_django_node_coverage(self):
+        from scripts.run_mariadb_gate import SUITES
+
+        new_modules = {
+            "management.tests_ig_stock_authority_20261023",
+            "management.tests_ig_stock_catalog_copy_20261023",
+            "management.tests_ig_stock_claim_guard_20261023",
+            "management.tests_ig_stock_request_scope_20261023",
+            "management.tests_ig_palette_intent_20261023",
+            "management.tests_ig_standard_funnel_qa",
+        }
+        self.assertTrue(new_modules.issubset(SUITES["stock-authority"]))
+        for legacy_suite in ("lifecycle", "checkout-concurrency", "follow-ugc-concurrency",
+                             "lease-concurrency", "conversion-context", "dialogue-quality"):
+            self.assertFalse(new_modules & set(SUITES[legacy_suite]))
+
+        django_workflow = yaml.safe_load((WORKFLOW.parent / "django61-gate.yml").read_text())
+        steps = django_workflow["jobs"]["django61"]["steps"]
+        django_step = next(step for step in steps if step.get("name") == "Run Instagram reply and context regressions")
+        django_tokens = django_step["run"].replace("\\\n", " ").split()
+        for module in new_modules:
+            self.assertEqual(django_tokens.count(module), 1)
+        self.assertIn("--settings=test_settings_no_network_non_dtf", django_tokens)
+
+        node_step = next(step for step in steps if step.get("name") == "Run live conversation UI regressions")
+        node_tokens = node_step["run"].split()
+        self.assertEqual(node_tokens[:2], ["node", "--test"])
+        for path in (
+            "tests/js/management-bot-stock-review.test.js",
+            "tests/js/management-ig-fulfillment-review-reuse.test.cjs",
+            "tests/js/management-ig-fulfillment-stock-sync.test.cjs",
+            "tests/js/management-ig-restock-waiting-list.test.cjs",
+        ):
+            self.assertEqual(node_tokens.count(path), 1)
+            self.assertTrue((WORKFLOW.parents[2] / path).is_file())
 
     def test_lifecycle_check_rejects_failed_cancelled_and_skipped_matrix(self):
         aggregate = self.workflow["jobs"]["lifecycle"]

@@ -187,26 +187,25 @@ class NativeFulfillmentReviewTests(_RestockFixture, TestCase):
         provider.assert_not_called()
         return result
 
-    def test_positive_exact_catalog_inquiry_has_no_manager_review(self):
+    def test_positive_exact_catalog_inquiry_requires_manager_review(self):
         self.variant.stock = self.rule.stock = 5
         self.variant.save(update_fields=["stock"])
         self.rule.save(update_fields=["stock"])
         result = self._ordinary_inquiry()
-        self.assertFalse(result["ready"], result)
-        self.assertEqual(result["reason"], "no_review_requirement")
-        self.assertFalse(Request.objects.exists())
-        self.assertFalse(IgFollowUpTask.objects.filter(reason="fulfillment_review").exists())
-        self.assertFalse(IgBotNotification.objects.filter(event_type="fulfillment_review").exists())
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(Request.objects.count(), 1)
+        self.assertEqual(IgFollowUpTask.objects.filter(reason="fulfillment_review").count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
 
-    def test_positive_exact_warehouse_inquiry_has_no_manager_review(self):
+    def test_positive_exact_warehouse_inquiry_requires_manager_review(self):
         from management.tests_ig_fulfillment_stock_sync import NativeFulfillmentStockSyncTests
         stock = NativeFulfillmentStockSyncTests.warehouse(self)
         stock.quantity = 5
         stock.save(update_fields=["quantity"])
         result = self._ordinary_inquiry()
-        self.assertEqual(result["reason"], "no_review_requirement", result)
-        self.assertFalse(Request.objects.exists())
-        self.assertFalse(IgBotNotification.objects.filter(event_type="fulfillment_review").exists())
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(Request.objects.count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
 
     def test_zero_catalog_inquiry_still_creates_source_bound_review(self):
         result = self._ordinary_inquiry()
