@@ -23,7 +23,7 @@ _REFERENCE = re.compile(r'@C[1-9]\d*')
 _VARIANT = re.compile(r'\(variant_id=\d+, ')
 _SHORT_VARIANT = re.compile(r'\(v=(\d+), ')
 _PRICE = re.compile(r' — (\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)? грн(?: \(знижка [^()\n]*\))?)(?=;|$)')
-_STOCK = re.compile(r', на складі \d+ шт$')
+_STOCK = re.compile(r', (?:на складі \d+ шт|обліковий stock=\d+)$')
 
 
 def _fragments(line):

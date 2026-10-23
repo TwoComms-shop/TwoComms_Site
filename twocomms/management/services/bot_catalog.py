@@ -17,8 +17,8 @@ from django.core.cache import cache
 logger = logging.getLogger(__name__)
 from django.db.models import Sum
 
-CACHE_KEY = "ig_bot_catalog_ctx"
-CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_shared_v1"
+CACHE_KEY = "ig_bot_catalog_ctx_physical_boundary_v2"
+CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_physical_boundary_v2"
 CACHE_TTL = 600          # 10 хв
 # Збій build-у кешується на дуже короткий час: знімок мусить швидко оновитись
 # після відновлення, а не жити ті самі 10 хвилин, що й валідний каталог.
@@ -194,6 +194,11 @@ def _build(*, compact: bool = False) -> str:
         )
 
     price_rule = (
+        "\nМежа каталогу: це ціни та описані конфігурації, не фізична наявність. "
+        "Обліковий stock будь-якого значення, доступні/недоступні для checkout "
+        "розміри й неповний перелік кольорів не доводять наявність або відсутність. "
+        "Для непідтвердженої можливості збережи точне побажання й уточни у менеджера; "
+        "не підмінюй його показаним кольором чи іншим розміром."
         "\nПравило ціни: точну ціну називай лише для обраної конфігурації "
         "variant_id + фасон/опції. Якщо в рядку є діапазон або різні ціни, "
         "спершу уточни параметри; не підмінюй ціну товару базовою. Не вигадуй "
@@ -210,13 +215,7 @@ def _build(*, compact: bool = False) -> str:
 
 
 def _availability_label(product_id: int, *, aggregate_stock: int) -> str:
-    """Формулировка наличия для строки каталога — из единого resolver (Э3.7).
-
-    Агрегированный `stock` показывается только как диагностика рядом с
-    авторитетным статусом. Он больше не решает сам: раньше нулевой остаток здесь
-    означал «під замовлення», тогда как checkout по тому же варианту мог сказать
-    «недоступно» — и клиент читал взаимно противоречивые вещи.
-    """
+    """Expose resolver eligibility and accounting without a physical-stock claim."""
     try:
         from management.services.ig_offer_resolver import (
             OfferStatus,
@@ -227,18 +226,10 @@ def _availability_label(product_id: int, *, aggregate_stock: int) -> str:
     except Exception:
         logger.debug("offer resolver unavailable for product %s", product_id, exc_info=True)
         return ", наявність уточнюємо"
-    if resolution.status == OfferStatus.IN_STOCK:
-        return (
-            f", на складі: {aggregate_stock} шт"
-            if aggregate_stock > 0
-            else ", в наявності"
-        )
-    if resolution.status == OfferStatus.MADE_TO_ORDER:
-        return ", під замовлення (відшиваємо 1-3 дні)"
-    if resolution.status == OfferStatus.UNAVAILABLE:
-        return ", зараз недоступно"
-    # `unknown` — fail-closed: ничего не утверждаем клиенту.
-    return ", наявність уточнюємо"
+    status = {OfferStatus.IN_STOCK: "in_stock", OfferStatus.MADE_TO_ORDER: "made_to_order",
+        OfferStatus.UNAVAILABLE: "unavailable"}.get(resolution.status, "unknown")
+    return (f", обліковий stock={aggregate_stock}, checkout_status={status} "
+        "(фізичну наявність не підтверджує)")
 
 
 def _log_catalog_truncation(dropped: int, total: int, limit: int) -> None:

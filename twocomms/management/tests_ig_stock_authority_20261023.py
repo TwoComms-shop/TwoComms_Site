@@ -13,6 +13,85 @@ from management.services.ig_fulfillment_delivery import render_manager_update
 from management.tests_ig_restock_subscriptions import _RestockFixture
 
 
+class StockPromptBoundaryTests(SimpleTestCase):
+    def test_checkout_projection_retains_choices_price_and_accounting_without_physical_labels(self):
+        from management.services.ig_client_state_card import checkout_prompt_value
+        for stock in (0, 100):
+            with self.subTest(stock=stock):
+                value = {"product": {"id": 7, "price": "900.00", "price_exact": True},
+                    "color": {"selected": "black", "options": [{"name": "Black", "stock": stock, "variant_id": 3}]},
+                    "size": {"selected": "M", "available": ["L"] if stock == 0 else ["M", "L"],
+                        "disabled": ["M"] if stock == 0 else [], "requested_unavailable": "M" if stock == 0 else ""}}
+                before = deepcopy(value)
+                rendered = checkout_prompt_value(value)
+                self.assertEqual(value, before)
+                self.assertEqual(rendered["product"], before["product"])
+                self.assertEqual(rendered["color"]["selected"], "black")
+                self.assertEqual(rendered["color"]["options"], [{"name": "Black", "accounting_stock": stock, "variant_id": 3}])
+                self.assertEqual(rendered["size"], {"selected": "M",
+                    "checkout_eligible_values": before["size"]["available"],
+                    "checkout_disabled_values": before["size"]["disabled"],
+                    "checkout_ineligible_request": before["size"]["requested_unavailable"]})
+
+    def test_pending_observation_is_accounting_but_exact_manager_decision_is_unchanged(self):
+        from management.services.ig_fulfillment_context import fulfillment_prompt_value
+        for stock in (0, 100):
+            with self.subTest(stock=stock):
+                observation = {"status": "available" if stock else "unavailable",
+                    "reason": "physical_stock_available" if stock else "insufficient_free_stock",
+                    "physical_quantity": stock, "free_quantity": stock, "size_cap": stock}
+                lines = [{"line_id": "line:1:0", "preferences": {"size": "M", "color": "мокко"},
+                    "observation": observation}]
+                decision = {"id": 9, "lines": [{"line_id": "line:1:0", "availability": "available",
+                    "checked_quantity": 1, "supply_basis": "accessible_unrecorded"}]}
+                value = {"status": "reviewed", "current_request": {"lines": lines},
+                    "lines": deepcopy(lines), "decision": decision}
+                before = deepcopy(value)
+                rendered = fulfillment_prompt_value(value)
+                self.assertEqual(value, before)
+                self.assertEqual(rendered["decision"], decision)
+                line = rendered["current_request"]["lines"][0]
+                self.assertEqual(line["preferences"], {"size": "M", "color": "мокко"})
+                self.assertNotIn("observation", line)
+                self.assertEqual(line["accounting_observation"], {
+                    "accounting_status": observation["status"], "accounting_reason": observation["reason"],
+                    "physical_quantity": stock, "free_quantity": stock, "size_cap": stock})
+
+    def test_catalogue_price_and_configuration_keep_zero_and_positive_accounting_local(self):
+        from decimal import Decimal
+        from management.services.ig_catalog_pricing import format_variant_pricing
+        for stock in (0, 100):
+            with self.subTest(stock=stock):
+                rows = [{"variant_id": 3, "color": "Black", "price": Decimal("900.00"),
+                    "price_text": "900", "price_reason": "", "fit_code": "classic",
+                    "compatible_sizes": ("M", "L"), "stock": stock}]
+                before = deepcopy(rows)
+                text = format_variant_pricing(rows)
+                self.assertEqual(rows, before)
+                for known in ("Black", "variant_id=3", "900 грн", "classic=M/L", f"обліковий stock={stock}"):
+                    self.assertIn(known, text)
+                self.assertNotIn("на складі", text)
+
+    def test_shared_catalogue_encoding_keeps_accounting_counts_local_and_lossless(self):
+        from decimal import Decimal
+        from management.services.ig_catalog_pricing import format_variant_pricing
+        from management.services.ig_catalog_prompt_compaction import compact_catalog_text, expand_compact_catalog_text
+        lines = ["Каталог TwoComms (усі актуальні товари; скорочений формат):"]
+        for stock in range(40):
+            variant_id = stock + 1
+            row = {"variant_id": variant_id, "color": "Black", "price": Decimal("900.00"),
+                "price_text": "900", "price_reason": "", "fit_code": "classic",
+                "compatible_sizes": ("M", "L"), "stock": stock}
+            lines.append(f"• id={variant_id} | Fictional {variant_id} — 900 грн; кольори: " + format_variant_pricing([row]))
+        original = "\n".join(lines)
+        encoded = compact_catalog_text(original)
+        self.assertLess(len(encoded), len(original))
+        self.assertEqual(expand_compact_catalog_text(encoded), original)
+        for stock in range(40):
+            self.assertIn(f"variant_id={stock + 1}, @C", encoded)
+            self.assertIn(f", обліковий stock={stock})", encoded)
+
+
 @override_settings(IG_FULFILLMENT_REVIEWS_ENABLED=True, IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True,
     GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
 class NativeStockAuthorityTests(_RestockFixture, TestCase):

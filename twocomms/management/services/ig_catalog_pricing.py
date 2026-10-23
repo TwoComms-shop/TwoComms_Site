@@ -311,7 +311,6 @@ def format_variant_pricing(rows: list[dict]) -> str:
         if reasons:
             detail += ", причина: " + "; ".join(reasons)
         stock = int(options[0].get("stock") or 0)
-        if stock > 0:
-            detail += f", на складі {stock} шт"
+        detail += f", обліковий stock={stock}"
         rendered.append(f"{color} (variant_id={variant_id}, {detail})")
     return ", ".join(rendered)

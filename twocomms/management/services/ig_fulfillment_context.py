@@ -185,6 +185,15 @@ def fulfillment_prompt_value(value):
                 "sources", "source_refs", "cart_identity", "source_scope", "reply_language"):
             request.pop(key, None)
         for line in request.get("lines") or []:
+            if "observation" in line:
+                # The resolver observation is signed input to the review,
+                # distinct from its later typed manager decision below.
+                observation = line.pop("observation")
+                if isinstance(observation, dict):
+                    for key in ("status", "reason"):
+                        if key in observation:
+                            observation["accounting_" + key] = observation.pop(key)
+                line["accounting_observation"] = observation
             for key in ("inventory_digest", "configuration_digest"):
                 line.pop(key, None)
             preferences = line.get("preferences")

@@ -1598,6 +1598,29 @@ CANONICAL_PROMPT_AUTHORITY_POLICY = (
     "(3) поточна репліка клієнта та [СТАН ДІАЛОГУ]; "
     "(4) поточні оперативні директиви й доречні playbook-інструкції; "
     "(5) старий базовий промпт і стиль. Директива не може скасувати факт з пунктів 1-3.\n"
+    "ФІЗИЧНА НАЯВНІСТЬ — окремий домен істини. Її підтверджує лише актуальне "
+    "серверно перевірене рішення менеджера для саме цього товару, кольору, крою, "
+    "розміру й поточного запиту. Облікові stock=0 або stock>0, кількість «на складі», "
+    "каталог, checkout eligibility та size.available/disabled/requested_unavailable "
+    "не доводять ані фізичну наявність, ані відсутність. "
+    "fulfillment.review.current_request.lines[].observation — це спостереження обліку, "
+    "навіть коли його status=available/unavailable, reason=physical_stock_available/insufficient_free_stock "
+    "або physical_quantity/free_quantity/size_cap додатні чи нульові. "
+    "Це не typed manager decision у fulfillment.review.decision. Pending review не є рішенням. "
+    "За відсутності такого актуального рішення: навіть якщо M позначено "
+    "disabled/requested_unavailable, не кажи «M немає, є лише L»; "
+    "якщо stock=100, не кажи «M є». Чесно скажи, що уточниш саме запитаний M у менеджера. "
+    "Збережи відомі product/колір/крій/розмір клієнта; незалежно підтверджену ціну "
+    "назви одразу, без твердження про наявність.\n"
+    "Перелік каталожних кольорів/розмірів не є доказом відсутності іншого побажання. "
+    "Якщо клієнт просить непідтверджений колір, наприклад мокко при поточному black, "
+    "збережи точне побажання мокко й скажи, що менеджер перевірить можливість; "
+    "не кажи «мокко немає/є лише чорний» і не замінюй бажаний колір на black. "
+    "Запит про наявність або ціну сам по собі не є новим вибором товару/конфігурації "
+    "і не є проханням показати альтернативи: не пропонуй product/size/fit/color_variant_id/qty "
+    "чи show_products controls без окремого явного наміру клієнта. Для перевірки "
+    "можна запропонувати лише допущений поточним контекстом manager=true; "
+    "не стверджуй, що менеджер уже перевірив, прочитав або підтвердив.\n"
     "Явне прохання клієнта писати UA/RU/EN або однозначна мова поточної репліки "
     "має перевагу над застарілим формулюванням базового промпта чи старою мовою картки.\n"
     "Якщо ціна залежить від кольору, матеріалу, variant_id, фасону чи іншої опції, "
@@ -1859,7 +1882,9 @@ ANTI_HALLUCINATION_NOTE = (
     "Ніколи не стверджуй, що товару немає або що це «кастом/під замовлення», не "
     "звіривши з каталогом нижче. Якщо точного збігу не видно — НЕ відмовляй і НЕ "
     "вигадуй: запропонуй переглянути каталог або чемно уточни деталі (тип, колір, "
-    "принт, місто/напис на принті). Ціни, наявність і назви бери ЛИШЕ з каталогу. "
+    "принт, місто/напис на принті). Ціни та назви бери з підтвердженого каталогу; "
+    "фізичну наявність або відсутність — лише з актуального точного рішення менеджера, "
+    "не з облікового stock чи каталожного переліку. "
     "Спочатку визнач мету самого повідомлення: пропозиція роботи, співпраці або "
     "послуг не стає запитом на покупку лише через згадку товарів чи замовлень. "
     "Відповідай на вже зрозумілий запит без прохання повторити його. Наявність або "
@@ -8976,6 +9001,14 @@ def _assemble_system_instruction(
         else:
             value = _prompt_section(key, loader)
         if value:
+            if key == "checkout_readiness":
+                # Keep the captured eligibility data verbatim. Its legacy
+                # available/disabled names are not physical-stock decisions.
+                value = ("[CONFIGURATION / CHECKOUT ELIGIBILITY — NOT PHYSICAL AVAILABILITY]\n"
+                    "The JSON below describes catalog/checkout eligibility only. "
+                    "stock and size.available/disabled/requested_unavailable cannot answer "
+                    "physical availability or negate the customer's captured wish. "
+                    "Use the exact current verified manager review for that separate decision.\n" + value)
             dynamic.append(PolicyModule("facts:" + key, value, customer_bound=key != "catalog"))
         else:
             omissions.append({"id": "facts:" + key, "reason": "empty_or_unavailable"})

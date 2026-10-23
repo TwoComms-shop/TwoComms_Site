@@ -7,6 +7,7 @@ remain with their existing owners.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -707,6 +708,26 @@ def client_state_admin_payload(state: CapturedClientState):
     return state.as_dict()
 
 
+def checkout_prompt_value(readiness):
+    """Label eligibility/accounting in the prompt without changing captured truth."""
+    value = deepcopy(readiness)
+    if not isinstance(value, dict):
+        return value
+    size = value.get("size")
+    if isinstance(size, dict):
+        for old, new in (("available", "checkout_eligible_values"),
+                ("disabled", "checkout_disabled_values"),
+                ("requested_unavailable", "checkout_ineligible_request")):
+            if old in size:
+                size[new] = size.pop(old)
+    color = value.get("color")
+    if isinstance(color, dict):
+        for row in color.get("options") or []:
+            if isinstance(row, dict) and "stock" in row:
+                row["accounting_stock"] = row.pop("stock")
+    return value
+
+
 def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_slots=()) -> RenderResult:
     """Budget estimated tokens by whole slots; oversized mandatory data fails.
 
@@ -747,6 +768,9 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
                 continue
             projected = {"slot": key, "line_id": cart.get("active_line_id"),
                 "value": slot["value"], "authority": slot["authority"], **catalog}
+            if "availability" in projected:
+                eligibility = projected.pop("availability")
+                projected["checkout_eligibility"] = {"available": "eligible", "unavailable": "ineligible"}.get(eligibility, eligibility)
         elif key == "waiting_list.interest":
             # Exact source refs/binding stay in the immutable state. Keep this
             # mandatory history summary small; exact lines remain optional.
@@ -759,6 +783,11 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
                 if name not in {"freshness", "source_watermark", "mandatory", "capture_scope", "scope_status"}
                 and not (name in {"applicability", "availability"} and value == "unknown")
                 and not (name in {"conflict", "superseded_by"} and value is None)}}
+            if key == "configuration.readiness":
+                projected["value"] = checkout_prompt_value(projected["value"])
+            if key.startswith("choice.") and "availability" in projected:
+                eligibility = projected.pop("availability")
+                projected["checkout_eligibility"] = {"available": "eligible", "unavailable": "ineligible"}.get(eligibility, eligibility)
             if key == "fulfillment.review":
                 from management.services.ig_fulfillment_context import fulfillment_prompt_value
                 projected["value"] = fulfillment_prompt_value(slot["value"])

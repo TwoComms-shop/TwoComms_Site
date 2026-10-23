@@ -7,7 +7,7 @@ import json
 from django.conf import settings
 from django.utils import timezone
 
-from management.services.ig_client_state_card import assemble_client_state
+from management.services.ig_client_state_card import assemble_client_state, checkout_prompt_value
 from management.services.ig_turn_capture import capture_revision_context, detached_payload
 
 
@@ -170,7 +170,7 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             generation_boundary.response_plan.configuration["consultation_measurements"], ensure_ascii=False, separators=(",", ":")))
             if generation_boundary.response_plan.configuration.get("consultation_measurements") else "",
         "checkout_readiness": "[CAPTURED CHECKOUT READINESS]\n" + json.dumps(
-            readiness, ensure_ascii=False, separators=(",", ":")),
+            checkout_prompt_value(readiness), ensure_ascii=False, separators=(",", ":")),
         "shown_products": "", "funnel_journal": "",
         "objection_lifecycle": "[CURRENT SOURCE OBJECTION]\n" + json.dumps(
             {"present": context.facts.objection_present,

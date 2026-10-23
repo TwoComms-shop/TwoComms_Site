@@ -48,17 +48,26 @@ class CatalogLiveIntegrationTests(unittest.TestCase):
             "prepare_catalog_choice_presentations", "prepare_catalog_configuration_choices",
             "prepare_catalog_chart_effect", "prepare_catalog_choice_page")}
         self.factories.update(factories)
+        self.illustration = Mock(return_value=preparation())
         modules = {
             "management.services": module("management.services", instagram_bot=self.bot),
             "management.services.ig_catalog_media": module("management.services.ig_catalog_media", prepare_catalog_media=self.media),
             "management.services.ig_catalog_choice_presentations": module("management.services.ig_catalog_choice_presentations", **self.factories),
+            "management.services.ig_product_inquiry_presentation": module(
+                "management.services.ig_product_inquiry_presentation", prepare_fit_illustration=self.illustration),
+            "management.services.ig_fit_consultation": module("management.services.ig_fit_consultation",
+                fit_consultation_request=Mock(return_value={})),
         }
         resolve = Mock(return_value=(choice, source_reasons))
         choose = Mock(return_value=selector)
+        prepared_reply = function("_catalog_prepared_reply")
+        unavailable_chart = Mock(return_value=copy_reason)
+        combined = function("_combined_chart_and_fit_content", _catalog_prepared_reply=prepared_reply,
+            _catalog_unavailable_chart_reason=unavailable_chart)
         execute = function("_prepare_visible_content", _catalog_native_source_choice=resolve,
-            _catalog_configuration_selector=choose, _catalog_unavailable_chart_reason=Mock(return_value=copy_reason),
+            _catalog_configuration_selector=choose, _catalog_unavailable_chart_reason=unavailable_chart,
             _catalog_plain_chart_requested=Mock(return_value=plain_chart),
-            _catalog_prepared_reply=function("_catalog_prepared_reply"))
+            _catalog_prepared_reply=prepared_reply, _combined_chart_and_fit_content=combined)
         with patch.dict(sys.modules, modules):
             result = execute(self.revision, self.response, self.settings)
         return result, resolve, choose
@@ -94,6 +103,7 @@ class CatalogLiveIntegrationTests(unittest.TestCase):
         result, *_ = self.visible(choice=choice, prepare_catalog_chart_effect=chart)
         self.assertIs(chart.call_args.kwargs["choice"], choice)
         self.assertEqual(result[1], self.response.reply_text)
+        self.illustration.assert_not_called()
         self.factories["prepare_catalog_choice_presentations"].assert_not_called()
         self.bot._catalog_media_selection_for_control.assert_not_called()
 
@@ -275,8 +285,9 @@ class CatalogLiveIntegrationTests(unittest.TestCase):
         factory = Mock(return_value=preparation(handled=True, effects=({"payload": "actual configured grid"},)))
         result, *_ = self.visible(plain_chart=True, prepare_catalog_chart_effect=factory)
         self.assertEqual(result[0], ({"payload": "actual configured grid"},))
-        self.assertEqual(factory.call_args.kwargs, {})
+        self.assertEqual(factory.call_args.kwargs, {"response_plan": None})
         self.assertEqual(result[1], self.response.reply_text)
+        self.illustration.assert_not_called()
         self.bot._catalog_media_selection_for_control.assert_not_called()
 
     def test_plain_chart_source_parser_refuses_quotes_reports_foreign_model_and_multiline(self):

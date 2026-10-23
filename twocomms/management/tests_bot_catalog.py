@@ -114,7 +114,7 @@ class CatalogVariantPriceTests(TestCase):
 
         self.assertIn(
             f"Термо-зелена (variant_id={variant.pk}, ціна 1450 грн, "
-            "фасони/розміри: oversize=XS/M)",
+            "фасони/розміри: oversize=XS/M, обліковий stock=0)",
             text,
         )
         self.assertNotIn("oversize: XS/S/M/L/XL/XXL", text)
