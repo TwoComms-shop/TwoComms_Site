@@ -156,7 +156,12 @@ class UnlistedProductSourceTests(SimpleTestCase):
                 'Менеджер написав: ' + positive, 'Якщо ' + positive,
                 positive.replace('й одразу повідомлю вам.', 'й повідомлю, що худі M є в наявності.'),
                 positive.rstrip('. ') + ', але худі L є в наявності.',
-                'Наявність розміру M стовідсоткова, я уточню у менеджера.'):
+                'Наявність розміру M стовідсоткова, я уточню у менеджера.',
+                'Regarding physical availability for L, I will check with our team and let you know.',
+                'Regarding physical availability of white hoodie M, I will check with our team.',
+                'Regarding physical availability of Other Print M, I will check with our team.',
+                'Regarding physical availability for M, I will check with your team.',
+                'Regarding physical availability for M, I will check with our team and let you know that M is in stock.'):
             with self.subTest(text=text):
                 self.assertFalse(_pending_stock_answer_covered(plan, text, 7))
 
@@ -785,6 +790,71 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
         generated.assert_not_called()
         transport.assert_not_called()
 
+    def test_actual_h5_english_xxl_price_and_physical_team_check_sends_unchanged_once(self):
+        from copy import deepcopy
+        from management.models import IgBotNotification
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.models import IgCommerceSelectionSession
+        self.customer.language = 'en'
+        self.customer.save(update_fields=['language'])
+        grid = self.product.size_grid
+        grid.guide_data['rows'].append({'size': 'XXL', 'display_size': 'XXL'})
+        grid.save(update_fields=['guide_data'])
+        self.rule.size, self.rule.stock = 'XXL', 100
+        self.rule.save(update_fields=['size', 'stock'])
+        self.variant.stock = 100
+        self.variant.save(update_fields=['stock'])
+        self.choice = self.canonical('I want the Restock Aurora hoodie, quantity 1, size XXL, color black, classic fit')
+        parsed = {'reply_text': 'The price for the Restock Aurora hoodie in Black (size XXL, classic fit) is 900.00 грн. '
+            'Regarding physical availability for XXL, I will check with our team and let you know!',
+            'controls': [{'kind': 'price_quoted', 'value': '900.00'}, {'kind': 'manager', 'value': True}],
+            'turn_intelligence': {'catalog_candidates': [{'confidence': 1.0,
+                'evidence': 'Restock Aurora hoodie size XXL black', 'product_id': 1}],
+                'confidence': 1.0, 'intent': 'price_inquiry', 'transcript': ''}}
+        original = deepcopy(parsed)
+        import hashlib, json
+        self.assertEqual(hashlib.sha256(json.dumps(original, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest(),
+            '5bfb10b57c9a26e99addf784a4106b85c8f91aecab136348eef5e737b12c3e29')
+        result, model, http = self.prepare(question='Is this hoodie available in size XXL and what is its price?', parsed=parsed)
+        self.assertEqual(result.state, 'completed', (result.reasons, self.validation_reasons,
+            self.revision.action_receipts.get('response_coverage')))
+        self.assertEqual((model.call_count, http.call_count), (1, 1))
+        self.assertEqual(self.parsed, original)
+        self.assertEqual(self.revision.delivery_effects.get(state='sent').payload['message']['text'], original['reply_text'])
+        self.assertFalse(self.revision.action_receipts['response_coverage']['remaining'])
+        self.assertEqual(IgCommerceSelectionSession.objects.get(client=self.customer, open_slot=1).snapshot(),
+            self.generation_head)
+        self.assertEqual(capture_current_selection_lines(self.customer.pk)['lines'][0]['fields']['size']['value'], 'XXL')
+        self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer, reason='fulfillment_review').count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), 1)
+        repeated, generated, transport = self._execute()
+        self.assertEqual(repeated.state, 'completed', repeated.reasons)
+        generated.assert_not_called()
+        transport.assert_not_called()
+
+    def test_team_role_never_hides_foreign_configuration_or_firm_stock(self):
+        self.customer.language = 'en'
+        self.customer.save(update_fields=['language'])
+        self.variant.stock = self.rule.stock = 100
+        self.variant.save(update_fields=['stock'])
+        self.rule.save(update_fields=['stock'])
+        self.reject_candidate = True
+        for check in ('Regarding physical availability for L, I will check with our team.',
+                'Regarding physical availability of white hoodie M, I will check with our team.',
+                'Regarding physical availability of Other Print M, I will check with our team.',
+                'Regarding physical availability for M, I will check with your team.',
+                'Regarding physical availability for M, I will check with our team and let you know that M is in stock.'):
+            with self.subTest(check=check):
+                result, _, http = self.prepare(question='Is this hoodie available in size M and what is its price?',
+                    parsed={'reply_text': 'The Restock Aurora hoodie costs 900 UAH. ' + check,
+                        'controls': [{'kind': 'manager', 'value': True}]})
+                self.assertNotEqual(result.state, 'completed', (result.reasons, self.validation_reasons))
+                http.assert_not_called()
+                self.assertTrue(set(self.validation_reasons) & {
+                    'response_plan_pending_stock_answer_required', 'unverified_product_availability',
+                    'response_plan_line_claim_unverified'})
+
     def test_parenthetical_foreign_published_product_cannot_borrow_current_price(self):
         from management.services.ig_commerce_projection import capture_current_selection_lines
         self.products[1].title = 'Other Print'
@@ -853,6 +923,15 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
     def test_english_fronted_topic_manager_check_and_callback_sends(self):
         self.pending_variation('en', 'Is this hoodie available in size M and what is its price?',
             'The Restock Aurora hoodie costs 900 UAH. Regarding availability of this hoodie in size M, I will check with our manager and let you know.')
+
+    def test_internal_team_checks_in_ukrainian_and_russian_send_with_exact_scope(self):
+        for language, question, text in (
+            ('uk', 'Чи є це худі в розмірі M у наявності та яка його ціна?',
+             'Ціна Restock Aurora — 900 грн. Щодо фізичної наявності худі M, я уточню з нашою командою та повідомлю вам.'),
+            ('ru', 'Есть ли худи Restock Aurora в размере M в наличии и какая цена?',
+             'Худи Restock Aurora стоит 900 грн. По физическому наличию худи M, я уточню с нашей командой и сразу вам сообщу.')):
+            with self.subTest(language=language):
+                self.pending_variation(language, question, text)
 
     def test_zero_pending_stock_then_known_price_with_redundant_current_controls(self):
         self.price_continuation(True)

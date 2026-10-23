@@ -867,8 +867,8 @@ def _pending_stock_answer_covered(plan, text, source_message_id):
         # unknown predicate as though it were a model name.
         semantic = re.sub(r"(?<!\w)" + re.escape(title) + r"(?!\w)", ' ', clause, flags=re.I) if title else clause
         pending_check = _pending_manager_stock_check(semantic)
-        if ("?" in clause or (not pending_check and not _source_owned_availability_check(clause))
-            or not manager.search(clause) or (not pending_check and not _has_positive_claim(check, clause))):
+        if ("?" in clause or (not pending_check and (not _source_owned_availability_check(clause)
+            or not manager.search(clause) or not _has_positive_claim(check, clause)))):
             continue
         literal = title and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", clause, re.I)
         garment = _captured_base(captured.get("readiness"), "")[1]

@@ -18,6 +18,9 @@ class PendingManagerStockGrammarTests(SimpleTestCase):
         'Regarding availability of this hoodie in size M, I will check with our manager and let you know.',
         'As for availability of M, I’ll check with our manager.',
         'I am checking availability of M with our manager.',
+        'Щодо фізичної наявності худі M, я уточню з нашою командою та повідомлю вам.',
+        'По физическому наличию худи M, я уточню с нашей командой и сразу вам сообщу.',
+        'Regarding physical availability for M, I will check with our team and let you know.',
     )
 
     def test_topic_and_own_manager_check_share_one_nonassertive_predicate(self):
@@ -29,6 +32,24 @@ class PendingManagerStockGrammarTests(SimpleTestCase):
                 start, end = parsed['availability_span']
                 self.assertTrue(text[start:end])
                 self.assertFalse(_product_availability_claim(text))
+
+    def test_internal_team_role_does_not_authorize_foreign_reported_or_firm_stock(self):
+        from management.services.ig_reply_truth import _pending_manager_stock_check, validate_reply_truth, ReplyTruthContext
+        positive = 'Regarding physical availability for M, I will check with our team and let you know.'
+        for text in (positive.replace('our team', 'your team'), positive.replace('our team', 'their team'),
+                positive.replace('I will', 'They will'), positive.replace('I will check', 'I checked'),
+                positive.replace('I will check', 'I will not check'), 'If ' + positive,
+                'Our team wrote: ' + positive, f'«{positive}»',
+                positive.replace('let you know.', 'let you know that size M is in stock.'),
+                positive.replace('physical availability', 'guaranteed physical availability'),
+                positive.replace('physical availability', 'physical confirmed availability'),
+                positive.replace('for M', 'for M in stock'), positive.rstrip('.') + ', size M is in stock.'):
+            with self.subTest(text=text):
+                self.assertFalse(_pending_manager_stock_check(text))
+        for text in (positive + ' Size M is in stock.', positive + ' It arrives in 2 days.',
+                     positive + ' The price is 1 UAH.'):
+            with self.subTest(asserted=text):
+                self.assertFalse(validate_reply_truth(text, context=ReplyTruthContext()).valid)
 
     def test_unknown_stock_predicates_are_never_product_labels_regardless_of_case(self):
         from management.services.ig_reply_truth import (_pending_manager_stock_check,

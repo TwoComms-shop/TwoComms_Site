@@ -987,8 +987,12 @@ def _pending_manager_stock_check(clause: str):
     action = re.compile(r"\b(?:(?:(?:зараз|наразі|сейчас|також|также)\s+)?(?:(?:я|ми)\s+)?"
         r"(?:(?:зараз|наразі|сейчас|також|также)\s+)?(?:уточню|уточнимо|уточним|перевірю|перевіримо|проверю|проверим|перевіряю|перевіряємо|проверяю|проверяем)|"
         r"(?:i|we)(?:['’]ll|\s+(?:will|shall|am|are))\s+(?:(?:now|also)\s+)?(?:check(?:ing)?|verify(?:ing)?))\b", re.I)
-    manager = re.compile(r"\b(?:у|з|із|с|со|with)\s+(?:(?:нашого|нашим|нашего|our|the)\s+)?"
-        r"(?:менеджер(?:а|ом|у)?|manager)\b", re.I)
+    # The role names an internal check recipient, never stock authority.
+    # A team must be explicitly ours; a customer's/foreign team is not this
+    # business's pending manager workflow.
+    manager = re.compile(r"\b(?:у|з|із|с|со|with)\s+(?:"
+        r"(?:(?:нашого|нашим|нашего|our|the)\s+)?(?:менеджер(?:а|ом|у)?|manager)|"
+        r"(?:нашою\s+командою|нашей\s+командой|our\s+team))\b", re.I)
     actions, managers = list(action.finditer(text)), list(manager.finditer(text))
     if len(actions) != 1 or len(managers) != 1:
         return {}
@@ -1005,6 +1009,10 @@ def _pending_manager_stock_check(clause: str):
         subject = subject[:start] + " " * (end - start) + subject[end:]
     subject = re.sub(r"^\s*(?:що\s+стосується|щодо|стосовно|что\s+касается|по|насч[её]т|"
         r"regarding|concerning|as\s+for|about)\s+", "", subject, flags=re.I).strip(" ,—–-")
+    # "Physical" qualifies the adjacent availability noun, not a new
+    # assertion. Do not admit it as a free-standing residual adjective.
+    subject = re.sub(r"\b(?:physical|фізичн(?:а|ої|у|ій)|"
+        r"физическ(?:ая|ой|ую|ом|ое|ого|ому))\s+(?=" + noun.pattern + ")", "", subject, flags=re.I)
     # What remains must be one nonverbal availability topic, not a report,
     # conditional, second action, confirmed stock or an appended yes/no/wait.
     if (not noun.search(subject) or re.search(r"[,;:]|\b(?:я|ми|i|we|said|wrote|says|напис\w*|сказ\w*|"

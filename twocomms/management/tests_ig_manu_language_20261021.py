@@ -1,11 +1,11 @@
-"""Offline regressions for a copied catalogue name in an English conversation."""
+"""Offline source-language and native bounded-repair regressions."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone as datetime_timezone
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 
 from management.services.ig_reply_language import (
     reply_language_mismatch, resolve_own_source_reply_language,
@@ -205,3 +205,231 @@ class ManuNativeLanguagePipelineTests(TestCase):
         self.assertEqual(fixture.revision.bundle_snapshot["sources"], frozen_sources)
         fixture.customer.refresh_from_db()
         self.assertEqual(fixture.customer.language, "uk")
+
+
+# Exact H4B model object, preserved independently of the repair answer below.
+# Original provider-results SHA256: 9aca57c117d76375e08dd65aa673b0c199f8164b8cdbf4dc665758d398e68774.
+H4B_WRONG_UKRAINIAN_CANDIDATE = {
+    "reply_text": "Зрозуміла ваше побажання щодо фіолетового кольору для худі Restock Aurora! "
+        "Я обов'язково уточні в менеджера, чи є можливість зробити в такому кольорі, і одразу вам повідомлю.",
+    "controls": [{"kind": "manager", "value": True}],
+}
+RUSSIAN_REPAIR_CANDIDATE = {
+    "reply_text": "Ваше пожелание — худи Restock Aurora фиолетового цвета. "
+        "Уточню у менеджера возможность худи фиолетового цвета.",
+    "controls": [{"kind": "manager", "value": True}],
+}
+
+from management import tests_ig_restock_subscriptions as restock_fixture
+
+
+class _NativeRussianRepairFixture(restock_fixture._RestockFixture):
+    """One fake managed invocation; two candidates use production callbacks.
+
+    The second answer and accounting winner are local fixtures, not another
+    real model result. Private capture may reuse this mixin without inheriting
+    a concrete TestCase or unrelated test methods.
+    """
+
+    def setUp(self):
+        from management import tests_ig_source_cart_catalog as catalog_fixture
+        original = catalog_fixture.SourceCartCatalogTests.setUp
+
+        def catalog_before_sources(case):
+            original(case)
+            case.category.name, case.category.slug = "Худі", "hoodies"
+            case.category.save(update_fields=["name", "slug"])
+            case.products[0].price = case.variants[0].price_override = 900
+            case.products[0].save(update_fields=["price"])
+            case.variants[0].save(update_fields=["price_override"])
+
+        with patch.object(catalog_fixture.SourceCartCatalogTests, "setUp", catalog_before_sources):
+            super().setUp()
+        self.settings.ai_enabled = True
+        self.settings.save(update_fields=["ai_enabled"])
+        self._publish_reviewed_policy()
+        self.client_row.language = "ru"
+        self.client_row.save(update_fields=["language"])
+        self.customer = self.client_row
+        self.canonical("Хочу худи Restock Aurora, количество 1, размер M, цвет black, крой classic")
+        self.source_row = self.source("Хочу это худи фиолетового цвета.")
+        self.revision, self.token = self.revision(self.source_row)
+        self.generation_calls = []
+        self.actual_inline_count = 0
+        self.actual_hash_override = "observed"
+        self.provider_failure = False
+        self.before_validate = self.after_validate = None
+        self.candidate_decisions = []
+        self.repair_calls = 0
+        self.primary_payload = self.repair_payload = self.native_request_policy_manifest = None
+
+    def _publish_reviewed_policy(self):
+        from management.knowledge.scenarios import SCENARIO_INSTRUCTIONS, reviewed_scenario_values
+        from management.services.ig_policy_publication import draft_state, save_instruction_draft, publish_instruction_policy
+        from management.services.ig_revision_outbox import PublicationBinding
+        state = draft_state()
+        for row in SCENARIO_INSTRUCTIONS:
+            _, state = save_instruction_draft(expected_revision=state.revision,
+                expected_snapshot_hash=state.snapshot_hash, values=reviewed_scenario_values(row["key"]),
+                note="offline native language repair fixture")
+        result = publish_instruction_policy(expected_draft_revision=state.revision,
+            expected_draft_hash=state.snapshot_hash, expected_head_id=self.publication.pk,
+            expected_head_hash=self.publication.snapshot_hash, note="offline native language repair fixture")
+        self.publication = result.publication
+        self.binding = PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash)
+        self.settings.refresh_from_db()
+
+    def _source_head(self):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        return capture_current_selection_lines(self.customer.pk)
+
+    def _durable_selection(self):
+        from management.models import IgCommerceSelectionSession
+        from management.services.ig_commerce_projection import _legacy_line
+        self.customer.refresh_from_db()
+        session = IgCommerceSelectionSession.objects.get(pk=self.source_head_before["session_id"])
+        return {"session_id": session.pk, "generation": session.generation,
+            "revision": session.revision, "snapshot": session.snapshot(),
+            "current_product_id": self.customer.current_product_id,
+            "legacy_line": _legacy_line(self.customer, session.generation)}
+
+    def _source_fence_rows(self):
+        from management.models import InstagramBotMessage
+        from management.services.ig_commerce_projection import _source_fence_row
+        return {row.pk: _source_fence_row(row) for row in InstagramBotMessage.objects.filter(
+            pk__in=self.source_head_before["fence"]["source_ids"]).select_related("client")}
+
+    def _generate_repair(self, payload, **kwargs):
+        from management import tests_ig_revision_live as native_fixture
+        from management.models import IgBotNotification, IgFollowUpTask
+
+        self.primary_payload = deepcopy(payload)
+        self.native_request_policy_manifest = deepcopy(kwargs["request_policy_manifest"])
+        self.source_head_before = deepcopy(self._source_head())
+        self.durable_selection_before = deepcopy(self._durable_selection())
+        self.source_fence_rows_before = deepcopy(self._source_fence_rows())
+        self.revision.refresh_from_db()
+        receipts_before = deepcopy(self.revision.action_receipts)
+        cases_before = IgFollowUpTask.objects.filter(client=self.customer).count()
+        notices_before = IgBotNotification.objects.filter(client=self.customer).count()
+        original_validator = kwargs["result_validator"]
+
+        def validate(candidate, *, usage):
+            decision = original_validator(candidate, usage=usage)
+            self.candidate_decisions.append((deepcopy(candidate), decision))
+            return decision
+
+        kwargs["result_validator"] = validate
+        first = deepcopy(H4B_WRONG_UKRAINIAN_CANDIDATE)
+        rejected = validate(first, usage={"_request_inline_count": 0, "_request_inline_content_hashes": []})
+        self.assertFalse(rejected.valid)
+        self.assertEqual(rejected.reason_codes, ("reply_language_mismatch",))
+        self.http.assert_not_called()
+        self.revision.refresh_from_db()
+        self.assertFalse(self.revision.delivery_effects.exists())
+        self.assertFalse(self.revision.generation_proposal)
+        self.assertEqual(self.revision.action_receipts, receipts_before)
+        self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer).count(), cases_before)
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), notices_before)
+        self.assertEqual(self._source_head(), self.source_head_before)
+        self.assertEqual(self._durable_selection(), self.durable_selection_before)
+
+        self.repair_calls += 1
+        repaired = kwargs["repair_payload_factory"](payload, first, rejected.reason_codes)
+        self.assertIsInstance(repaired, dict)
+        self.repair_payload = deepcopy(repaired)
+        self.assertEqual(payload, self.primary_payload, "Repair must not rewrite its initial request.")
+        self.assertEqual(repaired["system_instruction"], payload["system_instruction"])
+        self.assertEqual(repaired["generationConfig"], payload["generationConfig"])
+        self.assertEqual(repaired["contents"][:len(payload["contents"])], payload["contents"])
+        additions = repaired["contents"][len(payload["contents"]):]
+        previous = [json.loads(part["text"]) for item in additions if item["role"] == "model" for part in item["parts"]]
+        self.assertEqual(previous, [H4B_WRONG_UKRAINIAN_CANDIDATE])
+        hints = "\n".join(part.get("text", "") for item in additions if item["role"] == "user" for part in item["parts"])
+        self.assertIn("Reply in Russian.", hints)
+        self.assertIn("previous candidate used the wrong reply language", hints)
+        self.assertIn("SAME SEALED CUSTOMER BUNDLE", hints)
+        self.assertIn("Хочу это худи фиолетового цвета", hints)
+        self.assertEqual(first, H4B_WRONG_UKRAINIAN_CANDIDATE)
+
+        # Existing native fixture admits the second candidate through the SAME
+        # real callback, then records its fake accounting winner for outbox.
+        self.parsed = deepcopy(RUSSIAN_REPAIR_CANDIDATE)
+        return native_fixture.RevisionLiveTests._generate(self, repaired, **kwargs)
+
+    def run_repair(self):
+        from management.services.ig_revision_live import execute_claimed_revision
+        with patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate_repair) as generate, \
+                patch("management.services.instagram_bot.get_page_token", return_value="offline-language-token"), \
+                patch("management.services.instagram_bot._provider_http", return_value=(200, json.dumps({"message_id": "russian-repair-once"}))) as http, \
+                patch("management.services.instagram_bot._register_outgoing_message"):
+            self.http = http
+            result = execute_claimed_revision(self.revision.pk, self.token, self.settings)
+        return result, generate, http
+
+
+@override_settings(IG_REVISION_EXECUTION_ENABLED=False, IG_FULFILLMENT_REVIEWS_ENABLED=True,
+    IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True, IG_TURN_CONTEXT_MODE="unified",
+    IG_CLIENT_STATE_PROMPT_TOKENS=2400, GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class ManuNativeRussianRepairTests(_NativeRussianRepairFixture, TransactionTestCase):
+    reset_sequences = True
+
+    def test_actual_wrong_ukrainian_candidate_repairs_once_to_one_russian_sent_reply(self):
+        import hashlib
+        from management.models import IgBotNotification, IgFollowUpTask
+        from management.services.ig_revision_live import execute_claimed_revision
+
+        self.assertEqual(hashlib.sha256(json.dumps(H4B_WRONG_UKRAINIAN_CANDIDATE,
+            ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "e654332512a74531d0802f280c22fe10e0d559af8ee0df7fb8a9d3d5745b773d")
+        result, generate, http = self.run_repair()
+        self.assertEqual((generate.call_count, self.repair_calls, http.call_count), (1, 1, 1))
+        self.assertEqual(len(self.candidate_decisions), 2)
+        self.assertEqual(self.candidate_decisions[0][0], H4B_WRONG_UKRAINIAN_CANDIDATE)
+        self.assertTrue(self.candidate_decisions[1][1].valid, self.candidate_decisions[1][1].reason_codes)
+        self.revision.refresh_from_db()
+        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(self.revision.state, self.revision.State.PROCESSED)
+        self.assertFalse(self.revision.action_receipts["response_coverage"].get("remaining"))
+        effect = self.revision.delivery_effects.get()
+        self.assertEqual((effect.kind, effect.state, effect.provider_message_id), ("text", "sent", "russian-repair-once"))
+        self.assertEqual(effect.payload["message"]["text"], RUSSIAN_REPAIR_CANDIDATE["reply_text"])
+        task = IgFollowUpTask.objects.get(client=self.customer)
+        self.assertEqual(task.reason, "revision_case:product_configuration_review")
+        inquiry = task.manager_context["product_inquiries"]["inquiries"][0]
+        self.assertEqual((inquiry["source_message_id"], inquiry["product_id"], inquiry["axis"], inquiry["requested_value"]),
+            (self.source_row.pk, self.product.pk, "color", "purple"))
+        self.assertIn("фиолетового", inquiry["question"])
+        notice = IgBotNotification.objects.get(client=self.customer)
+        self.assertEqual(notice.payload["manager_task_id"], task.pk)
+        self.assertEqual(notice.payload["revision_id"], self.revision.pk)
+        self.source_head_after = self._source_head()
+        self.assertEqual(self._durable_selection(), self.durable_selection_before)
+        source_rows_after = self._source_fence_rows()
+        self.assertEqual(source_rows_after.keys(), self.source_fence_rows_before.keys())
+        for source_id, original in self.source_fence_rows_before.items():
+            before, after = deepcopy(original), deepcopy(source_rows_after[source_id])
+            before_status, after_status = before.pop("status"), after.pop("status")
+            self.assertEqual(after, before, "Source content/ownership/ingress evidence must remain exact.")
+            if after_status != before_status:
+                self.assertIn(before_status, {"pending", "processing"})
+                self.assertEqual(after_status, "done")
+        # Native reply finalization marks source messages processed. That is
+        # part of source_digest and consequently capture_digest, not a change
+        # to session/head, selection evidence, cart values or their authority.
+        def semantic_head(value):
+            value = deepcopy(value)
+            value.pop("capture_digest")
+            value["fence"].pop("source_digest")
+            return value
+        self.assertEqual(semantic_head(self.source_head_after), semantic_head(self.source_head_before))
+        with patch("management.services.call_ai_analysis.gemini_generate_text") as replay_model, \
+                patch("management.services.instagram_bot._provider_http") as replay_http:
+            replay = execute_claimed_revision(self.revision.pk, self.token, self.settings)
+        self.assertEqual(replay.state, "completed", replay.reasons)
+        replay_model.assert_not_called()
+        replay_http.assert_not_called()
+        self.assertEqual(self.revision.delivery_effects.count(), 1)
+        self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer).count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), 1)
+        self.assertEqual(self._durable_selection(), self.durable_selection_before)
