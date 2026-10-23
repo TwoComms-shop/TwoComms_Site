@@ -37,7 +37,8 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
             "fail-fast": False,
             "max-parallel": 5,
             "matrix": {"suite": ["lifecycle", "checkout-concurrency", "follow-ugc-concurrency",
-                "lease-concurrency", "conversion-context", "dialogue-quality", "stock-authority"]},
+                "lease-concurrency", "conversion-context", "dialogue-quality", "stock-authority",
+                "stock-authority-consumers"]},
         })
         self.assertEqual(self.suite_job["runs-on"], "ubuntu-24.04")
         self.assertEqual(self.suite_job["timeout-minutes"], 30)
@@ -46,14 +47,17 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", self.source)
 
     def test_every_native_matrix_entry_has_a_runner_suite_and_coverage_is_not_duplicated(self):
-        from scripts.run_mariadb_gate import SUITES
+        from scripts.run_mariadb_gate import STOCK_AUTHORITY_ACCEPTANCE_LABELS, SUITES
 
         matrix = self.suite_job["strategy"]["matrix"]["suite"]
-        self.assertEqual(len(matrix), 7)
+        self.assertEqual(len(matrix), 8)
         self.assertEqual(len(set(matrix)), len(matrix))
         self.assertTrue(all(SUITES[name] for name in matrix))
         self.assertFalse(set(SUITES["dialogue-quality"]) & set(SUITES["conversion-context"]))
         self.assertFalse(set(SUITES["stock-authority"]) & set(SUITES["dialogue-quality"]))
+        self.assertFalse(set(SUITES["stock-authority"]) & set(SUITES["stock-authority-consumers"]))
+        self.assertEqual(set(SUITES["stock-authority"]) | set(SUITES["stock-authority-consumers"]),
+                         set(STOCK_AUTHORITY_ACCEPTANCE_LABELS))
 
     def test_stock_authority_has_native_and_existing_django_node_coverage(self):
         from scripts.run_mariadb_gate import SUITES
@@ -66,7 +70,8 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
             "management.tests_ig_palette_intent_20261023",
             "management.tests_ig_standard_funnel_qa",
         }
-        self.assertTrue(new_modules.issubset(SUITES["stock-authority"]))
+        stock_labels = set(SUITES["stock-authority"]) | set(SUITES["stock-authority-consumers"])
+        self.assertTrue(new_modules.issubset(stock_labels))
         for legacy_suite in ("lifecycle", "checkout-concurrency", "follow-ugc-concurrency",
                              "lease-concurrency", "conversion-context", "dialogue-quality"):
             self.assertFalse(new_modules & set(SUITES[legacy_suite]))

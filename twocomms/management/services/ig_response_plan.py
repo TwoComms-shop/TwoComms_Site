@@ -47,6 +47,29 @@ CHOICE_ALIASES = {
     "tshirt": ("tshirt", "t-shirt", "футболка", "футболку"),
     "hoodie": ("hoodie", "худі", "худи"),
 }
+
+def _additional_color_choice_aliases():
+    # Finite adjective forms for the remaining source-parser color families.
+    # These are acknowledgements of a wish, never catalogue/physical authority.
+    ru = ("ый", "ая", "ое", "ые", "ую", "ого", "ой", "ых", "ыми", "ым", "ом", "ому")
+    uk = ("ий", "а", "е", "і", "у", "ого", "ої", "их", "ими", "им", "ому", "ою")
+    families = {
+        "olive": (("оливков", ru + uk),),
+        "purple": (("фиолетов", ru), ("фіолетов", uk)),
+        "beige": (("бежев", ru + uk),),
+        "burgundy": (("бордо", ("",)), ("бордов", ru + uk + ("ій",))),
+        "orange": (("оранжев", ru + uk), ("помаранчев", uk)),
+        "red": (("красн", ru), ("червон", uk)),
+        "yellow": (("желт", ru), ("жёлт", ru), ("жовт", uk)),
+        "brown": (("коричнев", ru + uk),),
+    }
+    return {color: tuple(dict.fromkeys((color, *(("violet",) if color == "purple" else ()),
+        *(root + suffix for root, suffixes in roots for suffix in suffixes))))
+        for color, roots in families.items()}
+
+
+CHOICE_ALIASES.update(_additional_color_choice_aliases())
+
 _NEGATED_CHOICE_RE = re.compile(
     r"\b(?:не|ні|not|no|never|(?:do|does|did|has|have|had|is|are|was|were|ca|wo|could|would|should|must|need)n['’]t)\b", re.I,
 )
@@ -787,7 +810,8 @@ def _capture_pending_stock_questions(client, revision, plan):
     if len(lines) != 1 or cart.get("active_line_id") != lines[0].get("line_id"):
         return {}
     selected = {key: value.get("value") for key, value in lines[0].get("fields", {}).items()}
-    ids = {row["source_message_id"] for row in plan.obligations if row["kind"] == "info:question"}
+    ids = {row["source_message_id"] for row in plan.obligations
+        if row["kind"] in {"info:question", "info:price"}}
     candidates = [row for row in revision.bundle_snapshot.get("sources", ())
         if row.get("message_id") in ids and stock_question(row.get("text"), size=selected.get("size"),
             color=selected.get("color"), title=plan.configuration.get("product_title", ""))]
@@ -1127,6 +1151,11 @@ class ResponsePlan:
         """Validate each assertion against its own line; no union authority."""
         if not self.line_plans:
             return ""
+        combined_sources = {row["source_message_id"] for row in self.obligations
+            if row["kind"] == "info:price"} & set(self.pending_stock_questions.get("source_message_ids", ()))
+        if any(not _pending_stock_answer_covered(self, response.reply_text, source_id)
+                for source_id in combined_sources):
+            return "response_plan_pending_stock_answer_required"
         from management.services.ig_response_cart_plan import matching_line_ids, scoped_claim_clauses, anaphoric_price_reply_line_id, selected_title_text
         from management.services.ig_reply_truth import validate_reply_truth
         scoped = self.line_truth_contexts(context)
@@ -1497,6 +1526,9 @@ class ResponsePlan:
         for clause in scoped_claim_clauses(identity if _unquoted_text(identity) == identity else ""):
             owner = anaphoric_price_reply_line_id(clause, self.line_plans, active_line_id=active,
                 readiness_by_line={active: self.readiness_snapshot}, obligations=self.obligations)
+            if not owner and any(_pending_stock_answer_covered(self, clause, source_id)
+                    for source_id in self.pending_stock_questions.get("source_message_ids", ())):
+                owner = self.pending_stock_questions["line_id"]
             if owner and clause not in clauses[owner]:
                 clauses[owner].append(clause)
         if self.focused_candidate_line_id:
@@ -1554,6 +1586,12 @@ class ResponsePlan:
                     done = (line_id, obligation.get("recipient_id")) in admitted
             elif kind.startswith("info:") and kind != "info:price":
                 done = _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"])
+            if (kind == "info:price" and obligation["source_message_id"]
+                    in self.pending_stock_questions.get("source_message_ids", ())):
+                # One combined source asked both questions. A valid price
+                # alone cannot discharge its still-pending availability ask.
+                done = done and _pending_stock_answer_covered(self, response.reply_text,
+                    obligation["source_message_id"])
             (covered if done else remaining).append(obligation["id"])
         dependent = {"purchase_requested", "model_query", "info:price"}
         if selector:

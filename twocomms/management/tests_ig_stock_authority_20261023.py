@@ -600,3 +600,149 @@ class NativeManagerReviewProjectionTests(TransactionTestCase):
         self.assertTrue(row['manager_review']['actionable'])
         self.assertEqual(row['manager_review']['task_id'], task.pk)
         self.assertEqual(IgFollowUpTask.objects.count(), before)
+
+
+class ColorChoiceFamilyCoverageTests(SimpleTestCase):
+    def test_response_aliases_cover_source_canonical_color_vocabulary(self):
+        from management.services.ig_commerce_turns import _COLOR_WORDS
+        from management.services.ig_response_plan import CHOICE_ALIASES
+        self.assertLessEqual(set(_COLOR_WORDS.values()), set(CHOICE_ALIASES))
+
+    def test_missing_families_acknowledge_finite_english_ukrainian_russian_wishes(self):
+        from management.services.ig_response_plan import _acknowledges_choice
+        families = {'olive': ('olive', 'оливкового', 'оливкової'),
+            'purple': ('violet', 'фиолетового', 'фіолетового'), 'beige': ('beige', 'бежевого', 'бежевої'),
+            'burgundy': ('burgundy', 'бордо', 'бордового', 'бордовой', 'бордової', 'бордовій'), 'orange': ('orange', 'оранжевого', 'помаранчевого'),
+            'red': ('red', 'красного', 'червоного'), 'yellow': ('yellow', 'жёлтого', 'жовтого'),
+            'brown': ('brown', 'коричневого', 'коричневої')}
+        for color, words in families.items():
+            for word in words:
+                with self.subTest(color=color, word=word):
+                    self.assertTrue(_acknowledges_choice('color', color, f'Your preference is {word}.', {}))
+
+    def test_negation_quotes_other_color_and_unbounded_suffix_are_not_acknowledgements(self):
+        from management.services.ig_response_plan import _acknowledges_choice
+        for text in ('Ваше пожелание — не фиолетового цвета.', 'Your preference is not purple.',
+                     'Менеджер сообщил: «Ваше пожелание — фиолетового цвета».',
+                     'Ваше пожелание — красного цвета.', 'Your preference is purpleish.',
+                     'Ваше пожелание — фиолетовогошума.'):
+            with self.subTest(text=text):
+                self.assertFalse(_acknowledges_choice('color', 'purple', text, {}))
+
+    def test_burgundy_word_boundaries_negation_and_quotes_retain_debt(self):
+        from management.services.ig_response_plan import _acknowledges_choice
+        for text in ('Ваше побажання — не бордової барви.',
+                     'Менеджер повідомив: «Ваше побажання — бордової барви».',
+                     'Ваше побажання — бордовоїшуми.', 'Your preference is burgundyish.'):
+            with self.subTest(text=text):
+                self.assertFalse(_acknowledges_choice('color', 'burgundy', text, {}))
+
+    def test_new_color_acknowledgement_aliases_do_not_authorize_physical_stock(self):
+        from management.services.ig_reply_truth import ReplyTruthContext, validate_reply_truth
+        from management.services.ig_response_plan import CHOICE_ALIASES
+        context = ReplyTruthContext(source_chosen_colors=CHOICE_ALIASES['purple'])
+        for text in ('Фіолетове худі є в наявності.', 'Фиолетовое худи есть в наличии.',
+                     'The purple hoodie is in stock.'):
+            with self.subTest(text=text):
+                self.assertFalse(validate_reply_truth(text, context=context).valid)
+
+    def test_other_product_line_cannot_discharge_current_purple_wish(self):
+        import json
+        from management.services.ig_response_plan import ResponsePlan
+        from management.services.ig_response_cart_plan import ResponseLinePlan
+        rows = []
+        for index, (title, garment) in enumerate((('Aurora hoodie', 'hoodie'), ('Other Tee', 'tshirt')), 1):
+            rows.append(ResponseLinePlan(json.dumps({'line_id': f'line:{index}', 'index': index-1,
+                'recipient_id':'self', 'choices':{'product_id':index, 'color':'purple', 'garment_type':garment},
+                'evidence':{}, 'scope':{}, 'configuration':{'product_id':index, 'product_title':title},
+                'next_selector':'', 'authority':{}, 'obligations':[]})))
+        obligation = {'id':'7:line:1:color', 'kind':'color', 'line_id':'line:1',
+            'source_message_id':7, 'value':'purple'}
+        plan = ResponsePlan({}, {}, {}, {}, '', {}, (obligation,), line_plans=tuple(rows))
+        coverage = plan.coverage(SimpleNamespace(reply_text='Your preference for Other Tee is purple.', control={}))
+        self.assertEqual(coverage['remaining'], [obligation['id']])
+
+
+@override_settings(IG_REVISION_EXECUTION_ENABLED=False, IG_FULFILLMENT_REVIEWS_ENABLED=True,
+    IG_TURN_CONTEXT_MODE='unified', IG_CLIENT_STATE_PROMPT_TOKENS=2400,
+    GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class NativeColorChoiceCoverageTests(_RestockFixture, TransactionTestCase):
+    reset_sequences = True
+    from management.tests_ig_standard_funnel_qa import NativeStockContinuationTests as _Fixture
+    def setUp(self):
+        from management.tests_ig_source_cart_catalog import SourceCartCatalogTests
+        original = SourceCartCatalogTests.setUp
+        def catalog_before_sources(case):
+            original(case)
+            case.category.name, case.category.slug = 'Худі', 'hoodies'
+            case.category.save(update_fields=['name', 'slug'])
+        with patch.object(SourceCartCatalogTests, 'setUp', catalog_before_sources):
+            super().setUp()
+        self.settings.ai_enabled = True
+        self.settings.save(update_fields=['ai_enabled'])
+        self.customer = self.client_row
+        self.generation_calls = []
+        self.before_validate = self.after_validate = None
+        self.actual_inline_count = 0
+        self.actual_hash_override = 'observed'
+        self.provider_failure = False
+
+    _generate = _Fixture._generate
+    _execute = _Fixture._execute
+
+    def answer(self, language, source_text, reply, *, expected_color="purple"):
+        from management.models import IgFollowUpTask
+        self.customer.language = language
+        self.customer.save(update_fields=['language'])
+        source = self.source(source_text)
+        self.revision, self.token = _RestockFixture.revision(self, source)
+        self.parsed = {'reply_text':reply, 'controls':[{'kind':'manager','value':True}]}
+        result, generated, http = self._execute()
+        self.revision.refresh_from_db()
+        self.assertEqual(result.state, 'completed', (result.reasons, self.revision.action_receipts))
+        self.assertEqual((generated.call_count, http.call_count), (1, 1))
+        self.assertEqual(self.revision.delivery_effects.filter(state='sent').count(), 1)
+        self.assertFalse(self.revision.action_receipts['response_coverage']['remaining'])
+        task = IgFollowUpTask.objects.get(client=self.customer)
+        self.assertEqual(task.reason, 'revision_case:product_configuration_review')
+        inquiry, = task.manager_context['product_inquiries']['inquiries']
+        self.assertEqual((inquiry['source_message_id'], inquiry['requested_value']), (source.pk, expected_color))
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), 1)
+        replay, generated, http = self._execute()
+        self.assertEqual(replay.state, 'completed', replay.reasons)
+        generated.assert_not_called()
+        http.assert_not_called()
+
+    def test_russian_natural_purple_wish_has_one_sent_and_no_debt(self):
+        self.answer('ru', 'Хочу это худи фиолетового цвета.',
+            'Ваше пожелание — худи фиолетового цвета. Уточню у менеджера возможность худи фиолетового цвета.')
+
+    def test_ukrainian_natural_purple_wish_has_one_sent_and_no_debt(self):
+        self.answer('uk', 'Хочу це худі фіолетового кольору.',
+            'Ваше побажання — худі фіолетового кольору. Уточню у менеджера можливість такого варіанту.')
+
+    def test_english_natural_purple_wish_has_one_sent_and_no_debt(self):
+        self.answer('en', 'I want this hoodie in purple.',
+            'Your preference is a purple hoodie. I will check the possibility with our manager.')
+
+
+    def test_russian_burgundy_genitive_color_has_one_sent_and_no_debt(self):
+        self.answer('ru', 'Хочу это худи бордового цвета.',
+            'Ваше пожелание — худи бордового цвета. Уточню у менеджера возможность такого варианта.',
+            expected_color='burgundy')
+
+    def test_russian_burgundy_inflected_palette_has_one_sent_and_no_debt(self):
+        self.answer('ru', 'Хочу это худи в бордовой расцветке.',
+            'Ваше пожелание — худи в бордовой расцветке. Уточню у менеджера возможность такого варианта.',
+            expected_color='burgundy')
+
+    def test_ukrainian_burgundy_inflected_color_has_one_sent_and_no_debt(self):
+        self.answer('uk', 'Хочу це худі бордової барви.',
+            'Ваше побажання — худі бордової барви. Уточню у менеджера можливість такого варіанту.',
+            expected_color='burgundy')
+
+
+    def test_ukrainian_burgundy_locative_palette_has_one_sent_and_no_debt(self):
+        self.answer('uk', 'Хочу це худі у бордовій гамі.',
+            'Ваше побажання — худі у бордовій гамі. Уточню у менеджера можливість такого варіанту.',
+            expected_color='burgundy')

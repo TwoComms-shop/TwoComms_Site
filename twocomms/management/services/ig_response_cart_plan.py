@@ -205,7 +205,7 @@ def _scoped_request_tokens(text, *, choices, title="", extra_words=()):
             value = re.sub(r"(?<!\w)" + re.escape(selected) + r"(?!\w)", " ", value, flags=re.I)
     words = re.findall(r"[\w’']+", value.casefold())
     allowed = set("а чи є в у цей це ця цієї цього його її ще і та який яка наявності наявність розмір розмірі "
-        "есть ли эта этот этой этого его её размер размере наличии наличие и какая "
+        "есть ли это эта этот этой этого его её размер размере наличии наличие и какая "
         "is are do you have this that my the selected it its in of for size stock available availability "
         "худі худи hoodie футболка футболки t shirt tshirt товар товара товару позиція позиції позиция item one".split())
     allowed.update(extra_words)
@@ -213,7 +213,12 @@ def _scoped_request_tokens(text, *, choices, title="", extra_words=()):
 
 
 def stock_question(text, *, size="", color="", title=""):
-    words = _scoped_request_tokens(text, choices={"size": size, "color": color}, title=title)
+    # A price adjunct still asks about the same source-selected SKU. Keep the
+    # closed vocabulary and exact-choice checks: this only identifies the ask;
+    # current-review capture and reply validation still supply all authority.
+    words = _scoped_request_tokens(text, choices={"size": size, "color": color}, title=title,
+        extra_words=("ціна", "вартість", "скільки", "коштує", "цена", "стоимость", "сколько", "стоит",
+            "price", "cost", "what", "what's", "what’s", "how", "much", "does", "and"))
     return bool(words and set(words) & {"є", "есть", "наявності", "наявність", "наличии", "наличие", "have", "stock", "available", "availability"})
 
 

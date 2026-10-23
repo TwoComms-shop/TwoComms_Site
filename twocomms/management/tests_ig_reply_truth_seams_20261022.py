@@ -230,3 +230,147 @@ class NativeHiringAcceptanceSeamTests(TransactionTestCase):
         self.assertEqual(result.state, "blocked", result.reasons)
         self.assertIn("unverified_recruitment", self.rejection_reason_codes)
         http.assert_not_called()
+
+
+@override_settings(IG_REVISION_EXECUTION_ENABLED=False, IG_FULFILLMENT_REVIEWS_ENABLED=True,
+    IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True, IG_TURN_CONTEXT_MODE='unified',
+    IG_CLIENT_STATE_PROMPT_TOKENS=20000, GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class NativeCombinedStockPriceSeamTests(TransactionTestCase):
+    """An exact current review binds a short check without inventing stock truth."""
+    reset_sequences = True
+    from management import tests_ig_restock_subscriptions as restock_fixtures
+    from management import tests_ig_standard_funnel_qa as stock_fixtures
+    source = restock_fixtures._RestockFixture.source
+    canonical = restock_fixtures._RestockFixture.canonical
+    _execute = live_fixtures.RevisionLiveTests._execute
+    _generate = stock_fixtures.NativeStockContinuationTests._generate
+    answer = stock_fixtures.NativeStockContinuationTests.answer
+    assert_complete = stock_fixtures.NativeStockContinuationTests.assert_complete
+
+    def setUp(self):
+        from management.tests_ig_source_cart_catalog import SourceCartCatalogTests
+        from product_catalog.models import VariantSizeRule
+        original = SourceCartCatalogTests.setUp
+
+        def catalog_before_sources(case):
+            original(case)
+            case.category.name, case.category.slug = 'Худі', 'hoodies'
+            case.category.save(update_fields=['name', 'slug'])
+            case.products[0].price = case.variants[0].price_override = 900
+            case.products[0].save(update_fields=['price'])
+            case.variants[0].save(update_fields=['price_override'])
+            grid = case.products[0].size_grid
+            grid.guide_data['rows'].append({'size': 'XXL', 'display_size': 'XXL'})
+            grid.save(update_fields=['guide_data'])
+            VariantSizeRule.objects.create(variant=case.variants[0], fit_code='classic',
+                size='XXL', stock=100, is_enabled=True)
+
+        with patch.object(SourceCartCatalogTests, 'setUp', catalog_before_sources):
+            self.restock_fixtures._RestockFixture.setUp(self)
+        self.settings.ai_enabled = True
+        self.settings.save(update_fields=['ai_enabled'])
+        self.customer = self.client_row
+        self.generation_calls = []
+        self.before_validate = self.after_validate = None
+        self.actual_inline_count, self.actual_hash_override = 0, 'observed'
+        self.provider_failure = False
+        self.canonical('I want Restock Aurora hoodie, quantity 1, size XXL, color black, fit classic')
+        from management.services.ig_response_plan import capture_response_plan
+        self.before_validate = lambda: setattr(self, 'observed_plan',
+            capture_response_plan(self.customer, revision=self.revision))
+
+    def test_natural_combined_question_and_anaphoric_pending_check_send_once(self):
+        outcome = self.answer(
+            'Is this hoodie in size XXL available, and what is the price?',
+            'The Restock Aurora hoodie costs 900 UAH. I will check availability in size XXL with our manager.',
+            controls=[{'kind': 'manager', 'value': True}, {'kind': 'price_quoted', 'value': 900}])
+        self.assertTrue(self.observed_plan.pending_stock_questions, self.observed_plan.obligations)
+        self.assert_complete(*outcome)
+
+    def test_same_natural_answer_to_stock_only_source_already_has_an_owner(self):
+        self.assert_complete(*self.answer('Is this hoodie in size XXL available?',
+            'The Restock Aurora hoodie costs 900 UAH. I will check availability in size XXL with our manager.',
+            controls=[{'kind': 'manager', 'value': True}, {'kind': 'price_quoted', 'value': 900}]))
+
+    def test_foreign_or_reported_pending_check_cannot_inherit_current_line(self):
+        for check in (
+            'I will check availability in size L with our manager.',
+            'I will check availability of the T-shirt in size XXL with our manager.',
+            'I will check availability of Other Print in size XXL with our manager.',
+            'I will check availability of the "Other Print" hoodie in size XXL with our manager.',
+            '“I will check availability in size XXL with our manager.”',
+            'The manager said: I will check availability in size XXL with our manager.',
+            'I will not check availability in size XXL with our manager.',
+            'It is available in size XXL.',
+        ):
+            with self.subTest(check=check):
+                result, _, http = self.answer(
+                    'Is this hoodie in size XXL available, and what is the price?',
+                    'The Restock Aurora hoodie costs 900 UAH. ' + check)
+                self.assertNotEqual(result.state, 'completed', result.reasons)
+                http.assert_not_called()
+                self.assertFalse(self.revision.delivery_effects.exists())
+
+    def test_combined_source_keeps_stock_debt_when_only_known_price_is_answered(self):
+        result, _, http = self.answer('Is this hoodie in size XXL available, and what is the price?',
+            'The Restock Aurora hoodie costs 900 UAH.')
+        self.assertNotEqual(result.state, 'completed', result.reasons)
+        response = SimpleNamespace(reply_text=self.parsed['reply_text'], control={'manager': True})
+        self.assertTrue(self.observed_plan.coverage(response)['remaining'])
+        http.assert_not_called()
+        self.assertFalse(self.revision.delivery_effects.exists())
+
+    def test_current_pending_check_cannot_authorize_a_wrong_price(self):
+        result, _, http = self.answer('Is this hoodie in size XXL available, and what is the price?',
+            'The Restock Aurora hoodie costs 1000 UAH. I will check availability in size XXL with our manager.')
+        self.assertEqual(result.state, 'blocked', result.reasons)
+        http.assert_not_called()
+        self.assertFalse(self.revision.delivery_effects.exists())
+
+    def test_price_only_does_not_capture_stock_review_or_require_a_check(self):
+        outcome = self.answer('What is the price?', 'The Restock Aurora hoodie costs 900 UAH.', controls=[])
+        self.assertFalse(self.observed_plan.pending_stock_questions)
+        self.assert_complete(*outcome, case=False)
+
+    def test_later_separate_price_source_is_answered_while_prior_review_remains_pending(self):
+        self.assert_complete(*self.answer('Is this hoodie in size XXL available?',
+            'I will check availability in size XXL with our manager.'))
+        outcome = self.answer('What is the price?', 'The Restock Aurora hoodie costs 900 UAH.', controls=[])
+        self.assertFalse(self.observed_plan.pending_stock_questions)
+        self.assert_complete(*outcome)
+
+    def test_two_real_cart_lines_do_not_share_an_anaphoric_stock_owner(self):
+        self.canonical('добавьте Storm, количество 1, размер L, цвет pink, крій classic')
+        result, _, http = self.answer(
+            'Is the Restock Aurora hoodie in size XXL available, and what is the price?',
+            'The Restock Aurora hoodie costs 900 UAH. I will check availability in size XXL with our manager.')
+        self.assertEqual(len(self.observed_plan.line_plans), 2)
+        self.assertFalse(self.observed_plan.pending_stock_questions)
+        self.assertEqual(result.state, 'blocked', result.reasons)
+        http.assert_not_called()
+        self.assertFalse(self.revision.delivery_effects.exists())
+
+
+class CombinedStockQuestionScopeTests(SimpleTestCase):
+    def test_price_adjunct_preserves_exact_own_stock_subject(self):
+        from management.services.ig_response_cart_plan import stock_question
+        for text in (
+            'Is this hoodie in size XXL available, and what is the price?',
+            'Чи є це худі в розмірі XXL у наявності та яка його ціна?',
+            'Есть ли этот худи в размере XXL в наличии и какая цена?',
+            'Есть ли это худи в размере XXL в наличии и какая цена?',
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(stock_question(text, size='XXL'))
+                self.assertFalse(stock_question(text, size='M'))
+        for text in (
+            'What is the price?',
+            'Is this Other Print hoodie in size XXL available, and what is the price?',
+            'Is this hoodie in size XXL available? Can I collect it in person?',
+            '“Is this hoodie in size XXL available, and what is the price?”',
+            'The customer asked: Is this hoodie in size XXL available, and what is the price?',
+            'Is this hoodie in size XXL available, and what is the price of item 2?',
+            'Is this hoodie in size XXL not available, and what is the price?',
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(stock_question(text, size='XXL', title='Restock Aurora'))

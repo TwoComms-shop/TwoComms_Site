@@ -1839,8 +1839,14 @@ print(json.dumps({
                          ["drop_user", "drop_database", "verify_cleanup", "close"])
 
     def test_stock_authority_covers_current_rules_and_bounded_existing_consumers(self):
-        labels = self.runner._validate_suite("stock-authority")
+        labels = (self.runner._validate_suite("stock-authority")
+                  + self.runner._validate_suite("stock-authority-consumers"))
         self.assertEqual(len(labels), len(set(labels)))
+        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 46)
+        self.assertEqual(set(labels), set(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS))
+        self.assertEqual(len(self.runner.STOCK_AUTHORITY_CORE_MODULES), 9)
+        self.assertEqual(set(self.runner.SUITES["stock-authority"]),
+                         self.runner.STOCK_AUTHORITY_CORE_MODULES)
         for suffix in ("authority_20261023", "catalog_copy_20261023", "claim_guard_20261023",
                        "request_scope_20261023"):
             self.assertIn("management.tests_ig_stock_" + suffix, labels)
@@ -1876,24 +1882,74 @@ print(json.dumps({
                     self.assertIn(parts[3], [node.name for node in case.body
                                             if isinstance(node, ast.FunctionDef)])
 
-    def test_stock_authority_uses_the_native_gate_command_and_verified_cleanup(self):
-        admin = FakeAdmin()
-        command = FakeCommandRunner()
-        result = self.runner.run_gate(
-            server_mode="external", suite="stock-authority", admin=admin,
-            command_runner=command, project_root=PROJECT_ROOT,
-            environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=io.StringIO(),
+    def test_stock_partitions_discover_every_current_test_id_without_overlap_or_database_io(self):
+        groups = {
+            "acceptance": self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS,
+            "authority": self.runner.SUITES["stock-authority"],
+            "consumers": self.runner.SUITES["stock-authority-consumers"],
+        }
+        # Load the current full modules as well as selected cases. Test bodies
+        # never run, and any accidental database connection fails discovery.
+        script = """
+import json, sys, unittest
+from unittest.mock import patch
+import django
+def ids(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from ids(item)
+        else:
+            yield item.id()
+with patch('django.db.backends.base.base.BaseDatabaseWrapper.ensure_connection',
+           side_effect=AssertionError('test discovery must not access a database')):
+    django.setup()
+    loader = unittest.TestLoader()
+    result = {name: list(ids(loader.loadTestsFromNames(labels)))
+              for name, labels in json.loads(sys.stdin.read()).items()}
+    assert not loader.errors, loader.errors
+print(json.dumps(result))
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script], input=json.dumps(groups), text=True,
+            capture_output=True, timeout=30, cwd=PROJECT_ROOT / "twocomms",
+            env={**os.environ, "DJANGO_SETTINGS_MODULE": "test_settings_no_network_non_dtf",
+                 "GOOGLE_INDEXING_ENABLED": "0", "INDEXNOW_ENABLED": "0"},
         )
-        test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
-        self.assertEqual(test_calls, [[
-            sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
-            *self.runner.SUITES["stock-authority"],
-            "--settings=test_settings_mariadb", "--noinput", "--keepdb",
-        ]])
-        self.assertEqual(result["suite"], "stock-authority")
-        self.assertEqual(result["cleanup"], "verified")
-        self.assertEqual([call[0] for call in admin.calls][-4:],
-                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        discovered = json.loads(completed.stdout)
+        self.assertGreaterEqual(len(discovered["acceptance"]), 401)
+        for group in discovered.values():
+            self.assertTrue(group)
+            self.assertEqual(len(group), len(set(group)))
+        self.assertFalse(set(discovered["authority"]) & set(discovered["consumers"]))
+        self.assertEqual(set(discovered["authority"]) | set(discovered["consumers"]),
+                         set(discovered["acceptance"]))
+
+    def test_stock_authority_uses_the_native_gate_command_and_verified_cleanup(self):
+        for suite in ("stock-authority", "stock-authority-consumers"):
+            with self.subTest(suite=suite):
+                admin = FakeAdmin()
+                command = FakeCommandRunner()
+                result = self.runner.run_gate(
+                    server_mode="external", suite=suite, admin=admin,
+                    command_runner=command, project_root=PROJECT_ROOT,
+                    environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=io.StringIO(),
+                )
+                test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
+                self.assertEqual(test_calls, [[
+                    sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
+                    *self.runner.SUITES[suite],
+                    "--settings=test_settings_mariadb", "--noinput", "--keepdb",
+                ]])
+                self.assertEqual(result["suite"], suite)
+                self.assertEqual(result["cleanup"], "verified")
+                call_names = [call[0] for call in admin.calls]
+                for check in ("prepare_database_warning_contract", "verify_database_warning_contract_reverse",
+                              "verify_release_schema", "verify_database_warning_contract"):
+                    self.assertIn(check, call_names)
+                    self.assertLess(call_names.index(check), call_names.index("drop_user"))
+                self.assertEqual(call_names[-4:],
+                                 ["drop_user", "drop_database", "verify_cleanup", "close"])
 
     def test_follow_ugc_suite_verifies_latest_schema_before_cleanup(self):
         admin = FakeAdmin()
