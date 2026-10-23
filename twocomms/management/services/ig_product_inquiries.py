@@ -30,30 +30,30 @@ _SPEC = re.compile(_SPEC.pattern + "|" + _WEIGHT.pattern + r"|\bсклад\b|н�
 _MASS_AMOUNT = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:кг|kg|kilograms?|гр?(?:ам(?:м(?:а|ов|ы)?|ів|а|и)?)?|g(?:rams?)?)(?!\w)(?!\s*/)", re.I)
 
 
-def _production_possibility_noun_span(clause):
-    """Only a nominal manufacture object of our own manager check is owed.
+def _dependent_production_spans(clause, disposition=None):
+    """Production wording owned by a complete manager enquiry, not a promise.
 
-    This classifies one noun span, never production, timing or source
-    authority. The caller still validates every independent claim and its
-    native inquiry/source/line binding.
+    Nominal timing/options and whether/when manufacture is possible are
+    objects of our check. Only their production spans are nonassertive; no
+    duration, arrival, stock or independent action gains authority.
     """
     from management.services.ig_reply_language import own_reply_text
-    raw = str(clause or "").strip()
-    if (not raw or len(raw) > 700 or own_reply_text(raw) != raw
-        or re.search(r"[,;:?!\n]|\b(?:не|ні|not|never|if|would|could|якщо|якби|если|вчера|учора|раніше|раньше|previously|already)\b|n['’]t\b", raw, re.I)):
+    raw = str(clause or "")
+    if (not raw or len(raw) > 900 or own_reply_text(raw) != raw
+        or re.search(r"[;:?!\n]|\b(?:не|ні|not|never|would|could|якби|вчера|учора|раніше|раньше|previously|already)\b|n['’]t\b", raw, re.I)):
         return ()
     action = re.compile(r"\b(?:(?:(?:я|ми|мы)\s+)?"
         r"(?:(?:обов['’]язково|обязательно|зараз|сейчас|також|также)\s+)?"
         r"(?:уточню|уточнимо|уточним|перевірю|перевіримо|проверю|проверим|перевіряю|проверяю)|"
         r"(?:i|we)(?:['’]ll|\s+will)\s+(?:also\s+)?(?:check|verify)|"
         r"(?:i\s+am|we\s+are)\s+(?:also\s+)?(?:checking|verifying))\b", re.I)
-    manager = re.compile(r"\b(?:у|з|із|с|со|with)\s+(?:(?:нашого|нашим|нашего|our|the)\s+)?"
-        r"(?:менеджер(?:а|ом|у)?|manager)\b", re.I)
-    noun = re.compile(r"\b(?:виготовлення|изготовлен(?:ие|ия|ию|ием)|manufacturing)\b", re.I)
-    actions, managers, nouns = list(action.finditer(raw)), list(manager.finditer(raw)), list(noun.finditer(raw))
-    if len(actions) != 1 or len(managers) != 1 or len(nouns) != 1:
+    manager = re.compile(r"\b(?:у|в|з|із|с|со|with)\s+(?:"
+        r"(?:(?:нашого|нашим|нашего|our|the)\s+)?(?:менеджер(?:а|ом|у)?|manager)|"
+        r"(?:нашою\s+командою|нашей\s+командой|our\s+team))\b", re.I)
+    actions, managers = list(action.finditer(raw)), list(manager.finditer(raw))
+    if len(actions) != 1 or len(managers) != 1:
         return ()
-    callback = re.search(r"\s+(?:та|й|і|и|and)\s+(?:"
+    callback = re.search(r"\s*,?\s+(?:та|й|і|и|and)\s+(?:"
         r"(?:(?:я|ми|мы)\s+)?(?:(?:одразу|відразу|сразу)\s+)?(?:(?:вам|вас)\s+)?"
         r"(?:повідомлю|повідомимо|сообщу|сообщим)(?:\s+(?:вам|вас))?|"
         r"дам(?:о)?\s+вам\s+знати|"
@@ -64,14 +64,52 @@ def _production_possibility_noun_span(clause):
     residual = raw
     for start, end in sorted(spans, reverse=True):
         residual = residual[:start] + " " * (end - start) + residual[end:]
-    # No wildcard product names or predicates: the only optional object is
-    # an anaphoric colour/size reference to the separately captured wish.
-    if not re.fullmatch(r"\s*(?:можливість\s+виготовлення|"
-        r"возможность\s+изготовления|(?:the\s+)?(?:possibility|feasibility)\s+of\s+manufacturing)"
-        r"(?:\s+(?:в|у|такому|такім|цьому|таком|этом|кольорі|цвете|відтінку|оттенке|"
-        r"розмірі|размере|in|such|this|that|a|the|color|colour|shade|size))*\s*[.!]?\s*", residual, re.I):
-        return ()
-    return nouns[0].span()
+    head = (r"(?:можливість|возможность|терміни|термін|строки|строк|сроки|срок|час|время|умови|условия|варіанти|варианты|"
+        r"possibility|feasibility|times?|lead\s+time|timing|terms|options)")
+    noun = r"(?:виготовлення|изготовлен(?:ие|ия|ию|ием)|manufacturing|production)"
+    nominal = (r"(?:the\s+)?(?:" + head + r"(?:\s+(?:та|і|и|and)\s+" + head + r"){0,2}"
+        r"\s+(?:of\s+|for\s+)?" + noun + "|" + noun + r"\s+" + head + ")")
+    anaphora = (r"(?:\s+(?:в|у|такому|такім|цьому|таком|этом|кольорі|цвете|відтінку|оттенке|"
+        r"розмірі|размере|in|such|this|that|a|the|color|colour|shade|size))*")
+    dependent = (r"(?:(?:чи|ли|whether|if|when|коли|когда)\s+"
+        r"(?:(?:ми|мы|we)\s+)?(?:зможемо|можемо|сможем|можем|можна|can)|"
+        r"(?:(?:ми|мы)\s+)?(?:сможем|можем|можно)\s+ли)\s+"
+        r"(?:виготовити|изготовить|зробити|сделать|manufacture|make|produce)"
+        r"(?:\s+(?:це|это|it|them))?")
+    topic = re.fullmatch(r"(?P<prefix>.*?)\s*(?P<object>" + nominal + ")" + anaphora + r"\s*[.!]?\s*", residual, re.I)
+    if topic:
+        prefix = topic.group('prefix').strip()
+        if prefix and not _production_check_source_topic(prefix, disposition):
+            return ()
+    else:
+        topic = re.fullmatch(r"\s*,?\s*(?P<object>" + dependent + ")" + anaphora + r"\s*[.!]?\s*", residual, re.I)
+        if not topic or topic.start('object') < actions[0].start():
+            return ()
+    object_start, object_end = topic.span('object')
+    return tuple(match.span() for match in _PRODUCTION.finditer(raw)
+        if object_start <= match.start() and match.end() <= object_end)
+
+
+def _production_check_source_topic(prefix, disposition):
+    """An optional fronted garment/colour topic uses actual inquiry values."""
+    if not isinstance(disposition, dict):
+        return False
+    match = re.fullmatch(r"(?:по|щодо|стосовно|regarding|concerning|about)\s+(.+?)\s*[,—–-]?", prefix, re.I)
+    if not match:
+        return False
+    from management.services.ig_response_cart_plan import _scoped_request_tokens
+    from management.services.approved_public_facts import _GARMENT_WORDS
+    subject = match.group(1)
+    for row in disposition.get('inquiries', ()):
+        axis = row.get('axis')
+        if axis not in {'color', 'size'}:
+            continue
+        garments = {key for key, pattern in _GARMENT_WORDS.items() if pattern.search(str(row.get('question') or ''))}
+        if any(key not in garments for key, pattern in _GARMENT_WORDS.items() if pattern.search(subject)):
+            continue
+        if _scoped_request_tokens(subject, choices={axis: row.get('requested_value')}):
+            return True
+    return False
 
 
 def _garment_weight_requested(text):
@@ -601,13 +639,13 @@ def validate_inquiry_response(disposition, response):
         return "product_inquiry_handoff_required"
     if any(row["axis"] != "information" for row in disposition["inquiries"]):
         from management.services.ig_reply_truth import (_claim_sentences, _product_availability_claim,
-            _TIMING_RE, _ARRIVAL_RE, _TIMING_GUARANTEE_RE, _timing_nonclaim)
+            _TIMING_RE, _ARRIVAL_RE, _TIMING_GUARANTEE_RE, _timing_nonclaim, _TIMING_ENQUIRY_RE)
         from management.services.ig_reply_language import own_reply_text
         clauses = list(_claim_sentences(own_reply_text(text), ()))
         if any(_product_availability_claim(clause) for clause in clauses):
             return "product_inquiry_availability_unverified"
         for clause in clauses:
-            checked_production = _production_possibility_noun_span(clause)
+            checked_production = _dependent_production_spans(clause, disposition)
             cursor = 0
             for part in re.split(r"[,;:]|\b(?:але|но|but)\b", clause):
                 part_start = clause.find(part, cursor)
@@ -616,10 +654,15 @@ def validate_inquiry_response(disposition, response):
                     continue
                 for pattern in (_TIMING_RE, _ARRIVAL_RE, _TIMING_GUARANTEE_RE, _PRODUCTION):
                     for match in pattern.finditer(part):
-                        if (pattern is _PRODUCTION and checked_production
-                            and checked_production[0] <= part_start + match.start()
-                            and part_start + match.end() <= checked_production[1]):
-                            continue
+                        if pattern is _PRODUCTION:
+                            if any(start <= part_start + match.start() and part_start + match.end() <= end
+                                   for start, end in checked_production):
+                                continue
+                            # A wh-check prefix cannot bless a later independent
+                            # manufacture verb. Only the complete enquiry above
+                            # owns dependent production spans in this guard.
+                            if any(enquiry.start() <= match.start() for enquiry in _TIMING_ENQUIRY_RE.finditer(part)):
+                                return "product_inquiry_fulfillment_unverified"
                         if not _timing_nonclaim(part, match.start()):
                             return "product_inquiry_fulfillment_unverified"
     # Each unanswered spec clause requires uncertainty/check language. An

@@ -108,7 +108,7 @@ class ProductInquirySourceTests(SimpleTestCase):
                 'I will check with our manager the possibility of manufacturing in this shade and let you know.',
                 'I am checking the feasibility of manufacturing in this color with our manager.'):
             with self.subTest(text=text):
-                self.assertTrue(inquiries._production_possibility_noun_span(text))
+                self.assertTrue(inquiries._dependent_production_spans(text))
                 self.assertEqual(inquiries.validate_inquiry_response(disposition,
                     ValidatedResponse(text, (ResponseControl('manager', True),))), '')
 
@@ -128,12 +128,70 @@ class ProductInquirySourceTests(SimpleTestCase):
                 positive.replace('в таком оттенке', 'в чёрном цвете'),
                 positive.rstrip('.') + ', изготовим его.', positive + ' Изготовим его за 2 дня.'):
             with self.subTest(text=text):
-                self.assertFalse(inquiries._production_possibility_noun_span(text))
+                self.assertFalse(inquiries._dependent_production_spans(text))
                 self.assertEqual(inquiries.validate_inquiry_response(disposition,
                     ValidatedResponse(text, (ResponseControl('manager', True),))), 'product_inquiry_fulfillment_unverified')
-        self.assertFalse(inquiries._production_possibility_noun_span(f'«{positive}»'))
+        self.assertFalse(inquiries._dependent_production_spans(f'«{positive}»'))
         self.assertEqual(inquiries.validate_inquiry_response(disposition,
             ValidatedResponse(positive, ())), 'product_inquiry_handoff_required')
+
+    def test_nominal_and_subordinate_manufacturing_check_family_is_own_source_bound(self):
+        disposition = self.capture('Хочу фиолетовое худи')
+        positives = ('По фиолетовому худи я уточню у менеджера сроки изготовления.',
+            'Уточню у менеджера терміни виготовлення в такому кольорі.',
+            'I will check the manufacturing time with our manager.',
+            'Сроки изготовления я уточню у менеджера.',
+            'I will check with our manager when we can manufacture it.',
+            'Уточню у менеджера, чи зможемо виготовити в такому кольорі.',
+            'Уточню у менеджера, чи зможемо виготовити в такому кольорі, і одразу вам повідомлю.',
+            'Уточню у менеджера, сможем ли изготовить в таком оттенке.',
+            'I will check with our manager whether we can manufacture it and let you know.',
+            'I will check with our manager if we can manufacture it.',
+            'Варіанти виготовлення в такому кольорі перевірю з менеджером.',
+            'I am checking the manufacturing options with our manager.',
+            'Я уточню у менеджера время изготовления.',
+            'Уточню у менеджера час виготовлення.',
+            'Я уточню у менеджера, можно ли изготовить в таком оттенке.',
+            'Уточню у менеджера, чи можна виготовити в такому кольорі.',
+            'Уточню в менеджера терміни виготовлення.',
+            'I will check the manufacturing times with our manager.',
+            'I will check the manufacturing lead time with our manager.',
+            'I will check the manufacturing time with our team.')
+        for text in positives:
+            with self.subTest(text=text):
+                self.assertTrue(inquiries._dependent_production_spans(text, disposition))
+                self.assertEqual(inquiries.validate_inquiry_response(disposition,
+                    ValidatedResponse(text, (ResponseControl('manager', True),))), '')
+        wrong = self.capture('Хочу оливковое худи')
+        self.assertFalse(inquiries._dependent_production_spans(positives[0], wrong))
+
+    def test_manufacturing_check_family_keeps_independent_actions_and_foreign_sources_protected(self):
+        disposition = self.capture('Хочу фиолетовое худи')
+        for text in ('Уточню у менеджера терміни виготовлення та виготовимо за 2 дні.',
+                'I will check the manufacturing time with our manager and we will manufacture it tomorrow.',
+                'Уточню у менеджера, чи зможемо виготовити та виготовимо за 2 дні.',
+                'I will check with our manager whether we can manufacture it and we will manufacture it.',
+                'I will check with our manager if we can manufacture it and dispatch it tomorrow.',
+                'Сроки изготовления гарантированы, я уточню у менеджера.',
+                'Сроки изготовления подтверждены, я уточню у менеджера.',
+                'Уточню у вашего менеджера сроки изготовления.',
+                'Менеджер сказал: сроки изготовления я уточню у менеджера.',
+                'Я не уточню у менеджера сроки изготовления.',
+                'Я уточнила у менеджера сроки изготовления.',
+                'Если я уточню у менеджера сроки изготовления.',
+                'If I check the manufacturing time with our manager.',
+                'По белому худи я уточню у менеджера сроки изготовления.',
+                'По фиолетовой футболке я уточню у менеджера сроки изготовления.',
+                'По худи Other Print я уточню у менеджера сроки изготовления.',
+                'I will check the manufacturing time with your team.',
+                'I will check the manufacturing time with their team.',
+                'Уточню з вашою командою терміни виготовлення.',
+                'Я уточню у менеджера, можно ли изготовить и изготовим его.',
+                'Уточню у менеджера, чи можна виготовити та відправимо завтра.'):
+            with self.subTest(text=text):
+                self.assertFalse(inquiries._dependent_production_spans(text, disposition))
+                self.assertEqual(inquiries.validate_inquiry_response(disposition,
+                    ValidatedResponse(text, (ResponseControl('manager', True),))), 'product_inquiry_fulfillment_unverified')
 
     def test_known_color_resolution_requires_verified_variant_and_exact_source_choice(self):
         source = self.sources("Хочу чёрную футболку")

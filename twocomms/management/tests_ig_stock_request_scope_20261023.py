@@ -371,6 +371,38 @@ class NativeUnlistedProductRequestTests(TransactionTestCase):
         http.assert_not_called()
         self.assertEqual(IgFollowUpTask.objects.filter(reason='revision_case:product_configuration_review').count(), 1)
 
+    def test_unlisted_color_manufacturing_time_check_sends_without_production_authority(self):
+        from management.models import IgBotNotification
+        product = self._select_product(1)
+        self._fresh('Хочу худі фіолетового кольору.')
+        self._answer('Ваше побажання — худі фіолетового кольору. '
+            'Уточню у менеджера терміни виготовлення в такому кольорі.', manager=True)
+        self.assertFalse(self.revision.action_receipts['response_coverage']['remaining'])
+        task = IgFollowUpTask.objects.get(reason='revision_case:product_configuration_review')
+        inquiry, = task.manager_context['product_inquiries']['inquiries']
+        self.assertEqual((inquiry['source_message_id'], inquiry['product_id'], inquiry['requested_value']),
+            (self.source.pk, product.pk, 'purple'))
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), 1)
+        result, model, http = self._execute()
+        self.assertEqual(result.state, 'completed', result.reasons)
+        model.assert_not_called()
+        http.assert_not_called()
+
+    def test_manufacturing_time_check_cannot_hide_same_clause_manufacture_guarantee(self):
+        self._select_product(1)
+        self._fresh('Хочу худі фіолетового кольору.')
+        self._expected_rejection = 'product_inquiry_fulfillment_unverified'
+        self.parsed = {'reply_text': 'Ваше побажання — худі фіолетового кольору. '
+            'Уточню у менеджера терміни виготовлення та виготовимо в такому кольорі.',
+            'controls': [{'kind': 'manager', 'value': True}]}
+        result, model, http = self._execute()
+        self.assertNotEqual(result.state, 'completed')
+        self.assertEqual(model.call_count, 1)
+        http.assert_not_called()
+        self.revision.refresh_from_db()
+        self.assertFalse(self.revision.delivery_effects.exists())
+        self.assertIn(self._expected_rejection, self._observed_rejection)
+
     def test_recognized_missing_purple_uses_existing_manager_case(self):
         self.color_case('Хочу худі кольору purple.', 'purple')
 
