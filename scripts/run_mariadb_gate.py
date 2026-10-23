@@ -34,6 +34,7 @@ STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
     "management.tests_ig_response_cart_plan",
     "management.tests_ig_reply_truth",
     "management.tests_ig_source_cart_catalog",
+    "management.tests_ig_product_inquiries",
     "management.tests_ig_stock_authority_20261023",
     "management.tests_ig_stock_catalog_copy_20261023",
     "management.tests_ig_stock_claim_guard_20261023",
@@ -82,6 +83,7 @@ STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
     "management.tests_ig_restock_waiting_list.NativeRestockWaitingListTests.test_reviewed_ready_row_is_excluded_only_with_complete_current_manager_scope",
 )
 STOCK_AUTHORITY_CORE_MODULES = frozenset({
+    "management.tests_ig_product_inquiries",
     "management.tests_ig_stock_authority_20261023",
     "management.tests_ig_stock_claim_guard_20261023",
     "management.tests_ig_stock_request_scope_20261023",

@@ -101,6 +101,40 @@ class ProductInquirySourceTests(SimpleTestCase):
         self.assertEqual(inquiries.validate_inquiry_response(disposition,
             ValidatedResponse(inquiries.inquiry_reply(disposition), (ResponseControl("manager", True),))), "")
 
+    def test_own_nominal_manufacturing_possibility_check_is_not_a_production_promise(self):
+        disposition = self.capture('Хочу фиолетовое худи')
+        for text in ('Обязательно уточню у менеджера возможность изготовления в таком оттенке и сразу вам сообщу.',
+                'Я уточню у менеджера можливість виготовлення в такому кольорі та повідомлю вам.',
+                'I will check with our manager the possibility of manufacturing in this shade and let you know.',
+                'I am checking the feasibility of manufacturing in this color with our manager.'):
+            with self.subTest(text=text):
+                self.assertTrue(inquiries._production_possibility_noun_span(text))
+                self.assertEqual(inquiries.validate_inquiry_response(disposition,
+                    ValidatedResponse(text, (ResponseControl('manager', True),))), '')
+
+    def test_nominal_check_never_launders_firm_actions_timing_reports_or_foreign_references(self):
+        disposition = self.capture('Хочу фиолетовое худи')
+        positive = 'Обязательно уточню у менеджера возможность изготовления в таком оттенке и сразу вам сообщу.'
+        for text in (positive.replace('и сразу вам сообщу.', 'и изготовим его.'),
+                positive.replace('и сразу вам сообщу.', 'и сделаем за 2 дня.'),
+                positive.replace('и сразу вам сообщу.', 'и отправим завтра.'),
+                positive.replace('в таком оттенке', 'в таком оттенке гарантировано'),
+                positive.replace('в таком оттенке', 'в таком оттенке обеспечено'),
+                positive.replace('в таком оттенке', 'в таком оттенке подтверждено'),
+                positive.replace('у менеджера', 'у вашего менеджера'),
+                'Менеджер сказал: ' + positive, 'Если ' + positive,
+                positive.replace('уточню', 'не уточню'), positive.replace('уточню', 'уточнила'),
+                positive.replace('в таком оттенке', 'для Other Print'),
+                positive.replace('в таком оттенке', 'в чёрном цвете'),
+                positive.rstrip('.') + ', изготовим его.', positive + ' Изготовим его за 2 дня.'):
+            with self.subTest(text=text):
+                self.assertFalse(inquiries._production_possibility_noun_span(text))
+                self.assertEqual(inquiries.validate_inquiry_response(disposition,
+                    ValidatedResponse(text, (ResponseControl('manager', True),))), 'product_inquiry_fulfillment_unverified')
+        self.assertFalse(inquiries._production_possibility_noun_span(f'«{positive}»'))
+        self.assertEqual(inquiries.validate_inquiry_response(disposition,
+            ValidatedResponse(positive, ())), 'product_inquiry_handoff_required')
+
     def test_known_color_resolution_requires_verified_variant_and_exact_source_choice(self):
         source = self.sources("Хочу чёрную футболку")
         cart = {"active_line_id": "shirt", "lines": [{"line_id": "shirt", "product_id": 12}]}

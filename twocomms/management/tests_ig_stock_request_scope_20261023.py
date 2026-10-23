@@ -999,3 +999,53 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
         http.assert_not_called()
         self.assertTrue(self.validation_reasons)
         self.assertEqual(self.domain_state()['purchase_counts'], (0, 0, 0, 0))
+
+
+from management.tests_ig_manu_language_20261021 import _NativeRussianRepairFixture
+
+
+@override_settings(IG_REVISION_EXECUTION_ENABLED=False, IG_FULFILLMENT_REVIEWS_ENABLED=True,
+    IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True, IG_TURN_CONTEXT_MODE="unified",
+    IG_CLIENT_STATE_PROMPT_TOKENS=2400, GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
+class NativeActualRussianProductionPossibilityRepairTests(_NativeRussianRepairFixture, TransactionTestCase):
+    reset_sequences = True
+
+    def test_actual_russian_nominal_manufacture_check_repairs_and_sends_once_without_debt(self):
+        from unittest.mock import patch
+        from management import tests_ig_manu_language_20261021 as language_fixture
+        from management.models import IgBotNotification
+        from management.services.ig_revision_live import execute_claimed_revision
+        actual = {'reply_text': 'Я поняла ваше пожелание насчёт фиолетового цвета для худи Restock Aurora! '
+            'Обязательно уточню у менеджера возможность изготовления в таком оттенке и сразу вам сообщу.',
+            'controls': [{'kind': 'manager', 'value': True}]}
+        import hashlib, json
+        self.assertEqual(hashlib.sha256(json.dumps(actual, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest(),
+            '8d7d2baef5113a09c0144b664fc84ba92fba7c627de0954b77c1d287f4253379')
+        with patch.object(language_fixture, 'RUSSIAN_REPAIR_CANDIDATE', actual):
+            result, generate, http = self.run_repair()
+        self.assertEqual((generate.call_count, self.repair_calls, http.call_count), (1, 1, 1))
+        self.assertEqual(result.state, 'completed', (result.reasons,
+            [(candidate, decision.reason_codes) for candidate, decision in self.candidate_decisions]))
+        self.assertEqual(len(self.candidate_decisions), 2)
+        self.assertEqual(self.candidate_decisions[0][0], language_fixture.H4B_WRONG_UKRAINIAN_CANDIDATE)
+        self.assertEqual(self.candidate_decisions[0][1].reason_codes, ('reply_language_mismatch',))
+        self.assertEqual(self.candidate_decisions[1][0], actual)
+        self.assertTrue(self.candidate_decisions[1][1].valid, self.candidate_decisions[1][1].reason_codes)
+        self.revision.refresh_from_db()
+        effect = self.revision.delivery_effects.get()
+        self.assertEqual((effect.state, effect.payload['message']['text']), ('sent', actual['reply_text']))
+        self.assertFalse(self.revision.action_receipts['response_coverage']['remaining'])
+        task = IgFollowUpTask.objects.get(client=self.customer)
+        self.assertEqual(task.reason, 'revision_case:product_configuration_review')
+        inquiry, = task.manager_context['product_inquiries']['inquiries']
+        self.assertEqual((inquiry['source_message_id'], inquiry['product_id'], inquiry['requested_value']),
+            (self.source_row.pk, self.product.pk, 'purple'))
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), 1)
+        self.assertEqual(self._durable_selection(), self.durable_selection_before)
+        with patch('management.services.call_ai_analysis.gemini_generate_text') as generated, \
+                patch('management.services.instagram_bot._provider_http') as transport:
+            repeated = execute_claimed_revision(self.revision.pk, self.token, self.settings)
+        self.assertEqual(repeated.state, 'completed', repeated.reasons)
+        generated.assert_not_called()
+        transport.assert_not_called()

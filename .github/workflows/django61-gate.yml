@@ -84,6 +84,7 @@ jobs:
             management.tests_ig_conversion_audit_stats_20261022 \
             management.tests_ig_stock_authority_20261023 \
             management.tests_ig_source_cart_catalog \
+            management.tests_ig_product_inquiries \
             management.tests_ig_reply_truth \
             management.tests_ig_response_plan \
             management.tests_ig_response_cart_plan \

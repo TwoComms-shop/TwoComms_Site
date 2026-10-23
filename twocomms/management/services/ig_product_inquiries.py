@@ -30,6 +30,50 @@ _SPEC = re.compile(_SPEC.pattern + "|" + _WEIGHT.pattern + r"|\bсклад\b|н�
 _MASS_AMOUNT = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:кг|kg|kilograms?|гр?(?:ам(?:м(?:а|ов|ы)?|ів|а|и)?)?|g(?:rams?)?)(?!\w)(?!\s*/)", re.I)
 
 
+def _production_possibility_noun_span(clause):
+    """Only a nominal manufacture object of our own manager check is owed.
+
+    This classifies one noun span, never production, timing or source
+    authority. The caller still validates every independent claim and its
+    native inquiry/source/line binding.
+    """
+    from management.services.ig_reply_language import own_reply_text
+    raw = str(clause or "").strip()
+    if (not raw or len(raw) > 700 or own_reply_text(raw) != raw
+        or re.search(r"[,;:?!\n]|\b(?:не|ні|not|never|if|would|could|якщо|якби|если|вчера|учора|раніше|раньше|previously|already)\b|n['’]t\b", raw, re.I)):
+        return ()
+    action = re.compile(r"\b(?:(?:(?:я|ми|мы)\s+)?"
+        r"(?:(?:обов['’]язково|обязательно|зараз|сейчас|також|также)\s+)?"
+        r"(?:уточню|уточнимо|уточним|перевірю|перевіримо|проверю|проверим|перевіряю|проверяю)|"
+        r"(?:i|we)(?:['’]ll|\s+will)\s+(?:also\s+)?(?:check|verify)|"
+        r"(?:i\s+am|we\s+are)\s+(?:also\s+)?(?:checking|verifying))\b", re.I)
+    manager = re.compile(r"\b(?:у|з|із|с|со|with)\s+(?:(?:нашого|нашим|нашего|our|the)\s+)?"
+        r"(?:менеджер(?:а|ом|у)?|manager)\b", re.I)
+    noun = re.compile(r"\b(?:виготовлення|изготовлен(?:ие|ия|ию|ием)|manufacturing)\b", re.I)
+    actions, managers, nouns = list(action.finditer(raw)), list(manager.finditer(raw)), list(noun.finditer(raw))
+    if len(actions) != 1 or len(managers) != 1 or len(nouns) != 1:
+        return ()
+    callback = re.search(r"\s+(?:та|й|і|и|and)\s+(?:"
+        r"(?:(?:я|ми|мы)\s+)?(?:(?:одразу|відразу|сразу)\s+)?(?:(?:вам|вас)\s+)?"
+        r"(?:повідомлю|повідомимо|сообщу|сообщим)(?:\s+(?:вам|вас))?|"
+        r"дам(?:о)?\s+вам\s+знати|"
+        r"(?:(?:i|we)(?:['’]ll|\s+will)?\s+)?(?:let\s+you\s+know|notify\s+you))\s*[.!]?\s*$", raw, re.I)
+    spans = [actions[0].span(), managers[0].span()]
+    if callback:
+        spans.append(callback.span())
+    residual = raw
+    for start, end in sorted(spans, reverse=True):
+        residual = residual[:start] + " " * (end - start) + residual[end:]
+    # No wildcard product names or predicates: the only optional object is
+    # an anaphoric colour/size reference to the separately captured wish.
+    if not re.fullmatch(r"\s*(?:можливість\s+виготовлення|"
+        r"возможность\s+изготовления|(?:the\s+)?(?:possibility|feasibility)\s+of\s+manufacturing)"
+        r"(?:\s+(?:в|у|такому|такім|цьому|таком|этом|кольорі|цвете|відтінку|оттенке|"
+        r"розмірі|размере|in|such|this|that|a|the|color|colour|shade|size))*\s*[.!]?\s*", residual, re.I):
+        return ()
+    return nouns[0].span()
+
+
 def _garment_weight_requested(text):
     """A garment mass question, never the customer's body measurements."""
     fabric_spans = list(_FABRIC_WEIGHT.finditer(str(text or "")))
@@ -563,12 +607,21 @@ def validate_inquiry_response(disposition, response):
         if any(_product_availability_claim(clause) for clause in clauses):
             return "product_inquiry_availability_unverified"
         for clause in clauses:
+            checked_production = _production_possibility_noun_span(clause)
+            cursor = 0
             for part in re.split(r"[,;:]|\b(?:але|но|but)\b", clause):
+                part_start = clause.find(part, cursor)
+                cursor = part_start + len(part)
                 if _HISTORY.search(part):
                     continue
                 for pattern in (_TIMING_RE, _ARRIVAL_RE, _TIMING_GUARANTEE_RE, _PRODUCTION):
-                    if any(not _timing_nonclaim(part, match.start()) for match in pattern.finditer(part)):
-                        return "product_inquiry_fulfillment_unverified"
+                    for match in pattern.finditer(part):
+                        if (pattern is _PRODUCTION and checked_production
+                            and checked_production[0] <= part_start + match.start()
+                            and part_start + match.end() <= checked_production[1]):
+                            continue
+                        if not _timing_nonclaim(part, match.start()):
+                            return "product_inquiry_fulfillment_unverified"
     # Each unanswered spec clause requires uncertainty/check language. An
     # appended "manager" control cannot bless a confident material claim.
     information = any(row["axis"] == "information" for row in disposition["inquiries"])
