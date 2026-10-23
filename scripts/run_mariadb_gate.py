@@ -10,6 +10,7 @@ strict adapter for a locally provisioned MariaDB server.
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import secrets
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import time
 import uuid
+from functools import lru_cache
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Callable, Mapping, TextIO
@@ -328,6 +330,18 @@ _TEST_RESULT_RE = re.compile(
     r"(?:skipped|expected failures|unexpected successes)=\d+)*\))?)$"
 )
 _TEST_FAILURE_RE = re.compile(r"^(ERROR|FAIL):\s+.+$")
+_LITERAL_TEST_ID = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+"
+_NAMED_TEST_FAILURE_RE = re.compile(
+    rf"^(ERROR|FAIL):\s+(test\w*)\s+\(({_LITERAL_TEST_ID})\)(?:\s.*)?$"
+)
+_VERBOSE_TEST_RESULT_RE = re.compile(
+    rf"^(test\w*)\s+\(({_LITERAL_TEST_ID})\)\s+\.\.\.\s+"
+    r"(ok|FAIL|ERROR|skipped(?:\s.*)?|expected failure|unexpected success)$"
+)
+_TEST_DESCRIPTION_PREFIX_RE = re.compile(rf"^(test\w*)\s+\(({_LITERAL_TEST_ID})\)$")
+_TEST_DESCRIPTION_RESULT_RE = re.compile(
+    r"^.+\s+\.\.\.\s+(ok|FAIL|ERROR|skipped(?:\s.*)?|expected failure|unexpected success)$"
+)
 _TEST_FAILURE_RESULT_RE = re.compile(r"^FAILED(?:\s+.*)?$")
 _EXCEPTION_RE = re.compile(
     r"^(?:(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception|Failure)):(?:\s.*)?$"
@@ -483,7 +497,70 @@ def classify_database_check_warnings(
     }
 
 
-def _failure_summary(*, suite: str, completed: subprocess.CompletedProcess) -> str:
+@lru_cache(maxsize=4)
+def _literal_repository_test_ids(project_root: Path) -> frozenset[str]:
+    """Trust only source-defined module/class/method names, without imports.
+
+    Dynamic/generated and inherited aliases deliberately fall back to the
+    generic marker. Neither runner output nor subtest parameters grant names.
+    """
+    source_root = project_root / "twocomms"
+    identities = set()
+    for path in source_root.rglob("test*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+        module = ".".join(path.relative_to(source_root).with_suffix("").parts)
+        for cls in tree.body:
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            for method in cls.body:
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name.startswith("test"):
+                    identities.add(f"{module}.{cls.name}.{method.name}")
+    return frozenset(identities)
+
+
+def _trusted_test_identity(match, allowed_test_ids, *, method_group, id_group):
+    identity = match.group(id_group) if match else ""
+    if identity in allowed_test_ids and identity.rsplit(".", 1)[-1] == match.group(method_group):
+        return identity
+    return None
+
+
+def _test_execution_receipts(completed, allowed_test_ids) -> str:
+    """Retain literal identities/status and numeric summaries, never reasons."""
+    lines = []
+    seen = set()
+    for stream in (completed.stderr or "", completed.stdout or ""):
+        pending_description_id = None
+        for raw_line in stream.splitlines():
+            candidate = _ANSI_ESCAPE_RE.sub("", raw_line.strip())
+            match = _VERBOSE_TEST_RESULT_RE.fullmatch(candidate)
+            identity = _trusted_test_identity(match, allowed_test_ids, method_group=1, id_group=2)
+            description_result = _TEST_DESCRIPTION_RESULT_RE.fullmatch(candidate) if pending_description_id else None
+            if not identity and description_result:
+                identity = pending_description_id
+                status = description_result.group(1)
+            elif identity:
+                status = match.group(3)
+            pending_description_id = None
+            if identity:
+                status = "skipped" if status.startswith("skipped") else status
+                receipt = f"MariaDB test receipt: id={identity} result={status}"
+            elif _TEST_RESULT_RE.fullmatch(candidate):
+                receipt = f"MariaDB test summary: {candidate}"
+            else:
+                prefix = _TEST_DESCRIPTION_PREFIX_RE.fullmatch(candidate)
+                pending_description_id = _trusted_test_identity(prefix, allowed_test_ids, method_group=1, id_group=2)
+                continue
+            if receipt not in seen:
+                seen.add(receipt)
+                lines.append(receipt)
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _failure_summary(*, suite: str, completed: subprocess.CompletedProcess, allowed_test_ids=()) -> str:
     lines = [
         f"MariaDB gate child failed: suite={suite} exit={completed.returncode}"
     ]
@@ -513,13 +590,15 @@ def _failure_summary(*, suite: str, completed: subprocess.CompletedProcess) -> s
             )
             if database_errno_match:
                 lines.append(f"database_error: errno={database_errno_match.group(1)}")
+            elif test_failure_match:
+                named = _NAMED_TEST_FAILURE_RE.fullmatch(candidate)
+                identity = _trusted_test_identity(named, allowed_test_ids, method_group=2, id_group=3)
+                lines.append(f"{test_failure_match.group(1)}: {identity or 'test_failed'}")
             elif exception_kind:
                 lines.append("exception:")
                 lines.append(f"exception_kind: {exception_kind}")
             elif exception_match:
                 lines.append("exception:")
-            elif test_failure_match:
-                lines.append(f"{test_failure_match.group(1)}: test_failed")
             elif _TEST_RESULT_RE.fullmatch(candidate):
                 lines.append(candidate)
             elif _TEST_FAILURE_RESULT_RE.fullmatch(candidate):
@@ -1718,6 +1797,7 @@ def run_gate(
             "--settings=test_settings_mariadb",
             "--noinput",
             "--keepdb",
+            "--verbosity=2",
         ]
         stage = "test_suite"
         completed = command_runner(
@@ -1728,8 +1808,11 @@ def run_gate(
             text=True,
             check=False,
         )
+        allowed_test_ids = _literal_repository_test_ids(Path(project_root))
+        output.write(_test_execution_receipts(completed, allowed_test_ids))
         if completed.returncode:
-            output.write(_failure_summary(suite=suite, completed=completed))
+            output.write(_failure_summary(suite=suite, completed=completed,
+                                          allowed_test_ids=allowed_test_ids))
             primary_error = RuntimeError(f"{suite} command failed ({completed.returncode})")
             raise primary_error
 
@@ -1926,6 +2009,7 @@ def run_gate(
         primary_error = primary_error or exc
         output.write(_safe_error_identity(stage=stage, error=primary_error))
     finally:
+        cleanup_verified = False
         if user_attempted:
             try:
                 admin.drop_user(username)
@@ -1936,16 +2020,21 @@ def run_gate(
                 admin.drop_database(database)
             except BaseException as exc:
                 cleanup_errors.append(exc)
-        if (user_attempted or database_attempted) and hasattr(admin, "verify_cleanup"):
+        if user_attempted or database_attempted:
             try:
-                user_exists, database_exists = admin.verify_cleanup(database, username)
-                if user_exists or database_exists:
+                verifier = getattr(admin, "verify_cleanup", None)
+                if not callable(verifier):
+                    raise RuntimeError("cleanup verifier unavailable")
+                user_exists, database_exists = verifier(database, username)
+                if user_exists is not False or database_exists is not False:
                     cleanup_errors.append(
                         RuntimeError(
                             "cleanup verification found residue: "
                             f"user={bool(user_exists)} database={bool(database_exists)}"
                         )
                     )
+                else:
+                    cleanup_verified = True
             except BaseException as exc:
                 cleanup_errors.append(exc)
         close = getattr(admin, "close", None)
@@ -1971,6 +2060,8 @@ def run_gate(
             raise GateError(
                 "MariaDB gate cleanup failed", cleanup_errors=cleanup_errors
             ) from cleanup_errors[0]
+        if cleanup_verified:
+            output.write(f"MariaDB cleanup receipt: suite={suite} cleanup=verified\n")
     if primary_error:
         if isinstance(primary_error, GateError):
             raise primary_error

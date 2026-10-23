@@ -1433,6 +1433,140 @@ print(json.dumps({
         ):
             self.assertNotIn(private_detail, summary)
 
+    def test_literal_test_allowlist_reads_ast_without_importing_or_dynamic_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module = root / "twocomms" / "management" / "tests_native.py"
+            module.parent.mkdir(parents=True)
+            module.write_text(
+                "raise RuntimeError('must never import')\n"
+                "class NativeTests:\n"
+                "    def test_literal(self): pass\n"
+                "    async def test_async_literal(self): pass\n"
+                "    generated = 'customer-private-value'\n"
+                "class AliasTests(NativeTests): pass\n",
+                encoding="utf-8",
+            )
+            identities = self.runner._literal_repository_test_ids(root)
+        self.assertEqual(identities, frozenset({
+            "management.tests_native.NativeTests.test_literal",
+            "management.tests_native.NativeTests.test_async_literal",
+        }))
+
+    def test_failure_retains_only_existing_literal_id_without_subtest_values(self):
+        identity = ("management.tests_ig_fresh_conversation_reset_20261023."
+                    "FreshResetFinancialLockRaceTests."
+                    "test_standard_callback_holding_deal_causes_atomic_busy_reset_then_can_settle")
+        method = identity.rsplit(".", 1)[-1]
+        allowed = self.runner._literal_repository_test_ids(PROJECT_ROOT)
+        self.assertIn(identity, allowed)
+        completed = subprocess.CompletedProcess([], 1, "", (
+            f"FAIL: {method} ({identity}) (customer='private@example.com', address='private street')\n"
+            "ERROR: test_invented (management.tests_private.CustomerName.test_invented)\n"
+            f"FAIL: test_mismatch ({identity})\n"
+            "AssertionError: token=private-token\n"))
+        rendered = self.runner._failure_summary(suite="dialogue-quality", completed=completed,
+                                               allowed_test_ids=allowed)
+        self.assertIn(f"FAIL: {identity}\n", rendered)
+        self.assertIn("ERROR: test_failed", rendered)
+        self.assertIn("FAIL: test_failed", rendered)
+        for private in ("private@example.com", "private street", "private-token", "CustomerName", "test_mismatch"):
+            self.assertNotIn(private, rendered)
+
+    def test_verbose_execution_receipts_keep_status_and_counts_without_skip_reason(self):
+        identity = ("management.tests_ig_fresh_conversation_reset_20261023."
+                    "FreshResetFinancialLockRaceTests."
+                    "test_standard_callback_holding_deal_causes_atomic_busy_reset_then_can_settle")
+        method = identity.rsplit(".", 1)[-1]
+        allowed = self.runner._literal_repository_test_ids(PROJECT_ROOT)
+        for status, expected in (("ok", "ok"), ("FAIL", "FAIL"), ("ERROR", "ERROR"),
+                                 ("skipped 'private customer+token'", "skipped"),
+                                 ("expected failure", "expected failure"),
+                                 ("unexpected success", "unexpected success")):
+            with self.subTest(status=expected):
+                completed = subprocess.CompletedProcess([], 0,
+                    "test_private (management.secret.Customer.test_private) ... ok\n", (
+                    f"{method} ({identity}) ... {status}\n"
+                    "Ran 1 test in 2.345s\nOK (skipped=1)\n"
+                    "Traceback private-token\n"))
+                rendered = self.runner._test_execution_receipts(completed, allowed)
+                self.assertIn(f"MariaDB test receipt: id={identity} result={expected}\n", rendered)
+                self.assertIn("MariaDB test summary: Ran 1 test in 2.345s", rendered)
+                self.assertIn("MariaDB test summary: OK (skipped=1)", rendered)
+                for private in ("private customer", "private-token", "management.secret", "Traceback"):
+                    self.assertNotIn(private, rendered)
+
+    def test_native_success_emits_reset_execution_receipt_with_verbosity_two(self):
+        identity = ("management.tests_ig_fresh_conversation_reset_20261023."
+                    "FreshResetFinancialLockRaceTests."
+                    "test_standard_callback_holding_deal_causes_atomic_busy_reset_then_can_settle")
+        method = identity.rsplit(".", 1)[-1]
+        command = FakeCommandRunner(stdout=f"{method} ({identity}) ... ok\nRan 1 test in 0.123s\nOK\n")
+        evidence = io.StringIO()
+        self.runner.run_gate(server_mode="external", suite="dialogue-quality", admin=FakeAdmin(),
+            command_runner=command, project_root=PROJECT_ROOT,
+            environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=evidence)
+        test_calls = [args for args, _kwargs in command.calls if args[2] == "test"]
+        self.assertEqual(len(test_calls), 1)
+        self.assertIn("--verbosity=2", test_calls[0])
+        self.assertIn(f"id={identity} result=ok", evidence.getvalue())
+        self.assertIn("MariaDB test summary: Ran 1 test in 0.123s", evidence.getvalue())
+
+    def test_real_unittest_verbose_format_with_description_keeps_only_identity_and_status(self):
+        class ReceiptTests(unittest.TestCase):
+            def test_native(self):
+                """Private customer description must never be retained."""
+
+        ReceiptTests.__module__ = "management.tests_native_receipt"
+        ReceiptTests.__qualname__ = "ReceiptTests"
+        stream = io.StringIO()
+        unittest.TextTestRunner(stream=stream, verbosity=2).run(
+            unittest.defaultTestLoader.loadTestsFromTestCase(ReceiptTests))
+        identity = "management.tests_native_receipt.ReceiptTests.test_native"
+        completed = subprocess.CompletedProcess([], 0, "", stream.getvalue())
+        rendered = self.runner._test_execution_receipts(completed, frozenset({identity}))
+        self.assertIn(f"id={identity} result=ok", rendered)
+        self.assertIn("MariaDB test summary: Ran 1 test", rendered)
+        self.assertNotIn("Private customer", rendered)
+        self.assertNotIn("description", rendered)
+
+    def test_primary_failure_still_emits_cleanup_receipt_after_verified_removal(self):
+        admin = FakeAdmin()
+        evidence = io.StringIO()
+        with self.assertRaises(self.runner.GateError):
+            self.runner.run_gate(server_mode="external", admin=admin,
+                command_runner=FakeCommandRunner(returncode=1, fail_command="test"),
+                project_root=PROJECT_ROOT, environ={"MARIADB_ADMIN_PASSWORD": "root-secret"},
+                output=evidence)
+        self.assertIn("MariaDB cleanup receipt: suite=lifecycle cleanup=verified", evidence.getvalue())
+        self.assertNotIn("MariaDB gate passed:", evidence.getvalue())
+        self.assertEqual([call[0] for call in admin.calls][-4:],
+                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+
+    def test_cleanup_receipt_requires_available_successful_verifier_and_no_other_error(self):
+        for condition in ("missing", "error", "residue", "unproven", "drop_error", "close_error"):
+            with self.subTest(condition=condition):
+                admin = FakeAdmin()
+                if condition == "missing":
+                    admin.verify_cleanup = None
+                elif condition == "error":
+                    admin.verify_cleanup = mock.Mock(side_effect=RuntimeError("private verifier"))
+                elif condition == "residue":
+                    admin.residue = (True, False)
+                elif condition == "unproven":
+                    admin.residue = (None, None)
+                elif condition == "drop_error":
+                    admin.fail_cleanup = True
+                else:
+                    admin.close = mock.Mock(side_effect=RuntimeError("private close"))
+                evidence = io.StringIO()
+                with self.assertRaises(self.runner.GateError):
+                    self.runner.run_gate(server_mode="external", admin=admin,
+                        command_runner=FakeCommandRunner(), project_root=PROJECT_ROOT,
+                        environ={"MARIADB_ADMIN_PASSWORD": "root-secret"}, output=evidence)
+                self.assertNotIn("cleanup=verified", evidence.getvalue())
+                self.assertNotIn("private", evidence.getvalue())
+
     def test_failure_summary_reads_sanitized_markers_from_stdout(self):
         completed = subprocess.CompletedProcess(
             args=["python", "manage.py", "test"],
@@ -1939,7 +2073,7 @@ print(json.dumps({
                 self.assertEqual(test_calls, [[
                     sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
                     *self.runner.SUITES[suite],
-                    "--settings=test_settings_mariadb", "--noinput", "--keepdb",
+                    "--settings=test_settings_mariadb", "--noinput", "--keepdb", "--verbosity=2",
                 ]])
                 self.assertEqual(result["suite"], suite)
                 self.assertEqual([call[0] for call in admin.calls][-4:],
@@ -2051,7 +2185,7 @@ print(json.dumps(result))
                 self.assertEqual(test_calls, [[
                     sys.executable, str(PROJECT_ROOT / "twocomms/manage.py"), "test",
                     *self.runner.SUITES[suite],
-                    "--settings=test_settings_mariadb", "--noinput", "--keepdb",
+                    "--settings=test_settings_mariadb", "--noinput", "--keepdb", "--verbosity=2",
                 ]])
                 self.assertEqual(result["suite"], suite)
                 self.assertEqual(result["cleanup"], "verified")
