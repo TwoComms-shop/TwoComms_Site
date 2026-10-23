@@ -21,12 +21,25 @@ _REPORTED = re.compile(r"\b(?:said|says|told|asked|saying|wrote|he|she|they)\b|"
     r"\b(?:i|we)\s+(?:write|reply|answer|respond|speak)\b", re.I)
 _TEMPORARY = re.compile(r"\b(?:now|today|this\s+time|this\s+reply|for\s+now)\b|"
     r"зараз|сьогодні|сейчас|сегодня|цього\s+разу|на\s+цей\s+раз|в\s+этот\s+раз", re.I)
-_SHORT = re.compile(r"\b(?:short|brief|briefly|concise|concisely)\b|коротко|короче|стисло|лаконіч\w*|лаконич\w*", re.I)
+_SHORT = re.compile(r"\b(?:short|brief|briefly|concise|concisely)\b|коротко|короче|кратко|стисло|лаконіч\w*|лаконич\w*", re.I)
 _DETAIL = re.compile(r"\b(?:detail(?:ed)?|thoroughly|fully)\b|докладн\w*|детальн\w*|подробн\w*|розгорнут\w*|развёрнут\w*", re.I)
 _EMOJI = re.compile(r"\b(?:emoji|emojis|emoticons|smileys)\b|емодз\w*|эмодз\w*|смайл\w*", re.I)
 _NO = re.compile(r"\b(?:no|without|not|never|stop|avoid|don['’]?t|do\s+not|без|не)\b", re.I)
 _DEFAULT = re.compile(r"\bas\s+usual\b|як\s+звичайно|как\s+обычно|звичайним\s+стилем", re.I)
 _ART = re.compile(r"\b(?:print|slogan|inscription|design)\b|принт\w*|напис\s+на|надпись\s+на", re.I)
+_COMMUNICATION_REQUEST = re.compile(
+    r"\b(?:reply|answer|respond|explain)\b|відпові\w*|отвеч\w*|ответ\w*|поясн\w*|объясн\w*", re.I)
+_HISTORICAL = re.compile(r"^\s*(?:раніше|раньше|ранее|previously|earlier)\b", re.I)
+_COORDINATION = re.compile(r",|\b(?:і|й|та|и|а|але|но|and|but)\b", re.I)
+_POSITIVE_EMOJI_SUFFIX = re.compile(
+    r"(?:с|з|із|зі|with)\s+(?:емодзі|эмодзи|emoji|emojis|emoticons|smileys|смайл\w*)", re.I)
+
+
+def _target_prefix(fragment, start, other_targets):
+    """A negation attached to another finite choice cannot own this target."""
+    prefix = fragment[:start]
+    end = max((match.end() for pattern in other_targets for match in pattern.finditer(prefix)), default=0)
+    return prefix[end:]
 
 
 def _bare_style_preferences(clause):
@@ -38,9 +51,9 @@ def _bare_style_preferences(clause):
     result = []
     scope = "current_turn" if _TEMPORARY.search(clause) else "persistent"
     shapes = (
-        ("verbosity", "short", r"коротко|короче|кратко|стисло|briefly|short|concisely|"
+        ("verbosity", "short", r"коротко|короче|кратко|стисло|briefly|brief|short|concise|concisely|"
             r"(?:короткі|стислі)\s+відповіді|(?:короткие|краткие)\s+ответы"),
-        ("verbosity", "detailed", r"докладніше|детальніше|подробнее|in\s+detail|"
+        ("verbosity", "detailed", r"докладніше|докладно|детальніше|детально|подробнее|подробно|detailed|in\s+detail|"
             r"(?:докладні|детальні)\s+відповіді|(?:подробные|детальные)\s+ответы"),
         ("emoji", "omit", r"без\s+(?:емодзі|эмодзи|emoji|emojis|смайл\w*)|"
             r"(?:no|without)\s+(?:emoji|emojis|emoticons|smileys)"),
@@ -60,30 +73,56 @@ def explicit_preferences(text):
     value = own_reply_text(text)
     result = []
     for clause in re.split(r"[.!?;\n]+", value):
-        if _REPORTED.search(clause) or _ART.search(clause):
-            continue
-        bare = _bare_style_preferences(clause)
-        if bare:
-            result.extend(bare)
-            continue
-        if not _REQUEST.search(clause):
+        if _REPORTED.search(clause) or _HISTORICAL.search(clause):
             continue
         scope = "current_turn" if _TEMPORARY.search(clause) else "persistent"
-        # Negated verbosity is not its opposite: "not briefly" does not grant
-        # a detailed preference. Only positively requested values are stored.
-        choices = []
-        for slot, choice, pattern in (("verbosity", "short", _SHORT),
-                                     ("verbosity", "detailed", _DETAIL)):
-            for match in pattern.finditer(clause):
-                if not _NO.search(clause[max(0, match.start() - 15):match.start()]):
-                    choices.append((match.start(), slot, choice))
-        for match in _DEFAULT.finditer(clause):
-            choices.extend(((match.start(), "verbosity", "default"), (match.start(), "emoji", "default")))
-        for match in _EMOJI.finditer(clause):
-            before = clause[max(0, match.start() - 45):match.start()]
-            choices.append((match.start(), "emoji", "omit" if _NO.search(before) else "allow"))
-        result.extend({"slot": slot, "value": choice, "scope": scope}
-            for _at, slot, choice in sorted(choices))
+        art_target = False
+        previous_style = False
+        for fragment in _COORDINATION.split(clause):
+            if not fragment.strip():
+                continue
+            follows_style, previous_style = previous_style, False
+            if _ART.search(fragment):
+                art_target = True
+                continue
+            if art_target and not _COMMUNICATION_REQUEST.search(fragment):
+                continue
+            art_target = False
+            # Only an exact positive continuation may inherit an immediately
+            # preceding admitted style choice. Product prose cannot carry it.
+            if follows_style and _POSITIVE_EMOJI_SUFFIX.fullmatch(fragment.strip()):
+                result.append({"slot": "emoji", "value": "allow", "scope": scope})
+                previous_style = True
+                continue
+            if _DEFAULT.fullmatch(fragment.strip()):
+                result.extend({"slot": slot, "value": "default", "scope": scope}
+                              for slot in ("verbosity", "emoji"))
+                previous_style = True
+                continue
+            bare = _bare_style_preferences(fragment)
+            if bare:
+                result.extend({**request, "scope": scope} for request in bare)
+                previous_style = True
+                continue
+            if not _REQUEST.search(fragment):
+                continue
+            # Negated verbosity is not its opposite: "not briefly" does not
+            # grant detail. Only positively requested values are stored.
+            choices = []
+            for slot, choice, pattern in (("verbosity", "short", _SHORT),
+                                         ("verbosity", "detailed", _DETAIL)):
+                for match in pattern.finditer(fragment):
+                    before = _target_prefix(fragment, match.start(), (_EMOJI,))
+                    if not _NO.search(before[-15:]):
+                        choices.append((match.start(), slot, choice))
+            for match in _DEFAULT.finditer(fragment):
+                choices.extend(((match.start(), "verbosity", "default"), (match.start(), "emoji", "default")))
+            for match in _EMOJI.finditer(fragment):
+                before = _target_prefix(fragment, match.start(), (_SHORT, _DETAIL, _DEFAULT))
+                choices.append((match.start(), "emoji", "omit" if _NO.search(before[-45:]) else "allow"))
+            result.extend({"slot": slot, "value": choice, "scope": scope}
+                for _at, slot, choice in sorted(choices))
+            previous_style = bool(choices)
     return result
 
 

@@ -6514,7 +6514,9 @@ def bot_client_detail_api(request, client_id):
                 if f.trigger == IgFollowUpTask.Trigger.EVENT
                 and f.event_key
                 and f.reason not in {HUMAN_REPLY_UNKNOWN_REASON, "fulfillment_review",
-                    "fulfillment_manager_update", "subscribed_restock"}
+                    "fulfillment_manager_update", "subscribed_restock",
+                    "revision_case:product_configuration_review",
+                    "revision_case:product_information_review"}
                 and not continuation_exists
                 and f.status in {
                     IgFollowUpTask.Status.SENT,

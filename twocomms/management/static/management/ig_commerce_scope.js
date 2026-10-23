@@ -63,7 +63,7 @@
         el('strong', 'ig-cs-product', line.title || 'Модель ще не обрана'));
       heading.append(caption);
       if (line.active === true) heading.append(el('span', 'ig-cs-active', line.editable === true ? 'Поточна для уточнення' : 'Поточна позиція'));
-      const recipients = { self: 'Для себе', friend: 'Для друга', friend_female: 'Для подруги', mother: 'Для мами', father: 'Для тата', boyfriend: 'Для хлопця', girlfriend: 'Для дівчини' };
+      const recipients = { self: 'Для себе', friend: 'Для друга', friend_female: 'Для подруги', mother: 'Для мами', father: 'Для тата', boyfriend: 'Для хлопця', girlfriend: 'Для дівчини', sister: 'Для сестри', brother: 'Для брата' };
       node.append(heading, el('p', 'ig-cs-recipient', Object.hasOwn(recipients, line.recipient_id) ? recipients[line.recipient_id] : line.recipient_id ? 'Окремий отримувач' : 'Отримувача не уточнено'));
       const fields = line.fields || {}, details = el('dl', 'ig-cs-fields');
       for (const [key, name] of [['size', 'Розмір'], ['color', 'Колір'], ['fit_option_code', 'Посадка'], ['quantity', 'Кількість']]) {

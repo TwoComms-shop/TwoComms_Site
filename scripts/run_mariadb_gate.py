@@ -165,6 +165,12 @@ SUITES = {
     # Keep the October 22 dialogue work separate from the legacy conversion
     # gate, whose native run already approaches the per-job timeout.
     "dialogue-quality": (
+        "management.tests_ig_qa23_turn_parsing",
+        "management.tests_ig_qa23_business_cart",
+        "management.tests_ig_qa23_context_actions",
+        "management.tests_ig_qa23_conversion_causes",
+        "management.tests_ig_qa23_communication_preferences",
+        "management.tests_ig_qa23_terse_questions",
         "management.tests_ig_analysis_lane_isolation_20261023",
         "management.tests_ig_analysis_lane",
         "management.tests_ig_worker_progress",

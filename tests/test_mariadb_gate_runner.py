@@ -1810,6 +1810,14 @@ print(json.dumps({
             "management.tests_ig_standard_funnel_20261022",
             "storefront.tests.test_size_guide_authority_20261022",
         }
+        expected.update({
+            "management.tests_ig_qa23_turn_parsing",
+            "management.tests_ig_qa23_business_cart",
+            "management.tests_ig_qa23_context_actions",
+            "management.tests_ig_qa23_conversion_causes",
+            "management.tests_ig_qa23_communication_preferences",
+            "management.tests_ig_qa23_terse_questions",
+        })
         self.assertEqual(set(modules), expected)
         self.assertEqual(len(modules), len(expected))
         self.assertEqual(self.runner._validate_suite("dialogue-quality"), modules)

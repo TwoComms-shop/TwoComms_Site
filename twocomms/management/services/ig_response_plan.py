@@ -572,9 +572,17 @@ def _requested_topics(text, parsed_topics=()):
             if fit_request.get("audience_requested"):
                 topics.add("info:audience")
         markers = list(re.finditer(
-            r"\b(?:скільки|сколько|яка|який|какой|коли|когда|where|when|how|what|чи|ли|tell)\b"
+            r"\b(?:скільки|сколько|яка|який|які|какой|какая|какие|як|как|коли|когда|where|when|how|what|which|чи|ли|tell)\b"
             r"|\b(?:підкаж\w*|подскаж\w*|уточн\w*|check|clarify)", clause, re.I))
-        asking = ("?" in clause and not markers) or any(
+        # An entire short topic (possibly after a size choice) is an ordinary
+        # elliptical request. A noun inside a title, description or statement
+        # is not: keep the full-match boundary instead of accepting any mention.
+        nominal_request = bool(re.fullmatch(
+            r"\s*(?:(?:(?:розмір|размер|size)\s+)?(?:[2-5]?x{0,3}[sml]|[хx]{1,3}[лl])(?!\w)\s*[,;]?\s*)?"
+            r"(?:(?:а|і|и|and|also)\s+)?(?:состав|склад|матеріал|материал|тканина|ткань|"
+            r"ціна|цена|вартість|price|cost|composition|fabric|material|догляд|уход|care)"
+            r"(?:\s*[,;]?\s+(?:будь\s+ласка|пожалуйста|please))?\s*", clause, re.I))
+        asking = nominal_request or ("?" in clause and not markers) or any(
             not _locally_negated(clause, marker.start()) and not any(
                 negation.end() == len(clause[:marker.start()].rstrip())
                 for negation in _NEGATED_CHOICE_RE.finditer(clause[:marker.start()].rstrip()))
@@ -586,7 +594,7 @@ def _requested_topics(text, parsed_topics=()):
             topics.add("info:density")
             matched = True
         for topic, pattern in (
-            ("material", r"матеріал|материал|material|склад\b|состав|composition|cotton|бавов|хлоп"),
+            ("material", r"матеріал|материал|тканин\w*|ткан[ьи]\b|fabric|material|склад\b|состав|composition|cotton|бавов|хлоп"),
             ("density", r"щільн|плотност|density|gsm|г/м"),
             ("weight", r"ваг(?:а|и|у|ою)\b|важ(?:ить|ать)\b|вес(?:а|у|ом|ит|ят)?\b|\bweigh(?:t|s|ing)?\b"),
             ("care", r"прат|стир|догляд|уход|wash|care"),
@@ -598,6 +606,15 @@ def _requested_topics(text, parsed_topics=()):
             ("recruitment", r"ваканс|праців|работ\w*|робот\w*|staff|job|hiring"),
             ("service", r"власн\w*\s+принт|св(?:о[йяю]|ій)\w*\s+(?:принт|дизайн)|custom|own\s+design|сервіс|сервис|service"),
         ):
+            topic_matches = list(re.finditer(pattern, clause, re.I))
+            def refused(match):
+                boundary = r"[,;]|\b(?:а|але|но|but)\b"
+                local = (re.split(boundary, clause[:match.start()], flags=re.I)[-1]
+                    + match.group() + re.split(boundary, clause[match.end():], flags=re.I)[0])
+                return bool(re.search(r"\bне\s+(?:цікав\w*|интерес\w*|важлив\w*|важн\w*|хочу\s+(?:знати|знать))"
+                    r"|\b(?:not\s+interested|(?:do\s+not|don't)\s+want\s+to\s+know)\b", local, re.I))
+            if topic_matches and all(refused(match) for match in topic_matches):
+                continue
             if topic == "price":
                 price_matches = list(re.finditer(pattern, clause, re.I))
                 if price_matches and all(_locally_negated(clause, match.start()) or re.search(

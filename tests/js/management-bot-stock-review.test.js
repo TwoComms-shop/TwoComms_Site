@@ -181,17 +181,19 @@ test('one submission covers every mixed-cart line and preserves the requested qu
 });
 
 test('existing private-draft entry preserves dirty work and creates no send command when opening a source-bound reply',()=>{
- let dirty=false,updates=[],newDocuments=0,focus=0,opened=0;
+ let dirty=false,updates=[],newDocuments=0,focus=0,opened=0,notices=[];
  const sandbox={activeId:12,humanDocumentsClientId:12,csrf:'fixture-only',
   ClientContextDrawer:{open(){opened++;}},humanDocumentsDisclosure:{open:false},
   humanDocumentsController:{hasUnsavedChanges:()=>dirty,update:opts=>{updates.push(opts);return true;}},
   humanDocumentsRoot:{querySelector:selector=>selector==='[data-action="new"]'?{click(){newDocuments++;}}:{focus(){focus++;}}},
+  setGlobalFeedback:(...args)=>notices.push(args),
   fetch:()=>assert.fail('opening existing draft UI must never send'),detail:()=>assert.fail('opening draft must not refresh/send'),
  };
  vm.createContext(sandbox);let start=template.indexOf('    function openFulfillmentReply('),end=template.indexOf('    function placeFulfillmentReview(',start);assert.ok(start>0&&end>start);
  const code=template.slice(start,end).replace(/\{% url "management_bot_clients_api" %\}/g,'/bot/api/clients/');vm.runInContext(code,sandbox);
  sandbox.openFulfillmentReply(12,11);assert.equal(opened,1);assert.equal(updates[0].contextMessageId,11);assert.equal(updates[0].clientId,12);assert.equal(newDocuments,1);assert.equal(focus,1);
  dirty=true;sandbox.openFulfillmentReply(12,22);assert.equal(updates.length,1);assert.equal(newDocuments,1);assert.equal(focus,2);
+ assert.match(notices[0][0],/попередню приватну чернетку.*#22.*Нова відповідь ще не створена/);assert.equal(notices[0][1],'error');
  sandbox.activeId=13;sandbox.openFulfillmentReply(12,11);assert.equal(opened,2);assert.equal(newDocuments,1);
 });
 

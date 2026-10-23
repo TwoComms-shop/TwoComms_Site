@@ -1932,7 +1932,7 @@ body.bot-drawer-open{overflow:hidden;}
 <script src="{% static 'management/ig_journey_geometry.js' %}?v=journey-confirmed-purchases-v17"></script>
 <script src="{% static 'management/ig_journey.js' %}?v=journey-confirmed-purchases-v17"></script>
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_human_documents.js' %}?v=human-documents-v2"></script>{% endif %}
-{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=274e711a8760"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=3d87bf7c76b1"></script>{% endif %}
+{% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_selection_corrections.js' %}?v=81225a7831b5"></script><script src="{% static 'management/ig_commerce_scope.js' %}?v=9b2725059140"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/ig_media_lifecycle.js' %}?v=private-media-v1"></script>{% endif %}
 {% if bot_can_view_pii %}<script src="{% static 'management/js/ig_memory_card.js' %}?v=memory-presentation-v1"></script>{% endif %}
 {% if bot_can_operate and bot_can_view_pii %}<script src="{% static 'management/ig_decision_trace.js' %}?v=decision-evidence-v1"></script><script src="{% static 'management/ig_quality_observations.js' %}?v=decision-evidence-v1"></script>{% endif %}
@@ -2591,7 +2591,11 @@ body.bot-drawer-open{overflow:hidden;}
           });
         }
       }
-      contextEl.appendChild(assistedCommerceRoot);if(assistedPartialRoot&&assistedPartialController)contextEl.appendChild(assistedPartialRoot);syncAssistedPanelOrder(assistedCommerceController.commerce);if(created)void assistedCommerceController.load();
+      contextEl.appendChild(assistedCommerceRoot);if(assistedPartialRoot&&assistedPartialController)contextEl.appendChild(assistedPartialRoot);syncAssistedPanelOrder(assistedCommerceController.commerce);
+      // Accepted full detail refreshes also refresh this separately loaded view.
+      // Preserve focused editors, drafts and pinned uncertain operations.
+      const canRefresh=!contextPreservedRoots.has(assistedCommerceRoot)&&!contextPreservedRoots.has(assistedPartialRoot)&&!assistedCommerceController.busy&&!assistedCommerceController.unknown&&assistedCommerceController.canLeave()&&(!assistedPartialController||!assistedPartialController.busy&&!assistedPartialController.unknown&&assistedPartialController.canLeave());
+      if(created||canRefresh)void assistedCommerceController.load();
       {% endif %}
     }
     function renderSplitShipping(id){
@@ -2661,7 +2665,7 @@ body.bot-drawer-open{overflow:hidden;}
       if(!humanDocumentsController.hasUnsavedChanges()){
         const updated=humanDocumentsController.update({clientId,contextMessageId:messageId,csrf,baseUrl:'{% url "management_bot_clients_api" %}'.replace(/clients\/$/,''),onRefresh:()=>{if(Number(activeId)===Number(clientId))void detail(clientId);}});
         if(updated)humanDocumentsRoot.querySelector('[data-action="new"]')?.click();
-      }
+      }else setGlobalFeedback('Залишено попередню приватну чернетку. Збережіть або відкиньте її перед створенням відповіді на повідомлення #'+String(messageId)+'. Нова відповідь ще не створена.','error');
       humanDocumentsRoot.querySelector('textarea')?.focus({preventScroll:true});
     }
     function placeFulfillmentReview(){

@@ -282,6 +282,21 @@ def _find_prefix_value(text: str, words: dict[str, str]) -> str:
         if re.search(r"(?:описани|description|карточк|характеристик)\w*", segment):
             continue
         before = lowered[segment_start:start]
+        if words is _COLOR_WORDS:
+            # A contrastive correction owns its positive colour even when a
+            # customer omits the comma: "не чорне а біле". Do not shorten
+            # general negation scopes or apply this to other choice axes.
+            colors = "|".join(_word_pattern(word) for word in _COLOR_WORDS)
+            contrasted = re.search(r"\b(?:не|ні|not|no)\s+(?:" + colors
+                + r")\s*,?\s+(?:а|але|but)\s+", before)
+            if contrasted and (_negated_action(before[:contrasted.start()])
+                or re.search(r"\b(?:maybe|perhaps|might|мабуть|можливо|наверно|возможно)\b",
+                    segment[contrasted.end():], re.I)):
+                continue
+            correction = re.search(r"\b(?:не|ні|not|no)\s+(?:" + colors
+                + r")\s*,?\s+(?:а|але|but)\s+$", before)
+            if correction and not _negated_action(before[:correction.start()]):
+                before = ""
         if re.search(r"\b(?:do|does|did|have|has|had)n['’]t\s+(?:want|need|choose|select|order|buy|requested|chosen|selected)(?:\s+(?:a|the|color|fit)){0,2}\s*$", before):
             continue
         if re.search(
@@ -387,7 +402,9 @@ def _parse_model_payload(payload) -> dict:
 _RECIPIENT_WORDS = {"себя": "self", "себе": "self", "myself": "self", "друга": "friend", "другу": "friend", "friend": "friend", "подруги": "friend_female", "подругу": "friend_female", "мами": "mother", "мамы": "mother", "mother": "mother", "тата": "father", "папы": "father", "father": "father",
     # Voluntary beneficiary roles scope the customer's draft line. They do
     # not establish a third party's identity or gift/packaging instructions.
-    "boyfriend": "boyfriend", "girlfriend": "girlfriend"}
+    "boyfriend": "boyfriend", "girlfriend": "girlfriend",
+    "сестри": "sister", "сестры": "sister", "сестре": "sister", "сестрі": "sister", "sister": "sister",
+    "брата": "brother", "брату": "brother", "братові": "brother", "brother": "brother"}
 _ADD_ACTION = r"\b(?:добав(?:ьте|ь|ить)|додай(?:те)?|додати|add)\b"
 _REMOVE_ACTION = r"\b(?:убер(?:ите|и)|удал(?:ите|и|ить)|прибери|видали|remove|delete)\b"
 _REPLACE_ACTION = r"\b(?:замен(?:ите|и|ить)|замін(?:іть|и|ити)|replace|вместо|замість|instead\s+of)\b"
@@ -432,11 +449,29 @@ def _historical_selectors(text, operations):
 
 def _recipient(text):
     values = set()
-    for match in re.finditer(r"\b(?:для|for)\s+(?:мого\s+|моего\s+|my\s+)?(\w+)\b", text.casefold()):
-        if not _negated_action(text[:match.start()]):
-            value = _RECIPIENT_WORDS.get(match.group(1))
+    pattern = (r"\b(?P<gift>(?:в\s+подарок|на\s+подарунок))\s+"
+        r"(?:для\s+)?(?:(?:моей|моїй|моему|моєму|моєї|моего|мого)\s+)?(?P<gift_role>\w+)\b"
+        r"|\b(?:для|for)\s+(?:(?:мого|моего|моєї|моей|my)\s+)?(?P<role>\w+)\b")
+    unknown_gift = False
+    for match in re.finditer(pattern, text.casefold()):
+        start, _end = _preference_segment(text, match.start())
+        before = text[start:match.start()]
+        if (not _negated_action(before) and not re.search(
+                r"\b(?:не|ні|not|no)\s+(?:хочу|want|need)\b"
+                r"|\b(?:do|does|did)n['’]t\s+(?:want|need)\b", before, re.I)):
+            coordinated = re.match(r"\s+(?:или|або|чи|or|и|і|and)\s+"
+                r"(?:(?:для|for)\s+)?(?:(?:мого|моего|моєї|моей|my)\s+)?(\w+)\b",
+                text[match.end():], re.I)
+            if coordinated and coordinated.group(1).casefold() in _RECIPIENT_WORDS:
+                return "", "ambiguous_recipient"
+            value = _RECIPIENT_WORDS.get(match.group("gift_role") or match.group("role"))
             if value:
                 values.add(value)
+            elif (match.group("gift") or (match.group("role") or "") in {
+                    "colleague", "coworker", "коллеги", "коллеге", "колеги", "колезі"}):
+                unknown_gift = True
+    if unknown_gift:
+        return "", "ambiguous_recipient"
     return (next(iter(values)), "") if len(values) == 1 else ("", "ambiguous_recipient" if values else "")
 
 
@@ -490,6 +525,23 @@ def _line_quantity(text, *, action):
     if action in {"add", "update", "replace"}:
         patterns.append(r"(?<!\w)(\d{1,3})\s*(?:футболк\w*|худі|худи|hoodies?|t-shirts?)\b")
     values = {int(match.group(1)) for pattern in patterns for match in re.finditer(pattern, text, re.I)}
+    if action == "add":
+        # Match a quantity phrase, never rewrite number words globally: the
+        # spoken "два XL" remains a size alias and reviewed titles are masked
+        # by the canonical source resolver before this function is called.
+        numbers = {"одну": 1, "один": 1, "одна": 1, "одне": 1, "one": 1,
+            "два": 2, "две": 2, "дві": 2, "two": 2, "три": 3, "three": 3,
+            "чотири": 4, "четыре": 4, "four": 4, "п'ять": 5, "п’ять": 5, "пять": 5, "five": 5,
+            "шість": 6, "шесть": 6, "six": 6, "сім": 7, "семь": 7, "seven": 7,
+            "вісім": 8, "восемь": 8, "eight": 8, "дев'ять": 9, "дев’ять": 9, "девять": 9, "nine": 9,
+            "десять": 10, "ten": 10}
+        number = "|".join(re.escape(word) for word in numbers)
+        for match in re.finditer(r"(?<!\w)(" + number
+                + r")\s+(?:футболк\w*|худі|худи|hoodies?|t-shirts?|шт\.?|штук\w*|pieces?|items?)\b", text, re.I):
+            if (_negated_action(text[:match.start()])
+                or re.search(r"\b(?:или|або|чи|or)\b", text, re.I)):
+                return None, "ambiguous_line_quantity"
+            values.add(numbers[match.group(1).casefold()])
     if len(values) > 1 or any(value > 50 for value in values):
         return None, "ambiguous_line_quantity"
     return (next(iter(values)), "") if values else (None, "")
@@ -525,7 +577,12 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
         explicit_quantity = bool(re.search(r"\b(?:количество|кількість|quantity)\b", quantity_clause, re.I))
         if explicit_quantity and not action and not _negated_action(lowered[:re.search(r"\b(?:количество|кількість|quantity)\b", lowered).start()]):
             action = "update"
-        correction = re.search(r"\b(?:не|not)\s+(.+?),\s*(?:а|but)\s+(.+)", lowered)
+        correction = re.search(r"\b(?:не|ні|not)\s+(.+?),\s*(?:а|але|but)\s+(.+)", lowered)
+        if not correction:
+            color_correction = re.search(r"\b(?:не|ні|not)\s+(.+?)\s+(?:а|але|but)\s+(.+)", lowered)
+            if (color_correction and _find_prefix_value(color_correction.group(1), _COLOR_WORDS)
+                and _find_prefix_value(color_correction.group(2), _COLOR_WORDS)):
+                correction = color_correction
         if correction and not action:
             old_garment = _find_prefix_value(correction.group(1), _GARMENT_WORDS)
             new_garment = _find_prefix_value(correction.group(2), _GARMENT_WORDS)

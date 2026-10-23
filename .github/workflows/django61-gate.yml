@@ -67,6 +67,12 @@ jobs:
           INDEXNOW_ENABLED: "0"
         run: |
           python manage.py test \
+            management.tests_ig_qa23_turn_parsing \
+            management.tests_ig_qa23_business_cart \
+            management.tests_ig_qa23_context_actions \
+            management.tests_ig_qa23_conversion_causes \
+            management.tests_ig_qa23_communication_preferences \
+            management.tests_ig_qa23_terse_questions \
             management.tests_ig_conversation_activity \
             management.tests_ig_live_identity_echo_20261022 \
             management.tests_ig_profile \
@@ -159,6 +165,7 @@ jobs:
           python manage.py test storefront.tests.test_product_size_guides storefront.tests.test_size_guide_authority_20261022 --settings=test_settings_no_network_non_dtf --noinput --parallel 1
       - name: Run live conversation UI regressions
         run: |
+          node --test tests/js/management-bot-qa23-context-actions.test.js tests/js/management-ig-qa23-recipients.test.cjs
           node --test tests/js/management-bot-client-list.test.js tests/js/management-bot-live-sync.test.js tests/js/management-bot-chat-reading.test.js tests/js/management-bot-conversation-scroll.test.js tests/js/management-bot-conversion-audit.test.js tests/js/management-bot-stock-review.test.js tests/js/management-ig-fulfillment-review-reuse.test.cjs tests/js/management-ig-fulfillment-stock-sync.test.cjs tests/js/management-ig-restock-waiting-list.test.cjs twocomms/twocomms_django_theme/static/js/product-detail.test.js
       - name: Exercise production-like static pipeline
         run: python scripts/run_static_gate.py --output static-gate.json

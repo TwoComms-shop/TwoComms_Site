@@ -69,6 +69,43 @@ _LINE_CLARIFICATIONS = frozenset({"ambiguous_line_target", "missing_line_target"
     "line_source_unverified", "copy_source_unverified", "existing_order_amendment_or_new"})
 
 
+def _business_cart_observation_reason(text, request, source_request):
+    """Trade assortment is not a retail choice, including on an existing cart.
+
+    Reuse the response contract's owned business/personal partition. A hybrid
+    can retain the original source only when its complete cart facts already
+    equal the independently parsed personal purchase. Ambiguous mixed facts
+    remain an observation; never rewrite the source or its provenance.
+    """
+    from management.services.ig_business_cooperation import business_cooperation_for_sources
+    source = {"message_id": 1, "role": "user", "text": str(text or "")}
+    if not business_cooperation_for_sources([source]):
+        return ""
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_response_plan import _business_source_partition, _PERSONAL_PURCHASE
+
+    _, residual = _business_source_partition([source])
+    personal = str(residual[0].get("text") or "") if len(residual) == 1 else ""
+    if personal == source["text"] or not _PERSONAL_PURCHASE.search(personal):
+        return "business_source_observed"
+    personal_request = parse_turn(personal)
+    if not personal_request.purchase_requested:
+        return "business_personal_cart_ambiguous"
+
+    def cart_facts(value):
+        payload = _request_payload(value)
+        # Identity resolution may add a clarification when no exact model was
+        # chosen; that does not add or change any customer cart fact.
+        for key in ("source_binding", "info_topics", "support_requested", "catalog_garment_type", "pending_clarification"):
+            payload.pop(key, None)
+        return payload
+
+    expected = cart_facts(personal_request)
+    if cart_facts(source_request) != expected or cart_facts(request) != expected:
+        return "business_personal_cart_ambiguous"
+    return ""
+
+
 def _line_source_request(source, client, request, *, original=None):
     """Generated selectors cannot substitute for the customer's exact source."""
     from management.services.ig_commerce_turns import parse_turn
@@ -728,6 +765,9 @@ def apply_turn(
             raise CommerceRevisionConflict("catalog_choice_source_unverified")
     else:
         source_request = parse_turn(source.text)
+        business_observation = _business_cart_observation_reason(source.text, request, source_request)
+        if business_observation:
+            _non_mutation(locked_client, source, business_observation, classification="neutral")
     if request.full_cart_purchase_requested:
         supplied, original = _request_payload(request), _request_payload(source_request)
         binding = dict(request.source_binding)

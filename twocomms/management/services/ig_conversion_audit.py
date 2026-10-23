@@ -213,6 +213,11 @@ def _reported_cause(code, proofs):
             if not _REFUSAL.search(clause):
                 continue
             for connector in _CAUSAL.finditer(clause):
+                # Keep the polarity attached to the causal connector. Taking
+                # only its following span would turn "not because of price"
+                # into positive price evidence if another sentence mentions it.
+                if re.search(r'\b(?:не|not|no)\s*$', clause[:connector.start()], re.I):
+                    continue
                 backward = connector.group().casefold() in {'тому', 'поэтому', 'therefore', 'so'}
                 span = clause[:connector.start()] if backward else clause[connector.end():]
                 span = span.rstrip(' ,').rsplit(',', 1)[-1] if backward else span.split(',', 1)[0]

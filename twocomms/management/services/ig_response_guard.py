@@ -493,9 +493,9 @@ def _cart_source_fallback(client, revision, plan):
     labels = {"uk": {"black": "чорний", "white": "білий", "blue": "синій", "pink": "рожевий", "grey": "сірий", "green": "зелений", "classic": "класична", "oversize": "оверсайз", "tshirt": "футболку", "hoodie": "худі"},
         "ru": {"black": "чёрный", "white": "белый", "blue": "синий", "pink": "розовый", "grey": "серый", "green": "зелёный", "classic": "классическая", "oversize": "оверсайз", "tshirt": "футболку", "hoodie": "худи"},
         "en": {"tshirt": "t-shirt", "hoodie": "hoodie", "classic": "classic fit", "oversize": "oversize"}}
-    recipients = {"uk": {"self": "для себе", "friend": "для друга", "friend_female": "для подруги", "mother": "для мами", "father": "для тата"},
-        "ru": {"self": "для себя", "friend": "для друга", "friend_female": "для подруги", "mother": "для мамы", "father": "для папы"},
-        "en": {"self": "for yourself", "friend": "for a friend", "friend_female": "for a friend", "mother": "for your mother", "father": "for your father"}}
+    recipients = {"uk": {"self": "для себе", "friend": "для друга", "friend_female": "для подруги", "mother": "для мами", "father": "для тата", "sister": "для сестри", "brother": "для брата"},
+        "ru": {"self": "для себя", "friend": "для друга", "friend_female": "для подруги", "mother": "для мамы", "father": "для папы", "sister": "для сестры", "brother": "для брата"},
+        "en": {"self": "for yourself", "friend": "for a friend", "friend_female": "for a friend", "mother": "for your mother", "father": "for your father", "sister": "for your sister", "brother": "for your brother"}}
     def safe(value, limit=240):
         return isinstance(value, str) and 0 < len(value) <= limit and not re.search(r"[.!?,;\n\r<>«»“”\"]", value)
     def identity(row):

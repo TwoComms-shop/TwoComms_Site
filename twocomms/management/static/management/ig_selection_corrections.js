@@ -150,7 +150,7 @@
       if (!capture) { currentValue.textContent = '—'; authority.textContent = 'Не підтверджено'; scopeLabel.textContent = 'Поточна позиція не підтверджена.'; provenance.textContent = 'Для уточнення потрібне підтверджене поточне джерело.'; return; }
       const visible = staged || capture;
       const scope = visible.context.scope;
-      const recipients = { self: 'Для себе', friend: 'Для друга', friend_female: 'Для подруги', mother: 'Для мами', father: 'Для тата', boyfriend: 'Для хлопця', girlfriend: 'Для дівчини' };
+      const recipients = { self: 'Для себе', friend: 'Для друга', friend_female: 'Для подруги', mother: 'Для мами', father: 'Для тата', boyfriend: 'Для хлопця', girlfriend: 'Для дівчини', sister: 'Для сестри', brother: 'Для брата' };
       scopeLabel.textContent = [scope.order_id === null ? 'Замовлення ще не прив’язане' : 'Прив’язане замовлення',
         `Позиція ${visible.context.active_index + 1}`,
         Object.hasOwn(recipients, scope.recipient_id) ? recipients[scope.recipient_id] : 'Окремий отримувач'].join(' · ');
