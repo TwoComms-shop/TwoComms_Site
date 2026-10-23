@@ -56,9 +56,18 @@ def _fragments(line):
     tail_start = max(variant_ends, default=0)
     field = line.find('; фасони/розміри: ', tail_start)
     if field >= 0:
-        end = line.find('; принт: ', field)
-        end = len(line) if end < 0 else end
+        boundaries = [line.find(marker, field) for marker in
+            ('; категорія: ', '; колекції: ', '; принт: ')]
+        end = min((value for value in boundaries if value >= 0), default=len(line))
         output.append((field, end, line[field:end]))
+    # These relations belong to each exact product ID, including identical
+    # print names on different garments. Intern their complete literal text;
+    # never infer membership from a title or apply a category to nearby rows.
+    category = line.find('; категорія: ', tail_start)
+    if category >= 0:
+        end = line.find('; принт: ', category)
+        end = len(line) if end < 0 else end
+        output.append((category, end, line[category:end]))
     return sorted(output)
 
 
@@ -107,7 +116,7 @@ def compact_catalog_text(text, *, abbreviate_variant_ids=False):
     return candidate if len(candidate) < len(text) else text
 
 
-def fit_compact_catalog(lines, *, limit, footer=''):
+def fit_compact_catalog(lines, *, limit, footer='', minimum_products=0):
     """Count the entire legend, footer and explicit coverage notice in budget.
 
     Recompute references after dropping a whole product, so every retained
@@ -119,7 +128,9 @@ def fit_compact_catalog(lines, *, limit, footer=''):
     if any(not row.startswith('• id=') for row in products):
         raise ValueError('catalog_product_line_invalid')
     total = len(products)
-    for keep in range(total, -1, -1):
+    if type(minimum_products) is not int or not 0 <= minimum_products <= total:
+        raise ValueError('catalog_required_products_invalid')
+    for keep in range(total, minimum_products - 1, -1):
         dropped = total - keep
         notice = ''
         heading = header

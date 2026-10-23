@@ -128,3 +128,32 @@ class B028SeedPlaybookTests(TestCase):
             call_command("seed_ig_bot_sales_playbooks", "--publish", stdout=StringIO())
 
         self.assertEqual(BotInstruction.objects.count(), 0)
+
+    def test_owner_payment_seed_upgrades_exact_old_body_without_publishing(self):
+        from management.management.commands.seed_ig_bot_sales_playbooks import LEGACY_PLAYBOOK_BODIES
+        from management.knowledge.publication_compat import REVIEWED_BODIES
+        from management.models import BotPolicyPublication
+
+        old = next(body for body in LEGACY_PLAYBOOK_BODIES["Prepayment Objection"]
+                   if body.startswith("Передоплата — індивідуально погоджена сума"))
+        row = BotInstruction.objects.create(title="Prepayment Objection", body=old)
+        publications = BotPolicyPublication.objects.count()
+        call_command("seed_ig_bot_sales_playbooks", stdout=StringIO())
+        row.refresh_from_db()
+        self.assertEqual(row.body, REVIEWED_BODIES["Prepayment Objection"])
+        self.assertEqual(BotPolicyPublication.objects.count(), publications)
+        call_command("seed_ig_bot_sales_playbooks", stdout=StringIO())
+        row.refresh_from_db()
+        self.assertEqual(row.body, REVIEWED_BODIES["Prepayment Objection"])
+        self.assertEqual(BotPolicyPublication.objects.count(), publications)
+
+    def test_owner_payment_seed_preserves_administrator_variation(self):
+        from management.management.commands.seed_ig_bot_sales_playbooks import LEGACY_PLAYBOOK_BODIES
+
+        old = next(body for body in LEGACY_PLAYBOOK_BODIES["Prepayment Objection"]
+                   if body.startswith("Передоплата — індивідуально погоджена сума"))
+        body = old + " Умова адміністратора для окремого випадку."
+        row = BotInstruction.objects.create(title="Prepayment Objection", body=body)
+        call_command("seed_ig_bot_sales_playbooks", stdout=StringIO())
+        row.refresh_from_db()
+        self.assertEqual(row.body, body)

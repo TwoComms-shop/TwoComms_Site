@@ -4,10 +4,10 @@
 {% load responsive_images %}
 
 {% block title %}{% trans 'Оптові закупівлі та дропшипінг одягу — TwoComms' %}{% endblock %}
-{% block description %}{% trans 'Оптовий одяг TwoComms для магазинів і мереж: футболки та худі від 8 одиниць, персональні ціни, швидке відвантаження й підтримка менеджера.' %}{% endblock %}
+{% block description %}{% trans 'Опт партіями по 8, 16 і далі кратно 8; дропшипінг з індивідуальною знижкою. Ціни, оплату та відправлення погоджуємо з менеджером TwoComms.' %}{% endblock %}
 {% block keywords %}{% trans 'оптові закупівлі одягу, футболки оптом, худі оптом, оптовий одяг TwoComms, дропшипінг одягу, оптовий прайс, український бренд одягу, партнерська програма TwoComms' %}{% endblock %}
 {% block og_title %}{% trans 'TwoComms — оптові закупівлі та дропшипінг українського стріт одягу' %}{% endblock %}
-{% block og_description %}{% trans 'Отримайте вигідні умови для магазинів та дропшиперів: старт від 8 одиниць, фіксовані ціни за договором, швидке відвантаження та підтримка менеджера бренду TwoComms.' %}{% endblock %}
+{% block og_description %}{% trans 'Опт партіями по 8, 16 і далі кратно 8; дропшипінг з індивідуальною знижкою. Ціни, оплату та відправлення погоджуємо з менеджером TwoComms.' %}{% endblock %}
 {% block twitter_title %}{% trans 'Оптові продажі та дропшипінг TwoComms' %}{% endblock %}
 {% block twitter_description %}{% trans 'Підключайтесь до партнерської програми TwoComms: опт і дропшипінг українського стріт одягу з гнучкими умовами та підтримкою.' %}{% endblock %}
 {% block og_type %}article{% endblock %}
@@ -18,7 +18,7 @@
   "@context": "https://schema.org",
   "@type": "WebPage",
   "name": "{% trans 'Оптові закупівлі та дропшипінг TwoComms' %}",
-  "description": "{% trans 'Оптові закупівлі та дропшипінг стріт-одягу TwoComms: футболки, худі, аксесуари. Старт від 8 одиниць, персональні прайси, швидке відвантаження та підтримка менеджера.' %}",
+  "description": "{% trans 'Опт партіями по 8, 16 і далі кратно 8; дропшипінг з індивідуальною знижкою. Ціни, оплату та відправлення погоджуємо з менеджером TwoComms.' %}",
   "url": "{{ site_base_url }}{{ request.path }}",
   "publisher": {
     "@type": "Organization",
@@ -2370,232 +2370,21 @@
       <!-- Контейнер карточек ценообразования -->
       <div class="categories-content-unified">
         <div class="pricing-cards">
-      <!-- Drop Prices -->
-      <div class="pricing-card">
-        <div class="card-bg-dark">
-          <div class="card-glow-dark"></div>
-          <div class="card-ripple-dark"></div>
-        </div>
-        <div class="pricing-icon">
-          <img src="{% static 'img/icons/default.svg' %}" width="24" height="24" alt="{% trans 'Дроп ціни - TwoComms' %}" loading="lazy" decoding="async">
-        </div>
-        <h3 class="pricing-title">{% trans 'Дроп ціни' %}</h3>
-        <p class="pricing-description">
-          {% trans 'Фіксовані ціни незалежно від кількості замовлення. Ідеально для дропшипінгу та роздрібної торгівлі.' %}
-        </p>
-        <div class="price-ranges">
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M16 4c0-1.11.89-2 2-2s2 .89 2 2-.89 2-2 2-2-.89-2-2zm4 18v-6h2.5l-2.54-7.63A1.5 1.5 0 0 0 18.54 8H17c-.8 0-1.54.37-2.01.99L14 10.5l-1.99-1.51C11.54 8.37 10.8 8 10 8H8.46c-.8 0-1.54.37-2.01.99L4 10.5l-1.99-1.51C1.54 8.37.8 8 0 8v2h2.5L0 17.63V22h2v-4h2v4h2v-4h2v4h2v-4h2v4h2v-4h2v4h2z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans 'Футболки' %}</div>
-                <div class="price-item-desc">{% trans 'Класичні футболки' %}</div>
-              </div>
-              <div class="price-item-value">{{ tshirt_prices.drop }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M16 4c0-1.11.89-2 2-2s2 .89 2 2-.89 2-2 2-2-.89-2-2zm4 18v-6h2.5l-2.54-7.63A1.5 1.5 0 0 0 18.54 8H17c-.8 0-1.54.37-2.01.99L14 10.5l-1.99-1.51C11.54 8.37 10.8 8 10 8H8.46c-.8 0-1.54.37-2.01.99L4 10.5l-1.99-1.51C1.54 8.37.8 8 0 8v2h2.5L0 17.63V22h2v-4h2v4h2v-4h2v4h2v-4h2v4h2v-4h2v4h2z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans 'Худі [фліс]' %}</div>
-                <div class="price-item-desc">{% trans "М'який фліс" %}</div>
-              </div>
-              <div class="price-item-value">{{ hoodie_prices.drop }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-        </div>
+      <div class="pricing-card" data-partner-terms="dropship">
+        <h3 class="pricing-title">{% trans 'Дропшипінг' %}</h3>
+        <p class="pricing-description">{% trans 'Індивідуальна знижка 10–15% від поточної повної ціни на сайті. Конкретну знижку погоджує менеджер.' %}</p>
+        <p class="pricing-description">{% trans 'Від 8 фактичних продажів на місяць обговорюємо нові умови. Зміни не активуються автоматично.' %}</p>
+        <p class="pricing-description"><a href="/dropshipper/">{% trans 'Кабінет партнера — TEST' %}</a>. {% trans 'Можливості кабінету обмежені; поточні умови та замовлення погоджуйте в Telegram.' %}</p>
       </div>
-
-      <!-- Wholesale Prices -->
-      <div class="pricing-card">
-        <div class="card-bg-dark">
-          <div class="card-glow-dark"></div>
-          <div class="card-ripple-dark"></div>
-        </div>
-        <div class="pricing-icon">
-          <img src="{% static 'img/icons/default.svg' %}" width="24" height="24" alt="{% trans 'Футболки опт - TwoComms' %}" loading="lazy" decoding="async">
-        </div>
-        <h3 class="pricing-title">{% trans 'Футболки опт' %}</h3>
-        <p class="pricing-description">
-          {% trans 'Вигідні ціни залежно від обсягу замовлення. Чим більше замовляєте, тим менше платите за одиницю.' %}
-        </p>
-        <div class="price-ranges">
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '8-15 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Мінімальне замовлення' %}</div>
-              </div>
-              <div class="price-item-value">{{ tshirt_prices.wholesale.0 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '16-31 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Середній обсяг' %}</div>
-              </div>
-              <div class="price-item-value">{{ tshirt_prices.wholesale.1 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '32-63 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Великий обсяг' %}</div>
-              </div>
-              <div class="price-item-value">{{ tshirt_prices.wholesale.2 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '64-99 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Оптовий обсяг' %}</div>
-              </div>
-              <div class="price-item-value">{{ tshirt_prices.wholesale.3 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item featured">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '100+ шт' %}</div>
-                <div class="price-item-desc">{% trans 'Максимальна вигода' %}</div>
-              </div>
-              <div class="price-item-value">{{ tshirt_prices.wholesale.4 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-        </div>
+      <div class="pricing-card" data-partner-terms="wholesale">
+        <h3 class="pricing-title">{% trans 'Оптові партії' %}</h3>
+        <p class="pricing-description">{% trans 'Закуповуйте партіями по 8, 16 або іншій кількості, кратній 8. Кращі умови для вашої партії погоджуємо індивідуально.' %}</p>
+        <p class="pricing-description">{% trans 'Форма замовлення та прайс допомагають підготувати запит. Остаточні ціни, склад партії й умови підтверджує менеджер; договір можливий за погодженням.' %}</p>
       </div>
-
-      <!-- Hoodie Wholesale Prices -->
-      <div class="pricing-card">
-        <div class="card-bg-dark">
-          <div class="card-glow-dark"></div>
-          <div class="card-ripple-dark"></div>
-        </div>
-        <div class="pricing-icon">
-          <img src="{% static 'img/icons/default.svg' %}" width="24" height="24" alt="{% trans 'Худі опт - TwoComms' %}" loading="lazy" decoding="async">
-        </div>
-        <h3 class="pricing-title">{% trans 'Худі [фліс] опт' %}</h3>
-        <p class="pricing-description">
-          {% trans "Спеціальні ціни для худі з флісом. М'який та зручний матеріал." %}
-        </p>
-        <div class="price-ranges">
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '8-15 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Мінімальне замовлення' %}</div>
-              </div>
-              <div class="price-item-value">{{ hoodie_prices.wholesale.0 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '16-31 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Середній обсяг' %}</div>
-              </div>
-              <div class="price-item-value">{{ hoodie_prices.wholesale.1 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '32-63 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Великий обсяг' %}</div>
-              </div>
-              <div class="price-item-value">{{ hoodie_prices.wholesale.2 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '64-99 шт' %}</div>
-                <div class="price-item-desc">{% trans 'Оптовий обсяг' %}</div>
-              </div>
-              <div class="price-item-value">{{ hoodie_prices.wholesale.3 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-          
-          <div class="price-item featured">
-            <div class="price-item-content">
-              <div class="price-item-icon">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                </svg>
-              </div>
-              <div class="price-item-info">
-                <div class="price-item-name">{% trans '100+ шт' %}</div>
-                <div class="price-item-desc">{% trans 'Максимальна вигода' %}</div>
-              </div>
-              <div class="price-item-value">{{ hoodie_prices.wholesale.4 }} {% trans 'грн' %}</div>
-            </div>
-          </div>
-        </div>
+      <div class="pricing-card" data-partner-terms="dispatch">
+        <h3 class="pricing-title">{% trans 'Оплата та відправлення' %}</h3>
+        <p class="pricing-description">{% trans 'ТТН може оформити партнер або TwoComms. Для ТТН партнера відділення відправника погоджуємо заздалегідь.' %}</p>
+        <p class="pricing-description">{% trans 'Якщо відправляє TwoComms, до відправлення потрібна повна оплата на IBAN або передоплата 200 грн. Деталі погоджуємо з менеджером.' %}</p>
       </div>
         </div>
       </div>
@@ -2719,7 +2508,7 @@
             {% optimized_image product.main_image.url product.title|add:" - TwoComms" "product-image" product.main_image.width|default:1080 product.main_image.height|default:1350 loading='lazy' fetchpriority='low' sizes='(max-width: 768px) 80vw, (max-width: 1200px) 45vw, 30vw' %}
           {% endif %}
           <div class="product-overlay">
-            <div class="product-badge">{% trans 'Дроп:' %} {{ hoodie_prices.drop }} {% trans 'грн' %}</div>
+            <div class="product-badge">{% trans 'Умови через менеджера' %}</div>
           </div>
         </div>
         <div class="product-content">
@@ -2741,38 +2530,8 @@
             </div>
           </div>
 
-          <!-- Prices -->
-          <div class="product-prices">
-            <div class="price-section">
-              <span class="price-label">{% trans 'Дроп ціна:' %}</span>
-              <span class="price-value">{{ hoodie_prices.drop }} {% trans 'грн' %}</span>
-            </div>
-            <div class="price-section">
-              <span class="price-label">{% trans 'Оптові ціни:' %}</span>
-              <div class="wholesale-ranges">
-                <div class="wholesale-range">
-                  <span class="range-label">8-15</span>
-                  <span class="range-price">{{ hoodie_prices.wholesale.0 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">16-31</span>
-                  <span class="range-price">{{ hoodie_prices.wholesale.1 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">32-63</span>
-                  <span class="range-price">{{ hoodie_prices.wholesale.2 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">64-99</span>
-                  <span class="range-price">{{ hoodie_prices.wholesale.3 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">100+</span>
-                  <span class="range-price">{{ hoodie_prices.wholesale.4 }} {% trans 'грн' %}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <!-- Partner terms -->
+          <div class="product-prices"><p>{% trans 'Ціну цієї позиції та умови партії підтверджує менеджер у Telegram.' %}</p></div>
         </div>
       </div>
       {% endfor %}
@@ -2785,7 +2544,7 @@
             {% optimized_image product.main_image.url product.title|add:" - TwoComms" "product-image" product.main_image.width|default:1080 product.main_image.height|default:1350 loading='lazy' fetchpriority='low' sizes='(max-width: 768px) 80vw, (max-width: 1200px) 45vw, 30vw' %}
           {% endif %}
           <div class="product-overlay">
-            <div class="product-badge">{% trans 'Дроп:' %} {{ tshirt_prices.drop }} {% trans 'грн' %}</div>
+            <div class="product-badge">{% trans 'Умови через менеджера' %}</div>
           </div>
         </div>
         <div class="product-content">
@@ -2807,38 +2566,8 @@
             </div>
           </div>
 
-          <!-- Prices -->
-          <div class="product-prices">
-            <div class="price-section">
-              <span class="price-label">{% trans 'Дроп ціна:' %}</span>
-              <span class="price-value">{{ tshirt_prices.drop }} {% trans 'грн' %}</span>
-            </div>
-            <div class="price-section">
-              <span class="price-label">{% trans 'Оптові ціни:' %}</span>
-              <div class="wholesale-ranges">
-                <div class="wholesale-range">
-                  <span class="range-label">8-15</span>
-                  <span class="range-price">{{ tshirt_prices.wholesale.0 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">16-31</span>
-                  <span class="range-price">{{ tshirt_prices.wholesale.1 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">32-63</span>
-                  <span class="range-price">{{ tshirt_prices.wholesale.2 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">64-99</span>
-                  <span class="range-price">{{ tshirt_prices.wholesale.3 }} {% trans 'грн' %}</span>
-                </div>
-                <div class="wholesale-range">
-                  <span class="range-label">100+</span>
-                  <span class="range-price">{{ tshirt_prices.wholesale.4 }} {% trans 'грн' %}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <!-- Partner terms -->
+          <div class="product-prices"><p>{% trans 'Ціну цієї позиції та умови партії підтверджує менеджер у Telegram.' %}</p></div>
         </div>
       </div>
       {% endfor %}

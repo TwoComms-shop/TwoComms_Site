@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
+import hmac
 import json
 import re
 
@@ -18,6 +19,42 @@ MAX_LINES = 16
 MAX_PRODUCTS = 8
 MAX_VARIANTS = 32
 MAX_READS = 128
+COLOR_IDENTITY_SCHEMA = "source-cart-catalog-color.v1"
+
+
+def _color_identity_json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _color_identity_digest(value):
+    return hashlib.sha256(_color_identity_json(value).encode()).hexdigest()
+
+
+def _color_identity_signature(value):
+    from django.conf import settings
+    return hmac.new(str(settings.SECRET_KEY).encode(),
+        (COLOR_IDENTITY_SCHEMA + ":" + _color_identity_json(value)).encode(), hashlib.sha256).hexdigest()
+
+
+def verified_catalog_color_identity(value, *, product_id, capture, line):
+    """Identity only: exact native product/variant/source/config, never stock."""
+    keys = {"schema", "product_id", "variant_id", "catalog_name", "resolved_choice", "line_id",
+        "cart_digest", "scope", "line_digest", "signature"}
+    if (not isinstance(value, dict) or set(value) != keys or value.get("schema") != COLOR_IDENTITY_SCHEMA
+        or type(product_id) is not int or product_id <= 0 or value.get("product_id") != product_id
+        or type(value.get("variant_id")) is not int or value["variant_id"] <= 0
+        or not isinstance(capture, dict) or not isinstance(line, dict)
+        or not isinstance(value.get("catalog_name"), str) or not 0 < len(value["catalog_name"]) <= 255
+        or not isinstance(value.get("resolved_choice"), str) or not 0 < len(value["resolved_choice"]) <= 80):
+        return False
+    material = {key: item for key, item in value.items() if key != "signature"}
+    try:
+        return (value["cart_digest"] == capture.get("capture_digest")
+            and value["scope"] == capture.get("scope") and value["line_id"] == line.get("line_id")
+            and value["line_digest"] == _color_identity_digest(line)
+            and hmac.compare_digest(str(value["signature"]), _color_identity_signature(material)))
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -93,6 +130,9 @@ def _size_blocked(variant, size, fit, *, include_ledger=True):
     general = next((row for row in reversed(rows) if not row.fit_code), None)
     specific = next((row for row in reversed(rows) if row.fit_code == fit), None) if fit else None
     rule = specific or general
+    if rule and include_ledger and rule.stock is not None and rule.stock <= 0:
+        from management.services.ig_inventory_availability import inventory_source_for_variant
+        include_ledger = inventory_source_for_variant(variant) != "warehouse"
     return bool(rule and (not rule.is_enabled or (include_ledger and rule.stock is not None and rule.stock <= 0)))
 
 
@@ -271,6 +311,14 @@ def _resolve(capture, *, _catalog_readback=None):
             "grid": {"available": available, "disabled": disabled, "resolved": has_contract and selected_variant is not None}}
         state = selection_readiness(product_id=product_id, selection=selection, size=size, fit=fit,
             quantity=quantity or 1, color=str(wish or ""), strict=True, _catalog_inputs=graph)
+        # Catalogue identity survives a zero accounting balance. Keep this
+        # separate from orderable color options and every checkout/stock gate.
+        if selected_variant is not None and not color_gap:
+            identity = {"schema": COLOR_IDENTITY_SCHEMA, "product_id": product_id,
+                "variant_id": selected_variant.pk, "catalog_name": str(selected_variant.color.name or ""),
+                "resolved_choice": str(wish or selected_variant.color.name or ""), "line_id": line_id, "cart_digest": capture.get("capture_digest"),
+                "scope": capture.get("scope"), "line_digest": _color_identity_digest(row)}
+            state["color"]["catalog_color_identity"] = {**identity, "signature": _color_identity_signature(identity)}
         if color_gap:
             state["applicability_known"] = False
             state["can_issue_link"] = False

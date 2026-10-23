@@ -32,6 +32,107 @@ from management.services.ig_revision_transport import prepare_text_effects
 ACTION = "checkout_proposal_create"
 
 
+def requested_nonstandard_carrier(client, sources, *, source_cart_capture=None):
+    """An own current delivery choice needs its actual human arrangement."""
+    import re
+    from management.services.instagram_bot import _current_purchase_source_texts
+    from management.services.ig_commerce_turns import _current_source_text
+
+    result = {}
+    carriers = re.compile(r"\b(?P<ukr>укрпошт\w*|укрпочт\w*|ukrposhta)\b|"
+        r"\b(?P<meest>meest|міст\s+експрес\w*|мист\s+экспресс\w*)\b|"
+        r"\b(?P<pickup>самовив\w*|самовывоз\w*|pick\s*up)\b|"
+        r"\b(?P<other>інш\w*\s+(?:служб\w*|перевізник\w*)|друг\w*\s+(?:служб\w*|перевозчик\w*)|another\s+carrier)\b|"
+        r"\b(?P<np>нов(?:а|ою|ой)\s+пошт\w*|нов(?:ая|ой)\s+почт\w*|nova\s+poshta|нп)\b", re.I)
+    for row in _current_purchase_source_texts(client, sealed_sources=sources,
+            source_cart_capture=source_cart_capture, with_ids=True):
+        for clause in re.split(r"[.!?;\n,]+|\b(?:але|а|но|but)\b", _current_source_text(row["text"]), flags=re.I):
+            if re.search(r"\b(?:сказ\w*|казав\w*|говор\w*|said|told|якщо|если|if)\b", clause, re.I):
+                continue
+            if len(list(carriers.finditer(clause))) > 1 and re.search(r"\b(?:або|чи|или|or)\b", clause, re.I):
+                result = {"carrier": "ambiguous", "source_message_id": row["message_id"], "source_quote": row["text"]}
+                continue
+            for match in carriers.finditer(clause):
+                before, after = clause[:match.start()], clause[match.end():]
+                negated = bool(re.search(r"\b(?:не|ні|not|no|без|without)\s*(?:(?:хочу|через|by|via)\s*){0,2}$", before, re.I)
+                    or re.search(r"\b(?:не|not|don['’]t|do\s+not)\s+(?:відправ\w*|отправ\w*|send|ship|use)\s+(?:(?:через|by|via)\s+)?$", before, re.I)
+                    or re.match(r"\s+не\s+(?:треба|потріб\w*|нуж\w*|відправ\w*|достав\w*|отправ\w*)\b", after, re.I))
+                if negated:
+                    if result.get("carrier") == match.lastgroup:
+                        result = {}
+                    continue
+                addressed = bool(re.search(r"\b(?:відправ\w*|надішл\w*|надсила\w*|достав\w*|отрима\w*|отправ\w*|пришл\w*|получ\w*|"
+                    r"хочу|потріб\w*|нуж\w*|можна|можно|можете|через|зараз|тепер|сейчас|теперь|now|send|ship|deliver|receiv\w*|prefer|via|by)\b", clause, re.I)
+                    or not (before + after).strip(" :—-"))
+                if not addressed:
+                    continue
+                result = {} if match.lastgroup == "np" else {"carrier": match.lastgroup,
+                    "source_message_id": row["message_id"], "source_quote": row["text"]}
+    return result
+
+
+def checkout_question_coverage(plan, response, sources, coverage):
+    """Retain current question debt; an honest unconfirmed discount is an answer."""
+    import re
+    from management.services.ig_response_plan import _requested_topics, _unquoted_text
+
+    if not (response.control.get("paylink") or response.control.get("payment")):
+        return coverage
+    result = deepcopy(coverage)
+    by_id = {row.get("message_id"): row for row in sources if isinstance(row, dict) and row.get("role") == "user"}
+    payment_ids = {row["source_message_id"] for row in plan.obligations
+        if row["id"] in result.get("remaining", ()) and row["kind"].startswith("info:payment")}
+    if payment_ids:
+        client_id = plan.scope.get("client_id") or (plan.source_cart_capture.get("scope") or {}).get("client_id")
+        if type(client_id) is int:
+            policy, reasons = _prepay_policy(IgClient(pk=client_id), sources)
+            if not reasons:
+                # The authenticated current 200+COD choice is answered by the
+                # existing hosted payment policy, not an invented prose amount.
+                for row in plan.obligations:
+                    if row["source_message_id"] == policy.evidence_message_id and row["kind"].startswith("info:payment") and row["id"] in result["remaining"]:
+                        result["remaining"].remove(row["id"])
+                        result.setdefault("covered", []).append(row["id"])
+    discount = r"\b(?:зниж\w*|скид\w*|discount\w*)\b"
+    honest_discount = any(re.search(discount, clause, re.I) and re.search(
+        r"не\s+(?:підтвердж\w*|подтвержд\w*)|не\s+маю\s+підтвердж\w*|"
+        r"немає\s+підтверджен\w*|(?:не\s+можу|не\s+могу)\s+підтверд\w*|(?:cannot|can['’]t)\s+confirm|unconfirmed|not\s+confirmed", clause, re.I)
+        for clause in re.split(r"[.!?\n]+", _unquoted_text(response.reply_text)))
+    pending_discount = any(re.search(discount, clause, re.I) and re.search(
+        r"\b(?:уточн\w*|перевір\w*|погод\w*|уточн\w*|провер\w*)\b|\b(?:will|shall)\b.*\b(?:check|ask|confirm)\b", clause, re.I)
+        for clause in re.split(r"[.!?\n]+", _unquoted_text(response.reply_text)))
+    if honest_discount and not pending_discount:
+        for obligation in plan.obligations:
+            if obligation["kind"] != "info:question" or obligation["id"] not in result.get("remaining", ()):
+                continue
+            text = _unquoted_text((by_id.get(obligation["source_message_id"]) or {}).get("text") or "")
+            unknown = [clause for clause in re.findall(r"[^.!?\n]+[?]?", text)
+                if "info:question" in _requested_topics(clause)]
+            if (unknown and all(re.search(discount, clause, re.I) for clause in unknown)
+                and re.search(r"парн\w*|для\s+двох|для\s+двоих|pair\w*|couple\w*|\btwo\b", text, re.I)):
+                result["remaining"].remove(obligation["id"])
+                result.setdefault("covered", []).append(obligation["id"])
+    if not result.get("remaining"):
+        result["disposition"] = "complete"
+    return result
+
+
+def checkout_question_reason(plan, response, sources, *, coverage=None, checkout_cart_binding=None):
+    """Configuration and binding own purchase debt; questions must be answered first."""
+    if plan.plan_gap:
+        return plan.plan_gap
+    coverage = checkout_question_coverage(plan, response, sources,
+        coverage if coverage is not None else plan.coverage(response, checkout_cart_binding=checkout_cart_binding))
+    remaining = set(coverage.get("remaining", ()))
+    from management.services.ig_commerce_turns import parse_turn
+    ambiguous = {row.get("message_id") for row in sources if isinstance(row, dict) and row.get("role") == "user"
+        and (parse_turn(row.get("text") or "").pending_line_clarification or parse_turn(row.get("text") or "").pending_clarification)}
+    if any(row["id"] in remaining and (row["kind"].startswith(("info:", "payment:"))
+            or (row["kind"] == "unresolved_line_operation" and row["source_message_id"] in ambiguous)) for row in plan.obligations):
+        return "response_plan_checkout_questions_unanswered"
+    return ""
+
+
 @dataclass(frozen=True)
 class RevisionCheckoutResult:
     planned: bool = False
@@ -420,6 +521,8 @@ def checkout_authority_control(client, control, *, source_cart_capture=None, sou
 def authorize_revision_checkout(client, control, source_text, *, sealed_sources=(), source_cart_capture=None, source_cart_revision_id=None, assisted_context=None):
     """Use the real purchase gate with sealed customer text, never model prose."""
     from management.services.instagram_bot import payment_link_allowed
+    if requested_nonstandard_carrier(client, sealed_sources, source_cart_capture=source_cart_capture):
+        return {}, ("response_plan_checkout_delivery_requires_manager",)
     if assisted_context is not None:
         from management.services.ig_assisted_commerce_context import AssistedCommerceContext
         from management.models import IgCustomerTurnRevision
@@ -451,7 +554,8 @@ def authorize_revision_checkout(client, control, source_text, *, sealed_sources=
     purchase_control = ({"product": normalized["items"][0]["product_id"],
         **{key: control[key] for key in ("paylink", "payment") if key in control}}
         if "source_cart_binding" in normalized else dict(control))
-    if not payment_link_allowed(client, purchase_control, str(source_text or "")):
+    if not payment_link_allowed(client, purchase_control, str(source_text or ""),
+            sealed_sources=sealed_sources, source_cart_capture=source_cart_capture):
         return {}, ("checkout_purchase_authority_missing",)
     return normalized, ()
 
@@ -605,6 +709,14 @@ def prepare_revision_checkout(
             )
             if reasons:
                 raise _Rollback(",".join(reasons))
+            # Recompute from the saved candidate and current sealed source plan
+            # before the proposal factory can create any invoice/offer facts.
+            from management.services.ig_response_plan import capture_response_plan
+            question_plan = capture_response_plan(client, revision=revision, source_cart_capture=cart_capture)
+            question_reason = checkout_question_reason(question_plan, response, sealed_sources,
+                checkout_cart_binding=control.get("source_cart_binding"))
+            if question_reason:
+                raise _Rollback(question_reason)
             expected_selector = (compact_checkout_control(control, artifact=cart_reference["artifact"])
                 if original_capture is not None else control)
             if len(bound) != 1 or bound[0].get("selector") != expected_selector:
@@ -657,9 +769,19 @@ def prepare_revision_checkout(
             business_after = capture_checkout_business_facts(client)
             cart_owner_after = checkout_owner_scope(client) if original_capture is not None else None
             facts = []
+            owned_inventory = None
             for old in authority.fact_bindings:
                 selector = old["selector"]
                 own_cart_rebind = False
+                from management.services.ig_revision_authority import CLAIM_INVENTORY_AVAILABILITY
+                if old["claim"] == CLAIM_INVENTORY_AVAILABILITY:
+                    from management.services.ig_inventory_availability import capture_owned_checkout_inventory, owned_inventory_reference
+                    owned_inventory = capture_owned_checkout_inventory(client.pk,
+                        selector.get("inventory_availability_capture"), proposal_id=checkout.pk, now=now)
+                    if owned_inventory.get("status") != "captured":
+                        raise _Rollback(owned_inventory.get("reason") or "checkout_inventory_owned_hold_unavailable")
+                    selector = {"inventory_availability_reference": owned_inventory_reference(revision, owned_inventory)}
+                    own_cart_rebind = True
                 if old["claim"] == CLAIM_CATALOG_CONFIGURATION and original_capture is not None:
                     owned = rebind_checkout_cart_owner(control,
                         before=control["checkout_owner_scope"], after=cart_owner_after, checkout=checkout)
@@ -708,7 +830,11 @@ def prepare_revision_checkout(
                 raise _Rollback("checkout_post_offer_unavailable")
             from management.services.ig_reply_authority import build_reply_truth_context
             from management.services.ig_reply_truth import validate_reply_truth
-            truth = validate_reply_truth(text, context=build_reply_truth_context(client, control=response.control, server_urls=(url,)))
+            context = build_reply_truth_context(client, control=response.control, server_urls=(url,))
+            from management.services.ig_reply_authority import apply_inventory_availability_context
+            if owned_inventory is not None:
+                context = apply_inventory_availability_context(context, owned_inventory)
+            truth = validate_reply_truth(text, context=context)
             if not truth.valid:
                 raise _Rollback("checkout_final_truth:" + ",".join(truth.reasons))
             namespace = revision.bundle_snapshot["sources"][0]["source_namespace"]

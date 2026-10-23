@@ -1,7 +1,9 @@
 """Palette consultation names its subject without choosing a cart garment."""
 import base64
 import json
+from copy import deepcopy
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.core.files.base import ContentFile
 from django.test import SimpleTestCase, TransactionTestCase, override_settings
@@ -113,22 +115,27 @@ class NativePaletteIntentTests(TransactionTestCase):
     _answer = contract.NativeLiveConversationContractTests._answer
     _select_product = contract.NativePendingProductInformationBoundaryTests._select_product
 
-    def test_initial_category_request_sends_native_cards_only_from_its_hard_subject(self):
+    def _category_products(self):
         from storefront.models import Category, Product
+        image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")
+        products = []
+        for index, kind in enumerate(("tshirts", "hoodie", "hoodie", "hoodie")):
+            category, _ = Category.objects.get_or_create(slug=kind, defaults={"name": kind})
+            product = Product(title=f"Catalog model {index}", slug=f"catalog-model-{index}",
+                category=category, price=900, status="published")
+            product.main_image.save(f"catalog-model-{index}.png", ContentFile(image), save=False)
+            product.save()
+            products.append(product)
+        return products
+
+    def test_initial_category_request_sends_native_cards_only_from_its_hard_subject(self):
         from management.models import IgCommerceSelectionSession
         from management.services.ig_catalog_candidates import rank_candidates
         from management.services.ig_catalog_graph import build_catalog_graph
+        from management.services.ig_revision_outbox import _canonical
 
         with TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
-            image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=")
-            products = []
-            for index, kind in enumerate(("tshirts", "hoodie", "hoodie", "hoodie")):
-                category, _ = Category.objects.get_or_create(slug=kind, defaults={"name": kind})
-                product = Product(title=f"Catalog model {index}", slug=f"catalog-model-{index}",
-                    category=category, price=900, status="published")
-                product.main_image.save(f"catalog-model-{index}.png", ContentFile(image), save=False)
-                product.save()
-                products.append(product)
+            products = self._category_products()
             for text, reply in (("Покажіть худі", "Ось кілька моделей худі."),
                                 ("Покажите худи", "Вот несколько моделей худи."),
                                 ("Show me hoodies", "Here are several hoodie models.")):
@@ -145,6 +152,12 @@ class NativePaletteIntentTests(TransactionTestCase):
                     sent = list(self.revision.delivery_effects.filter(state="sent"))
                     native = [row for row in sent if (row.payload.get("message", {}).get("attachment") or {}).get("type") == "template"]
                     self.assertEqual(len(native), 1)
+                    binding = next(row for row in native[0].fact_bindings if row["claim"] == "catalog_asset_references")
+                    self.assertLessEqual(len(_canonical(binding)), 4096)
+                    reference = binding["selector"]["catalog_choice_reference"]
+                    self.assertEqual(reference["scope"]["revision_snapshot_digest"], self.revision.snapshot_digest)
+                    self.assertEqual(reference["scope"]["source_message_ids"], [self.source.pk])
+                    self.assertTrue(all("category_reference_digest" in row for row in reference["cards"]))
                     elements = native[0].payload["message"]["attachment"]["payload"]["elements"]
                     self.assertEqual({row["title"] for row in elements}, {row.title for row in products[1:]})
                     self.assertEqual(http.call_count, len(sent))
@@ -153,6 +166,55 @@ class NativePaletteIntentTests(TransactionTestCase):
                     self.assertFalse(any(row.get("garment_type") or row.get("product_id") for row in session.lines))
                     self.assertFalse(IgFollowUpTask.objects.filter(client=self.customer).exists())
                     self.assertEqual(self.revision.action_receipts["response_coverage"]["remaining"], [])
+
+    def test_compact_category_binding_rejects_category_reference_source_and_body_tampering_before_send(self):
+        from django.db.models import QuerySet
+        from management.services import ig_revision_live as service
+        from storefront.models import Category
+
+        with TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
+            products = self._category_products()
+            drain = service._drain_effects
+            for changed_field in ("category", "reference", "source", "body"):
+                with self.subTest(changed_field=changed_field):
+                    self._fresh("Show me hoodies")
+                    self.parsed = {"reply_text": "Here are several hoodie models.", "controls": [
+                        {"kind": "show_products", "value": [row.pk for row in products[1:]]}]}
+                    mutations = []
+                    def changed(*args, **kwargs):
+                        native = self.revision.delivery_effects.get(group="template")
+                        mutations.append(native.pk)
+                        if changed_field == "category":
+                            Category.objects.filter(pk=products[1].category_id).update(name="Changed after planning")
+                        elif changed_field == "reference":
+                            for effect in self.revision.delivery_effects.all():
+                                bindings = deepcopy(effect.fact_bindings)
+                                for binding in bindings:
+                                    if binding["claim"] == "catalog_asset_references":
+                                        binding["selector"]["catalog_choice_reference"]["cards"][0]["category_reference_digest"] = "0" * 64
+                                # Simulate persisted corruption below the ORM's
+                                # immutable-plan guard; the send guard must
+                                # independently reject it as well.
+                                QuerySet.update(type(effect).objects.filter(pk=effect.pk), fact_bindings=bindings)
+                        elif changed_field == "source":
+                            type(self.source).objects.filter(pk=self.source.pk).update(text="Show me T-shirts instead")
+                        else:
+                            payload = deepcopy(native.payload)
+                            payload["message"]["attachment"]["payload"]["elements"][0]["title"] = "Substituted body"
+                            QuerySet.update(type(native).objects.filter(pk=native.pk), payload=payload)
+                        return drain(*args, **kwargs)
+                    try:
+                        with patch.object(service, "_drain_effects", side_effect=changed):
+                            result, _model, http = self._execute([(200, json.dumps({"message_id": f"prefix-{index}"})) for index in range(8)])
+                        self.assertTrue(mutations, result.reasons)
+                        self.assertNotEqual(result.state, "completed", result.reasons)
+                        self.assertFalse(self.revision.delivery_effects.filter(group="template", state="sent").exists())
+                        if changed_field != "body":
+                            http.assert_not_called()
+                        self.assertFalse(any((call.kwargs.get("data") or {}).get("message", {}).get("attachment")
+                            for call in http.call_args_list))
+                    finally:
+                        Category.objects.filter(pk=products[1].category_id).update(name="hoodie")
 
     def test_initial_catalog_show_retains_query_subject_without_a_false_selected_garment(self):
         from management.models import IgCommerceSelectionSession

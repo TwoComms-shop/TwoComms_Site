@@ -3,6 +3,7 @@ import re
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from management.knowledge.publication_compat import REVIEWED_BODIES
 from management.models import BotInstruction
 from management.services.approved_public_facts import approved_provider_fact_text
 
@@ -213,11 +214,7 @@ PLAYBOOKS = [
         "intent_tags": "prepayment,payment",
         "priority": 40,
         "body": (
-            "Передоплата — індивідуально погоджена сума, яку менеджер або клієнт явно "
-            "погодили в поточній переписці для цього замовлення. Не називай 200 грн і не "
-            "перенось суму з іншого "
-            "клієнта чи попереднього замовлення. Пояснюй спокійно: погоджена частина вноситься "
-            "зараз, залишок — за узгодженим сценарієм."
+            REVIEWED_BODIES["Prepayment Objection"]
         ),
     },
     {
@@ -305,6 +302,7 @@ LEGACY_PLAYBOOK_BODIES = {
         "розмірної сітки та не обирай фасон чи розмір замість клієнта.",
     }),
     "Prepayment Objection": frozenset({
+        'Передоплата — індивідуально погоджена сума, яку менеджер або клієнт явно погодили в поточній переписці для цього замовлення. Не називай 200 грн і не перенось суму з іншого клієнта чи попереднього замовлення. Пояснюй спокійно: погоджена частина вноситься зараз, залишок — за узгодженим сценарієм.',
         "Передоплата може бути лише на точну суму, яку менеджер або клієнт явно погодили "
         "в поточній переписці. Не називай фіксовані 200 грн і не перенось суму з іншого "
         "клієнта чи попереднього замовлення. Пояснюй спокійно: погоджена частина "

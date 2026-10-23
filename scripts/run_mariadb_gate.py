@@ -27,6 +27,9 @@ from typing import Callable, Mapping, TextIO
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUITE = "lifecycle"
+# Stop children before the CI job's 45-minute ceiling so Python retains time
+# to drop and verify its owned schema/user and upload sanitized evidence.
+COMMAND_BUDGET_SECONDS = 40 * 60
 # Partition the complete acceptance list by module ownership; growing full
 # modules remain covered without duplicating native transaction cleanup.
 STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
@@ -171,6 +174,27 @@ SUITES = {
         "management.tests_ig_qa23_conversion_causes",
         "management.tests_ig_qa23_communication_preferences",
         "management.tests_ig_qa23_terse_questions",
+        "management.tests_ig_q23_cooperation_policy",
+        "management.tests_ig_qa23_catalog_browsing",
+        "management.tests_ig_fresh_conversation_reset_20261023",
+        "management.tests_ig_lesia_prompt_budget_20261023",
+        "management.tests_ig_multi_recipient_journey_20261023",
+        "management.tests_ig_positive_stock_autonomy_20261023",
+        "management.tests_ig_stock_clause_apposition_20261023",
+        "management.tests_ig_preoffer_readiness_20261023",
+        "management.tests_ig_checkout_terminalization",
+        "management.tests_ig_revision_live",
+        "management.tests_ig_catalog_color_identity_20261023",
+        "management.tests_ig_followup_policies",
+        "management.tests_ig_w4_followup_copy",
+        "management.tests_ig_followup_delivery_fsm",
+        "management.tests_ig_conversion_publication",
+        "management.tests_ig_seed_playbooks_b028",
+        "management.tests_ig_required_policy",
+        "management.tests_ig_required_policy_integration",
+        "management.tests_ig_policy_publication",
+        "management.tests_ig_catalog_choice_presentations",
+        "management.tests_ig_catalog_category_discovery",
         "management.tests_ig_analysis_lane_isolation_20261023",
         "management.tests_ig_analysis_lane",
         "management.tests_ig_worker_progress",
@@ -197,6 +221,7 @@ SUITES = {
         "management.tests_ig_size_grid_authority_20261022",
         "management.tests_ig_standard_funnel_20261022",
         "storefront.tests.test_size_guide_authority_20261022",
+        "storefront.tests.test_ig_checkout_recipient_labels_20261023",
     ),
     "selection-idempotence": (
         "management.tests_ig_revision_selection_noop_20261023",
@@ -1401,6 +1426,18 @@ def _command_runner(args: list[str], **kwargs):
     return subprocess.run(args, **kwargs)
 
 
+def _deadline_command_runner(command_runner, *, deadline):
+    """Give every child only the remaining shared monotonic command budget."""
+    def run(args, **kwargs):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(args, 0)
+        requested = kwargs.get("timeout")
+        kwargs["timeout"] = remaining if requested is None else min(requested, remaining)
+        return command_runner(args, **kwargs)
+    return run
+
+
 def _validate_suite(suite: str) -> tuple[str, ...]:
     try:
         return SUITES[suite]
@@ -1545,6 +1582,9 @@ def run_gate(
     output: TextIO | None = None,
     native_binaries: Mapping[str, str | None] | None = None,
 ) -> dict[str, str]:
+    command_runner = _deadline_command_runner(
+        command_runner, deadline=time.monotonic() + COMMAND_BUDGET_SECONDS,
+    )
     source = dict(os.environ if environ is None else environ)
     output = output or sys.stdout
     modules = _validate_suite(suite)

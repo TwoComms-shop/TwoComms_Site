@@ -212,6 +212,9 @@ def _selection_signal(text, *, selection_context=False):
     own request can follow them; unmarked verbatim copying is indistinguishable
     from an identical customer request and is outside this lexical fallback.
     """
+    from management.services.ig_recipient_planning import affirmative_apparel_request
+    if affirmative_apparel_request(text):
+        return True
     value = _customer_text(text)
     reported = bool(_SELECTION_REPORTED.match(value))
     signal = None

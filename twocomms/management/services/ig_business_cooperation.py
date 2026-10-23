@@ -62,6 +62,63 @@ _TOPICS = (
 )
 
 
+def business_source_observations(sources):
+    """Exact customer observations, not qualification or agreed trade terms."""
+    import hashlib
+    originals = {row.get("message_id"): row for row in sources if isinstance(row, dict)}
+    current = current_cooperation_sources(sources)
+    if not business_cooperation_for_sources(current):
+        return []
+    observations = []
+    future = re.compile(r"план\w*|plan\w*|хочу|хочемо|want|intend|future|майбут\w*|\bwill\b|\bбуду\b|\bбудемо\b|\bбудем\b|expect\w*|очіку\w*|ожида\w*", re.I)
+    for source in current:
+        if type(source.get("message_id")) is not int or source["message_id"] <= 0:
+            continue
+        for clause in re.findall(r"[^.!?\n]+[.!?]?", str(source.get("text") or "")):
+            text = clause.strip()
+            original = str(originals[source["message_id"]].get("text") or "")
+            # Questions, future thresholds and negated offers are not a sales
+            # record. Keep their original text in the normal source brief.
+            quote = text.rstrip(".!?")
+            if (quote not in original or "?" in original[original.find(quote):original.find(quote)+len(quote)+1]
+                or not re.search(r"\b(?:я|ми|мы|у\s+мене|у\s+нас|у\s+меня|i|we|(?:my|our)\s+(?:shop|store|business))\b", text, re.I)
+                or re.search(r"\b(?:якщо|если|if|would|could|мож\w*|не|not|no)\b", text, re.I)):
+                continue
+            basis = "planned" if future.search(text) else "stated"
+            values = []
+            bases = {}
+            monthly = re.search(r"\b(\d{1,6})\s*(?:продаж\w*|sales)\s*(?:на|в|за|per|a)\s*(?:місяц\w*|месяц\w*|month)\b", text, re.I)
+            monthly_owner = re.match(r"^(?:(?:i|we)\s+(?:(?:will|shall)\s+)?(?:have|make|record|expect|plan)|"
+                r"(?:my|our)\s+(?:shop|store|business)\s+(?:has|have|records|makes)|"
+                r"у\s+(?:мене|нас|меня)\b|(?:я|ми|мы)\s+(?:(?:буду|будемо|будем)\s+)?(?:маю|маємо|имею|имеем|мати|иметь|план\w*|очіку\w*|ожида\w*))", text, re.I)
+            monthly_gap = text[monthly_owner.end():monthly.start()].strip() if monthly and monthly_owner else None
+            if monthly and monthly_owner and re.fullmatch(r"(?:(?:about|around|approximately|roughly|to\s+have|мати|иметь|є|близько|приблизно|около|примерно)\s*)?", monthly_gap, re.I):
+                values.append(("monthly_sales", int(monthly[1]), "sales_per_month"))
+                bases["monthly_sales"] = "planned" if future.search(text[:monthly.end()]) else "stated"
+            batch = re.search(r"(?:купую|купил\w*|викуп\w*|выкуп\w*|buy|buying|order)\s+(\d{1,6})\s*(?:реч\w*|штук\w*|футбол\w*|худі|худи|items?|garments?|shirts?|hoodies?)\b", text, re.I)
+            if batch:
+                values.append(("batch_quantity", int(batch[1]), "garments"))
+            if re.search(r"instagram|інстаграм|инстаграм", text, re.I):
+                values.append(("resale_channel", "instagram", "channel"))
+            if re.search(r"(?:я|ми|i|we)[^.!?]{0,20}(?:оформл\w*|оформля\w*|prepare|create)[^.!?]{0,25}(?:ттн|waybill)", text, re.I):
+                values.append(("waybill_preference", "partner", "requested_owner"))
+            for kind, value, unit in values:
+                observations.append({"kind": kind, "value": value, "unit": unit,
+                    "basis": bases.get(kind, basis), "quote": quote[:500], "source_message_id": source["message_id"],
+                    "source_digest": source.get("source_digest") or hashlib.sha256(original.encode()).hexdigest(), "authority": "customer_statement",
+                    "individual_terms_confirmed": False})
+    return observations[-24:]
+
+
+def render_business_observations(observations):
+    labels = {"monthly_sales": "Продажі за місяць", "batch_quantity": "Кількість для закупівлі",
+        "resale_channel": "Канал перепродажу", "waybill_preference": "Хто оформляє ТТН"}
+    units = {"sales_per_month": "продажів на місяць", "garments": "речей", "channel": "", "requested_owner": ""}
+    values = {"instagram": "Instagram", "partner": "партнер (побажання клієнта)"}
+    return "\n".join(f"{labels[row['kind']]} ({'план клієнта' if row['basis'] == 'planned' else 'зі слів клієнта'}, не погоджено): {values.get(row['value'], row['value'])} {units[row['unit']]} · повідомлення №{row['source_message_id']}: {row['quote']}"
+        for row in observations)
+
+
 def _own_cooperation_text(text):
     # Keep a genuinely supplied contact URL/handle in the operator brief. Its
     # text never becomes a routing signal (own_reply_text below removes it).
@@ -133,7 +190,7 @@ def business_cooperation_for_sources(sources):
     if not subtypes:
         subtypes.append("partnership")
     ids = [row["message_id"] for row in current if type(row.get("message_id")) is int and row["message_id"] > 0]
-    return {
+    brief = {
         "schema_version": 1, "business_cooperation": True,
         "subtypes": subtypes, "primary_subtype": subtypes[0],
         "shop_launch": bool(store and launch),
@@ -141,6 +198,7 @@ def business_cooperation_for_sources(sources):
         "evidence_message_ids": list(dict.fromkeys(ids))[-64:],
         "decision_owner": "manager", "multiple_intents": len(subtypes) > 1,
     }
+    return brief
 
 
 def extract_business_cooperation(text):

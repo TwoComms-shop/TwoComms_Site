@@ -73,6 +73,27 @@ jobs:
             management.tests_ig_qa23_conversion_causes \
             management.tests_ig_qa23_communication_preferences \
             management.tests_ig_qa23_terse_questions \
+            management.tests_ig_q23_cooperation_policy \
+            management.tests_ig_qa23_catalog_browsing \
+            management.tests_ig_fresh_conversation_reset_20261023 \
+            management.tests_ig_lesia_prompt_budget_20261023 \
+            management.tests_ig_multi_recipient_journey_20261023 \
+            management.tests_ig_positive_stock_autonomy_20261023 \
+            management.tests_ig_stock_clause_apposition_20261023 \
+            management.tests_ig_preoffer_readiness_20261023 \
+            management.tests_ig_checkout_terminalization \
+            management.tests_ig_revision_live \
+            management.tests_ig_catalog_color_identity_20261023 \
+            management.tests_ig_followup_policies \
+            management.tests_ig_w4_followup_copy \
+            management.tests_ig_followup_delivery_fsm \
+            management.tests_ig_conversion_publication \
+            management.tests_ig_seed_playbooks_b028 \
+            management.tests_ig_required_policy \
+            management.tests_ig_required_policy_integration \
+            management.tests_ig_policy_publication \
+            management.tests_ig_catalog_choice_presentations \
+            management.tests_ig_catalog_category_discovery \
             management.tests_ig_conversation_activity \
             management.tests_ig_live_identity_echo_20261022 \
             management.tests_ig_profile \
@@ -162,7 +183,7 @@ jobs:
       - name: Run size guide authority regressions
         working-directory: twocomms
         run: |
-          python manage.py test storefront.tests.test_product_size_guides storefront.tests.test_size_guide_authority_20261022 --settings=test_settings_no_network_non_dtf --noinput --parallel 1
+          python manage.py test storefront.tests.test_product_size_guides storefront.tests.test_size_guide_authority_20261022 storefront.tests.test_qa23_cooperation_terms storefront.tests.test_owner_content_consistency storefront.tests.test_ig_checkout_recipient_labels_20261023 --settings=test_settings_no_network_non_dtf --noinput --parallel 1
       - name: Run live conversation UI regressions
         run: |
           node --test tests/js/management-bot-qa23-context-actions.test.js tests/js/management-ig-qa23-recipients.test.cjs

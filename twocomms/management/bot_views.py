@@ -5260,6 +5260,11 @@ def _client_card(c, *, follow_settings=None, follow_now=None, source_selection=N
             c,
             candidates=prefetched,
         )
+    if latest_analysis is not None:
+        from management.services.ig_funnel_reset import analysis_snapshot_is_after_reset
+
+        if not analysis_snapshot_is_after_reset(c, latest_analysis):
+            latest_analysis = None
     payment_status = ""
     try:
         verified_deal = latest_verified_payment_deal(c)
@@ -7433,21 +7438,49 @@ def bot_client_reset_funnel_api(request, client_id):
             "requires_confirmation": True,
             "error": "Підтвердіть скидання воронки для цього клієнта.",
         }, status=409)
+    mode = str(request.POST.get("mode") or "funnel")
+    expected_epoch = None
+    if mode == "fresh_conversation":
+        if str(request.POST.get("confirm_fresh_conversation") or "").lower() not in {"1", "true", "yes"}:
+            return JsonResponse({"success": False, "requires_confirmation": True,
+                "error": "Підтвердіть початок діалогу з чистого аркуша."}, status=409)
+        try:
+            expected_epoch = int(request.POST["expected_permission_epoch"])
+            if expected_epoch < 0:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            return JsonResponse({"success": False,
+                "error": "Оновіть картку перед повним скиданням діалогу."}, status=409)
     from .services.ig_funnel_reset import reset_funnel
 
     result = reset_funnel(
         client_id=client_id,
         actor=request.user,
         reason=request.POST.get("reason") or "manual_reset",
+        mode=mode,
+        expected_permission_epoch=expected_epoch,
     )
     if not result.get("ok"):
         return JsonResponse({
             "success": False,
             "error": result.get("error") or "Не вдалося скинути воронку.",
+            "code": result.get("code") or "",
         }, status=int(result.get("status") or 400))
+    message = "Воронку скинуто. Переписка, оплати та замовлення збережені."
+    if mode == "fresh_conversation":
+        message = (
+            "Діалог почнеться з чистого аркуша з наступного нового повідомлення клієнта. "
+            "Переписка, оплати, замовлення та поточний режим доступу збережені. "
+            f"Завершено старих завдань: {result.get('retired_revisions', 0)}; "
+            f"архівовано вхідних подій: {result.get('archived_inbox_events', 0)}."
+        )
+        message += (
+            f" Відкликано старих посилань магазину: {result.get('revoked_checkout_tokens', 0)}; "
+            f"рахунків на звірку: {result.get('checkout_payment_review', 0)}."
+        )
     return JsonResponse({
         "success": True,
-        "message": "Воронку скинуто. Переписка, оплати та замовлення збережені.",
+        "message": message,
         **{key: value for key, value in result.items() if key not in {"ok", "status"}},
     })
 

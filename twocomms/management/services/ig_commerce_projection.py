@@ -26,6 +26,8 @@ def _choice_digest(value):
 
 def _original_choice_request(source, capture):
     from management.services.ig_commerce_turns import parse_turn
+    decision = getattr(source, "commerce_turn_decision", None)
+    recipient_configuration = bool(decision and (decision.result_payload or {}).get("line_source_facts"))
     if str(source.quick_reply_payload or "").startswith("CC1:"):
         from management.models import IgClient
         from management.services.ig_catalog_choice_actions import native_choice_request, _source, _digest
@@ -43,7 +45,7 @@ def _original_choice_request(source, capture):
         cached[key] = (native_choice_request(owner, source, historical=True) if owner else None) or CommerceTurnRequest()
         return cached[key]
     if capture is None:
-        return parse_turn(source.text)
+        return parse_turn(source.text, _recipient_configuration=recipient_configuration)
     key = (source.pk, hashlib.sha256(source.text.encode()).hexdigest())
     parsed = capture.setdefault("parsed_sources", {})
     if key not in parsed:
@@ -59,7 +61,8 @@ def _original_choice_request(source, capture):
         # Shape detection must not resolve each URL through live ORM. Typed
         # line operations are then reparsed against the one captured graph.
         # Legacy exact identity retains its accepted source binding below.
-        original = parse_turn(source.text, parsed_catalog_graph=CatalogGraph((), "", ""))
+        original = parse_turn(source.text, parsed_catalog_graph=CatalogGraph((), "", ""),
+            _recipient_configuration=recipient_configuration)
         if original.line_operations or original.pending_line_clarification:
             from management.services.ig_catalog_graph import build_catalog_graph
             if "catalog_graph" not in capture:
@@ -117,10 +120,15 @@ def _validated_copy_projection(client, scope, capture):
     if key in cache:
         return cache[key]
     head = capture.get("row_lookup", {}).get(scope.get("head_transition_id"))
+    prior_lines = head.next_snapshot.get("lines") or [] if head is not None else []
+    known = [row for row in prior_lines if row.get("product_id")]
+    provisional_copy = (len(known) == 1 and known[0].get("line_id") == scope.get("line_id")
+        and scope.get("line_count") == len(prior_lines) and any(row.get("recipient_plan") and not row.get("product_id") for row in prior_lines))
     if (head is None or head.session.client_id != client.pk or head.session_id != scope.get("session_id")
         or head.session.generation != scope.get("generation") or head.to_revision != scope.get("revision")
         or head.session.commercial_episode_id != scope.get("episode_id")
-        or (not capture.get("allow_order_line_copy") and (scope.get("line_count") != 1 or len(head.next_snapshot.get("lines") or []) != 1))
+        or (not capture.get("allow_order_line_copy") and not provisional_copy
+            and (scope.get("line_count") != 1 or len(head.next_snapshot.get("lines") or []) != 1))
         or (capture.get("allow_order_line_copy") and scope.get("line_count") != len(head.next_snapshot.get("lines") or []))
         or scope.get("reset_floor") != capture["reset_floor"]
         or _choice_digest(head.next_snapshot) != scope.get("head_digest")):
@@ -259,6 +267,39 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
         copy_capture["catalog_product_ids"] = _captured_product_ids(copy_capture["row_lookup"].values())
         if copy_capture["catalog_product_ids"] is None:
             return {}
+    planning = {}
+    origin = line.get("recipient_plan")
+    if isinstance(origin, dict):
+        for candidate in transitions:
+            original_source = candidate.source_message
+            original_decision = getattr(original_source, "commerce_turn_decision", None)
+            original_line = next((row for row in (candidate.next_snapshot.get("lines") or [])
+                if row.get("line_id") == line["line_id"]), {})
+            if original_line.get("recipient_plan") != origin:
+                continue
+            if original_source is None or original_source.pk != origin.get("source_message_id"):
+                continue
+            if (not original_decision or not original_decision.accepted or original_decision.is_stale
+                or original_decision.transition_id != candidate.pk or original_source.client_id != client.pk
+                or original_source.sender_id != current["igsid"] or original_source.pk < reset_floor
+                or original_source.status == "failed" or not is_current_customer_source(original_source)
+                or original_line.get("recipient_id") != line.get("recipient_id")
+                or hashlib.sha256(original_source.text.encode()).hexdigest() != origin.get("source_digest")):
+                return {}
+            original_request = _original_choice_request(original_source, copy_capture)
+            facts = (original_decision.result_payload or {}).get("line_source_facts") or {}
+            ordinal = origin.get("operation_index")
+            if (original_request is None or type(ordinal) is not int or not 0 <= ordinal < len(original_request.line_operations)
+                or original_request.line_operations[ordinal].operation not in {"plan", "update", "replace"}
+                or original_request.line_operations[ordinal].recipient_id != line.get("recipient_id")
+                or not _line_replay(candidate, original_request, facts)):
+                return {}
+            planning = {**origin, "decision_id": original_decision.pk, "transition_id": candidate.pk,
+                "observed_at": (original_source.provider_created_at or original_source.created_at).isoformat(),
+                "authority": "customer_recipient_planning"}
+            break
+        if not planning:
+            return {}
     expected_snapshot = _source_snapshot(snapshot)
     revision = int(snapshot.get("revision") or 0)
     for transition in transitions:
@@ -293,6 +334,18 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             break
         owned = (source is not None and source.client_id == client.pk and source.sender_id == current["igsid"]
                  and is_current_customer_source(source))
+        if transition.action == "recipient_plan_clarification":
+            from management.services.ig_recipient_planning import unscoped_group_choice
+            from management.services.ig_commerce_turns import parse_turn
+            previous, following = _source_snapshot(transition.previous_snapshot), _source_snapshot(transition.next_snapshot)
+            for item in (previous, following):
+                for key in ("revision", "last_provider_message_id", "pending_clarification"):
+                    item.pop(key, None)
+            if (not owned or not decision or decision.accepted or decision.is_stale
+                or previous != following or not unscoped_group_choice(transition.previous_snapshot, parse_turn(source.text))):
+                return {}
+            expected_snapshot, revision = _source_snapshot(transition.previous_snapshot), transition.from_revision
+            continue
         if transition.action == "assisted_residual_adoption":
             from management.services.ig_assisted_continuation_sources import verify_assisted_adoption_transition
             cached = _capture.setdefault("assisted_adoption_cache", {}) if _capture is not None else {}
@@ -425,9 +478,20 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
                                 evidence[key]["reorder_origin"] = facts.get("reorder_origin")
                         else:
                             withdrawn_keys.add(key)
-            if before_line and (before_line.get("product_id") != after_line.get("product_id")
-                or before_line.get("recipient_id", "self") != after_line.get("recipient_id", "self")):
+            if before_line and before_line.get("recipient_id", "self") != after_line.get("recipient_id", "self"):
                 break
+            if before_line and before_line.get("product_id") != after_line.get("product_id"):
+                first_plan_binding = (not before_line.get("product_id") and after_line.get("recipient_plan")
+                    and before_line.get("recipient_plan") == after_line["recipient_plan"])
+                same_plan_quantity = (after_line.get("recipient_plan")
+                    and before_line.get("recipient_plan") == after_line["recipient_plan"]
+                    and "quantity" in values and before_line.get("quantity") == after_line.get("quantity") == values["quantity"])
+                if not first_plan_binding and not same_plan_quantity:
+                    break
+                # Only an unchanged beneficiary count may seek its original
+                # source across a print switch. Other old SKU choices expire.
+                if not first_plan_binding:
+                    withdrawn_keys.update(set(values) - {"quantity"})
             if not before_line:
                 break
             expected_snapshot = _source_snapshot(transition.previous_snapshot)
@@ -567,7 +631,7 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
         expected_snapshot = _source_snapshot(transition.previous_snapshot)
         revision = transition.from_revision
     confirmed = {key: value for key, value in values.items() if key in evidence}
-    if not confirmed and not cleared:
+    if not confirmed and not cleared and not planning:
         return {}
     if _capture is not None:
         return {"session_id": session.pk, "generation": session.generation,
@@ -576,6 +640,7 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             "recipient_id": str(line.get("recipient_id") or "self"), "line_id": str(line.get("line_id") or ""),
             "line_count": len(lines),
             "values": confirmed, "evidence": {**{key: evidence[key] for key in confirmed}, **cleared},
+            **({"planning": planning} if planning else {}),
             **({"cleared": cleared} if cleared else {}),
             "head_transition_id": transitions[0].pk if transitions else None,
             "head_digest": _choice_digest(transitions[0].next_snapshot) if transitions else None}
@@ -592,6 +657,8 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
     from management.models import InstagramBotMessage
     proof_sources = {evidence[key]["source_message_id"]: evidence[key]["source_digest"] for key in confirmed
         if evidence[key].get("source_kind") != "ig-checkout-cart-amendment.v1"}
+    if planning:
+        proof_sources[planning["source_message_id"]] = planning["source_digest"]
     final_sources = {row.pk: hashlib.sha256(row.text.encode()).hexdigest()
                      for row in InstagramBotMessage.objects.filter(
                          pk__in=proof_sources, client_id=client.pk, sender_id=current["igsid"],
@@ -620,6 +687,7 @@ def source_preferences_for(client, *, episode_id=None, line_id=None, _capture=No
             "line_id": str(line.get("line_id") or ""), "values": confirmed,
             "line_count": len(lines),
             "evidence": {**{key: evidence[key] for key in confirmed}, **cleared},
+            **({"planning": planning} if planning else {}),
             **({"cleared": cleared} if cleared else {}),
             "head_transition_id": transitions[0].pk if transitions else None,
             "head_digest": _choice_digest(transitions[0].next_snapshot) if transitions else None}
@@ -1038,7 +1106,8 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
             "fields": selection_capture.get("fields", {}), "evidence": proof.get("evidence", {}),
             "cleared": proof.get("cleared", {}), "history": _selection_history(client, capture, line["line_id"]),
             "history_coverage": {"complete": False, "event_limit": 8, "reason": "bounded_validated_history"},
-            "defaults": {"quantity": {"value": 1 if line.get("quantity", 1) == 1 else None,
+            "defaults": {"quantity": {"value": (None if line.get("recipient_plan") and "quantity" not in line
+                else 1 if line.get("quantity", 1) == 1 else None),
                 "authority": "existing_cart_default", "source_confirmed": False}},
             "unsupported_selectors": ["color_variant_id", "option_values"]})
     final_source_rows = list(InstagramBotMessage.objects.filter(pk__in=sources).select_related("client"))
@@ -1062,6 +1131,13 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
         "active_line_id": lines[snapshot["active_index"]]["line_id"] if lines and 0 <= snapshot["active_index"] < len(lines) else None,
         "source_watermark": watermark, "lines": captured_lines, "omissions": omissions,
         "coverage_complete": not omissions, "transition_limit": 64, "line_limit": 16, "query_limit": 64, "fence": fence}
+    if any(line.get("recipient_plan") for line in lines) and snapshot.get("pending_clarification") in {"ambiguous_line_target", "ambiguous_recipient"}:
+        head = transitions[0] if transitions else None
+        if head and head.source_message_id in sources:
+            payload["recipient_planning_state"] = {"schema": "recipient-planning.v1",
+                "clarification": snapshot["pending_clarification"], "transition_id": head.pk,
+                "source_message_id": head.source_message_id,
+                "source_digest": hashlib.sha256(sources[head.source_message_id].text.encode()).hexdigest()}
     if removed:
         payload["removed"] = removed
     payload["capture_digest"] = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,

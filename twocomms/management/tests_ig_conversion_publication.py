@@ -19,13 +19,16 @@ class OwnerScenarioPublicationTests(TestCase):
         before = BotInstruction.objects.count()
         plan = publish_reviewed_owner_scenarios()
         self.assertEqual(BotInstruction.objects.count(), before)
-        self.assertEqual([item["action"] for item in plan["changes"]], ["create"] * 5)
+        self.assertEqual([item["action"] for item in plan["changes"]], ["create"] * 8)
         result = publish_reviewed_owner_scenarios(apply=True,
             expected_draft_hash=plan["draft_hash"], expected_head_hash=plan["head_hash"])
         self.existing.refresh_from_db()
         self.assertEqual(self.existing.body, "Keep this policy.")
-        self.assertEqual(len(result["coverage"]), 5)
-        self.assertTrue(all(item["status"] == "declared_covered" for item in result["coverage"].values()))
+        self.assertEqual(len(result["coverage"]), 8)
+        for scenario in ("custom_print", "collaboration", "ugc", "size", "objection"):
+            self.assertEqual(result["coverage"][scenario]["status"], "declared_covered")
+        for language in ("uk", "ru", "en"):
+            self.assertTrue(result["coverage"]["business_cooperation_" + language]["required_id"])
         again = publish_reviewed_owner_scenarios()
         replay = publish_reviewed_owner_scenarios(apply=True,
             expected_draft_hash=again["draft_hash"], expected_head_hash=again["head_hash"])

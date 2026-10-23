@@ -22,7 +22,7 @@ CHOICE_KEYS = ("product_id", "model_query", "garment_type", "size", "fit_option_
 STATUSES = frozenset({"confirmed", "unknown", "ambiguous", "stale", "not_applicable"})
 AUTHORITIES = frozenset({"customer_source", "validated_selection_action", "catalog", "payment_ledger",
     "audited_correction", "permission_guard", "purpose_grant", "typed_analysis", "captured_narrative",
-    "untrusted_manager_note", "conversation_agreement", "verified_manager_review", "derived", "none"})
+    "untrusted_manager_note", "conversation_agreement", "verified_manager_review", "inventory_available", "derived", "none"})
 MAX_OPTIONAL_SLOTS = 64
 ESTIMATOR = "utf8_bytes_div4_estimate.v1"
 HEADER = (
@@ -50,6 +50,7 @@ HEADER = (
     "Business agreement never extends the native messaging window or proves native future permission, "
     "payment, refund, stock reservation or a price promise. "
     "fulfillment.review stores customer deadlines and an exact manager review. Pending is not confirmed availability. "
+    "inventory.availability separately proves positive exact retail quantity after protected commitments; check_required never means absent. It proves no reservation, timing, payment or manager check. "
     "Preparation, dispatch and carrier arrival are separate: never convert preparation days into an arrival guarantee. "
     "Clarify incomplete dates, discuss carrier variability for important deadlines, and ask before any split shipment. "
     "Mandatory server blocks and guards govern actions.\n"
@@ -415,11 +416,11 @@ def _assemble_client_state(*, boundary, components, captured_at, verified_cart=N
                 continue
             field_scope = raw.get("scope") or {}
             field_reason = _scope_reason(field_scope, scope) or _source_reason(raw.get("source_refs") or [], watermark, scope.get("reset_floor"))
-            if key in {"payment.reminder", "fulfillment.review", "waiting_list.interest", "waiting_list.items"} and raw.get("omission_reason"):
+            if key in {"payment.reminder", "fulfillment.review", "inventory.availability", "waiting_list.interest", "waiting_list.items"} and raw.get("omission_reason"):
                 field_reason = _reason(raw["omission_reason"])
-            if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "waiting_list.interest", "waiting_list.items"}:
+            if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "inventory.availability", "waiting_list.interest", "waiting_list.items"}:
                 field_reason = field_reason or _selection_binding_reason(raw.get("capture_scope"), boundary)
-            if key in {"payment.reminder", "fulfillment.review"}:
+            if key in {"payment.reminder", "fulfillment.review", "inventory.availability"}:
                 binding = raw.get("capture_scope") or {}
                 if any(name not in boundary or boundary[name] is None or binding.get(name) != boundary[name] for name in (
                         "selection_session_id", "selection_generation", "selection_revision", "source_cart_capture_digest")):
@@ -430,16 +431,22 @@ def _assemble_client_state(*, boundary, components, captured_at, verified_cart=N
                     raw["value"].get("state") == "not_captured" or raw["value"].get("lists") == [])
                 if authority != "conversation_agreement" and not capture_only:
                     field_reason = field_reason or "observation_authority_unknown"
-            if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review"} and authority != {
+            if key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "inventory.availability"} and authority != {
                     "conversation.agreement": "conversation_agreement", "receipt.observation": "typed_analysis",
-                    "payment.reminder": "conversation_agreement", "fulfillment.review": "verified_manager_review"}[key]:
+                    "payment.reminder": "conversation_agreement", "fulfillment.review": "verified_manager_review", "inventory.availability": "inventory_available"}[key]:
                 field_reason = field_reason or "observation_authority_unknown"
+            if key == "inventory.availability":
+                from management.services.ig_inventory_availability import verified_inventory_capture
+                value = raw.get("value")
+                if (not verified_inventory_capture(value) or value.get("client_id") != boundary.get("client_id")
+                    or value.get("source_cart_capture_digest") != boundary.get("source_cart_capture_digest")):
+                    field_reason = field_reason or "inventory_capture_unverified"
             status = raw.get("status") if raw.get("status") in STATUSES else "unknown"
             if authority == "none" and not field_reason:
                 field_reason = "authority_unknown"
             if raw.get("omission_reason"):
                 field_reason = field_reason or _reason(raw["omission_reason"])
-            protected_observation = key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "waiting_list.interest", "waiting_list.items"}
+            protected_observation = key in {"conversation.agreement", "receipt.observation", "payment.reminder", "fulfillment.review", "inventory.availability", "waiting_list.interest", "waiting_list.items"}
             slots[key] = _slot(None if field_reason and protected_observation else raw.get("value"), status="unknown" if field_reason else status,
                 authority="none" if field_reason and protected_observation else authority,
                 refs=[] if field_reason and protected_observation else raw.get("source_refs") or [], scope=field_scope,
@@ -786,6 +793,9 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
                 and not (name in {"conflict", "superseded_by"} and value is None)}}
             if key == "configuration.readiness":
                 projected["value"] = checkout_prompt_value(projected["value"])
+            if key == "inventory.availability":
+                from management.services.ig_inventory_availability import inventory_prompt_value
+                projected["value"] = inventory_prompt_value(projected["value"])
             if key.startswith("choice.") and "availability" in projected:
                 eligibility = projected.pop("availability")
                 projected["checkout_eligibility"] = {"available": "eligible", "unavailable": "ineligible"}.get(eligibility, eligibility)

@@ -83,7 +83,9 @@ def source_line_preferences(capture, row, *, source_watermark=0):
             cleared[key] = proof
         elif field.get("status") in {"confirmed", "ambiguous"} and field.get("value") is not None:
             values[key], evidence[key] = field["value"], proof
-    return {**expected, "values": values, "evidence": evidence, "cleared": cleared}
+    planning = (row.get("source_selection") or {}).get("planning")
+    return {**expected, "values": values, "evidence": evidence, "cleared": cleared,
+        **({"planning": planning} if isinstance(planning, dict) else {})}
 
 
 def build_cart_response_lines(*, capture, sources, readiness_by_line, authority_by_line, single_builder):
@@ -104,6 +106,16 @@ def build_cart_response_lines(*, capture, sources, readiness_by_line, authority_
         line_id = row["line_id"]
         base = single_builder(preferences, readiness_by_line.get(line_id) or {}, authority_by_line.get(line_id))
         payload = base.as_dict()
+        # Read-only catalogue identity belongs to this exact captured line.
+        # Keep its full signed proof server-side; prompt_projection uses an
+        # explicit presentation allowlist and does not expose configuration.
+        from management.services.ig_source_cart_catalog import verified_catalog_color_identity
+        identity = ((readiness_by_line.get(line_id) or {}).get("color") or {}).get("catalog_color_identity")
+        if verified_catalog_color_identity(identity, product_id=payload["configuration"].get("product_id"),
+                capture=capture, line=row):
+            payload["configuration"]["catalog_color_identity"] = identity
+        if preferences.get("planning"):
+            payload["configuration"]["recipient_planning"] = preferences["planning"]
         obligations = []
         for key, value in preferences["values"].items():
             proof = preferences["evidence"][key]
@@ -135,6 +147,20 @@ def matching_line_ids(clause, line_plans):
     """A clause needs a unique explicit identity; duplicated SKUs need scope."""
     rows = [plan.as_dict() for plan in line_plans]
     text = clause.casefold()
+    from management.services.ig_recipient_planning import RECIPIENT_WORDS, recipient_mentions
+    aliases = {**RECIPIENT_WORDS, "хлопцю": "boyfriend", "парню": "boyfriend",
+        "дівчині": "girlfriend", "девушке": "girlfriend", "мамі": "mother", "маме": "mother",
+        "татові": "father", "папе": "father", "подрузі": "friend_female", "подруге": "friend_female"}
+    dative = {"собі", "мені", "мне", "хлопцю", "парню", "дівчині", "девушке", "сестрі", "сестре", "брату", "братові"}
+    roles = {role for word, role in aliases.items()
+        if re.search(r"\b(?:для|for)\s+(?:(?:my|your|ваш\w*|мо\w*)\s+)?" + re.escape(word) + r"(?!\w)", text)
+        or (word in dative and re.search(r"^\s*" + re.escape(word) + r"(?!\w)", text))
+        or re.search(r"(?<!\w)" + re.escape(role) + r"\s*:", text)}
+    roles.update(row[0] for row in recipient_mentions(clause)[0])
+    # Dynamic recipient IDs retain literal matching; only the canonical
+    # source-backed row can own an alias. Generic 'you' is never a self scope.
+    roles.update(str(row["recipient_id"]).casefold() for row in rows if row["recipient_id"] not in set(aliases.values())
+        if re.search(r"(?<!\w)" + re.escape(str(row["recipient_id"]).casefold()) + r"(?!\w)", text))
     ordinal = []
     for row in rows:
         number = row["index"] + 1
@@ -144,6 +170,8 @@ def matching_line_ids(clause, line_plans):
         if len(ordinal) != 1:
             return ()
         selected = next(row for row in rows if row["line_id"] == ordinal[0])
+        if roles and roles != {str(selected["recipient_id"]).casefold()}:
+            return ()
         for other in rows:
             recipient = str(other["recipient_id"]).casefold()
             if recipient != str(selected["recipient_id"]).casefold() and re.search(r"(?<!\w)" + re.escape(recipient) + r"(?!\w)", text):
@@ -153,6 +181,20 @@ def matching_line_ids(clause, line_plans):
                 and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", text)):
                 return ()
         return tuple(ordinal)
+    if roles:
+        candidates = [row for row in rows if str(row["recipient_id"]).casefold() in roles]
+        if len(roles) != 1 or len(candidates) != 1:
+            return ()
+        selected = candidates[0]
+        # A different captured exact title is an identity conflict even when
+        # the beneficiary is explicit.
+        for other in rows:
+            title = str(other["configuration"].get("product_title") or "").casefold()
+            if (other["line_id"] != selected["line_id"] and title
+                and title != str(selected["configuration"].get("product_title") or "").casefold()
+                and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", text)):
+                return ()
+        return (selected["line_id"],)
     candidates = []
     garments = {"hoodie": r"\bhoodie\b|\bхуді\b|\bхуди\b", "tshirt": r"\bt-?shirt\b|\bфутболк\w*"}
     for row in rows:
@@ -286,7 +328,7 @@ def line_clauses(text, line_plans):
     return result
 
 
-def _configuration_apposition(text):
+def _configuration_apposition(text, *, stock_tail=False):
     """Only typed, nonverbal configuration descriptors may share commas."""
     from management.services.ig_response_plan import CHOICE_ALIASES
     size = r"(?:(?:розмір(?:у|і)?|размер(?:а|е)?|size)\s*)?(?:XS|S|M|L|XL|XXL|XXXL|[2-5]\s*[xх]\s*[lл])"
@@ -294,15 +336,22 @@ def _configuration_apposition(text):
     fit = r"(?:(?:крій|крой|fit)\s+(?:" + fits + r")|(?:" + fits + r")(?:\s+(?:крій|крой|fit))?)"
     colors = {alias.casefold() for key, aliases in CHOICE_ALIASES.items()
         if key not in {'hoodie', 'tshirt', 'classic', 'oversize'} for alias in aliases}
+    if stock_tail:
+        # Keep the identity on "Aurora, black, size M is in stock". The tail
+        # grammar contains no new subject or other assertion; truth authority
+        # still validates the complete original claim and its configuration.
+        match = re.fullmatch(r"(.*?)\s+(?:(?:є|есть)(?:\s+не)?\s+(?:в|у)\s+(?:наявності|наличии)|"
+            r"(?:is|are)(?:\s+not)?\s+(?:in\s+stock|available))\s*[.!]*", text.strip(), re.I)
+        return bool(match and _configuration_apposition(match[1]))
+    color = r"(?:(?:колір|кольору|цвет|цвета|colou?r)\s+)?(?:" + "|".join(
+        re.escape(value) for value in sorted(colors, key=lambda value: (-len(value), value))) + r")"
+    descriptor = r"(?:" + size + r"|" + fit + r"|" + color + r")"
     parts = text.replace('(', '').replace(')', '').split(',')
     if not 1 <= len(parts) <= 8 or len(text) > 300:
         return False
     for part in parts:
-        value = part.strip()
-        if re.fullmatch(size, value, re.I) or re.fullmatch(fit, value, re.I):
-            continue
-        color = re.sub(r"^(?:колір|кольору|цвет|цвета|colou?r)\s+", '', value, flags=re.I)
-        if color.casefold() not in colors:
+        value = part.strip(" .!")
+        if not re.fullmatch(descriptor + r"(?:\s+" + descriptor + r"){0,7}", value, re.I):
             return False
     return True
 
@@ -314,25 +363,53 @@ def scoped_claim_clauses(text):
         if _pending_manager_stock_check(sentence):
             yield sentence
             continue
-        # Parenthetical size/fit descriptions belong to their named SKU;
-        # their internal comma cannot detach a following price from it.
-        depth, start, malformed, group_start = 0, 0, False, 0
-        separators = []
-        for index, char in enumerate(sentence):
-            if char == '(':
-                if depth == 0:
-                    group_start = index + 1
-                depth += 1
-            elif char == ')':
-                malformed = malformed or depth == 0
-                depth = max(0, depth - 1)
-                if depth == 0:
-                    malformed = malformed or not _configuration_apposition(sentence[group_start:index])
-            elif char == ',' and depth == 0 and not (
-                    index and index + 1 < len(sentence) and sentence[index - 1].isdigit() and sentence[index + 1].isdigit()):
-                separators.append(index)
-        if depth or malformed:
-            separators = [match.start() for match in re.finditer(r"(?<!\d),|,(?!\d)", sentence)]
-        for end in (*separators, len(sentence)):
-            yield from re.split(r"[;\n]|\b(?:але|но|but)\b", sentence[start:end], flags=re.I)
-            start = end + 1
+        for section in re.split(r"[;\n]|\b(?:але|но|but)\b", sentence, flags=re.I):
+            # Parenthetical size/fit descriptions belong to their named SKU;
+            # their internal comma cannot detach a following price from it.
+            depth, start, malformed, unbalanced, group_start = 0, 0, False, False, 0
+            separators = []
+            for index, char in enumerate(section):
+                if char == '(':
+                    if depth == 0:
+                        group_start = index + 1
+                    depth += 1
+                elif char == ')':
+                    unbalanced = unbalanced or depth == 0
+                    depth = max(0, depth - 1)
+                    if depth == 0:
+                        malformed = malformed or not _configuration_apposition(section[group_start:index])
+                elif char == ',' and depth == 0 and not (
+                        index and index + 1 < len(section) and section[index - 1].isdigit() and section[index + 1].isdigit()):
+                    separators.append(index)
+            if malformed and not depth and not unbalanced:
+                # A foreign recipient/product inside balanced parentheses is
+                # part of this claim, not a fresh line after its inner comma.
+                # Keep the conflicting identities visible to the line guard.
+                yield section
+                continue
+            if depth or unbalanced:
+                separators = [match.start() for match in re.finditer(r"(?<!\d),|,(?!\d)", section)]
+            parts = []
+            for end in (*separators, len(section)):
+                parts.append(section[start:end])
+                start = end + 1
+            if depth or unbalanced:
+                # Invalid punctuation cannot opt into descriptor regrouping.
+                yield from parts
+                continue
+            position = 0
+            while position < len(parts):
+                group, following = [parts[position]], position + 1
+                while following < len(parts) and len(group) < 8 and _configuration_apposition(parts[following]):
+                    group.append(parts[following])
+                    following += 1
+                if following < len(parts) and len(group) < 8 and _configuration_apposition(parts[following], stock_tail=True):
+                    group.append(parts[following])
+                    following += 1
+                # New product/recipient/ordinal or an independent assertion
+                # does not match a descriptor and begins its own local group.
+                # These commas are syntactic apposition, not claim boundaries.
+                # Normalize only this proven descriptor chain for downstream
+                # clause-local truth checks; the delivered reply is untouched.
+                yield group[0] + ''.join(' ' + part.strip() for part in group[1:])
+                position = following

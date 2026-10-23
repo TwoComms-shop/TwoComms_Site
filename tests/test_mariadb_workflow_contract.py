@@ -23,7 +23,7 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         self.assertIn("healthcheck.sh --connect --innodb_initialized", self.source)
         self.assertIn("MARIADB_ROOT_PASSWORD: gate-root-password", self.source)
         self.assertIn('MARIADB_ROOT_HOST: "%"', self.source)
-        self.assertIn("timeout-minutes: 30", self.source)
+        self.assertIn("timeout-minutes: 45", self.source)
 
     def test_runs_external_gate_without_production_database_variables(self):
         self.assertIn('--server-mode external --suite "${{ matrix.suite }}"', self.source)
@@ -41,10 +41,16 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
                 "stock-authority-consumers", "selection-idempotence"]},
         })
         self.assertEqual(self.suite_job["runs-on"], "ubuntu-24.04")
-        self.assertEqual(self.suite_job["timeout-minutes"], 30)
+        self.assertEqual(self.suite_job["timeout-minutes"], 45)
         self.assertIn("mariadb", self.suite_job["services"])
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         self.assertNotIn("continue-on-error", self.source)
+
+    def test_runner_deadline_reserves_cleanup_time_before_job_timeout(self):
+        from scripts.run_mariadb_gate import COMMAND_BUDGET_SECONDS
+
+        self.assertEqual(COMMAND_BUDGET_SECONDS, 40 * 60)
+        self.assertGreaterEqual(self.suite_job["timeout-minutes"] * 60 - COMMAND_BUDGET_SECONDS, 5 * 60)
 
     def test_every_native_matrix_entry_has_a_runner_suite_and_coverage_is_not_duplicated(self):
         from scripts.run_mariadb_gate import STOCK_AUTHORITY_ACCEPTANCE_LABELS, SUITES

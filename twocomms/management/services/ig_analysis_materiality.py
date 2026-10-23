@@ -381,14 +381,25 @@ def record_authority_materiality(
 
 
 def _legacy_snapshot(client_id: int, *, include_manager: bool):
+    from management.services.ig_funnel_reset import latest_reset_after_message_id
+
+    reset_after = latest_reset_after_message_id(client_id)
     queryset = IgConversationAnalysisSnapshot.objects.filter(client_id=client_id)
+    if reset_after:
+        queryset = queryset.filter(last_analyzed_message_id__gt=reset_after)
     if not include_manager:
         queryset = queryset.exclude(
             interaction_type=(
                 IgConversationAnalysisSnapshot.InteractionType.MANAGER_OBSERVATION
             )
         )
-    return queryset.order_by("-id").first()
+    snapshot = queryset.order_by("-id").first()
+    if snapshot is not None:
+        from management.services.ig_funnel_reset import analysis_snapshot_is_after_reset
+
+        if not analysis_snapshot_is_after_reset(client_id, snapshot):
+            return None
+    return snapshot
 
 
 def current_analysis_snapshot(
@@ -404,7 +415,18 @@ def current_analysis_snapshot(
         return None
     if not selector_enforced():
         if candidates is not None:
+            from management.services.ig_funnel_reset import latest_reset_after_message_id
+
+            reset_after = latest_reset_after_message_id(client_id)
             for snapshot in candidates:
+                if snapshot.client_id != client_id or (
+                    reset_after and int(snapshot.last_analyzed_message_id or 0) <= reset_after
+                ):
+                    continue
+                from management.services.ig_funnel_reset import analysis_snapshot_is_after_reset
+
+                if not analysis_snapshot_is_after_reset(client_id, snapshot):
+                    continue
                 if include_manager or snapshot.interaction_type != (
                     IgConversationAnalysisSnapshot.InteractionType.MANAGER_OBSERVATION
                 ):

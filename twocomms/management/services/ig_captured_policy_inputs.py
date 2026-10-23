@@ -179,10 +179,10 @@ def capture_policy_inputs(client_id, *, boundary, sources, history, response_pla
 
     # Cooperation can be explicitly withdrawn by a later source in the same
     # burst. A per-message union must not restore that superseded invitation.
-    triggers.difference_update({"collaboration", "ugc"})
+    triggers.difference_update({"collaboration", "business_cooperation", "ugc"})
     cooperation_text = ". ".join(str(row.get("text") or "")
         for row in current_cooperation_sources(sources))
-    triggers.update(turn_triggers(cooperation_text) & {"collaboration", "ugc"})
+    triggers.update(turn_triggers(cooperation_text) & {"collaboration", "business_cooperation", "ugc"})
     from management.services.bot_sales_classifier import custom_print_requested_for_sources
 
     triggers.discard("custom_print")

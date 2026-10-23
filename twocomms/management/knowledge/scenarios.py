@@ -4,7 +4,7 @@ Importing these values does not publish or replace anything. A publisher must
 show the existing-head diff, preserve other rows and use draft/head CAS. The
 five scenario declarations use the existing required-policy admission engine.
 """
-VERSION = "2026-10-22.owner-scenarios.4"
+VERSION = "2026-10-23.owner-scenarios.q23.1"
 
 SCENARIO_INSTRUCTIONS = (
     {"key": "custom_print", "title": "Owner reviewed: custom print", "tags": ["custom_print"], "triggers": [],
@@ -25,10 +25,15 @@ SCENARIO_INSTRUCTIONS = (
 )
 
 
+from management.services.ig_cooperation_policy import LANGUAGES, reviewed_values
+
+SCENARIO_INSTRUCTIONS += tuple(reviewed_values(language) for language in LANGUAGES)
+
+
 def reviewed_scenario_values(key):
     """Detached values accepted by save_instruction_draft, not DB writes."""
     from copy import deepcopy
 
     row = next(item for item in SCENARIO_INSTRUCTIONS if item["key"] == key)
     return {**deepcopy({name: value for name, value in row.items() if name != "key"}),
-            "active": True, "priority": 10, "locale": "all", "trust_scope": "public_policy", "allowed_actions": []}
+            "active": True, "priority": 10, "locale": row.get("locale", "all"), "trust_scope": "public_policy", "allowed_actions": []}

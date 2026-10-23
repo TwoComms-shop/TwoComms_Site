@@ -166,12 +166,18 @@ def _color(value):
     return _find_prefix_value(value, _COLOR_WORDS) or value
 
 
-def _known_color(wanted, state):
+def _known_color(wanted, state, *, capture=None, line=None):
     # Source preference authority is not a catalogue color witness. A draft
     # without a proven product may carry its own wish in the allowed vocabulary.
     if type((state.get("product") or {}).get("id")) is not int or state["product"]["id"] <= 0:
         return False
     color = state.get("color") or {}
+    from management.services.ig_source_cart_catalog import verified_catalog_color_identity
+    identity = color.get("catalog_color_identity")
+    if (verified_catalog_color_identity(identity, product_id=state["product"]["id"], capture=capture, line=line)
+        and _color(identity["resolved_choice"]) == wanted
+        and color.get("selected_variant_id") in (None, identity["variant_id"])):
+        return True
     if (color.get("verified_resolution") is True and type(color.get("selected_variant_id")) is int
         and color["selected_variant_id"] > 0 and _color(color.get("resolved_choice")) == wanted):
         return True
@@ -324,10 +330,10 @@ def capture_product_inquiries(sources, *, cart_capture=None, readiness_by_line=N
             for match in color_matches:
                 if not _NEGATED.search(clause[:match.start()]):
                     wanted = _color(match.group())
-                    if not _known_color(wanted, state) and (source_product or wanted in {"olive", "purple", "beige", "burgundy", "orange"}):
+                    if not _known_color(wanted, state, capture=capture, line=source_line) and (source_product or wanted in {"olive", "purple", "beige", "burgundy", "orange"}):
                         candidates.append(("color", wanted, "requested_color_unverified"))
             for wanted in _freeform_color_wishes(clause):
-                if not _known_color(wanted, state) and not any(axis == "color" and value == wanted for axis, value, _reason in candidates):
+                if not _known_color(wanted, state, capture=capture, line=source_line) and not any(axis == "color" and value == wanted for axis, value, _reason in candidates):
                     candidates.append(("color", wanted, "requested_color_unverified"))
             size_state = state.get("size") or {}
             # Disabled catalogue labels still identify a real size. Stock and
@@ -504,7 +510,8 @@ def product_inquiries_for_revision(revision, *, response_plan=None):
             readiness[row.line_id] = {"product": {"id": data["configuration"].get("product_id")},
                 "size": {"available": data["authority"].get("sizes", []),
                          "requested_unavailable": data["choices"].get("size", "") if data["configuration"].get("requested_size_unavailable") else ""},
-                "color": {"options": [{"name": label} for label in data["authority"].get("colors", [])]}}
+                "color": {"options": [{"name": label} for label in data["authority"].get("colors", [])],
+                          "catalog_color_identity": data["configuration"].get("catalog_color_identity")}}
         capture = response_plan.source_cart_capture
         # Price/checkout authority may be empty because the current size has
         # zero stock. Its separately captured active readiness still supplies

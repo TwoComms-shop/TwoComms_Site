@@ -176,6 +176,21 @@ def prepare_revision_turn_context(revision, *, generation_boundary, collection,
             {"present": context.facts.objection_present,
              "source_message_ids": list(boundary["source_ids"])}, separators=(",", ":")),
     }
+    # A provider reply needs a bounded catalogue view, with every current SKU
+    # and every source-bound presented candidate protected before general rows.
+    # The full cached catalogue remains available to media/matching consumers.
+    from management.services.ig_prompt_projections import source_catalog_priorities
+    from management.services.bot_catalog import SOURCE_PROMPT_MAX_CHARS, get_catalog_context
+    priorities = source_catalog_priorities(state.as_dict().get("source_cart") or {},
+        generation_boundary.response_plan.prompt_projection())
+    try:
+        dynamic_notes["catalog"] = get_catalog_context(compact=True,
+            prompt_limit=SOURCE_PROMPT_MAX_CHARS, **priorities)
+    except ValueError as exc:
+        if not str(exc).startswith("catalog_budget_"):
+            raise
+        from management.services.ig_turn_intelligence import TurnContextError
+        raise TurnContextError("required_context_budget_exceeded") from exc
     fit = getattr(generation_boundary.response_plan, "fit_consultation", {})
     if fit:
         from management.services.ig_fit_consultation import fit_consultation_guidance

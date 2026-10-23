@@ -379,11 +379,52 @@ def _authority_from_projection(value) -> RevisionAuthorityBindingSet:
     )
 
 
-def _captured_reply_truth(plan, response, context, *, revision=None):
+def _catalog_browse_prose_urls(plan, response, revision, prepared_effects=None):
+    """Prose may repeat only a fresh URL on these authenticated themed cards."""
+    from management.services.ig_catalog_browsing import browse_authorized_urls, validate_catalog_browse_response
+    from management.services.ig_catalog_choice_presentations import (
+        SCHEMA_THEMED, prepare_catalog_choice_presentations, validate_catalog_choice_assets,
+        validate_catalog_choice_metadata,
+    )
+    capture = plan.configuration.get("catalog_browse")
+    candidates = browse_authorized_urls(capture)
+    if (revision is None or not candidates or not response.control.get("show_products")
+        or validate_catalog_browse_response(capture, response)
+        or not any(url in response.reply_text for url in candidates)):
+        return ()
+    if prepared_effects is None:
+        prepared = prepare_catalog_choice_presentations(revision, response,
+            InstagramBotSettings.objects.get(pk=1), response_plan=plan)
+        if not prepared.ready:
+            return ()
+        prepared_effects = prepared.effects
+    urls = []
+    for effect in prepared_effects:
+        metadata = effect.get("projection_metadata") or {}
+        manifest = metadata.get("catalog_choice") or {}
+        if manifest.get("schema") != SCHEMA_THEMED:
+            continue
+        if (manifest.get("scope", {}).get("catalog_browse", {}).get("digest") != capture.get("capture_digest")
+            or not validate_catalog_choice_metadata(metadata, payload=effect["payload"],
+                group=effect["group"], kind=effect["kind"])
+            or validate_catalog_choice_assets(manifest, revision.client)):
+            return ()
+        for card in manifest["cards"]:
+            url = card["theme_navigation"]["url"]
+            if url in candidates and url not in urls:
+                urls.append(url)
+    return tuple(urls)
+
+
+def _captured_reply_truth(plan, response, context, *, revision=None, prepared_effects=None):
     """Prove each line first, then retain whole-reply business/URL checks."""
     from management.services.ig_reply_truth import ReplyTruthResult, validate_reply_truth
     from management.services.ig_service_complaints import revision_service_complaint
     from management.services.ig_turn_intent import service_complaint_reply_reason
+    context = replace(context, cooperation_policy=plan.cooperation_policy, source_price_subjects=())
+    browse_urls = _catalog_browse_prose_urls(plan, response, revision, prepared_effects)
+    if browse_urls:
+        context = replace(context, authorized_urls=tuple(dict.fromkeys((*context.authorized_urls, *browse_urls))))
 
     complaint = revision_service_complaint(revision) if revision is not None else {}
     if complaint and set(response.control) == {"manager"} and response.control["manager"] is True:
@@ -423,7 +464,8 @@ def _captured_reply_truth(plan, response, context, *, revision=None):
         context = replace(context, **{
             key: tuple(dict.fromkeys(value for item in scoped for value in getattr(item, key)))
             for key in keys
-        }, approved_product_assertions=tuple(context.approved_product_assertions)
+        }, source_price_subjects=tuple(subject for item in scoped for subject in item.source_price_subjects),
+            approved_product_assertions=tuple(context.approved_product_assertions)
             + plan.answered_product_assertions(response, context))
     else:
         context = plan.truth_context(context)
@@ -443,6 +485,9 @@ def _revision_response_coverage(plan, response, *, revision, local=False, checko
         response = replace(response, controls=())
     coverage = plan.coverage(response, local=local, checkout_cart_binding=checkout_cart_binding,
         catalog_media_evidence=catalog_media_evidence)
+    from management.services.ig_revision_checkout import checkout_question_coverage
+    coverage = checkout_question_coverage(plan, response,
+        revision.bundle_snapshot.get("sources") or (), coverage)
     from management.services.ig_assisted_commerce_context import AssistedCommerceContext
     assisted = getattr(revision, "_assisted_commerce_context", None)
     if isinstance(assisted, AssistedCommerceContext) and not revision_service_complaint(revision):
@@ -488,7 +533,7 @@ class RevisionGenerationBoundary:
         self.has_images = has_images
         from management.services.ig_response_plan import capture_response_plan
         client = IgClient.objects.get(pk=revision.client_id)
-        self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=source_cart_capture)
+        self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=source_cart_capture, publication=publication)
         from management.services.ig_assisted_commerce_context import capture_assisted_context
         reference = (revision.generation_proposal or {}).get("assisted_offer_reference")
         self.assisted_context, self.assisted_reason = capture_assisted_context(
@@ -497,7 +542,7 @@ class RevisionGenerationBoundary:
             revision._assisted_commerce_context = self.assisted_context
             current_capture = self.assisted_context.current_capture
             if current_capture.get("capture_digest") != self.response_plan.source_cart_capture.get("capture_digest"):
-                self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=current_capture)
+                self.response_plan = capture_response_plan(client, revision=revision, source_cart_capture=current_capture, publication=publication)
         elif hasattr(revision, "_assisted_commerce_context"):
             del revision._assisted_commerce_context
         from management.services.ig_product_inquiries import product_inquiries_for_revision
@@ -568,6 +613,10 @@ class RevisionGenerationBoundary:
     def truth_context(self, context):
         from management.services.ig_reply_authority import apply_fulfillment_timing_context
         context = apply_fulfillment_timing_context(context, getattr(self, "captured_client_state", None))
+        from management.services.ig_inventory_availability import revision_inventory_capture
+        from management.services.ig_reply_authority import apply_inventory_availability_context
+        if retained := revision_inventory_capture(self.revision):
+            context = apply_inventory_availability_context(context, retained)
         return self.response_plan.truth_context(context)
 
     def validate_response_truth(self, response, context):
@@ -647,6 +696,14 @@ class RevisionGenerationBoundary:
         if not case_reason and self.assisted_context is None and ((preference_keys and not preference_acknowledgement) or "price_quoted" in control or checkout_requested):
             claims.append(CLAIM_CATALOG_CONFIGURATION)
         authority_control = dict(control)
+        from management.services import instagram_bot as bot
+        from management.services.ig_inventory_availability import captured_inventory_projection
+        from management.services.ig_reply_authority import inventory_availability_authorities
+        from management.services.ig_revision_authority import CLAIM_INVENTORY_AVAILABILITY
+        inventory = captured_inventory_projection(getattr(self, "captured_client_state", None))
+        if bot._stock_claim_sentences(response.reply_text) and inventory_availability_authorities(inventory):
+            claims.append(CLAIM_INVENTORY_AVAILABILITY)
+            authority_control["inventory_availability_capture"] = inventory
         if self.assisted_context is not None:
             authority_control["assisted_context"] = self.assisted_context
         if self.source_cart_fence:
@@ -908,6 +965,11 @@ class RevisionGenerationBoundary:
         if not readiness.ready:
             self.last_reasons = readiness.reasons
             return ValidationDecision(False, readiness.reasons)
+        from management.services.ig_cooperation_policy import selected_policy_reason
+        cooperation_reason = selected_policy_reason(response.reply_text, self.response_plan.cooperation_policy, policy_manifest)
+        if cooperation_reason:
+            self.last_reasons = (cooperation_reason,)
+            return ValidationDecision(False, self.last_reasons)
         # Customer routes produced by this candidate are accepted only after
         # proposal storage. Unknown purpose cannot reject that classification
         # prematurely; the mandatory action/send gates below run after acceptance.
@@ -960,13 +1022,21 @@ class RevisionGenerationBoundary:
         if not readiness.ready:
             self.last_reasons = readiness.reasons
             return ValidationDecision(False, readiness.reasons)
+        if response.control.get("paylink") or response.control.get("payment"):
+            from management.services.ig_revision_checkout import checkout_question_reason
+            question_reason = checkout_question_reason(self.response_plan, response,
+                self.revision.bundle_snapshot.get("sources") or (), checkout_cart_binding=self.checkout_cart_binding)
+            if question_reason:
+                self.last_reasons = (question_reason,)
+                return ValidationDecision(False, self.last_reasons)
         self.authority = authority
         self.last_reasons = ()
         return ValidationDecision(True)
 
     def repair(self, payload, parsed, reasons, *, base_repair):
         if self.repaired or set(reasons).intersection({"revision_domain_action_unsupported", "revision_cart_selection_unsupported"}) or any(
-            str(reason).startswith(("checkout", "custom_confirmation")) for reason in reasons
+            str(reason).startswith(("checkout", "custom_confirmation"))
+            and reason not in {"checkout_purchase_authority_missing", "checkout_cart_clarification_required"} for reason in reasons
         ):
             return None
         readiness = self.check()
@@ -991,6 +1061,7 @@ class RevisionGenerationBoundary:
 
         client = IgClient.objects.get(pk=self.revision.client_id)
         facts = asdict(build_reply_truth_context(client, captured_client_state=getattr(self, "captured_client_state", None)))
+        facts.pop("source_price_subjects", None)  # Internal line validator metadata, never prompt authority.
         repaired.setdefault("contents", []).append({
             "role": "user", "parts": [{"text": (
                 "[SERVER FACTS FOR THE SAME SEALED CUSTOMER BUNDLE]\n"
@@ -1773,6 +1844,16 @@ def _prepare_visible_content(revision, response, settings_row, *, response_plan=
 def _prepare_effects(revision, response, settings_row, *, response_plan=None):
     from management.services import instagram_bot as bot
     from management.services.ig_revision_transport import prepare_text_effects
+    from management.services.ig_response_plan import capture_response_plan
+    from management.services.ig_catalog_browsing import validate_catalog_browse_response
+
+    client = IgClient.objects.get(pk=revision.client_id)
+    if response_plan is None:
+        response_plan = capture_response_plan(client, revision=revision,
+            source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"),
+            publication=settings_row.active_instruction_publication)
+    if reason := validate_catalog_browse_response(response_plan.configuration.get("catalog_browse"), response):
+        return (), (reason,)
 
     prior, reply, reasons = _prepare_visible_content(revision, response, settings_row, response_plan=response_plan)
     if reasons:
@@ -1780,20 +1861,22 @@ def _prepare_effects(revision, response, settings_row, *, response_plan=None):
     effects = list(prior)
     from management.services.ig_reply_truth import validate_reply_truth
 
-    from management.services.ig_response_plan import capture_response_plan
-    client = IgClient.objects.get(pk=revision.client_id)
-    if response_plan is None:
-        response_plan = capture_response_plan(client, revision=revision,
-            source_cart_capture=(revision.generation_proposal or {}).get("source_cart_capture"))
     from management.services.ig_reply_authority import build_reply_truth_context
     context = (build_reply_truth_context(client, control=response.control) if response_plan.line_plans
         else bot._provider_reply_truth_context(client, response.control, reply))
     from management.services.ig_reply_authority import apply_fulfillment_timing_context
     context = apply_fulfillment_timing_context(context, (revision.generation_proposal or {}).get("fulfillment_capture"))
+    from management.services.ig_inventory_availability import revision_inventory_capture, validate_revision_inventory
+    from management.services.ig_reply_authority import apply_inventory_availability_context
+    if inventory := revision_inventory_capture(revision):
+        context = apply_inventory_availability_context(context, inventory)
+    if reason := validate_revision_inventory(revision):
+        return (), (reason,)
     from management.services.ig_fulfillment_context import validate_retained_fulfillment
     if reason := validate_retained_fulfillment(revision, (revision.generation_proposal or {}).get("fulfillment_capture")):
         return (), (reason,)
-    truth = _captured_reply_truth(response_plan, replace(response, reply_text=reply), context, revision=revision)
+    truth = _captured_reply_truth(response_plan, replace(response, reply_text=reply), context, revision=revision,
+        prepared_effects=prior)
     if not truth.valid:
         return (), truth.reasons
     prepared_text = prepare_text_effects(
@@ -1945,6 +2028,10 @@ def _drain_effects(revision, token, settings_row, access_token):
                 if reason := validate_retained_fulfillment(current, (current.generation_proposal or {}).get("fulfillment_capture")):
                     return ProviderPartResult(provider_namespace=effect.provider_namespace,
                         outcome="known_not_dispatched", explicit_rejection_code="fulfillment_scope_changed")
+                from management.services.ig_inventory_availability import validate_revision_inventory
+                if reason := validate_revision_inventory(current, fact_bindings=effect.fact_bindings):
+                    return ProviderPartResult(provider_namespace=effect.provider_namespace,
+                        outcome="known_not_dispatched", explicit_rejection_code=reason)
                 return original_transport(payload)
 
     transport = RevisionProviderTransport(original_transport.preflight, guarded_send)
@@ -2592,8 +2679,11 @@ def _execute_claimed_revision(revision_id, token, settings_row) -> RevisionLiveR
                 return RevisionLiveResult(revision_id, "blocked", checkout.reasons)
             return _drain_effects(revision, token, settings_row, access_token)
 
+        from management.services.instagram_bot import _source_purchase_assent
+        checkout_sources = [source for source in reversed(revision.bundle_snapshot["sources"]) if source.get("role") == "user"]
+        direct_sources = [source for source in checkout_sources if _source_purchase_assent(source.get("text") or "") > 0]
         checkout_source = next((
-            source for source in reversed(revision.bundle_snapshot["sources"])
+            source for source in (direct_sources or checkout_sources)
             if source.get("role") == "user" and not authorize_revision_checkout(
                 revision.client, response.control, source.get("text") or "",
                 sealed_sources=revision.bundle_snapshot["sources"],

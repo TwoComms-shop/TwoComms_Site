@@ -96,16 +96,37 @@ class CommunicationPolicyContracts(SimpleTestCase):
         from management.services.ig_policy_compiler import (
             DEFAULT_POLICY_BUDGET_CHARS, PolicyModule, compile_policy,
         )
+        from management.services.ig_policy_publication import SNAPSHOT_SCHEMA_VERSION, select_policy_snapshot
 
         self.assertEqual(CORE_POLICY_SHA256, core_policy_hash(CANONICAL_IG_CORE_POLICY))
-        playbooks = []
-        for row in SCENARIO_INSTRUCTIONS:
+        original_keys = ("custom_print", "collaboration", "ugc", "size", "objection")
+        instructions = []
+        for index, row in enumerate(SCENARIO_INSTRUCTIONS, 1):
             values = reviewed_scenario_values(row["key"])
-            self.assertEqual(values["programme_metadata"]["required_for_scenarios"], [row["key"]])
+            expected_scenario = row["key"] if row["key"] in original_keys else "business_cooperation"
+            self.assertEqual(values["programme_metadata"]["required_for_scenarios"], [expected_scenario])
             self.assertEqual(values["allowed_actions"], [])
-            playbooks.append(PolicyModule("scenario:" + row["key"], values["body"], required=True))
+            instructions.append({**values, "id": "scenario:" + row["key"], "source_id": index})
+        snapshot = {"schema_version": SNAPSHOT_SCHEMA_VERSION, "instructions": instructions}
         for locale in ("uk", "ru", "en"):
             with self.subTest(locale=locale):
+                selected = select_policy_snapshot(snapshot, locale=locale,
+                    active_triggers=("business_cooperation",),
+                    required_scenarios=(*original_keys, "business_cooperation"),
+                    budget_chars=DEFAULT_POLICY_BUDGET_CHARS)
+                expected_ids = {"scenario:" + key for key in
+                    (*original_keys, "public_cooperation_" + locale)}
+                self.assertEqual(set(selected["selected_ids"]), expected_ids)
+                self.assertEqual(set(selected["required_ids"]), expected_ids)
+                localized = [item for item in selected["selected"] if item["locale"] != "all"]
+                self.assertEqual([item["locale"] for item in localized], [locale])
+                playbooks = [PolicyModule(item["id"], item["rendered_body"], required=item["required"])
+                    for item in selected["selected"]]
+                creator = select_policy_snapshot(snapshot, locale=locale,
+                    client_tags={"creator", "collaboration"}, active_triggers=("creator",),
+                    required_scenarios=("collaboration",))
+                self.assertEqual(creator["selected_ids"], ["scenario:collaboration"])
+                self.assertEqual(creator["required_ids"], ["scenario:collaboration"])
                 knowledge = read_knowledge_manifest(locale)
                 compiled = compile_policy(
                     immutable_authority=[PolicyModule("authority:server", bot.CANONICAL_PROMPT_AUTHORITY_POLICY)],

@@ -718,15 +718,22 @@ def _personal_choice_fields(source):
     return fields
 
 
-def _business_topic_covered(kind, response, context, source_id):
+def _business_topic_covered(kind, response, context, source_id, cooperation_policy=None):
     """A trade acknowledgement keeps the actual management decision pending."""
     from management.services.ig_business_cooperation import _TOPICS
     from management.services.ig_reply_language import own_reply_text
     from management.services.ig_reply_truth import _locally_negated
-    if (not response.control.get("manager") or context.get("case_kind") != "collaboration_review"
-            or _business_approval_reason(response, context)):
-        return False
+    from management.services.ig_cooperation_policy import public_statement_topic
+    from management.services.ig_reply_truth import _claim_sentences
     topic = kind.removeprefix("business:")
+    row = next((row for row in context.get("sources", ())
+        if row["source_message_id"] == source_id and topic in row["topics"]), None)
+    if row is not None and any(public_statement_topic(sentence, cooperation_policy) == topic
+            for sentence in _claim_sentences(response.reply_text, ())):
+        return True
+    if (not response.control.get("manager") or context.get("case_kind") != "collaboration_review"
+            or _business_approval_reason(response, context, cooperation_policy)):
+        return False
     row = next((row for row in context.get("sources", ())
         if row["source_message_id"] == source_id and topic in row["topics"]), None)
     pattern = dict(_TOPICS).get(topic)
@@ -751,7 +758,7 @@ def _business_topic_covered(kind, response, context, source_id):
     return False
 
 
-def _business_approval_reason(response, context):
+def _business_approval_reason(response, context, cooperation_policy=None):
     """A captured trade request contains no approval of individual terms."""
     if not context:
         return ""
@@ -763,13 +770,25 @@ def _business_approval_reason(response, context):
         r"\bпідтверджен(?:о|а|ий|і)\b|підтверди\w*|\bподтвержден[оыа]\b|подтвердил\w*|"
         r"погоджено|узгоджено|согласовано|затверджено|утверждено|"
         r"дозвол(?:ено|яємо|яється)|разреш(?:ено|аем|ается)|"
-        r"(?:можете|можна|можно|you\s+(?:may|can))\s+(?:використов\w*|использов\w*|use|resell|sell)", re.I)
+        r"(?:можете|можна|можно|you\s+(?:may|can))\s+(?:використов\w*|использов\w*|reuse|use|resell|sell)|"
+        r"\b(?:may|can)\s+be\s+(?:re)?used\b", re.I)
     trade_scope = re.compile(r"співпрац\w*|сотруднич\w*|партнер\w*|партнёр\w*|оптов\w*|гуртов\w*|"
         r"wholesale|business|\bpartners?\b|partnership|cooperat\w*|resell\w*|dropship\w*", re.I)
     personal_partner = re.compile(r"\bfor\s+(?:your|my|his|her|their|our)\s+partner\b", re.I)
     trade_money = re.compile(r"(?<!\w)(?:(?:грн|₴|uah|usd|eur|gbp|pln|\$|€|£)\s*)?"
         r"\d{1,9}(?:[.,]\d{1,2})?\s*(?:%|відсот\w*|процент\w*|percent\w*|грн|₴|uah|usd|eur|gbp|pln)?(?!\w)", re.I)
     for sentence in _claim_sentences(own_reply_text(response.reply_text), ()):
+        from management.services.ig_cooperation_policy import public_statement_topic, is_reviewed_public_statement
+        if public_statement_topic(sentence, cooperation_policy):
+            continue
+        if is_reviewed_public_statement(sentence):
+            return "response_plan_business_terms_unconfirmed"
+        from management.services.ig_cooperation_policy import unreviewed_business_entitlement
+        if unreviewed_business_entitlement(sentence):
+            return "response_plan_business_terms_unconfirmed"
+        if (re.search(r"повернен\w*|возврат\w*|refund\w*", sentence, re.I)
+            and re.search(r"\d\s*%", sentence)):
+            return "response_plan_business_terms_unconfirmed"
         for clause in re.split(r"[;\n]|\b(?:але|но|but)\b", sentence, flags=re.I):
             # Ordinary selected-product prices/sizes keep their own native
             # truth authority. Only trade terms or photo-use rights belong to
@@ -788,6 +807,12 @@ def _business_approval_reason(response, context):
                 if not trade_scope.search(personal_partner.sub(" ", part)) or not dict(_TOPICS)["partner_price"].search(part):
                     continue
                 for amount in trade_money.finditer(part):
+                    # Own supplied item counts and monthly sales are not a
+                    # monetary quote. A currency/percent still stays guarded.
+                    suffix = part[amount.end():]
+                    if (not re.search(r"%|грн|₴|uah|usd|eur|\$|€|відсот|процент|percent", amount.group(), re.I)
+                        and re.match(r"\s*(?:худі|худи|футбол\w*|реч\w*|штук\w*|hoodies?|shirts?|t-shirts?|garments?|items?|продаж\w*|sales)\b", suffix, re.I)):
+                        continue
                     # An explicit check of a proposed price is a question,
                     # whereas a later coordinated price assertion is not.
                     before = clause[:part_offset + amount.start()]
@@ -842,6 +867,15 @@ def _capture_pending_stock_questions(client, revision, plan):
             color=selected.get("color"), title=plan.configuration.get("product_title", ""))]
     if not candidates:
         return {}
+    from management.services.ig_inventory_availability import capture_inventory_availability
+    inventory = capture_inventory_availability(client.pk, current_source_cart=cart)
+    positive = next((row for row in inventory.get("lines") or []
+        if row.get("line_id") == lines[0]["line_id"] and row.get("status") == "available"), None)
+    if positive:
+        return {"mode": "inventory_available", "inventory_capture": inventory,
+            "source_message_ids": [row["message_id"] for row in candidates], "line_id": lines[0]["line_id"],
+            "choices": selected, "title": plan.configuration.get("product_title", ""),
+            "readiness": {"product": deepcopy(plan.readiness_snapshot.get("product") or {})}}
     from management.services.ig_fulfillment_reviews import fulfillment_review_projection
     from django.utils import timezone
     projection = fulfillment_review_projection(client.pk, now=timezone.now(), current_source_cart=cart)
@@ -864,6 +898,13 @@ def _pending_stock_answer_covered(plan, text, source_message_id):
     captured = plan.pending_stock_questions
     if source_message_id not in captured.get("source_message_ids", ()):
         return False
+    if captured.get("mode") == "inventory_available":
+        from management.services.ig_reply_authority import apply_inventory_availability_context
+        from management.services.ig_reply_truth import ReplyTruthContext, _claim_sentences, _manager_availability_matches, _product_availability_claim
+        from management.services.ig_reply_language import own_reply_text
+        context = apply_inventory_availability_context(ReplyTruthContext(), captured.get("inventory_capture"))
+        return any(_product_availability_claim(clause) and any(fact.line_id == captured["line_id"] for fact in _manager_availability_matches(clause, context))
+            for clause in _claim_sentences(own_reply_text(text), ()))
     from management.services.ig_reply_language import own_reply_text
     from management.services.ig_reply_truth import (_claim_sentences, _has_positive_claim,
         _source_owned_availability_check, _pending_manager_stock_check)
@@ -1069,7 +1110,7 @@ def _approved_base_wish_anchors(plan, response):
     return tuple(result)
 
 
-def _topic_covered(kind, response, plan, *, source_message_id=None):
+def _topic_covered(kind, response, plan, *, source_message_id=None, source_price_subjects=()):
     """Require a protected, canonical answer assertion or an admitted handoff.
 
     The full candidate has already passed truth/scope/action validation. This
@@ -1129,8 +1170,14 @@ def _topic_covered(kind, response, plan, *, source_message_id=None):
                     return True
         return bool(re.search(r"\b(?:i|we)\s+(?:can|will|shall|(?:am|are)\s+happy\s+to)\s+(?:reply|answer|speak|write|continue)[^.!?\n]{0,25}\benglish\b"
             r"|\b(?:let['’]s|let\s+us)\s+(?:continue|speak|write)[^.!?\n]{0,15}\benglish\b", _unquoted_text(response.reply_text), re.I))
-    if kind == "info:presentation" and response.control.get("show_products"):
-        return True
+    if kind == "info:presentation":
+        if plan.configuration.get("catalog_browse"):
+            from management.services.ig_catalog_browsing import browse_presentation_covered, browse_clarification_covered
+            capture = plan.configuration["catalog_browse"]
+            return (browse_presentation_covered(capture, response, source_message_id)
+                or browse_clarification_covered(capture, response, source_message_id))
+        if response.control.get("show_products"):
+            return True
     prices = tuple(Decimal(value) for value in authority["prices"])
     days = authority.get("standard_dispatch_days")
     context = ReplyTruthContext(authorized_prices=prices,
@@ -1152,6 +1199,7 @@ def _topic_covered(kind, response, plan, *, source_message_id=None):
                 allowed_sizes=tuple(authority.get("sizes", ())),
                 allowed_fits=tuple(authority.get("fits", ())),
                 allowed_colors=tuple(authority.get("colors", ()))))
+            price_context = replace(price_context, source_price_subjects=tuple(source_price_subjects))
             if len(amounts) == 1 and validate_reply_truth(clause, context=price_context).valid:
                 try:
                     if Decimal(amounts[0][0].replace(",", ".")) in prices:
@@ -1203,7 +1251,9 @@ class ResponsePlan:
     product_focus: dict = field(default_factory=dict)
     product_information: dict = field(default_factory=dict)
     business_context: dict = field(default_factory=dict)
+    cooperation_policy: object | None = field(default=None, repr=False, compare=False)
     pending_stock_questions: dict = field(default_factory=dict)
+    recipient_planning: dict = field(default_factory=dict)
 
     @property
     def digest(self):
@@ -1217,8 +1267,12 @@ class ResponsePlan:
                 "obligations": list(self.obligations)}
         if self.pending_questions:
             payload["pending_questions"] = deepcopy(self.pending_questions)
+        if self.recipient_planning:
+            payload["recipient_planning"] = deepcopy(self.recipient_planning)
         if self.business_context:
             payload["business_context"] = deepcopy(self.business_context)
+        if self.cooperation_policy is not None:
+            payload["cooperation_public_policy"] = self.cooperation_policy.metadata()
         if self.pending_stock_questions:
             payload["pending_stock_questions"] = deepcopy(self.pending_stock_questions)
         if self.payment_observation or self.payment_claim_source_ids:
@@ -1270,15 +1324,37 @@ class ResponsePlan:
         for line in self.line_plans:
             row = line.as_dict()
             authority = row["authority"]
-            scoped = replace(context, authorized_prices=tuple(Decimal(value) for value in authority["prices"]),
+            scoped = replace(context, cooperation_policy=self.cooperation_policy, authorized_prices=tuple(Decimal(value) for value in authority["prices"]),
                 authorized_price_ranges=tuple((Decimal(low), Decimal(high)) for low, high in authority["price_ranges"]),
                 allowed_sizes=tuple(authority["sizes"]), allowed_fits=tuple(authority["fits"]), allowed_colors=tuple(authority["colors"]))
-            contexts[row["line_id"]] = ResponsePlan(row["choices"], row["evidence"], row["scope"],
+            derived = ResponsePlan(row["choices"], row["evidence"], row["scope"],
                 row["configuration"], row["next_selector"], authority, tuple(row["obligations"]),
                 product_information={"resolved_information": [item for item in self.product_information.get("resolved_information", ())
                     if item.get("line_id") == row["line_id"]],
                     "base_context_assertions": [item for item in self.product_information.get("base_context_assertions", ())
                         if item.get("product_id") == row["configuration"].get("product_id")]}).truth_context(scoped)
+            from management.services.ig_reply_truth import SourcePriceSubject
+            capture = self.source_cart_capture
+            fields = ("product_id", *(key for key in ("size", "fit_option_code", "color") if row["choices"].get(key)))
+            source_ids = tuple((row["evidence"].get(key) or {}).get("source_message_id") for key in fields)
+            captured_rows = [item for item in capture.get("lines") or [] if item.get("line_id") == row["line_id"]]
+            captured_fields = captured_rows[0].get("fields") or {} if len(captured_rows) == 1 else {}
+            if (capture.get("status") == "captured" and capture.get("coverage_complete")
+                and re.fullmatch(r"[a-f0-9]{64}", str(capture.get("capture_digest") or ""))
+                and row["scope"].get("capture_digest") == capture["capture_digest"]
+                and len(captured_rows) == 1
+                and all((captured_fields.get(key) or {}).get("value") == row["choices"].get(key) for key in fields)
+                and type(row["choices"].get("product_id")) is int
+                and row["choices"]["product_id"] == row["configuration"].get("product_id")
+                and row["configuration"].get("product_title") and authority["prices"]
+                and all(type(identity) is int and identity > 0 for identity in source_ids)):
+                subject = SourcePriceSubject(row["line_id"], row["choices"]["product_id"],
+                    row["configuration"]["product_title"], capture["capture_digest"], tuple(sorted(set(source_ids))),
+                    tuple((key, str(row["choices"][key])) for key in fields if key != "product_id"),
+                    tuple(Decimal(value) for value in authority["prices"]),
+                    product_kind=str(row["configuration"].get("product_kind") or ""))
+                derived = replace(derived, source_price_subjects=(subject,))
+            contexts[row["line_id"]] = derived
         return contexts
 
     def validate_multiline_claims(self, response, context):
@@ -1293,14 +1369,17 @@ class ResponsePlan:
         from management.services.ig_response_cart_plan import matching_line_ids, scoped_claim_clauses, anaphoric_price_reply_line_id, selected_title_text
         from management.services.ig_reply_truth import validate_reply_truth
         scoped = self.line_truth_contexts(context)
-        unbound = replace(context, authorized_prices=(), authorized_price_ranges=(), allowed_sizes=(),
+        unbound = replace(context, cooperation_policy=self.cooperation_policy, authorized_prices=(), authorized_price_ranges=(), allowed_sizes=(),
             allowed_fits=(), allowed_colors=(), source_chosen_sizes=(), source_chosen_fits=(),
-            source_chosen_colors=(), audited_chosen_sizes=())
+            source_chosen_colors=(), audited_chosen_sizes=(), source_price_subjects=())
         identity = (selected_title_text(response.reply_text, self.configuration.get("product_title", ""))
             if len(self.line_plans) == 1 else response.reply_text)
         plain_identity = _unquoted_text(identity)
         base_anchors = _approved_base_wish_anchors(self, response)
         for sentence in scoped_claim_clauses(plain_identity):
+            from management.services.ig_cooperation_policy import public_statement_topic
+            if public_statement_topic(sentence, self.cooperation_policy):
+                continue
             matches = matching_line_ids(sentence, self.line_plans)
             if not matches:
                 matches = tuple({row["line_id"] for row in base_anchors if row["clause"] == sentence})
@@ -1360,11 +1439,12 @@ class ResponsePlan:
         assertions = tuple(row["assertion"] for row in self.product_information.get("resolved_information", ())
                            if approved_inquiry_assertion(row))
         assertions += tuple(self.product_information.get("base_context_assertions") or ())
-        return replace(context, approved_product_assertions=assertions,
+        return replace(context, cooperation_policy=self.cooperation_policy or context.cooperation_policy, approved_product_assertions=assertions,
                        source_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") and not self._audited_size() else (),
                        audited_chosen_sizes=(str(self.choices["size"]),) if self.choices.get("size") and self._audited_size() else (),
                        source_chosen_fits=(str(self.choices["fit_option_code"]),) if self.choices.get("fit_option_code") else (),
-                       source_chosen_colors=CHOICE_ALIASES.get(str(self.choices["color"]), (str(self.choices["color"]),)) if self.choices.get("color") else ())
+                       source_chosen_colors=CHOICE_ALIASES.get(str(self.choices["color"]), (str(self.choices["color"]),)) if self.choices.get("color") else (),
+                       source_price_subjects=())
 
     def prompt_projection(self):
         """Compact presentation only; full plan/digest/source proof stay intact.
@@ -1392,6 +1472,8 @@ class ResponsePlan:
                 del group["obligations"]
         payload = {"version": 1, "plan_digest": self.digest, "obligation_columns": ["id", "kind"],
             "obligation_groups": list(groups.values())}
+        if self.recipient_planning:
+            payload["recipient_planning"] = deepcopy(self.recipient_planning)
         if self.business_context:
             payload["business_context"] = deepcopy(self.business_context)
         chart_fits = [{key: row[key] for key in ("id", "source_message_id", "fit_code", "line_id") if key in row}
@@ -1448,6 +1530,9 @@ class ResponsePlan:
             payload["plan_gap"] = self.plan_gap
         if self.fit_consultation:
             payload["fit_consultation"] = fit_consultation_projection(self.fit_consultation)
+        if self.configuration.get("catalog_browse"):
+            from management.services.ig_catalog_browsing import browse_prompt_guidance
+            payload["catalog_browse"] = browse_prompt_guidance(self.configuration["catalog_browse"])
         if self.product_focus:
             payload["product_focus"] = deepcopy(self.product_focus)
         if self.configuration.get("focus_selection_candidate"):
@@ -1463,7 +1548,7 @@ class ResponsePlan:
         # These named projections already retain their full semantics above.
         # The no-line configuration must not duplicate the same large grids.
         if "configuration" in payload:
-            for key in ("consultation_measurements", "source_clarifications", "reorder_observations"):
+            for key in ("consultation_measurements", "source_clarifications", "reorder_observations", "catalog_browse", "product_kind"):
                 payload["configuration"].pop(key, None)
         return payload
 
@@ -1483,14 +1568,34 @@ class ResponsePlan:
         if self.pending_questions:
             from management.services.ig_pending_question_context import pending_question_guidance
             guidance += "\n" + pending_question_guidance(self.pending_questions)
+        if self.recipient_planning:
+            guidance += ("\nRecipient plans are provisional beneficiaries, not ordered units. Answer current independent questions first; "
+                "do not force a selector after a complete conversational answer. Where prints are still unknown, ask whether "
+                "the customer has designs for each person or wants options. When one print is known, name only the remaining person. "
+                "A pending recipient clarification asks whose preference this is. Never copy another person's SKU, size, fit, color or quantity. "
+                "Recipient count proves neither units, same designs, common address, delivery, discount nor payment. "
+                "Consultation questions grant no selection or checkout controls; existing quote gates own the eventual all-line checkout.")
         if self.business_context or any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())):
             guidance += "\nKnown catalog retail prices never authorize partner prices or discounts; this pending business case contains no agreed trade amount."
         if self.business_context:
             guidance += ("\nBusiness obligations acknowledge each exact trade topic with manager control and explicit team review; "
                 "they grant no partner terms or retail price authority. The native collaboration case retains the decision. "
                 "Trade catalog colors/sizes are no personal SKU selection. Answer independent personal purchase questions separately.")
+        if self.cooperation_policy is not None:
+            guidance += ("\nThe selected reviewed public cooperation module permits its exact relevant Public answers as information. "
+                "Use their full exact sentences for protected amounts and permissions. They answer the public-policy topic only; "
+                "individual partnership approval, exact percentage, payment receipt, order, shipment and payout remain unconfirmed. "
+                "Do not replace available public answers with a blanket unknown-terms handoff.")
         if self.configuration.get("source_clarifications"):
             guidance += "\nThe current ad reference is ambiguous. Ask one short product clarification without selection/payment controls; retained cart choices do not answer that reference."
+        if self.configuration.get("catalog_browse"):
+            guidance += ("\nCatalog browse is a source-bound presentation capability, never selection or stock. "
+                "Use up to three relevant shortlist IDs with SHOW_PRODUCTS. Respect each garment/theme/exclusion; "
+                "extra membership does not disqualify a matching theme. eligible_count is catalogue membership, not stock. "
+                "Themed cards have choose/theme/all-garment buttons; all-garment intentionally broadens the theme. "
+                "Repeat only captured navigation URLs accompanying those same themed cards. No URL-only answer grants this capability. "
+                "Unavailable/incomplete capture permits no guessed products or dropped constraints: ask one necessary clarification. "
+                "An unresolved theme needs clarification, not automatic custom-print rescue.")
         if (not self.line_plans or self.payment_observation or self.payment_claim_source_ids
             or any(item["kind"].startswith(("payment:", "info:payment")) for item in self.obligations)):
             guidance += (
@@ -1543,11 +1648,15 @@ class ResponsePlan:
     def validate(self, response):
         if self.plan_gap:
             return self.plan_gap
+        from management.services.ig_catalog_browsing import validate_catalog_browse_response
+        browse_reason = validate_catalog_browse_response(self.configuration.get("catalog_browse"), response)
+        if browse_reason:
+            return browse_reason
         if _named_selected_product_conflict(self, response.reply_text):
             return "response_plan_selected_product_mismatch"
         business_context = self.business_context or ({"case_kind": "collaboration_review"}
             if any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())) else {})
-        business_reason = _business_approval_reason(response, business_context)
+        business_reason = _business_approval_reason(response, business_context, self.cooperation_policy)
         if business_reason:
             return business_reason
         if self.fit_consultation:
@@ -1559,7 +1668,13 @@ class ResponsePlan:
         elif self.product_focus:
             from management.services.ig_fit_consultation import validate_fit_consultation
 
-            reason = validate_fit_consultation({"focus": self.product_focus}, response)
+            # A new explicit browse predicate authorizes presentation beyond
+            # the retained print, while granting no product/cart mutation.
+            browse_presentation = bool(self.configuration.get("catalog_browse")
+                and response.control.get("show_products")
+                and not set(response.control).intersection({"product", "item", "option", "qty", "size", "fit", "color_variant_id"}))
+            reason = validate_fit_consultation({"focus": self.product_focus,
+                "assortment_requested": browse_presentation}, response)
             if reason:
                 return reason
         if any(row["kind"].startswith(("payment:", "info:payment")) for row in self.obligations):
@@ -1569,7 +1684,16 @@ class ResponsePlan:
                 return "response_plan_payment_forwarding_unverified"
         if self.line_plans:
             from management.services.ig_response_cart_plan import matching_line_ids
+            from management.services.ig_recipient_planning import planning_question_kind
             for question in re.findall(r"[^.!?\n]*[?]", _unquoted_text(response.reply_text)):
+                if planning_question_kind(self.recipient_planning, question, self.line_plans):
+                    if set(response.control).intersection({"product", "size", "fit", "option", "qty", "color_variant_id", "items", "paylink", "payment"}):
+                        return "response_plan_provisional_selection_unsupported"
+                    continue
+                if (self.recipient_planning and re.search(r"для кожного|для каждого|for each|для обох|для обоих|for both", question, re.I)
+                    and re.search(r"\b(?:принт\w*|designs?)\b", question, re.I)
+                    and any(row["has_product"] for row in self.recipient_planning.get("recipients", ()))):
+                    return "response_plan_line_selector_mismatch"
                 selectors = [field for field, pattern in _SELECTOR_WORDS.items() if re.search(pattern, question, re.I)
                     and asks_next_selector(question, field)]
                 if not selectors:
@@ -1656,7 +1780,7 @@ class ResponsePlan:
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
                         or (kind.startswith("info:") and not kind.startswith("info:payment") and _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"]))
-                        or (kind.startswith("business:") and _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"]))
+                        or (kind.startswith("business:") and _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"], self.cooperation_policy))
                         or (kind.startswith("withdrawal:") and asks_next_selector(text, kind.split(":", 1)[1])))
             if not done and kind in {"unresolved_line_operation", "info:question"}:
                 from management.services.ig_source_clarification import source_clarifier_covered
@@ -1704,7 +1828,13 @@ class ResponsePlan:
         base_anchors = _approved_base_wish_anchors(self, response)
         covered, remaining = [], []
         rows = {line.line_id: line.as_dict() for line in self.line_plans}
+        from management.services.ig_reply_truth import ReplyTruthContext
+        price_contexts = (self.line_truth_contexts(ReplyTruthContext())
+            if any(item["kind"] == "info:price" for item in self.obligations) else {})
         selector = self.next_selector_line
+        from management.services.ig_recipient_planning import planning_question_kind
+        planning_questions = {planning_question_kind(self.recipient_planning, text, self.line_plans)
+            for text in re.findall(r"[^.!?\n]*[?]", _unquoted_text(response.reply_text))} - {""}
         question = any(asks_next_selector(text, selector.get("field", ""))
             and (matching_line_ids(text, self.line_plans) == (selector.get("line_id"),)
                 or selector.get("line_id") == self.focused_candidate_line_id)
@@ -1721,7 +1851,7 @@ class ResponsePlan:
             elif obligation["id"] in chart_ids:
                 done = True
             elif kind.startswith("business:"):
-                done = _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"])
+                done = _business_topic_covered(kind, response, self.business_context, obligation["source_message_id"], self.cooperation_policy)
             elif kind in {"unresolved_line_operation", "info:question"} and self.configuration.get("source_clarifications"):
                 from management.services.ig_source_clarification import source_clarifier_covered
                 done = source_clarifier_covered(self.configuration, obligation["source_message_id"], response)
@@ -1749,9 +1879,21 @@ class ResponsePlan:
                     done = question and selector.get("line_id") == line_id and selector.get("field") == kind.split(":", 1)[1]
                 elif kind.startswith("info:"):
                     done = _topic_covered(kind, SimpleNamespace(reply_text=text, control=response.control), plan,
-                        source_message_id=obligation["source_message_id"])
+                        source_message_id=obligation["source_message_id"],
+                        source_price_subjects=price_contexts[line_id].source_price_subjects if kind == "info:price" else ())
                 elif kind == "purchase_requested":
                     done = (line_id, obligation.get("recipient_id")) in admitted
+            elif kind == "info:price" and len(rows) == 1:
+                # A sole captured position is an exact price subject even
+                # when the source's terse price question had no line label.
+                row = next(iter(rows.values()))
+                price_plan = ResponsePlan(row["choices"], row["evidence"], row["scope"], row["configuration"],
+                    row["next_selector"], row["authority"], tuple(row["obligations"]),
+                    pending_questions=self.pending_questions,
+                    pending_stock_questions=self.pending_stock_questions,
+                    product_information=self.product_information)
+                done = _topic_covered(kind, response, price_plan, source_message_id=obligation["source_message_id"],
+                    source_price_subjects=price_contexts[row["line_id"]].source_price_subjects)
             elif kind.startswith("info:") and kind != "info:price":
                 done = _topic_covered(kind, response, self, source_message_id=obligation["source_message_id"])
             if (kind == "info:price" and obligation["source_message_id"]
@@ -1764,12 +1906,20 @@ class ResponsePlan:
         dependent = {"purchase_requested", "model_query", "info:price"}
         if selector:
             dependent.add("withdrawal:" + selector["field"])
-        waiting = question and not self.plan_gap and all(item["kind"] in dependent for item in self.obligations if item["id"] in remaining)
+        planning_sources = {row["source"]["source_message_id"] for row in self.recipient_planning.get("recipients", ())}
+        clarification_source = (self.recipient_planning.get("clarification_source") or {}).get("source_message_id")
+        def planning_dependent(item):
+            return bool(("product" in planning_questions and item["source_message_id"] in planning_sources
+                and item["kind"] in {"garment_type", "unresolved_line_operation", "purchase_requested", "model_query"})
+                or ("recipient" in planning_questions and item["source_message_id"] == clarification_source
+                    and item["kind"] == "unresolved_line_operation"))
+        waiting = (question or planning_questions) and not self.plan_gap and all(
+            item["kind"] in dependent or planning_dependent(item) for item in self.obligations if item["id"] in remaining)
         result = {"version": 1, "plan_digest": self.digest,
             "source_message_ids": sorted({item["source_message_id"] for item in self.obligations}),
             "covered": covered, "remaining": remaining,
             "disposition": "complete" if not remaining and not self.plan_gap else "waiting_on_customer" if waiting else "recovery",
-            "next_selector": selector.get("field", "") if question else "", "next_selector_line": selector if question else {},
+            "next_selector": "recipient" if "recipient" in planning_questions else "product" if "product" in planning_questions else selector.get("field", "") if question else "", "next_selector_line": selector if question else {},
             "local": bool(local), **({"gap": self.plan_gap} if self.plan_gap else {})}
         if (self.payment_observation or self.payment_claim_source_ids) and not self.authority["payment_confirmed"]:
             result["payment_verification"] = "unresolved"
@@ -1816,6 +1966,7 @@ def build_response_plan(*, preferences, readiness, context, sources=(), payment_
     axis = next((row for row in (readiness.get("options") or {}).get("axes", [])
                  if "option:" + str(row.get("code") or "") == next_selector), {})
     configuration = {"product_id": (readiness.get("product") or {}).get("id"),
+                     "product_kind": str((readiness.get("product") or {}).get("kind") or "")[:120],
                      "next_selector_label": str(axis.get("label") or "")[:80],
                      "product_title": str((readiness.get("product") or {}).get("title") or "")[:240],
                      "applicability_known": bool(readiness.get("applicability_known")),
@@ -1959,12 +2110,12 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
                 allowed_fits=tuple(item["code"] for item in (readiness.get("fit") or {}).get("options") or ()) if applicable else (),
                 allowed_colors=tuple(item["name"] for item in (readiness.get("color") or {}).get("options") or ()) if applicable else (),
                 source_chosen_sizes=(), source_chosen_fits=(),
-                source_chosen_colors=(), audited_chosen_sizes=())
+                source_chosen_colors=(), audited_chosen_sizes=(), source_price_subjects=())
         else:
             line_context = replace(context, authorized_prices=line_context.authorized_prices,
                 authorized_price_ranges=line_context.authorized_price_ranges, allowed_sizes=line_context.allowed_sizes,
                 allowed_fits=line_context.allowed_fits, allowed_colors=line_context.allowed_colors,
-                source_chosen_sizes=(), source_chosen_fits=(), source_chosen_colors=(), audited_chosen_sizes=())
+                source_chosen_sizes=(), source_chosen_fits=(), source_chosen_colors=(), audited_chosen_sizes=(), source_price_subjects=())
         return build_response_plan(preferences=preferences, readiness=readiness, context=line_context)
     lines, gap = build_cart_response_lines(capture=capture, sources=sources,
         readiness_by_line=readiness_by_line, authority_by_line=contexts_by_line, single_builder=single)
@@ -2019,7 +2170,9 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
             r"\s*(?:привіт|вітаю|добрий\s+день|привет|здравствуйте|hello|hi|дякую|спасиб[оа]|thanks?|thank you|ок|okay|👍|❤|❤️)[.!\s]*", str(source["text"]), re.I):
             obligations.append({"id": f"{source_id}:unresolved_line_operation", "kind": "unresolved_line_operation", "source_message_id": source_id})
     gap = "response_plan_obligation_bound" if len(obligations) > MAX_OBLIGATIONS or any(len(item["id"]) > 160 for item in obligations) else ""
+    from management.services.ig_recipient_planning import planning_context
     return replace(plan, source_cart_capture=deepcopy(capture), line_plans=lines,
+        recipient_planning=planning_context(capture),
         obligations=tuple(obligations), plan_gap=gap, business_context=business_context,
         next_selector="" if obligations and all(item["kind"].startswith(("payment:", "info:payment", "business:")) for item in obligations) else next((line.as_dict()["next_selector"] for line in lines if line.as_dict()["next_selector"]), ""))
 
@@ -2073,8 +2226,17 @@ def _provided_source_cart(client, revision, capture):
         return {}, "response_plan_provided_cart_invalid"
 
 
-def capture_response_plan(client, *, revision=None, source_cart_capture=None):
+def capture_response_plan(client, *, revision=None, source_cart_capture=None, publication=None):
     plan = _capture_response_plan_inputs(client, revision=revision, source_cart_capture=source_cart_capture)
+    if revision is not None and publication is not None:
+        from management.services.ig_cooperation_policy import capture_cooperation_policy
+        plan = replace(plan, cooperation_policy=capture_cooperation_policy(publication,
+            revision.bundle_snapshot.get("sources") or []))
+    if revision is not None and plan.business_context:
+        from management.services.ig_business_cooperation import business_source_observations
+        observations = business_source_observations(revision.bundle_snapshot.get("sources") or [])
+        if observations:
+            plan = replace(plan, business_context={**plan.business_context, "source_observations": observations})
     if revision is None:
         return plan
     from management.services.ig_pending_question_context import capture_pending_question_context
@@ -2186,6 +2348,28 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None):
     if measurements.get("guides"):
         configuration["consultation_measurements"] = measurements
     plan = replace(plan, product_information=information, configuration=configuration)
+    from management.services.ig_catalog_browsing import capture_catalog_browse
+    browse = capture_catalog_browse(revision)
+    # Fit illustrations may deliberately show another print. The existing fit
+    # capability, labels and asset guard own that distinct request. A retained
+    # design's unqualified "send a photo" likewise stays under its focus guard;
+    # explicit garment/theme/design predicates still receive browse validation.
+    fit_only = (plan.fit_consultation and not plan.fit_consultation.get("assortment_requested")
+        and not any(row.get("include") or row.get("exclude") for row in browse.get("requests", ())))
+    if browse and not fit_only:
+        # The old parser creates photo debt, but a new named theme need not
+        # contain the word "photo". Record its actual source obligation too.
+        required_sources = (browse.get("scope", {}).get("source_ids", ()) if browse.get("status") == "unavailable" else
+            [row["source_id"] for row in browse.get("requests", ()) if row.get("include") or row.get("exclude")
+                or row.get("named_product_ids") or row.get("status") == "unresolved"])
+        obligations = list(plan.obligations)
+        for source_id in required_sources:
+            if not any(row["kind"] == "info:presentation" and row["source_message_id"] == source_id for row in obligations):
+                obligations.append({"id": f"{source_id}:info:presentation", "kind": "info:presentation",
+                    "source_message_id": source_id})
+        from management.services.ig_response_cart_plan import MAX_OBLIGATIONS
+        plan = replace(plan, configuration={**plan.configuration, "catalog_browse": browse}, obligations=tuple(obligations),
+            plan_gap="response_plan_obligation_bound" if len(obligations) > MAX_OBLIGATIONS else plan.plan_gap)
     plan = replace(plan, pending_stock_questions=_capture_pending_stock_questions(client, revision, plan))
     from management.services.ig_source_clarification import capture_source_clarifications
     clarifications = capture_source_clarifications(revision, plan.source_cart_capture, plan.obligations)

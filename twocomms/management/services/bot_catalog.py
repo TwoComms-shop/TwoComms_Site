@@ -16,8 +16,8 @@ from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-CACHE_KEY = "ig_bot_catalog_ctx_customer_facts_v3"
-CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_customer_facts_v3"
+CACHE_KEY = "ig_bot_catalog_ctx_customer_facts_v4"
+CACHE_COMPACT_KEY = "ig_bot_catalog_ctx_compact_customer_facts_v5"
 CACHE_TTL = 600          # 10 хв
 # Збій build-у кешується на дуже короткий час: знімок мусить швидко оновитись
 # після відновлення, а не жити ті самі 10 хвилин, що й валідний каталог.
@@ -45,6 +45,9 @@ MAX_CHARS = 48000
 # merchandising copy should not consume the sales reply budget on every turn.
 # This form retains every product and purchase-critical configuration fact.
 COMPACT_MAX_CHARS = 20000
+# Required core/state/turn policy needs room before optional knowledge. This
+# reply-only slice protects captured SKU/candidate rows ahead of general rows.
+SOURCE_PROMPT_MAX_CHARS = 9000
 COMPACT_PRINT_FINGERPRINT_CHARS = 96
 SITE = "https://twocomms.shop"
 
@@ -80,7 +83,7 @@ def resolve_catalog_sizes(product) -> dict[str, list[str]]:
         return {}
 
 
-def _build(*, compact: bool = False) -> str:
+def _build(*, compact: bool = False, required_product_ids=(), garment_types=(), prompt_limit=None) -> str:
     try:
         from storefront.models import Product, ProductStatus
         from productcolors.models import ProductColorVariant
@@ -90,8 +93,18 @@ def _build(*, compact: bool = False) -> str:
     qs = (
         Product.objects.filter(status=ProductStatus.PUBLISHED)
         .select_related("category")
-        .order_by("-featured", "-id")[:MAX_PRODUCTS]
+        .prefetch_related("merch_collection_assignments__collection")
+        .order_by("-featured", "-id")
     )
+    if compact and (required_product_ids or garment_types):
+        from django.db.models import Case, IntegerField, Value, When
+        from management.services.ig_catalog_graph import _GARMENT_TYPES_BY_CATEGORY
+        categories = [slug for slug, garment in _GARMENT_TYPES_BY_CATEGORY.items() if garment in garment_types]
+        qs = qs.order_by(Case(
+            When(pk__in=required_product_ids, then=Value(0)),
+            When(category__slug__in=categories, then=Value(1)),
+            default=Value(2), output_field=IntegerField()), "-featured", "-id")
+    qs = qs[:MAX_PRODUCTS]
     products = list(qs)
     if not products:
         return ""
@@ -166,6 +179,13 @@ def _build(*, compact: bool = False) -> str:
                 compact_line += f"; кольори: {variants_s}"
             if fits_s:
                 compact_line += fits_s
+            # The title may be identical on different garment types. Keep the
+            # per-ID relation even in the smallest live prompt representation.
+            compact_line += f"; категорія: {p.category.slug}"
+            collection_slugs = sorted({row.collection.slug for row in p.merch_collection_assignments.all()
+                if row.collection.is_active})
+            if collection_slugs:
+                compact_line += "; колекції: " + ",".join(collection_slugs)
             if fps:
                 fingerprint = "; ".join(fps[:3])[:COMPACT_PRINT_FINGERPRINT_CHARS].rstrip()
                 if fingerprint:
@@ -194,9 +214,11 @@ def _build(*, compact: bool = False) -> str:
     )
     if compact:
         from management.services.ig_catalog_prompt_compaction import fit_compact_catalog
-        text, dropped = fit_compact_catalog(lines, limit=COMPACT_MAX_CHARS, footer=price_rule)
+        limit = prompt_limit if prompt_limit is not None else COMPACT_MAX_CHARS
+        protected = sum(product.pk in required_product_ids for product in products)
+        text, dropped = fit_compact_catalog(lines, limit=limit, footer=price_rule, minimum_products=protected)
         if dropped:
-            _log_catalog_truncation(dropped, len(products), COMPACT_MAX_CHARS)
+            _log_catalog_truncation(dropped, len(products), limit)
         return text
     text, _dropped = truncate_catalog_lines(lines, limit=MAX_CHARS)
     return text + price_rule
@@ -250,7 +272,8 @@ def truncate_catalog_lines(lines: list[str], *, limit: int = MAX_CHARS) -> tuple
     return "\n".join(kept), dropped
 
 
-def get_catalog_context(force: bool = False, *, compact: bool = False) -> str:
+def get_catalog_context(force: bool = False, *, compact: bool = False,
+                        required_product_ids=(), garment_types=(), prompt_limit=None) -> str:
     """Э3.8: технічний збій НЕ кешується як валідний порожній каталог.
 
     Раніше будь-яке виключення `_build()` перетворювалось у порожній рядок і
@@ -265,14 +288,27 @@ def get_catalog_context(force: bool = False, *, compact: bool = False) -> str:
     видимим alert-ом, а не як нормальний стан.
     """
     cache_key = CACHE_COMPACT_KEY if compact else CACHE_KEY
+    scoped = compact and prompt_limit is not None
+    if scoped:
+        import hashlib
+        import json
+        required_product_ids = tuple(sorted({value for value in required_product_ids if type(value) is int and value > 0}))
+        garment_types = tuple(sorted(set(garment_types)))
+        identity = json.dumps([required_product_ids, garment_types, prompt_limit], separators=(",", ":"))
+        cache_key += ":source-v1:" + hashlib.sha256(identity.encode()).hexdigest()[:24]
     good_key = f"{cache_key}:last_known_good"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
     try:
-        text = _build(compact=compact)
+        text = (_build(compact=True, required_product_ids=required_product_ids,
+            garment_types=garment_types, prompt_limit=prompt_limit) if scoped else _build(compact=compact))
     except Exception as exc:
+        if scoped and isinstance(exc, ValueError) and str(exc).startswith("catalog_budget_"):
+            # Protected current SKUs cannot be evicted by a presentation
+            # budget, nor replaced by an unrelated/stale fallback catalogue.
+            raise
         logger.exception("Catalog context build failed")
         fallback = None
         try:

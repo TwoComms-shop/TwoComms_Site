@@ -164,6 +164,30 @@ class AvailabilityAuthority:
 
 
 @dataclass(frozen=True)
+class InventoryAvailabilityAuthority(AvailabilityAuthority):
+    """Positive exact retail inventory observation; no manager authorship."""
+
+    inventory_digest: str = ""
+    configuration_digest: str = ""
+    source_cart_capture_digest: str = ""
+    capture_digest: str = ""
+
+
+@dataclass(frozen=True)
+class SourcePriceSubject:
+    """Validator-only identity of one captured source line's price subject."""
+
+    line_id: str
+    product_id: int
+    title: str
+    capture_digest: str
+    source_message_ids: tuple[int, ...]
+    choices: tuple[tuple[str, str], ...]
+    prices: tuple[Decimal, ...]
+    product_kind: str = ""
+
+
+@dataclass(frozen=True)
 class ReplyTruthContext:
     authorized_prices: tuple[Decimal, ...] = ()
     authorized_price_ranges: tuple[tuple[Decimal, Decimal], ...] = ()
@@ -171,6 +195,9 @@ class ReplyTruthContext:
     authorized_urls: tuple[str, ...] = ()
     authorized_discount_percents: tuple[Decimal, ...] = ()
     authorized_discount_amounts: tuple[Decimal, ...] = ()
+    # Backend-only exact public explanations, never an applied discount or
+    # payment/order capability; dictionaries and customer prose are rejected.
+    cooperation_policy: object | None = None
     payment_confirmed: bool = False
     order_created: bool = False
     shipment_state: str = "unknown"
@@ -198,6 +225,8 @@ class ReplyTruthContext:
     fulfillment_deadline_authorities: tuple[FulfillmentDeadlineAuthority, ...] = ()
     fulfillment_review_status: Literal["", "pending", "reviewed"] = ""
     availability_authorities: tuple[AvailabilityAuthority, ...] = ()
+    inventory_availability_authorities: tuple[InventoryAvailabilityAuthority, ...] = ()
+    inventory_cart_line_ids: tuple[str, ...] = ()
     checkout_authority: CheckoutOrderAuthority | None = None
     full_payment_confirmed: bool | None = None
     shipping_authorities: tuple[ShippingAuthority, ...] = ()
@@ -206,6 +235,8 @@ class ReplyTruthContext:
     approved_payment_policy: tuple[tuple[str, str, str], ...] = ()
     # Exact reviewed general made-to-order prose; no order/payment/stock truth.
     approved_fulfillment_policy: tuple[tuple[str, str, str], ...] = ()
+    # Internal derived metadata; kept last for constructor compatibility.
+    source_price_subjects: tuple[SourcePriceSubject, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -901,6 +932,35 @@ def _positive_configuration_value(sentence: str, match: re.Match) -> str:
     return claimed
 
 
+def _source_price_subject_matches(sentence, context):
+    """Exact title/configuration grammar; an unknown named subject fails closed."""
+    from management.services.ig_response_cart_plan import single_price_subject
+    for subject in context.source_price_subjects:
+        if (type(subject) is not SourcePriceSubject or not subject.title or not subject.line_id
+            or type(subject.product_id) is not int or subject.product_id <= 0
+            or not re.fullmatch(r"[a-f0-9]{64}", subject.capture_digest)
+            or not subject.source_message_ids or any(type(value) is not int or value <= 0 for value in subject.source_message_ids)
+            or not re.search(r"(?<!\w)" + re.escape(subject.title) + r"(?!\w)", sentence, re.I)):
+            continue
+        choices = dict(subject.choices)
+        mentions = [*(_MONEY_RE.finditer(sentence)), *(_PREFIX_MONEY_RE.finditer(sentence))]
+        if (len(mentions) != 1 or _decimal(mentions[0].group("amount")) not in subject.prices
+            or _decimal(mentions[0].group("amount")) not in context.authorized_prices):
+            continue
+        value = sentence
+        fit = choices.get("fit_option_code", "")
+        fit_words = (r"classic|regular|класич\w*|классич\w*" if fit == "classic"
+            else r"oversize|оверсайз\w*" if fit == "oversize" else re.escape(fit) if fit else r"(?!)")
+        value = re.sub(r"(?<!\w)(?:" + fit_words + r")\s+(?:крій|крой|fit)(?!\w)", " ", value, flags=re.I)
+        value = _FIT_RE.sub(lambda match: " " if _configuration_axis_value("fit", _positive_configuration_value(value, match))
+            == _configuration_axis_value("fit", fit) and fit else match.group(), value)
+        readiness = {"product": {"id": subject.product_id, "kind": subject.product_kind},
+            "fit": {"selected": fit}}
+        if single_price_subject(value, choices=choices, title=subject.title, readiness=readiness):
+            return True
+    return False
+
+
 def _configuration_axis_value(axis: str, value) -> str:
     if axis == "size":
         from product_catalog.size_grid_services import normalize_size_value
@@ -1401,11 +1461,16 @@ def _availability_configuration_matches(
     return all(int(first or second) == fact.quantity for first, second in _STOCK_QUANTITY_RE.findall(sentence))
 
 
+_COMPLETED_STOCK_CHECK_RE = re.compile(
+    r"(?:менедж\w*|команд\w*|склад\w*)[^.!?\n]{0,35}(?:перевір(?:ив|ила|или|ено)|провер(?:ил|ила|или|ено)|підтверд(?:ив|ила|или|жено)|подтверд(?:ил|ила|или|ено))\b|"
+    r"(?:manager|team|warehouse)[^.!?\n]{0,35}(?:checked|verified|confirmed)|"
+    r"(?:я|ми|I|we)[^.!?\n]{0,20}(?:особисто|лично|фізично|физически|physically)[^.!?\n]{0,20}(?:перевір\w*|провер\w*|checked|verified)|"
+    r"(?:I|we)\s+(?:have\s+)?(?:checked|verified)\s+(?:the\s+)?(?:warehouse|physical\s+stock)", re.I)
+
+
 def _manager_availability_matches(
     sentence: str, context: ReplyTruthContext, *, expected_availability: str | None = None,
 ) -> tuple[AvailabilityAuthority, ...]:
-    if context.fulfillment_review_status != "reviewed":
-        return ()
     clauses = [clause for clause in _STOCK_CLAUSE_BOUNDARY_RE.split(sentence)
         if _availability_claim_statuses(clause)]
     if len(clauses) > 1:
@@ -1417,8 +1482,17 @@ def _manager_availability_matches(
     # Configuration-only clauses ("color black") inherit their protected
     # sentence's fact; they do not themselves assert physical availability.
     expected_availability = expected_availability or (statuses[0] if statuses else "available")
-    facts = tuple(fact for fact in context.availability_authorities if isinstance(fact, AvailabilityAuthority))
+    manager_facts = tuple(fact for fact in context.availability_authorities
+        if type(fact) is AvailabilityAuthority and context.fulfillment_review_status == "reviewed")
+    inventory_facts = tuple(fact for fact in context.inventory_availability_authorities
+        if type(fact) is InventoryAvailabilityAuthority)
+    # A current manager decision remains authoritative for its own line.
+    managed = {fact.line_id for fact in manager_facts}
+    facts = (*manager_facts, *(fact for fact in inventory_facts if fact.line_id not in managed))
     if not facts:
+        return ()
+    if (_WHOLE_CART_STOCK_RE.search(sentence) and context.inventory_cart_line_ids
+        and not set(context.inventory_cart_line_ids).issubset({fact.line_id for fact in facts})):
         return ()
     named = facts if _WHOLE_CART_STOCK_RE.search(sentence) else tuple(
         fact for fact in facts if _availability_scope_matches(sentence, fact))
@@ -1428,13 +1502,20 @@ def _manager_availability_matches(
         else:
             return ()
     for fact in named:
+        inventory = type(fact) is InventoryAvailabilityAuthority
         if (
             fact.availability != expected_availability or not fact.source_ref
             or type(fact.quantity) is not int or not 1 <= fact.quantity <= 99
+            or inventory and (expected_availability != "available"
+                or _COMPLETED_STOCK_CHECK_RE.search(sentence)
+                or fact.supply_basis != "inventory_observation"
+                or not all(re.fullmatch(r"[a-f0-9]{64}", str(value)) for value in (
+                    fact.inventory_digest, fact.configuration_digest,
+                    fact.source_cart_capture_digest, fact.capture_digest)))
             or expected_availability == "available" and (
-                fact.supply_basis not in {"warehouse_checked", "accessible_unrecorded"}
+                fact.supply_basis not in ({"inventory_observation"} if inventory else {"warehouse_checked", "accessible_unrecorded"})
                 or type(fact.checked_quantity) is not int
-                or not fact.quantity <= fact.checked_quantity <= 999
+                or not fact.quantity <= fact.checked_quantity <= (1000000 if inventory else 999)
             )
             or not _availability_configuration_matches(sentence, fact, expected_availability=expected_availability)
         ):
@@ -1836,6 +1917,9 @@ def validate_reply_truth(
     for sentence in _claim_sentences(reply_text, context.quoted_data):
         if _normalize(sentence) in policy_sentences:
             continue
+        from management.services.ig_cooperation_policy import public_statement_topic
+        if public_statement_topic(sentence, context.cooperation_policy):
+            continue
         if _unverified_deposit_refund(sentence, reply_text):
             _add(reasons, "unverified_payment_policy")
         if not _shipping_claims_verified(sentence, context):
@@ -1981,6 +2065,10 @@ def validate_reply_truth(
                 if axis in stated and _configuration_axis_value(axis, stated[axis]) not in {
                         _configuration_axis_value(axis, value) for value in choices}:
                     _add(reasons, "configuration_mismatch")
+        if (_COMPLETED_STOCK_CHECK_RE.search(sentence)
+            and (_product_availability_claim(sentence) or re.search(r"склад\w*|залишк\w*|warehouse|physical\s+stock", sentence, re.I))
+            and not (context.fulfillment_review_status == "reviewed" and context.availability_authorities)):
+            _add(reasons, "unverified_availability")
         availability_claim = _product_availability_claim(sentence)
         reviewed_stock_claim = availability_claim
         manager_availability = _manager_availability_matches(sentence, context) if reviewed_stock_claim else ()
@@ -2009,6 +2097,15 @@ def validate_reply_truth(
                     _add(reasons, "configuration_mismatch")
                 if _has_positive_claim(_CONFIGURATION_STOCK_RE, sentence) and not manager_availability:
                     _add(reasons, "unverified_availability")
+        # Exact line/product identity is bound by the caller before this
+        # guard. A proven price subject may describe that source choice even
+        # when zero stock withholds sellable catalogue configurations.
+        price_mentions = [*(_MONEY_RE.finditer(sentence)), *(_PREFIX_MONEY_RE.finditer(sentence))]
+        priced_source_subject = bool(len(price_mentions) == 1
+            and _decimal(price_mentions[0].group("amount")) in prices
+            and re.search(r"ціна|вартіст|кошту|цена|стоим|стоит|price|cost", sentence, re.I)
+            and not availability_claim and not _has_positive_claim(_CONFIGURATION_STOCK_RE, sentence)
+            and _source_price_subject_matches(sentence, context))
         for axis, pattern, allowed, source_choices, audited_choices in (
             ("size", _SIZE_RE, context.allowed_sizes, context.source_chosen_sizes, context.audited_chosen_sizes),
             ("fit", _FIT_RE, context.allowed_fits, context.source_chosen_fits, ()),
@@ -2057,9 +2154,12 @@ def validate_reply_truth(
                     and (_CUSTOMER_CHOICE_RE.search(clause)
                         or _comma_choice_continuation(sentence, clause_start, clause_end))):
                     effective.update(_configuration_axis_value(axis, value) for value in source_choices)
-                if _source_owned_availability_check(clause):
-                    # A check repeats the customer's exact request. Catalog
-                    # metadata must not silently substitute another size/color.
+                if priced_source_subject:
+                    effective.update(_configuration_axis_value(axis, value) for value in source_choices)
+                if _source_owned_availability_check(clause) or pending_check:
+                    # The validated whole pending check owns its fronted
+                    # subject across its comma; it cannot absorb a new claim.
+                    # Catalogue metadata cannot replace that exact request.
                     effective = {_configuration_axis_value(axis, value) for value in source_choices}
                 if (not _has_positive_claim(_AVAILABILITY_RE, clause)
                     and not _has_positive_claim(_CONFIGURATION_STOCK_RE, clause)

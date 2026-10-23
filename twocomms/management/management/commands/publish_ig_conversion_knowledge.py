@@ -7,7 +7,7 @@ from management.services.ig_policy_publication import PolicyPublicationError
 
 
 class Command(BaseCommand):
-    help = "Review/publish only the five owner-approved scenarios, preserving unrelated drafts."
+    help = "Review/publish the owner-approved scenarios and localized cooperation modules, preserving unrelated drafts."
 
     def add_arguments(self, parser):
         parser.add_argument("--apply", action="store_true")

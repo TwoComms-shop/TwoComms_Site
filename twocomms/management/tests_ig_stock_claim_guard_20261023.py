@@ -657,7 +657,7 @@ class NativeSourceOwnedStockCheckTests(_RestockFixture, TransactionTestCase):
         source = self.source("Is this hoodie in size M in stock?")
         revision, token = _RestockFixture.revision(self, source)
         self.revision, self.token = revision, token
-        self.parsed = {"reply_text": text, "controls": [{"kind": "manager", "value": True}]}
+        self.parsed = {"reply_text": text, "controls": [] if stock > 0 else [{"kind": "manager", "value": True}]}
         with patch("management.services.ig_presence.start_presence", return_value=None):
             result, model, http = self._execute()
         self.revision.refresh_from_db()
@@ -667,14 +667,15 @@ class NativeSourceOwnedStockCheckTests(_RestockFixture, TransactionTestCase):
         from management.models import IgFollowUpTask, IgBotNotification
         subject = "Restock Aurora" if exact_title else "this hoodie"
         result, model, http = self.execute_candidate(stock,
+            "Restock Aurora, black, size M is in stock." if stock > 0 else
             f"I will check the availability of {subject} in size M with our manager.")
         coverage = self.revision.action_receipts.get("response_coverage") or {}
         self.assertEqual(result.state, "completed", (result.reasons, coverage))
         self.assertEqual((model.call_count, http.call_count), (1, 1))
         self.assertEqual(self.revision.delivery_effects.filter(state="sent").count(), 1)
         self.assertFalse(coverage.get("remaining"), coverage)
-        self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer, reason="fulfillment_review").count(), 1)
-        self.assertEqual(IgBotNotification.objects.filter(client=self.customer, event_type="fulfillment_review").count(), 1)
+        self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer, reason="fulfillment_review").count(), 0 if stock > 0 else 1)
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer, event_type="fulfillment_review").count(), 0 if stock > 0 else 1)
         self.client_row.refresh_from_db()
         self.assertFalse(self.client_row.bot_paused)
         self.assertFalse(self.client_row.manager_takeover)

@@ -368,6 +368,7 @@ def validate_checkout_items(
     verified_assisted_selection=None,
 ):
     from product_catalog.services import effective_cart_unit_price, variant_allows_purchase
+    from management.services.ig_inventory_availability import inventory_source_for_variant
     from product_catalog.size_grid_services import (
         normalize_size_value,
         resolve_effective_sizes,
@@ -504,6 +505,7 @@ def validate_checkout_items(
                     fit_code=fit_code,
                     size=size,
                     option_values=option_values,
+                    **({"ignore_variant_stock": True} if inventory_source_for_variant(row) == "warehouse" else {}),
                 )
             ]
             if not sellable_variants:
@@ -592,6 +594,7 @@ def validate_checkout_items(
                     product,
                     option_key,
                     variant=variant,
+                    **({"ignore_variant_stock": True} if variant is not None and inventory_source_for_variant(variant) == "warehouse" else {}),
                 )
                 if row.get("is_enabled", True) and normalize_size_value(row.get("size"))
             }
@@ -617,6 +620,7 @@ def validate_checkout_items(
             fit_code=fit_code,
             size=size,
             option_values=option_values,
+            **({"ignore_variant_stock": True} if variant is not None and inventory_source_for_variant(variant) == "warehouse" else {}),
         ):
             raise CheckoutConfigurationError("unavailable_selection", item_index=index)
 

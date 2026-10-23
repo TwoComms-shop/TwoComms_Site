@@ -17772,3 +17772,207 @@ msgstr "for an ordinary return of an unused garment, keep its original appearanc
 #. Reviewed owner brief 2026-10-18; current-base scope.
 msgid "Зберігайте річ сухою, без прямого сонця. Особливі способи зберігання уточніть у команди за ярликом конкретного виробу."
 msgstr "Store the garment dry and out of direct sunlight. Check special storage methods with the team using the specific garment label."
+
+#. Public partner terms approved in October 2026.
+msgid "10–15% від поточної повної ціни на сайті — індивідуально"
+msgstr "10–15% off the current full website price — individually agreed"
+
+#. Public partner terms approved in October 2026.
+msgid "Індивідуальна знижка 10–15% від поточної повної ціни на сайті. Конкретну знижку погоджує менеджер."
+msgstr "An individual discount of 10–15% off the current full website price. Your manager agrees the specific discount."
+
+#. Public partner terms approved in October 2026.
+msgid "Індивідуальна знижка:"
+msgstr "Individual discount:"
+
+#. Public partner terms approved in October 2026.
+msgid "Індивідуальна партнерська знижка"
+msgstr "Individual partner discount"
+
+#. Public partner terms approved in October 2026.
+msgid "Індивідуальні умови партії"
+msgstr "Individual batch terms"
+
+#. Public partner terms approved in October 2026.
+msgid "Без власного складу"
+msgstr "No warehouse of your own needed"
+
+#. Public partner terms approved in October 2026.
+msgid "Винагорода за домовленістю"
+msgstr "Compensation by agreement"
+
+#. Public partner terms approved in October 2026.
+msgid "Від 8 фактичних продажів на місяць обговорюємо нові умови. Зміни не активуються автоматично."
+msgstr "From 8 actual sales per month, we can discuss new terms. Changes are not activated automatically."
+
+#. Public partner terms approved in October 2026.
+msgid "Для опту діють індивідуально погоджені умови партії. Універсальної відсоткової шкали немає; остаточну ціну підтверджує менеджер до замовлення."
+msgstr "Wholesale batch terms are agreed individually. There is no universal percentage scale; the manager confirms the final price before you order."
+
+#. Public partner terms approved in October 2026.
+msgid "Договір можливий за погодженням із менеджером. Для власного дизайну скористайтеся сторінкою «Кастомний принт»; склад, вартість і строки партії уточнюємо окремо."
+msgstr "A contract is possible by agreement with the manager. For your own design, use the Custom Print page; we agree the batch contents, cost and timing separately."
+
+#. Public partner terms approved in October 2026.
+msgid "Дропшипінг"
+msgstr "Dropshipping"
+
+#. Public partner terms approved in October 2026.
+msgid "Дропшипінг, оптові закупівлі партіями по 8, 16 і далі кратно 8, бренд-проєкти та співпраця з авторами контенту. Формат і можливий договір погоджуємо з менеджером."
+msgstr "Dropshipping, wholesale batches of 8, 16 and further multiples of 8, brand projects and content creator collaborations. Agree the format and any contract with the manager."
+
+#. Public partner terms approved in October 2026.
+msgid "За домовленістю"
+msgstr "By agreement"
+
+#. Public partner terms approved in October 2026.
+msgid "Закуповуйте партіями по 8, 16 або іншій кількості, кратній 8. Кращі умови для вашої партії погоджуємо індивідуально."
+msgstr "Buy in batches of 8, 16 or other multiples of 8. Better terms for your batch are agreed individually."
+
+#. Public partner terms approved in October 2026.
+msgid "Замовлення за погодженням із менеджером"
+msgstr "Orders agreed with the manager"
+
+#. Public partner terms approved in October 2026.
+msgid "Зв’язок із командою в Telegram"
+msgstr "Contact the team on Telegram"
+
+#. Public partner terms approved in October 2026.
+msgid "Кабінет партнера працює у режимі TEST з обмеженими можливостями. Реєстрація та показані розрахунки не активують партнерські умови автоматично; замовлення погоджуйте в Telegram."
+msgstr "The partner account is in TEST mode with limited features. Registration and displayed calculations do not activate partner terms automatically; agree orders on Telegram."
+
+#. Public partner terms approved in October 2026.
+msgid "Кабінет партнера — TEST"
+msgstr "Partner account — TEST"
+
+#. Public partner terms approved in October 2026.
+msgid "Коли можна обговорити нові партнерські умови?"
+msgstr "When can we discuss new partner terms?"
+
+#. Public partner terms approved in October 2026.
+msgid "Можливості кабінету обмежені; поточні умови та замовлення погоджуйте в Telegram."
+msgstr "Account features are limited; agree current terms and orders on Telegram."
+
+#. Public partner terms approved in October 2026.
+msgid "Можна використовувати публічні фото із сайту та Instagram TwoComms. За власний унікальний контент відповідає партнер; додаткові детальні фото погоджуємо для конкретного запиту."
+msgstr "You may use public photos from the TwoComms website and Instagram. Partners are responsible for their own unique content; additional detail photos are agreed for a specific request."
+
+#. Public partner terms approved in October 2026.
+msgid "Напишіть у Telegram TwoComms: https://t.me/twocomms. Форма та прайс допомагають підготувати запит; ціни, наявність і відправлення підтверджує менеджер."
+msgstr "Contact TwoComms on Telegram: https://t.me/twocomms. The form and price list help prepare your request; the manager confirms prices, availability and dispatch."
+
+#. Public partner terms approved in October 2026.
+msgid "Обговорити дропшипінг у Telegram"
+msgstr "Discuss dropshipping on Telegram"
+
+#. Public partner terms approved in October 2026.
+msgid "Обговорити умови з менеджером"
+msgstr "Discuss terms with the manager"
+
+#. Public partner terms approved in October 2026.
+msgid "Оплата та відправлення"
+msgstr "Payment and dispatch"
+
+#. Public partner terms approved in October 2026.
+msgid "Оплату й відправлення погоджуємо до відвантаження"
+msgstr "Agree payment and dispatch before shipment"
+
+#. Public partner terms approved in October 2026.
+msgid "Опт партіями по 8, 16 і далі кратно 8; дропшипінг з індивідуальною знижкою. Ціни, оплату та відправлення погоджуємо з менеджером TwoComms."
+msgstr "Wholesale batches of 8, 16 and further multiples of 8; dropshipping with an individual discount. Agree prices, payment and dispatch with a TwoComms manager."
+
+#. Public partner terms approved in October 2026.
+msgid "Оптові закупівлі — партіями по 8, 16 і далі кратно 8. Склад партії та кращі умови погоджуємо з менеджером індивідуально."
+msgstr "Wholesale orders come in batches of 8, 16 and further multiples of 8. Agree batch contents and better terms individually with the manager."
+
+#. Public partner terms approved in October 2026.
+msgid "Оптові партії"
+msgstr "Wholesale batches"
+
+#. Public partner terms approved in October 2026.
+msgid "Партії 8, 16 і далі кратно 8"
+msgstr "Batches of 8, 16 and further multiples of 8"
+
+#. Public partner terms approved in October 2026.
+msgid "Показані розрахунки кабінету не активують нові партнерські умови. Індивідуальні ціни та зміни підтверджує менеджер."
+msgstr "Displayed account calculations do not activate new partner terms. The manager confirms individual prices and changes."
+
+#. Public partner terms approved in October 2026.
+msgid "Почніть із Telegram TwoComms: https://t.me/twocomms. Опишіть формат співпраці та товари, які вас цікавлять; менеджер погодить актуальні умови."
+msgstr "Start on TwoComms Telegram: https://t.me/twocomms. Describe your partnership format and the products you are interested in; the manager will agree current terms."
+
+#. Public partner terms approved in October 2026.
+msgid "ТТН може оформити партнер або TwoComms. Для ТТН партнера відділення відправника погоджуємо заздалегідь."
+msgstr "The partner or TwoComms may create the waybill. For a partner waybill, agree the sender branch in advance."
+
+#. Public partner terms approved in October 2026.
+msgid "ТТН може оформити партнер або TwoComms; відділення відправника для ТТН партнера погоджуємо заздалегідь. Якщо відправляє TwoComms, до відправлення потрібна повна оплата на IBAN або передоплата 200 грн."
+msgstr "The partner or TwoComms may create the waybill; agree the sender branch for a partner waybill in advance. For TwoComms dispatch, full payment to IBAN or a UAH 200 deposit is required before shipment."
+
+#. Public partner terms approved in October 2026.
+msgid "ТТН партнера або TwoComms за погодженням"
+msgstr "Partner or TwoComms waybill by agreement"
+
+#. Public partner terms approved in October 2026.
+msgid "Умови через менеджера"
+msgstr "Terms through the manager"
+
+#. Public partner terms approved in October 2026.
+msgid "Форма замовлення та прайс допомагають підготувати запит. Остаточні ціни, склад партії й умови підтверджує менеджер; договір можливий за погодженням."
+msgstr "The order form and price list help prepare a request. The manager confirms final prices, batch contents and terms; a contract is possible by agreement."
+
+#. Public partner terms approved in October 2026.
+msgid "Фото із сайту та Instagram можна використовувати"
+msgstr "Website and Instagram photos may be reused"
+
+#. Public partner terms approved in October 2026.
+msgid "Хто оформлює ТТН?"
+msgstr "Who creates the waybill?"
+
+#. Public partner terms approved in October 2026.
+msgid "Ціну цієї позиції та умови партії підтверджує менеджер у Telegram."
+msgstr "The manager confirms this item’s price and batch terms on Telegram."
+
+#. Public partner terms approved in October 2026.
+msgid "Чи готовий кабінет партнера до повноцінної роботи?"
+msgstr "Is the partner account ready for full operation?"
+
+#. Public partner terms approved in October 2026.
+msgid "Чи можна оформити договір або замовити свій принт?"
+msgstr "Can we arrange a contract or order our own print?"
+
+#. Public partner terms approved in October 2026.
+msgid "Чим відрізняються умови дропшипінгу?"
+msgstr "How do dropshipping terms differ?"
+
+#. Public partner terms approved in October 2026.
+msgid "Як визначається ціна оптової партії?"
+msgstr "How is the wholesale batch price determined?"
+
+#. Public partner terms approved in October 2026.
+msgid "Як погодити оплату й відправлення?"
+msgstr "How do we agree payment and dispatch?"
+
+#. Public partner terms approved in October 2026.
+msgid "Як погодити оптове замовлення?"
+msgstr "How do we agree a wholesale order?"
+
+#. Public partner terms approved in October 2026.
+msgid "Яка знижка для дропшипінгу?"
+msgstr "What is the dropshipping discount?"
+
+#. Public partner terms approved in October 2026.
+msgid "Яка оплата потрібна до відправлення?"
+msgstr "What payment is required before dispatch?"
+
+#. Public partner terms approved in October 2026.
+msgid "Якщо відправляє TwoComms, до відправлення потрібна повна оплата на IBAN або передоплата 200 грн. Деталі погоджуємо з менеджером."
+msgstr "For TwoComms dispatch, full payment to IBAN or a UAH 200 deposit is required before shipment. Agree details with the manager."
+
+#. Public partner terms approved in October 2026.
+msgid "Які фото можна використовувати для продажів?"
+msgstr "Which photos may be used for sales?"
+
+#. Public global FAQ: distinct dropshipping and wholesale terms.
+msgid "Для дропшипінгу менеджер індивідуально погоджує знижку 10–15% від поточної повної ціни на сайті. Знижка не активується автоматично. Оптові закупівлі — партіями по 8, 16 і далі кратно 8; умови партії погоджуємо індивідуально, без універсальної відсоткової шкали. Для обговорення напишіть у Telegram TwoComms: https://t.me/twocomms."
+msgstr "For dropshipping, the manager individually agrees a discount of 10–15% off the current full website price. The discount is not activated automatically. Wholesale orders come in batches of 8, 16 and further multiples of 8; batch terms are agreed individually, without a universal percentage scale. Contact TwoComms on Telegram to discuss: https://t.me/twocomms."

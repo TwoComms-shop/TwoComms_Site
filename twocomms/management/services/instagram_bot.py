@@ -556,7 +556,8 @@ def _stock_reply_truth_context(client, reply: str, context, *, quoted_data=()):
     if not _stock_claim_sentences(reply, quoted_data=quoted_data):
         return context
     from management.services.ig_fulfillment_reviews import fulfillment_review_projection
-    from management.services.ig_reply_authority import fulfillment_availability_authorities
+    from management.services.ig_reply_authority import fulfillment_availability_authorities, apply_inventory_availability_context
+    from management.services.ig_inventory_availability import capture_inventory_availability
 
     try:
         projection = fulfillment_review_projection(client.pk)
@@ -564,15 +565,20 @@ def _stock_reply_truth_context(client, reply: str, context, *, quoted_data=()):
         status = "reviewed" if facts else "pending"
     except Exception:
         facts, status = (), "pending"
-    return replace(context, availability_authorities=facts, fulfillment_review_status=status)
+    context = replace(context, availability_authorities=facts, fulfillment_review_status=status)
+    try:
+        inventory = capture_inventory_availability(client.pk)
+    except Exception:
+        inventory = None
+    return apply_inventory_availability_context(context, inventory)
 
 
 def _has_exact_stock_evidence(client, control: dict, *, reply: str = "", quoted_data=()) -> bool:
-    """Only a current signed manager review can authorize exact stock prose.
+    """Exact stock prose needs current manager or protected inventory facts.
 
-    Allocation and offer resolution remain checkout tools. Their accounting
-    observations, including positive quantities and absent rows, are never a
-    customer-facing physical availability decision.
+    Raw model controls, isolated quantities and checkout eligibility grant no
+    stock claim. Inventory grants positive retail availability only; manager
+    review retains its independent reviewed availability and timing authority.
     """
     sentences = _stock_claim_sentences(reply, quoted_data=quoted_data)
     if not sentences:
@@ -581,7 +587,7 @@ def _has_exact_stock_evidence(client, control: dict, *, reply: str = "", quoted_
         from management.services.ig_reply_truth import ReplyTruthContext, _manager_availability_matches
 
         context = _stock_reply_truth_context(client, reply, ReplyTruthContext(), quoted_data=quoted_data)
-        if not context.availability_authorities:
+        if not context.availability_authorities and not context.inventory_availability_authorities:
             return False
         return all(_manager_availability_matches(sentence, context) for sentence in sentences)
     except Exception:
@@ -1491,7 +1497,94 @@ def _has_open_paid_deal(client) -> bool:
     ).exists()
 
 
-def payment_link_allowed(client, control: dict, reply: str) -> bool:
+def _source_purchase_assent(text):
+    """Ordered own purchase acts; a consultation or a CRM label is no assent."""
+    from management.services.ig_commerce_turns import _current_source_text, _source_purchase
+
+    state = 0
+    current = _current_source_text(text)
+    imperative = (r"(?:беру|забираю|купую|замовляю|заказываю|оформіть|оформлюй|оформлюйте|оформляй|оформляйте|оформи|оформите|оформлюємо|оформляем|"
+        r"підтверджую\s+замовлення|подтверждаю\s+заказ|place\s+(?:the\s+|my\s+)?order|i['’]ll\s+take|i\s+will\s+take)")
+    payment_question = (r"\b(?:чи\s+)?можна\b[^.!?]{0,35}(?:передоплат\w*|післяплат\w*)|\bможно\b[^.!?]{0,35}(?:предоплат\w*|налож\w*)"
+        r"|\b(?:як|как|how)\s+(?:(?:я|i)\s+)?(?:(?:можу|могу|can)\s+)?(?:оплат\w*|pay)\b")
+    condition = r"\b(?:якщо|если|if|maybe|perhaps|можливо|возможно)\b"
+    commercial_condition = r"\b(?:зниж\w*|скид\w*|discount\w*|цін\w*|цен\w*|вартіст\w*|стоим\w*|price|cost|опла[тч]\w*|плат\w*|pay\w*|передоплат\w*|предоплат\w*)\b"
+    # A comma does not detach the condition from "беру, якщо...".
+    clauses = []
+    for sentence in re.split(r"[.!;\n]+", current):
+        if re.fullmatch(r"\s*(?:так|да|yes)[, ]+(?:хочу|want)\s*", sentence, re.I):
+            clauses.append(sentence)
+            continue
+        if (re.search(condition, sentence, re.I) and (_source_purchase(sentence)
+            or re.search(r"\b" + imperative + r"\b|" + payment_question, sentence, re.I)
+            or re.search(commercial_condition, sentence, re.I))):
+            clauses.append(None)
+        else:
+            clauses.extend(re.split(r",+|\b(?:але|но|but)\b", sentence, flags=re.I))
+    for clause in clauses:
+        if clause is None:
+            state = -1
+            continue
+        clause = clause.strip()
+        if not clause:
+            continue
+        if re.search(r"\b(?:сказ\w*|казав\w*|говор\w*|said|told)\b", clause, re.I) and not re.search(
+                r"\b(?:тепер|зараз|now)\b|\b(?:а|але|but)\s+(?:я|ми|i|we)\b", clause, re.I):
+            continue
+        refusal = re.search(
+            r"\bне\s+(?:(?:зараз|поки|ще|сейчас|пока)\s+)*(?:(?:готов\w*|хочу|хочемо|буду|планую|планируем|планирую)\s+)?"
+            r"(?:(?:зараз|поки|ще|сейчас|пока)\s+)*(?:замов\w*|заказ\w*|оформ\w*|куп\w*|покуп\w*|опла[тч]\w*|плат\w*|посилання|лінк\w*|ссылк\w*)"
+            r"|\b(?:not\s+ready\s+to|do\s+not\s+want\s+to|don['’]t\s+want\s+to|won['’]t)\s+(?:buy|order|pay|purchase)\b"
+            r"|\b(?:do\s+not|don['’]t)\s+(?:want|need|send)\s+(?:a\s+)?(?:payment\s+)?link\b"
+            r"|^\s*(?:ні|нет|no)[, ]*(?:не\s+хочу|thanks)?\s*[?]?\s*$"
+            r"|^\s*(?:(?:я|поки|ще|зараз|сейчас|пока)\s+)*(?:передумал[аи]?|не\s+(?:готов\w*|хочу|буду))"
+            r"(?:\s+(?:зараз|поки|ще|сейчас|пока))*\s*$", clause, re.I)
+        if refusal:
+            state = -1
+            continue
+        if re.search(condition, clause, re.I):
+            continue
+        if (_source_purchase(clause) or re.search(
+                r"^\s*(?:(?:так|да|yes|будь\s+ласка|пожалуйста|please)[, ]+)?"
+                + imperative + r"\b", clause, re.I)
+            or re.fullmatch(r"(?:так|да|yes)[, ]+(?:хочу|want)[.! ]*", clause, re.I)
+            or re.search(payment_question, clause, re.I)):
+            state = 1
+    return state
+
+
+def _current_purchase_source_texts(client, *, sealed_sources=(), source_cart_capture=None, with_ids=False):
+    """Bound continuity to owned current-episode sources and the reset floor."""
+    from management.models import IgClient, IgCommercialEpisode, InstagramBotMessage
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+
+    if (not isinstance(client, IgClient) or client._state.adding
+        or type(client.pk) is not int or client.pk <= 0
+        or type(client.current_commercial_episode_id) is not int or client.current_commercial_episode_id <= 0
+        or not client.igsid):
+        return ()
+    episode = IgCommercialEpisode.objects.filter(pk=client.current_commercial_episode_id,
+        client_id=client.pk, open_slot=1, state="active").first()
+    if episode is None:
+        return ()
+    floor = conversation_route_reset_floor(client.pk)
+    lower = max(floor, int(episode.opened_watermark_message_id or 0))
+    sealed = {row.get("message_id"): row for row in sealed_sources
+        if isinstance(row, dict) and row.get("role") == "user" and type(row.get("message_id")) is int}
+    rows = list(InstagramBotMessage.objects.filter(client_id=client.pk, sender_id=client.igsid,
+        role="user", pk__gte=lower).select_related("client").order_by("-pk")[:64])
+    if sealed and (not set(sealed) <= {row.pk for row in rows}
+            or any(str(sealed[row.pk].get("text") or "") != str(row.text or "") for row in rows if row.pk in sealed)):
+        return ()
+    namespace = ((source_cart_capture or {}).get("scope") or {}).get("source_namespace")
+    owned = tuple(row for row in reversed(rows) if row.status != "failed"
+        and (not namespace or row.provider_namespace == namespace)
+        and is_current_customer_source(row, **({"namespace": namespace} if namespace else {})))
+    return tuple({"message_id": row.pk, "text": row.text} for row in owned) if with_ids else tuple(row.text for row in owned)
+
+
+def payment_link_allowed(client, control: dict, reply: str, *, sealed_sources=(), source_cart_capture=None) -> bool:
     """Require a product and purchase evidence before creating an invoice.
 
     A model phrase such as ``"сформую посилання"`` is not itself a purchase
@@ -1544,32 +1637,28 @@ def payment_link_allowed(client, control: dict, reply: str) -> bool:
     intent = str(getattr(client, "intent", "") or "").casefold()
     if "custom" in intent:
         return False
-    low = " ".join(str(reply or "").split()).casefold()
     # `stage == paid` тут навмисно **не** блокує: стадія означає «є оплачене
     # замовлення в роботі», а не «ця людина більше нічого не купить». Дубль
     # рахунку відсікає `_has_open_paid_deal` вище — за фактом грошей, не за
     # робочим станом воронки.
-    if _PURCHASE_COMMITMENT_RE.search(low):
-        return True
-    stage = str(getattr(client, "stage", "") or "").casefold()
-    if intent in {"payment", "checkout"} and stage in {"checkout", "payment_pending"}:
-        return True
-    # A direct question such as "How can I pay?" is already a purchase signal
-    # when the conversation has a fully resolved fit/size configuration.  Do
-    # not require the classifier to advance the CRM stage before issuing the
-    # first-party proposal, but still fail closed for a missing choice.
-    if intent in {"payment", "checkout"} and stage == "product_matched":
-        item_specs = explicit_item_specs or _control_item_specs(control)
-        if item_specs:
-            return all(
-                str(item.get("size") or "").strip()
-                and str(item.get("fit_option_code") or "").strip()
-                for item in item_specs
-            )
-        selected_size = str(control.get("size") or getattr(client, "current_size", "") or "").strip()
-        selected_fit = str(control.get("fit") or "").strip()
-        return bool(selected_size and selected_fit)
-    return False
+    texts = _current_purchase_source_texts(client, sealed_sources=sealed_sources,
+        source_cart_capture=source_cart_capture)
+    # Revision callers supply sealed customer snapshots. Legacy callers retain
+    # their explicit source text, but never a stage-only permission shortcut.
+    if not sealed_sources:
+        texts = (*texts, str(reply or ""))
+    assent = False
+    for text in texts:
+        state = _source_purchase_assent(text)
+        if state:
+            assent = state > 0
+    if not assent and sealed_sources and (not texts or _source_purchase_assent(texts[-1]) >= 0):
+        from management.services.ig_checkout_policy import resolve_payment_policy
+        from management.models import IgCheckoutProposal
+        ids = [row.get("message_id") for row in sealed_sources if isinstance(row, dict) and row.get("role") == "user"]
+        policy = resolve_payment_policy(client=client, evidence_message_ids=ids)
+        assent = policy.policy == IgCheckoutProposal.PaymentPolicy.FULL_OR_200_COD
+    return assent
 
 
 # Монобанк-подібні URL — щоб прибрати вигадане моделлю платіжне посилання й
@@ -1598,18 +1687,20 @@ CANONICAL_PROMPT_AUTHORITY_POLICY = (
     "(3) поточна репліка клієнта та [СТАН ДІАЛОГУ]; "
     "(4) поточні оперативні директиви й доречні playbook-інструкції; "
     "(5) старий базовий промпт і стиль. Директива не може скасувати факт з пунктів 1-3.\n"
-    "ФІЗИЧНА НАЯВНІСТЬ — окремий домен істини. Її підтверджує лише актуальне "
-    "серверно перевірене рішення менеджера для саме цього товару, кольору, крою, "
-    "розміру й поточного запиту. Облікові stock=0 або stock>0, кількість «на складі», "
-    "каталог, checkout eligibility та size.available/disabled/requested_unavailable "
-    "не доводять ані фізичну наявність, ані відсутність. "
-    "fulfillment.review.current_request.lines[].observation — це спостереження обліку, "
-    "навіть коли його status=available/unavailable, reason=physical_stock_available/insufficient_free_stock "
-    "або physical_quantity/free_quantity/size_cap додатні чи нульові. "
-    "Це не typed manager decision у fulfillment.review.decision. Pending review не є рішенням. "
-    "За відсутності такого актуального рішення: навіть якщо M позначено "
-    "disabled/requested_unavailable, не кажи «M немає, є лише L»; "
-    "якщо stock=100, не кажи «M є». Чесно скажи, що уточниш саме запитаний M у менеджера. "
+    "НАЯВНІСТЬ — окремий домен істини. Окремий поточний серверний inventory.availability "
+    "зі status=available для точно обраних товару/основи, кольору, крою, розміру та "
+    "запитаної кількості підтверджує позитивну наявність після захищених резервів. "
+    "У такому звичайному роздрібному випадку самостійно продовжуй вибір та оформлення; "
+    "дві речі чи два одержувачі самі по собі не потребують менеджера. Не називай "
+    "це особистою фізичною перевіркою складу або рішенням менеджера. "
+    "Сирі stock=0/stock>0, каталог, checkout eligibility, size.available/disabled/requested_unavailable "
+    "та fulfillment.review.current_request.lines[].observation окремо не є такою перевіркою. "
+    "Нульовий, невідомий, недостатній залишок чи непідтверджена конфігурація потребують "
+    "точкового запиту менеджеру: скажи, що уточниш саме цю позицію, без вигаданого «немає». "
+    "Позитивні інші позиції й незалежні запитання продовжуй опрацьовувати. "
+    "Pending review не є рішенням. Актуальне серверно перевірене fulfillment.review.decision "
+    "підтверджує власне рішення менеджера щодо конкретної позиції та строків; передай "
+    "саме ці факти. Inventory availability не підтверджує строків, оплати чи відправки. "
     "Збережи відомі product/колір/крій/розмір клієнта; незалежно підтверджену ціну "
     "назви одразу, без твердження про наявність.\n"
     "Перелік каталожних кольорів/розмірів не є доказом відсутності іншого побажання. "
@@ -2164,7 +2255,7 @@ def finalize_paylink(
         except Exception:
             pass
         return _paylink_fallback(client)
-    if not payment_link_allowed(client, control, reply):
+    if not payment_link_allowed(client, control, trigger_text):
         log("warning", "paylink_gate", f"{sender_id}: blocked without purchase candidate")
         try:
             notify_manager(
@@ -9009,7 +9100,8 @@ def _assemble_system_instruction(
                     "stock and size.available/disabled/requested_unavailable cannot answer "
                     "physical availability or negate the customer's captured wish. "
                     "Use the exact current verified manager review for that separate decision.\n" + value)
-            dynamic.append(PolicyModule("facts:" + key, value, customer_bound=key != "catalog"))
+            dynamic.append(PolicyModule("facts:" + key, value,
+                customer_bound=key != "catalog" or (captured_dynamic_notes is not None and "catalog" in captured_dynamic_notes)))
         else:
             omissions.append({"id": "facts:" + key, "reason": "empty_or_unavailable"})
     links = _prompt_section("quick_links", BotQuickLink.active_block)
@@ -9019,7 +9111,10 @@ def _assemble_system_instruction(
         ))
     if turn_note and str(turn_note).strip():
         # Source coverage and the response plan must survive optional budgets.
-        dynamic.append(PolicyModule("context:turn", str(turn_note).strip(), customer_bound=True))
+        from management.services.ig_prompt_projections import deduplicate_source_cart_note
+        projected_turn = deduplicate_source_cart_note(str(turn_note).strip(),
+            state=captured_client_state, state_text=state_render.text if state_render is not None else "")
+        dynamic.append(PolicyModule("context:turn", projected_turn, customer_bound=True))
     customer = [
         PolicyModule("context:" + key, str(value).strip(), priority=position)
         for position, (key, value) in enumerate((
@@ -13377,6 +13472,18 @@ def enqueue_inbound(
                 persistence_only=persistence_only,
                 _commercial_lock_held=True,
             )
+    # A fresh-conversation reset archives older provider events. Keep this
+    # inside the commercial lock so a delayed event cannot cross the reset
+    # fence, rebuild memory, or acquire a new reply owner. Explicit historical
+    # opt-outs retain their consent-only handling without becoming chat input.
+    from management.services.ig_funnel_reset import handle_historical_reset_ingress
+
+    if handle_historical_reset_ingress(
+        client, text=text, mid=mid, provider_created_at=received_at,
+        provider_namespace=ingress_provider_namespace(s),
+        _current_boundary_read=True,
+    ):
+        return False
     existing_source = (
         InstagramBotMessage.objects.filter(mid=mid).first()
         if mid
@@ -17891,13 +17998,19 @@ def _apply_referral(sender_id: str, ref: dict) -> None:
 
 
 def handle_webhook_payload(
-    s: InstagramBotSettings, payload: dict, *, persistence_only: bool = False
+    s: InstagramBotSettings, payload: dict, *, persistence_only: bool = False,
+    _inbox_event_id: int | None = None,
 ) -> int:
     """Розбирає payload вебхука і кладе вхідні в чергу. Повертає к-сть доданих.
 
     Echo (повідомлення сторінки/менеджера) поки пропускаємо для черги — їх
     використає авто-перехоплення менеджером (Task 21).
     """
+    inbox_receipt = None
+    if _inbox_event_id is not None:
+        from management.services.ig_webhook_inbox import _validated_native_inbox_receipt
+
+        inbox_receipt = _validated_native_inbox_receipt(s, payload, _inbox_event_id)
     enq = 0
     for sender_id, recipient_id, msg, ref in _iter_events(payload):
         if not msg:
@@ -17930,31 +18043,52 @@ def handle_webhook_payload(
         if message_mid and not _valid_message_id(message_mid):
             log("warning", "invalid_message_id", f"[{len(message_mid)} chars]")
             continue
-        if ref:
-            try:
-                _apply_referral(sender_id, ref)
-            except Exception as exc:
-                log("warning", "referral", repr(exc))
-        media = _extract_media_urls(msg)
-        media_metadata = _provider_attachment_metadata(msg)
-        from management.services.ig_ad_context import ad_referral_media_metadata
-        media_metadata.extend(ad_referral_media_metadata(ref, first_index=len(media_metadata),
-            provider_message_id=str(msg.get("mid") or "")))
-        if enqueue_inbound(
-            s,
-            sender_id=sender_id,
-            text=msg.get("text", ""),
-            mid=msg.get("mid", ""),
-            source="webhook",
-            attachments=media,
-            attachment_metadata=media_metadata,
-            referral_payload=ref,
-            received_at=msg.get("_event_created_at"),
-            reply_to_provider_message_id=_reply_to_provider_message_id(msg),
-            quick_reply_payload=_quick_reply_payload(msg),
-            persistence_only=persistence_only,
-        ):
-            enq += 1
+        if inbox_receipt is not None and inbox_receipt["customer_igsid"] != sender_id:
+            raise ValueError("inbox_source_unproven")
+        from management.services.ig_commercial_episodes import commercial_episode_client_lock
+        from management.services.ig_funnel_reset import handle_historical_reset_ingress
+
+        client = IgClient.get_or_create_for_sender(sender_id)
+        # This is the first customer mutation boundary, including ad defaults.
+        # Keep it through enqueue; reset takes the same client lock. Accepted
+        # raw identity fences unknown-clock messages even if reset committed
+        # after an earlier drainer check but before this native boundary.
+        with commercial_episode_client_lock(client.pk):
+            if handle_historical_reset_ingress(
+                client, text=str(msg.get("text") or ""), mid=message_mid,
+                provider_created_at=msg.get("_event_created_at"),
+                provider_namespace=ingress_provider_namespace(s),
+                inbox_event_id=inbox_receipt["id"] if inbox_receipt else None,
+                payload_digest=inbox_receipt["payload_digest"] if inbox_receipt else "",
+                _current_boundary_read=True,
+            ):
+                continue
+            if ref:
+                try:
+                    _apply_referral(sender_id, ref)
+                except Exception as exc:
+                    log("warning", "referral", repr(exc))
+            media = _extract_media_urls(msg)
+            media_metadata = _provider_attachment_metadata(msg)
+            from management.services.ig_ad_context import ad_referral_media_metadata
+            media_metadata.extend(ad_referral_media_metadata(ref, first_index=len(media_metadata),
+                provider_message_id=str(msg.get("mid") or "")))
+            if enqueue_inbound(
+                s,
+                sender_id=sender_id,
+                text=msg.get("text", ""),
+                mid=msg.get("mid", ""),
+                source="webhook",
+                attachments=media,
+                attachment_metadata=media_metadata,
+                referral_payload=ref,
+                received_at=msg.get("_event_created_at"),
+                reply_to_provider_message_id=_reply_to_provider_message_id(msg),
+                quick_reply_payload=_quick_reply_payload(msg),
+                persistence_only=persistence_only,
+                _commercial_lock_held=True,
+            ):
+                enq += 1
     return enq
 
 

@@ -354,6 +354,9 @@ def manager_case_reason(revision, response=None):
         return "collaboration_review"
     if any(_MANAGER_REQUEST.search(text) for text in texts):
         return "customer_manager_request"
+    from management.services.ig_revision_checkout import requested_nonstandard_carrier
+    if requested_nonstandard_carrier(revision.client, revision.bundle_snapshot.get("sources") or ()):
+        return "customer_manager_request"
     if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)) and any(SUPPORT_RE.search(text) for text in texts):
         return "business_review"
     if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)):
@@ -795,6 +798,19 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             ),
             "authority": {"price_confirmed": False, "fulfillment_started": False},
         })
+        if reason == "customer_manager_request":
+            from management.services.ig_revision_checkout import requested_nonstandard_carrier
+            delivery_request = requested_nonstandard_carrier(client, revision.bundle_snapshot.get("sources") or ())
+            if delivery_request:
+                from management.services.ig_commerce_projection import capture_current_selection_lines
+                cart = capture_current_selection_lines(client.pk)
+                context["delivery_request"] = delivery_request
+                context["delivery_cart"] = [{"line_id": row["line_id"], "recipient_id": row["recipient_id"],
+                    "fields": row.get("fields") or {}} for row in cart.get("lines") or []]
+                context["required_decisions"] = ["requested_carrier_arrangement", "customer_delivery_confirmation"]
+                task.message_text = ("Клієнт просить інший спосіб доставки. Узгодити відправку вручну; "
+                    "стандартна сторінка оформлення використовує Нову пошту. Не замінювати вибір клієнта автоматично.\n"
+                    + delivery_request["source_quote"])
         if reason == "collaboration_review":
             context["collaboration_brief"] = collaboration
             context["cooperation_kind"] = "recruitment_service" if recruitment else "business" if business else "creator_or_other"
@@ -818,6 +834,14 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
                 context['current_business_cooperation'] = context['collaboration_brief'].get('business_cooperation') or {}
             task.message_text = _product_inquiry_case_message(task.message_text,
                 {'inquiries': context['source_questions']})
+            if reason == 'collaboration_review' and business:
+                from management.services.ig_business_cooperation import business_source_observations, render_business_observations
+                observations = business_source_observations(revision.bundle_snapshot.get('sources') or [])
+                if observations:
+                    # Current display supplement only. Never change schema-1
+                    # business facts or immutable historical case scopes.
+                    context['business_source_observations'] = observations
+                    task.message_text += '\n\n' + render_business_observations(observations)
             if task.event_key != event_key:
                 context.update(pending_anchor)
                 if reason == 'collaboration_review' and business:
@@ -866,6 +890,9 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             alert += "\n\nТочний запит про товар: " + " · ".join(questions)[:600]
         elif context.get('source_questions'):
             alert += '\n\nПитання клієнта: ' + ' · '.join(dict.fromkeys(row['question'] for row in context['source_questions']))[:600]
+        if context.get('business_source_observations'):
+            from management.services.ig_business_cooperation import render_business_observations
+            alert += '\n\n' + render_business_observations(context['business_source_observations'])[:1200]
         notified = notify_manager(
             alert,
             dedupe_key=notification_key, event_type="escalation", client=client,

@@ -399,12 +399,7 @@ def _parse_model_payload(payload) -> dict:
     return result
 
 
-_RECIPIENT_WORDS = {"себя": "self", "себе": "self", "myself": "self", "друга": "friend", "другу": "friend", "friend": "friend", "подруги": "friend_female", "подругу": "friend_female", "мами": "mother", "мамы": "mother", "mother": "mother", "тата": "father", "папы": "father", "father": "father",
-    # Voluntary beneficiary roles scope the customer's draft line. They do
-    # not establish a third party's identity or gift/packaging instructions.
-    "boyfriend": "boyfriend", "girlfriend": "girlfriend",
-    "сестри": "sister", "сестры": "sister", "сестре": "sister", "сестрі": "sister", "sister": "sister",
-    "брата": "brother", "брату": "brother", "братові": "brother", "brother": "brother"}
+from management.services.ig_recipient_planning import RECIPIENT_WORDS as _RECIPIENT_WORDS
 _ADD_ACTION = r"\b(?:добав(?:ьте|ь|ить)|додай(?:те)?|додати|add)\b"
 _REMOVE_ACTION = r"\b(?:убер(?:ите|и)|удал(?:ите|и|ить)|прибери|видали|remove|delete)\b"
 _REPLACE_ACTION = r"\b(?:замен(?:ите|и|ить)|замін(?:іть|и|ити)|replace|вместо|замість|instead\s+of)\b"
@@ -459,7 +454,7 @@ def _recipient(text):
         if (not _negated_action(before) and not re.search(
                 r"\b(?:не|ні|not|no)\s+(?:хочу|want|need)\b"
                 r"|\b(?:do|does|did)n['’]t\s+(?:want|need)\b", before, re.I)):
-            coordinated = re.match(r"\s+(?:или|або|чи|or|и|і|and)\s+"
+            coordinated = re.match(r"\s+(?:или|або|чи|or|и|і|й|та|and)\s+"
                 r"(?:(?:для|for)\s+)?(?:(?:мого|моего|моєї|моей|my)\s+)?(\w+)\b",
                 text[match.end():], re.I)
             if coordinated and coordinated.group(1).casefold() in _RECIPIENT_WORDS:
@@ -522,10 +517,10 @@ def _line_quantity(text, *, action):
     patterns = [r"\b(?:количество|кількість|quantity)\s*(?:(?:of\s+)?(?:футболк\w*|худі|худи|hoodies?|t-shirts?)\s*)?(?:[:=]|на|to)?\s*(\d{1,3})(?!\w)",
         r"\b(?:количество|кількість|quantity)[^.!?;\n]{0,48}?(?:\bна\b|\bto\b|[:=])\s*(\d{1,3})(?!\w)",
         r"(?<!\w)(\d{1,3})\s*(?:шт\.?|штук\w*|pieces?|items?)\b"]
-    if action in {"add", "update", "replace"}:
+    if action in {"add", "update", "replace", "configure"}:
         patterns.append(r"(?<!\w)(\d{1,3})\s*(?:футболк\w*|худі|худи|hoodies?|t-shirts?)\b")
     values = {int(match.group(1)) for pattern in patterns for match in re.finditer(pattern, text, re.I)}
-    if action == "add":
+    if action in {"add", "configure"}:
         # Match a quantity phrase, never rewrite number words globally: the
         # spoken "два XL" remains a size alias and reviewed titles are masked
         # by the canonical source resolver before this function is called.
@@ -536,8 +531,9 @@ def _line_quantity(text, *, action):
             "вісім": 8, "восемь": 8, "eight": 8, "дев'ять": 9, "дев’ять": 9, "девять": 9, "nine": 9,
             "десять": 10, "ten": 10}
         number = "|".join(re.escape(word) for word in numbers)
+        descriptors = r"(?:(?:такі|таку|такие|такую|самі|саму|самые|же|same|чорн\w*|черн\w*|біл\w*|бел\w*|black|white|blue|red|син\w*|червон\w*)\s+){0,4}"
         for match in re.finditer(r"(?<!\w)(" + number
-                + r")\s+(?:футболк\w*|худі|худи|hoodies?|t-shirts?|шт\.?|штук\w*|pieces?|items?)\b", text, re.I):
+                + r")\s+" + descriptors + r"(?:футболк\w*|худі|худи|hoodies?|t-shirts?|шт\.?|штук\w*|pieces?|items?)\b", text, re.I):
             if (_negated_action(text[:match.start()])
                 or re.search(r"\b(?:или|або|чи|or)\b", text, re.I)):
                 return None, "ambiguous_line_quantity"
@@ -553,8 +549,14 @@ def _source_product_reference(value, *, media_evidence=None, parsed_catalog_grap
     return resolve_product_reference(value, media_evidence=media_evidence, catalog_graph=parsed_catalog_graph)
 
 
-def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quantity_title_texts=(), parsed_catalog_graph=None):
+def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quantity_title_texts=(), parsed_catalog_graph=None, _recipient_configuration=True):
     """Produce bounded source intents without guessing a canonical cart line."""
+    from management.services.ig_recipient_planning import planning_operations, recipient_selector, affirmative_apparel_request
+    planned, planning_pending = planning_operations(text)
+    if planned or planning_pending:
+        if _source_clauses is not None and planned:
+            _source_clauses.extend(("", text) for _ in planned)
+        return planned, planning_pending
     current = _current_source_text(text)
     operations = []
     clauses = re.split(r"\.(?=\s|$)|[;!\n]+|\s+(?:и|і|and)\s+(?=" + _ADD_ACTION + "|" + _REMOVE_ACTION + "|" + _REPLACE_ACTION + ")", current, flags=re.I)
@@ -563,6 +565,10 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
             continue
         lowered = clause.casefold().replace("ё", "е")
         more = _affirmed_action(clause, _MORE_ACTION)
+        from management.services.ig_recipient_planning import leading_recipient
+        dative_same = bool(leading_recipient(clause) and re.search(
+            r"\b(?:таку\s+саму|такі\s+самі|такую\s+же|такие\s+же)\b", clause, re.I))
+        more = more or dative_same
         action_patterns = (("remove", _REMOVE_ACTION), ("replace", _REPLACE_ACTION),
             ("add", _ADD_ACTION), ("update", _UPDATE_ACTION))
         action = next((kind for kind, pattern in action_patterns if _affirmed_action(clause, pattern)), "")
@@ -590,6 +596,14 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
             if action == "update":
                 clause = correction.group(2)
                 lowered = clause.casefold()
+        scoped_recipient, recipient_quote, scoped_pending = recipient_selector(clause)
+        quantity_hint, quantity_pending = _line_quantity(quantity_clause, action="configure")
+        from management.services.ig_recipient_planning import leading_recipient
+        if _recipient_configuration and not action and scoped_recipient and (leading_recipient(clause) or not affirmative_apparel_request(clause)) and (re.search(r"https?://", clause)
+                or _source_size(clause) or _find_prefix_value(clause, _COLOR_WORDS)
+                or _find_prefix_value(clause, _FIT_WORDS) or _find_prefix_value(clause, _GARMENT_WORDS)
+                or quantity_hint is not None or quantity_pending):
+            action = "configure"
         if not action:
             if re.search(r"\b(?:другой|другую|інший|іншу|another|different)\s+(?:подарок|подарунок|gift)\b", lowered) and not _negated_action(lowered[:re.search(r"\b(?:другой|другую|інший|іншу|another|different)\b", lowered).start()]):
                 return (), "ambiguous_line_target"
@@ -640,6 +654,8 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
                 return (), "ambiguous_line_operation"
         elif len(unique_garments) > 1:
             return (), "ambiguous_line_target"
+        elif action == "configure":
+            target_text = recipient_quote
         elif action != "add":
             target_garment = garment
             target_text = clause
@@ -647,14 +663,17 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
                 separator = re.search(r"\b(?:на|to)\b", clause, re.I)
                 if separator and _recipient(clause[:separator.start()])[0]:
                     target_text, config_text = clause[:separator.start()], clause[separator.end():]
-        selector, selector_pending = _line_selector(target_text if action == "replace" else clause,
+        selector, selector_pending = _line_selector(target_text if action in {"replace", "configure"} else clause,
             include_ordinals=action != "add")
         if selector_pending:
             return (), selector_pending
-        target_recipient, target_pending = _recipient(target_text) if action != "add" else ("", "")
+        target_recipient, target_pending = ((scoped_recipient, scoped_pending) if action == "configure"
+            else _recipient(target_text) if action != "add" else ("", ""))
         if target_pending:
             return (), target_pending
         recipient, pending = _recipient(config_text) if action in {"add", "replace"} or config_text != clause else ("", "")
+        if action == "add" and dative_same:
+            recipient, pending = scoped_recipient, scoped_pending
         if pending:
             return (), pending
         fields = {key: value for key, value in (("color", _find_prefix_value(config_text, _COLOR_WORDS)),
@@ -702,12 +721,12 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
             target_product_id, product_id = target_product_id or product_id, None
         if action == "replace" and not (garment or product_id or fields) and not ((separator or instead) and target_text.strip() and config_text.strip()):
             return (), "ambiguous_line_operation"
-        copy_previous = more and not (garment or product_id)
+        copy_previous = more and not product_id and (dative_same or not garment)
         if action == "add" and copy_previous:
             selector = {"target_line_id": "", "target_line_index": None}
         operations.append(CommerceLineOperation(operation=action, **selector,
             target_garment_type=target_garment, exact_product_id=product_id,
-            field_updates=fields, garment_type=garment if action in {"add", "replace"} else "",
+            field_updates=fields, garment_type=garment if action in {"add", "replace", "configure"} else "",
             recipient_id=recipient, copy_previous=copy_previous,
             target_product_id=target_product_id, target_recipient_id=target_recipient))
         if _source_clauses is not None:
@@ -729,7 +748,7 @@ def line_operation_source_clauses(text, *, _quantity_title_texts=(), parsed_cata
     return () if pending else tuple(clauses)
 
 
-def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(), parsed_catalog_graph=None) -> CommerceTurnRequest:
+def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(), parsed_catalog_graph=None, _recipient_configuration=True) -> CommerceTurnRequest:
     """Parse only bounded facts; never infer a payable product from free text."""
     raw = str(text or "").strip()
     current = _current_source_text(raw)
@@ -876,8 +895,9 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
         withdrawals["size"] = withdrawn_size
 
     line_operations, pending_line = _line_operations(raw, media_evidence=media_evidence,
-        _quantity_title_texts=_quantity_title_texts, parsed_catalog_graph=parsed_catalog_graph)
-    pending_line = pending_line or recipient_pending
+        _quantity_title_texts=_quantity_title_texts, parsed_catalog_graph=parsed_catalog_graph,
+        _recipient_configuration=_recipient_configuration)
+    pending_line = pending_line or ("" if line_operations and all(op.operation == "plan" for op in line_operations) else recipient_pending)
     if pending == "multiple_product_links" and not line_operations:
         pending_line = pending_line or "multiple_product_links"
     if reset_requested and not line_operations and not exchange_requested:

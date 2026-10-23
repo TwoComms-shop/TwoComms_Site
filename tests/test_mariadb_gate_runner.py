@@ -205,6 +205,79 @@ class MariaDbGateRunnerTests(unittest.TestCase):
 
         self.runner = run_mariadb_gate
 
+    def test_command_deadline_is_shared_and_preserves_shorter_child_limit(self):
+        command = FakeCommandRunner()
+        run = self.runner._deadline_command_runner(command, deadline=200)
+        with mock.patch.object(self.runner.time, "monotonic", side_effect=[100, 170, 201]):
+            run(["first"], timeout=60)
+            run(["second"])
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run(["must-not-launch"])
+        self.assertEqual([kwargs["timeout"] for _args, kwargs in command.calls], [60, 30])
+
+    def test_every_gate_child_uses_remaining_monotonic_budget(self):
+        clock = [100]
+        command = FakeCommandRunner()
+        def advancing_command(args, **kwargs):
+            result = command(args, **kwargs)
+            clock[0] += 25
+            return result
+        with mock.patch.object(self.runner.time, "monotonic", side_effect=lambda: clock[0]):
+            result = self.runner.run_gate(
+                server_mode="external", admin=FakeAdmin(), command_runner=advancing_command,
+                project_root=PROJECT_ROOT, environ={}, output=io.StringIO(),
+            )
+        self.assertEqual(result["cleanup"], "verified")
+        self.assertGreaterEqual(len(command.calls), 6)
+        self.assertEqual([kwargs["timeout"] for _args, kwargs in command.calls],
+                         [self.runner.COMMAND_BUDGET_SECONDS - 25 * i for i in range(len(command.calls))])
+
+    def test_expired_budget_does_not_launch_next_child_and_still_verifies_cleanup(self):
+        clock = [100]
+        admin = FakeAdmin()
+        command = FakeCommandRunner()
+        def exhausting_command(args, **kwargs):
+            result = command(args, **kwargs)
+            clock[0] += self.runner.COMMAND_BUDGET_SECONDS + 1
+            return result
+        evidence = io.StringIO()
+        with mock.patch.object(self.runner.time, "monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaises(self.runner.GateError) as raised:
+                self.runner.run_gate(
+                    server_mode="external", admin=admin, command_runner=exhausting_command,
+                    project_root=PROJECT_ROOT, environ={}, output=evidence,
+                )
+        self.assertIsInstance(raised.exception.primary_error, subprocess.TimeoutExpired)
+        self.assertEqual(len(command.calls), 1)
+        self.assertEqual([call[0] for call in admin.calls][-4:],
+                         ["drop_user", "drop_database", "verify_cleanup", "close"])
+        self.assertNotIn("MariaDB gate passed", evidence.getvalue())
+
+    def test_child_timeout_is_sanitized_and_cleanup_preserves_primary_failure(self):
+        for fail_cleanup in (False, True):
+            with self.subTest(fail_cleanup=fail_cleanup):
+                admin = FakeAdmin(fail_cleanup=fail_cleanup)
+                command = FakeCommandRunner()
+                def timed_out_command(args, **kwargs):
+                    if args[2] == "test":
+                        self.assertGreater(kwargs["timeout"], 0)
+                        raise subprocess.TimeoutExpired(args, kwargs["timeout"],
+                            output="customer=private-secret", stderr="password=private-secret")
+                    return command(args, **kwargs)
+                evidence = io.StringIO()
+                with self.assertRaises(self.runner.GateError) as raised:
+                    self.runner.run_gate(
+                        server_mode="external", admin=admin, command_runner=timed_out_command,
+                        project_root=PROJECT_ROOT, environ={}, output=evidence,
+                    )
+                self.assertIsInstance(raised.exception.primary_error, subprocess.TimeoutExpired)
+                self.assertEqual(bool(raised.exception.cleanup_errors), fail_cleanup)
+                self.assertEqual([call[0] for call in admin.calls][-4:],
+                                 ["drop_user", "drop_database", "verify_cleanup", "close"])
+                self.assertIn("stage=test_suite", evidence.getvalue())
+                self.assertNotIn("private-secret", evidence.getvalue())
+                self.assertNotIn("MariaDB gate passed", evidence.getvalue())
+
     def test_prerequisite_restoration_uses_only_original_captured_values(self):
         database = "test_twocomms_ig_0123456789ab"
         admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
@@ -1809,6 +1882,7 @@ print(json.dumps({
             "management.tests_ig_size_grid_authority_20261022",
             "management.tests_ig_standard_funnel_20261022",
             "storefront.tests.test_size_guide_authority_20261022",
+            "storefront.tests.test_ig_checkout_recipient_labels_20261023",
         }
         expected.update({
             "management.tests_ig_qa23_turn_parsing",
@@ -1817,6 +1891,27 @@ print(json.dumps({
             "management.tests_ig_qa23_conversion_causes",
             "management.tests_ig_qa23_communication_preferences",
             "management.tests_ig_qa23_terse_questions",
+            "management.tests_ig_q23_cooperation_policy",
+            "management.tests_ig_qa23_catalog_browsing",
+            "management.tests_ig_fresh_conversation_reset_20261023",
+            "management.tests_ig_lesia_prompt_budget_20261023",
+            "management.tests_ig_multi_recipient_journey_20261023",
+            "management.tests_ig_positive_stock_autonomy_20261023",
+            "management.tests_ig_stock_clause_apposition_20261023",
+            "management.tests_ig_preoffer_readiness_20261023",
+            "management.tests_ig_checkout_terminalization",
+            "management.tests_ig_revision_live",
+            "management.tests_ig_catalog_color_identity_20261023",
+            "management.tests_ig_followup_policies",
+            "management.tests_ig_w4_followup_copy",
+            "management.tests_ig_followup_delivery_fsm",
+            "management.tests_ig_conversion_publication",
+            "management.tests_ig_seed_playbooks_b028",
+            "management.tests_ig_required_policy",
+            "management.tests_ig_required_policy_integration",
+            "management.tests_ig_policy_publication",
+            "management.tests_ig_catalog_choice_presentations",
+            "management.tests_ig_catalog_category_discovery",
         })
         self.assertEqual(set(modules), expected)
         self.assertEqual(len(modules), len(expected))

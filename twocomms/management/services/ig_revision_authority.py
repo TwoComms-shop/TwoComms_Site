@@ -36,8 +36,10 @@ CLAIM_PAYMENT = "payment"
 CLAIM_ORDER = "order"
 CLAIM_SHIPMENT = "shipment"
 CLAIM_ASSISTED_COMMERCE = "assisted_commerce_offer"
+CLAIM_INVENTORY_AVAILABILITY = "retail_inventory_availability"
 
 FACT_CLAIMS = frozenset({
+    CLAIM_INVENTORY_AVAILABILITY,
     CLAIM_ASSISTED_COMMERCE,
     CLAIM_SOURCE_PREFERENCES,
     CLAIM_CATALOG_ASSET_REFERENCES,
@@ -268,6 +270,26 @@ def _base_binding(claim: str, client, episode, selector, projection, **subjects)
         "subjects": subjects,
         "authority_digest": _digest(projection),
     }
+
+
+def _inventory_availability_binding(client, control, episode):
+    from management.services.ig_inventory_availability import (validate_inventory_capture, verified_inventory_capture,
+        resolve_inventory_reference, inventory_capture_fingerprint)
+    from management.services.ig_reply_authority import inventory_availability_authorities
+    capture = control.get("inventory_availability_capture")
+    reference = control.get("inventory_availability_reference")
+    if reference is not None:
+        capture = resolve_inventory_reference(client.pk, reference)
+    if (not verified_inventory_capture(capture) or capture.get("client_id") != client.pk
+        or not inventory_availability_authorities(capture)):
+        return None, "inventory_availability_unverified"
+    reason = "" if reference is not None else validate_inventory_capture(client.pk, capture)
+    if reason:
+        return None, reason
+    selector = ({"inventory_availability_reference": reference} if reference is not None
+        else {"inventory_availability_capture": capture})
+    return _base_binding(CLAIM_INVENTORY_AVAILABILITY, client, episode, selector,
+        {"inventory_fingerprint": inventory_capture_fingerprint(capture)}), ""
 
 
 def _episode_projection(episode) -> dict:
@@ -881,7 +903,9 @@ def build_revision_authority_bindings(
     offers: list[dict] = []
     reasons: list[str] = []
     for claim in requested:
-        if claim == CLAIM_ASSISTED_COMMERCE:
+        if claim == CLAIM_INVENTORY_AVAILABILITY:
+            binding, reason = _inventory_availability_binding(fresh, safe_control, episode)
+        elif claim == CLAIM_ASSISTED_COMMERCE:
             binding, reason = _assisted_commerce_binding(fresh, safe_control, episode)
         elif claim == CLAIM_SOURCE_PREFERENCES:
             if "source_cart_fence" in safe_control:

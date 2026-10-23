@@ -45,11 +45,27 @@ class MadeToOrderPublicationTests(SimpleTestCase):
         from management.knowledge.scenarios import SCENARIO_INSTRUCTIONS, reviewed_scenario_values
 
         keys = ("custom_print", "collaboration", "ugc", "size", "objection")
-        self.assertEqual(tuple(row["key"] for row in SCENARIO_INSTRUCTIONS), keys)
+        localized_keys = tuple("public_cooperation_" + locale for locale in ("uk", "ru", "en"))
+        self.assertEqual(tuple(row["key"] for row in SCENARIO_INSTRUCTIONS), (*keys, *localized_keys))
         for key in keys:
             values = reviewed_scenario_values(key)
             self.assertEqual(values["programme_metadata"]["required_for_scenarios"], [key])
             self.assertEqual(values["allowed_actions"], [])
+            self.assertEqual(values["priority"], 10)
+            self.assertEqual(values["trust_scope"], "public_policy")
+            self.assertEqual(values["locale"], "all")
+        self.assertEqual(len(set(localized_keys)), 3)
+        for locale, key in zip(("uk", "ru", "en"), localized_keys, strict=True):
+            values = reviewed_scenario_values(key)
+            self.assertEqual(values["locale"], locale)
+            self.assertEqual(values["programme_metadata"]["required_for_scenarios"], ["business_cooperation"])
+            self.assertEqual(values["tags"], ["collaboration"])
+            self.assertEqual(values["triggers"], ["business_cooperation"])
+            self.assertEqual(values["allowed_actions"], [])
+            self.assertEqual(values["priority"], 10)
+            self.assertEqual(values["trust_scope"], "public_policy")
+            self.assertEqual(values["reviewed_source"]["source_id"],
+                f"management/bot_knowledge/modules/cooperation.{locale}.md")
         detached = reviewed_scenario_values("objection")
         detached["programme_metadata"]["required_for_scenarios"].append("forged")
         self.assertEqual(reviewed_scenario_values("objection")["programme_metadata"]["required_for_scenarios"], ["objection"])

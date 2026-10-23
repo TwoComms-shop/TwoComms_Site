@@ -293,7 +293,7 @@ def _rules_by_size(rules: Iterable[Any]) -> dict[str, Any]:
     return result
 
 
-def resolve_effective_sizes(product, option_key, variant=None) -> list[dict]:
+def resolve_effective_sizes(product, option_key, variant=None, *, ignore_variant_stock=False) -> list[dict]:
     """Return ordered, enabled rows after product and color/fit overrides."""
 
     key = normalize_option_key(option_key)
@@ -327,7 +327,7 @@ def resolve_effective_sizes(product, option_key, variant=None) -> list[dict]:
         color_rule = variant_rules.get(row["size"])
         if color_rule is not None:
             enabled = color_rule.is_enabled and (
-                color_rule.stock is None or color_rule.stock > 0
+                ignore_variant_stock or color_rule.stock is None or color_rule.stock > 0
             )
         if enabled:
             row["is_enabled"] = True

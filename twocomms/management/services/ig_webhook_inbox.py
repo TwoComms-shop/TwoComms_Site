@@ -6,6 +6,7 @@ import json
 import re
 from datetime import timedelta
 from dataclasses import dataclass
+from contextlib import nullcontext
 
 from django.conf import settings
 from django.db import DatabaseError, IntegrityError, models, transaction
@@ -280,10 +281,97 @@ def reconcile_owned_template_echo(event_id, settings_obj):
         return {"reconciled": True, "event_id": row.pk, "effect_id": effect.pk, "revision_id": effect.revision_id}
 
 
+def _archive_historical_customer_event(row, *, namespace, owner_id, now, client=None, _reply_boundary_held=False):
+    """Keep the accepted raw receipt without creating/replaying a USER row."""
+    from management.models import IgClient
+    from management.services.ig_funnel_reset import handle_historical_reset_ingress
+    from management.services.instagram_bot import _provider_event_datetime, _postback_message_fields
+
+    if row.namespace != namespace or not owner_id or row.owner_id != owner_id:
+        return False
+    event = _row_event(row.payload)
+    if not isinstance(event, dict):
+        return False
+    message = event.get("message") or {}
+    if not isinstance(message, dict) or message.get("is_echo"):
+        return False
+    sender = event.get("sender") or {}
+    recipient = event.get("recipient") or {}
+    if (not isinstance(sender, dict) or not isinstance(recipient, dict)
+        or str(sender.get("id") or "") != row.customer_igsid
+        or str(recipient.get("id") or "") != owner_id
+        or row.customer_igsid == owner_id):
+        return False
+    if client is None:
+        client = IgClient.objects.filter(igsid=row.customer_igsid).first()
+    if client is None or client.igsid != row.customer_igsid:
+        return False
+    # Use the native event clock parser (seconds/milliseconds), never an
+    # invented receive-time clock. Boolean timestamps prove no chronology.
+    timestamp = event.get("timestamp")
+    provider_at = None if isinstance(timestamp, bool) else _provider_event_datetime(timestamp or None)
+    postback = event.get("postback") or {}
+    if not isinstance(postback, dict):
+        postback = {}
+    native_message = message or _postback_message_fields(postback)
+    if not handle_historical_reset_ingress(client, text=str(native_message.get("text") or ""),
+        mid=str(native_message.get("mid") or ""), provider_created_at=provider_at,
+        provider_namespace=namespace, inbox_event_id=row.pk, payload_digest=row.payload_digest,
+        _reply_boundary_held=_reply_boundary_held):
+        return False
+    row.processed_at = now
+    row.reason = "fresh_conversation_reset_history"
+    row.attempts = models.F("attempts") + 1
+    row.next_attempt_at = None
+    row.last_error = ""
+    # Preserve payload and its receipt digest exactly; this is archive-only,
+    # not a claim that a transcript message has been materialized.
+    row.save(update_fields=["processed_at", "reason", "attempts", "next_attempt_at", "last_error"])
+    return True
+
+
+def archive_pre_reset_inbox(client, *, boundary, now):
+    """Archive available preaccepted customer rows inside the reset transaction.
+
+    Skip a row already held by a drainer to avoid lock-order inversion. Its
+    next drain (or enqueue's client-lock fence) uses the same durable boundary.
+    """
+    from management.models import IgWebhookInboxEvent
+
+    namespace = boundary.get("provider_namespace") or ""
+    if not namespace:
+        return 0
+    owner_id = namespace.split(":", 1)[-1]
+    rows = IgWebhookInboxEvent.objects.select_for_update(skip_locked=True).filter(
+        namespace=namespace, owner_id=owner_id, customer_igsid=client.igsid,
+        decision=IgWebhookInboxEvent.Decision.ACCEPTED, processed_at__isnull=True,
+        pk__lte=boundary.get("inbox_highwater") or 0,
+    ).order_by("id")
+    return sum(_archive_historical_customer_event(row, namespace=namespace,
+               owner_id=owner_id, now=now, client=client, _reply_boundary_held=True) for row in rows)
+
+
+def _validated_native_inbox_receipt(settings_obj, payload, event_id):
+    """Bind native parsing to the exact accepted owner-scoped raw receipt."""
+    from management.models import IgWebhookInboxEvent
+
+    namespace, owner = _namespace(settings_obj)
+    if not isinstance(event_id, int) or isinstance(event_id, bool) or event_id <= 0:
+        raise ValueError("inbox_source_unproven")
+    row = IgWebhookInboxEvent.objects.filter(
+        pk=event_id, namespace=namespace, owner_id=owner,
+        decision=IgWebhookInboxEvent.Decision.ACCEPTED, processed_at__isnull=True,
+    ).values("id", "customer_igsid", "payload_digest").first()
+    if row is None or hashlib.sha256(_canonical(payload)).hexdigest() != row["payload_digest"]:
+        raise ValueError("inbox_source_unproven")
+    return row
+
+
 def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
     """Consume one namespace under a short DB transaction; root wires daemon."""
-    from management.models import IgWebhookInboxEvent
+    from management.models import IgClient, IgWebhookInboxEvent
     from management.services import instagram_bot as bot
+    from management.services.ig_commercial_episodes import commercial_episode_client_lock
     from management.services.ig_revision_echo_integration import RevisionEchoDeferred
     from management.services.ig_db_circuit import (
         DbActiveCapacityError, DbCircuitOpen, db_active_slot, record_db_failure, release_idle_connection,
@@ -296,8 +384,21 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
         row = None
         try:
             with db_active_slot():
-                with transaction.atomic():
+                # Acquire client ownership before the inbox row/transaction:
+                # reset uses the same client→inbox order. Candidate reads are
+                # outside atomic so waiting for reset cannot pin an old view.
+                candidate = IgWebhookInboxEvent.objects.filter(
+                    namespace=namespace, decision=IgWebhookInboxEvent.Decision.ACCEPTED,
+                    processed_at__isnull=True,
+                ).filter(models.Q(next_attempt_at__isnull=True) | models.Q(next_attempt_at__lte=now)
+                ).order_by("attempts", "id").values("id", "customer_igsid").first()
+                if candidate is None:
+                    break
+                client_id = IgClient.objects.filter(igsid=candidate["customer_igsid"]).values_list("pk", flat=True).first()
+                client_boundary = commercial_episode_client_lock(client_id) if client_id else nullcontext()
+                with client_boundary, transaction.atomic():
                     row = (IgWebhookInboxEvent.objects.select_for_update(skip_locked=True).filter(
+                        pk=candidate["id"],
                         namespace=namespace,
                         decision=IgWebhookInboxEvent.Decision.ACCEPTED,
                         processed_at__isnull=True,
@@ -305,10 +406,13 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
                         models.Q(next_attempt_at__isnull=True) | models.Q(next_attempt_at__lte=now),
                     ).order_by("attempts", "id").first())
                     if row is None:
-                        break
+                        continue
                     if row.reason == "attribution_only":
                         row.processed_at = timezone.now()
                         row.save(update_fields=["processed_at"])
+                        processed += 1
+                        continue
+                    if _archive_historical_customer_event(row, namespace=namespace, owner_id=_owner, now=now):
                         processed += 1
                         continue
                     if _mid_namespace_state(row, namespace) == "blocked":
@@ -330,7 +434,10 @@ def drain_webhook_inbox(settings_obj, *, limit: int = 25) -> int:
 
                         _project_sent_history(template_effect.revision_id)
                     else:
-                        bot.handle_webhook_payload(settings_obj, row.payload, persistence_only=True)
+                        bot.handle_webhook_payload(settings_obj, row.payload, persistence_only=True, _inbox_event_id=row.pk)
+                        if _archive_historical_customer_event(row, namespace=namespace, owner_id=_owner, now=now):
+                            processed += 1
+                            continue
                     if _mid_namespace_state(row, namespace, require_materialized=True) == "blocked":
                         row.decision = IgWebhookInboxEvent.Decision.BLOCKED
                         row.reason = "provider_mid_namespace_unproven"

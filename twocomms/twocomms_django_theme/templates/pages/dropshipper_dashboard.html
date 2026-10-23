@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load static %}
+{% load static i18n %}
 {% load compress %}
 
 {% block title %}Дропшип панель — Головна • TwoComms{% endblock %}
@@ -14,6 +14,11 @@
   {% include "partials/dropshipper_sidebar.html" with active_tab="dashboard" %}
 
   <main class="ds-main" data-tab-container>
+    <div class="ds-container" role="note" data-partner-test-notice>
+      <p><strong>{% trans 'Кабінет партнера — TEST' %}</strong>. {% trans 'Можливості кабінету обмежені; поточні умови та замовлення погоджуйте в Telegram.' %}
+      <a href="https://t.me/twocomms" target="_blank" rel="noopener">{% trans 'Обговорити умови з менеджером' %}</a></p>
+      <p>{% trans 'Показані розрахунки кабінету не активують нові партнерські умови. Індивідуальні ціни та зміни підтверджує менеджер.' %}</p>
+    </div>
     <section class="ds-tab-panel is-active" data-tab-panel="main">
       <div class="ds-container">
         <section class="ds-hero" id="ds-hero" data-animate>

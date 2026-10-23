@@ -456,6 +456,12 @@ def _current_capture(client_id, expected_selection_revision, now, *, _remaining_
             boundary=boundary, captured_at=now,
             max_read_queries=_remaining_reads() if _remaining_reads else MAX_CONTEXT_READS))
         state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
+    from management.services.ig_inventory_availability import SLOT as INVENTORY_SLOT, capture_inventory_context
+    components["slots"][INVENTORY_SLOT] = capture_inventory_context(
+        client_id, boundary=boundary, captured_at=now, current_source_cart=cart,
+        max_read_queries=_remaining_reads() if _remaining_reads else None,
+        _catalog_readback=catalog_readback if catalog_readback.get("source_capture_digest") else None)
+    state = assemble_client_state(boundary=boundary, components=components, captured_at=now)
     return AdminStateResult(state, "captured", source_reason or payment_reason, now.isoformat(), revision)
 
 

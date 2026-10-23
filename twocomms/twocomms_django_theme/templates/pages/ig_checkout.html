@@ -135,6 +135,7 @@
               <div class="ig-item__body">
                 <div class="ig-item__heading">
                   <h3>{{ item.title }}</h3>
+                  {% if item.recipient_label %}<span class="ig-assisted-kind" data-beneficiary-label>{{ item.recipient_label }}</span>{% endif %}
                   {% if item.is_custom %}<span class="ig-assisted-kind">{% if html_lang == 'ru' %}Индивидуальный товар{% elif html_lang == 'en' %}Custom item{% else %}Індивідуальний товар{% endif %}</span>{% endif %}
                   <strong data-cart-line-total>{% if item.line_total == None %}{% if html_lang == 'ru' %}После согласования{% elif html_lang == 'en' %}After confirmation{% else %}Після погодження{% endif %}{% else %}{{ item.line_total }} {{ proposal.currency }}{% endif %}</strong>
                   <span class="ig-item__unit-price" data-cart-unit-price{% if item.quantity <= 1 or item.unit_price == None %} hidden{% endif %}>{{ item.quantity }} × {{ item.unit_price }} {{ proposal.currency }}</span>

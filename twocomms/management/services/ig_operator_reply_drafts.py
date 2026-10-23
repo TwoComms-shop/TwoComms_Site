@@ -159,9 +159,13 @@ def _capture(client_id, source_id, epoch, *, actor, allow_delay_apology=False):
         profile_language=client.language, reset_floor=floor, watermark_message_id=source.pk,
         watermark_event_at=timezone.now())
     publication = load_active_policy_snapshot(settings)
+    from management.services.ig_cooperation_policy import capture_cooperation_policy, TITLE
+    cooperation_policy = capture_cooperation_policy(publication, [history[-1]])
+    cooperation_ids = set(cooperation_policy.metadata()["module_ids"]) if cooperation_policy is not None else set()
     # Only published, active public instructions; no mutable draft rows or private notes.
     instructions = [row for row in publication.snapshot["instructions"]
         if row.get("active") and row.get("trust_scope") == "public_policy"
+        and (not str(row.get("title") or "").startswith(TITLE) or row.get("id") in cooperation_ids)
         and (set(row.get("tags") or ()) & {"collaboration", "recruitment", "core", "global"}
              or "collaboration" in (row.get("programme_metadata") or {}).get("required_for_scenarios", []))]
     task_rows = list(client.followup_tasks.filter(kind="manager_task")
@@ -205,6 +209,12 @@ def _capture(client_id, source_id, epoch, *, actor, allow_delay_apology=False):
     facts = {"employment": recruitment_service_for_sources(own), "business": business_cooperation_for_sources(own),
         "manager_tasks": tasks, "delay_apology_allowed": delay_allowed,
         "delay_cause": "unknown", "sending_authority": False}
+    from management.services.ig_business_cooperation import business_source_observations
+    observations = business_source_observations(own)
+    if observations:
+        facts["business_source_observations"] = observations
+    if cooperation_policy is not None:
+        facts["cooperation_public_policy"] = cooperation_policy.metadata()
     compiled = compile_policy(
         immutable_authority=[PolicyModule("authority:operator_draft", OPERATOR_POLICY),
             PolicyModule("authority:reply_language", reply_language_instruction(language))],
@@ -212,7 +222,8 @@ def _capture(client_id, source_id, epoch, *, actor, allow_delay_apology=False):
             PolicyModule("core:live_directives", settings.knowledge_base)] if settings.knowledge_base else
             [PolicyModule("core:published_prompt", settings.system_prompt)],
         verified_dynamic_facts=[PolicyModule("facts:operator_case", json.dumps(facts, ensure_ascii=False))],
-        playbooks=[PolicyModule(row["id"], row["body"], priority=row["priority"]) for row in instructions])
+        playbooks=[PolicyModule(row["id"], row["body"], priority=row["priority"],
+            required=row["id"] in cooperation_ids) for row in instructions])
     binding = {"schema": VERSION, "client_id": client.pk, "actor_id": actor.pk,
         "source_id": source.pk, "permission_epoch": epoch, "settings_epoch": settings.reply_permission_epoch,
         "namespace": namespace, "reset_floor": floor, "source_hashes": hashes,
@@ -226,7 +237,7 @@ def _capture(client_id, source_id, epoch, *, actor, allow_delay_apology=False):
         "allow_delay_apology": bool(allow_delay_apology)}
     return {"binding": binding, "capture_hash": human_payload_digest(binding), "history": history,
         "prompt": compiled.text, "facts": facts, "source": source, "client": client, "actor": actor,
-        "language": language}
+        "language": language, "_cooperation_policy": cooperation_policy}
 
 
 def validate_operator_generation_receipt(receipt, *, client, source, actor=None, text=None, document_id=None):
@@ -282,7 +293,9 @@ def _validated_reply(parsed, capture):
     if (capture["source"].pk not in parsed["evidence_message_ids"]
             or not set(parsed["evidence_message_ids"]) <= {row["message_id"] for row in users}):
         raise HumanReplyRejected("operator_output_invalid")
-    if (not validate_reply_truth(text, context=ReplyTruthContext()).valid
+    from management.services.ig_response_plan import _business_approval_reason
+    if (not validate_reply_truth(text, context=ReplyTruthContext(cooperation_policy=capture.get("_cooperation_policy"))).valid
+            or _business_approval_reason(SimpleNamespace(reply_text=text), capture["facts"].get("business"), capture.get("_cooperation_policy"))
             or recruitment_response_reason(users, SimpleNamespace(reply_text=text))
             or reply_language_mismatch(text, capture["language"]) or text.count("?") > 1
             or re.search(r"\[/?(?:item|objhandle|manager|stage)|```|https?://", text, re.I)

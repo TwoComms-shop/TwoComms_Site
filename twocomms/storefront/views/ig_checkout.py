@@ -834,6 +834,53 @@ def _hosted_item_context(item, frozen, proposal, assisted):
     return value
 
 
+def _proposal_recipient_labels(proposal, revision, *, language, ordered_items, assisted):
+    """Presentation only: retain the saved quote's exact item/beneficiary map."""
+    from management.services.ig_checkout_cart_provenance import CartProvenanceError, capture_proposal_provenance
+    snapshot = revision.snapshot if revision is not None and isinstance(revision.snapshot, dict) else {}
+    if "source_cart_binding" not in snapshot or assisted.get("ready") is not True:
+        return {}
+    episode = proposal.commercial_episode
+    if (episode is None or proposal.deal.client_id != proposal.client_id
+        or episode.client_id != proposal.client_id or episode.deal_id != proposal.deal_id
+        or revision.proposal_id != proposal.pk or revision.revision != proposal.revision):
+        return {}
+    rows = [{"proposal_item_id": item.pk, "position": item.position,
+        "product_id": item.product_id, "qty": item.quantity, "size": item.size or "",
+        "fit_option_code": item.fit_code or "", "color_variant_id": item.color_variant_id,
+        "option_values": item.option_values or {}, "unit_price": str(item.quoted_unit_price),
+        "line_total": str(item.quoted_line_total)} for item in ordered_items]
+    custom = {row["proposal_item_id"]: row for row in assisted.get("custom_rows", ())}
+    if any(item.product_id is None and item.pk not in custom for item in ordered_items):
+        return {}
+    if custom:
+        from management.services.ig_checkout_payment import CUSTOM_CART_KEYS
+        for item, row in zip(ordered_items, rows, strict=True):
+            if item.pk in custom:
+                row.update({key: custom[item.pk][key] for key in CUSTOM_CART_KEYS})
+                row.update(fit_option_label=item.fit_label or "", option_labels=item.option_labels or {})
+    owner = {"proposal_id": str(proposal.public_id), "proposal_pk": proposal.pk,
+        "revision_id": revision.pk, "revision": proposal.revision, "client_id": proposal.client_id,
+        "deal_id": proposal.deal_id, "episode_id": proposal.commercial_episode_id}
+    try:
+        proof = capture_proposal_provenance(revision_snapshot=snapshot, owner=owner, proposal_items=rows)
+    except CartProvenanceError:
+        return {}
+    labels = {
+        "uk": {"self": "Для вас", "boyfriend": "Для хлопця", "girlfriend": "Для дівчини",
+            "friend": "Для друга", "friend_female": "Для подруги", "mother": "Для мами",
+            "father": "Для тата", "sister": "Для сестри", "brother": "Для брата"},
+        "ru": {"self": "Для вас", "boyfriend": "Для парня", "girlfriend": "Для девушки",
+            "friend": "Для друга", "friend_female": "Для подруги", "mother": "Для мамы",
+            "father": "Для папы", "sister": "Для сестры", "brother": "Для брата"},
+        "en": {"self": "For you", "boyfriend": "For your boyfriend", "girlfriend": "For your girlfriend",
+            "friend": "For your friend", "friend_female": "For your friend", "mother": "For your mother",
+            "father": "For your father", "sister": "For your sister", "brother": "For your brother"},
+    }.get(language, {})
+    return {group["proposal_item_id"]: labels.get(proof["binding"]["quote_line_map"][group["quote_position"]]["recipient_id"], "")
+        for group in proof.get("proposal_items", ())}
+
+
 def _proposal_context(proposal, *, request, grant_id="", form_error="", form_error_field="", form_values=None):
     from management.models import IgCheckoutRevision
     revision = IgCheckoutRevision.objects.filter(proposal=proposal, revision=proposal.revision).order_by('-id').first()
@@ -962,10 +1009,14 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
     _cart_grant, cart_token = _load_grant(request, proposal)
     cart_state = checkout_cart_state(proposal, cart_token)
     _record_displayed_shipping(request, proposal, cart_state)
+    ordered_items = list(proposal.items.order_by('position', 'id'))
+    recipient_labels = _proposal_recipient_labels(proposal, revision, language=language,
+        ordered_items=ordered_items, assisted=assisted)
     rendered_items = ([_hosted_item_context(item, frozen_items[index] if index < len(frozen_items) else {}, proposal, assisted)
-        for index, item in enumerate(proposal.items.order_by('position', 'id'))]
+        for index, item in enumerate(ordered_items)]
         if assisted.get("ready") is True else [])
     for index, item in enumerate(rendered_items):
+        item["recipient_label"] = recipient_labels.get(ordered_items[index].pk, "")
         if index < len(cart_state["items"]):
             item["line_id"] = cart_state["items"][index]["line_id"]
     if cart_state["review_needed"] and proposal.cart_amendments.filter(source_body__pending_review=True).exists():
@@ -988,7 +1039,7 @@ def _proposal_context(proposal, *, request, grant_id="", form_error="", form_err
                 continue
             row = _item_context(old)
             row.update(line_id=requested["line_id"], quantity=requested["quantity"], unit_price=None, line_total=None,
-                is_custom=bool(requested.get("is_custom")))
+                is_custom=bool(requested.get("is_custom")), recipient_label=recipient_labels.get(old.pk, ""))
             rendered_items.append(row)
     elif cart_state["blocked_reason"] == "empty_cart":
         state = "empty_cart"

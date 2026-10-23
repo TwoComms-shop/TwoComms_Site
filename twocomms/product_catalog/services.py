@@ -721,6 +721,7 @@ def variant_allows_purchase(
     fit_code: str = "",
     size: str = "",
     option_values=None,
+    ignore_variant_stock=False,
 ) -> bool:
     """Validate a persisted cart selection against current variant rules."""
 
@@ -753,11 +754,13 @@ def variant_allows_purchase(
                     product,
                     option_key,
                     variant=color_variant,
+                    **({"ignore_variant_stock": True} if ignore_variant_stock else {}),
                 )
             }
             if normalize_size_value(wanted_size) not in allowed:
                 return False
-    return variant_allows_size(color_variant, wanted_size, fit)
+    return variant_allows_size(color_variant, wanted_size, fit,
+        **({"ignore_variant_stock": True} if ignore_variant_stock else {}))
 
 
 def product_fit_notes(product) -> dict:
@@ -776,7 +779,7 @@ def disabled_sizes_for_variant(variant, fit_code: str = "") -> list:
     return sorted({r.size for r in rules})
 
 
-def variant_allows_size(variant, size: str, fit_code: str = "") -> bool:
+def variant_allows_size(variant, size: str, fit_code: str = "", *, ignore_variant_stock=False) -> bool:
     """Resolve general and fit-specific colour size availability."""
 
     wanted_size = str(size or "").strip().upper()
@@ -793,7 +796,7 @@ def variant_allows_size(variant, size: str, fit_code: str = "") -> bool:
     general = next((rule for rule in reversed(rules) if not rule.fit_code), None)
     specific = next((rule for rule in reversed(rules) if rule.fit_code == wanted_fit), None)
     rule = specific or general
-    return bool(rule and rule.is_enabled and (rule.stock is None or rule.stock > 0))
+    return bool(rule and rule.is_enabled and (ignore_variant_stock or rule.stock is None or rule.stock > 0))
 
 
 # ---------------------------------------------------------------------------

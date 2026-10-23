@@ -389,7 +389,9 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             requirements = [hint for hint in requirements if hint["source_id"] in selected]
         context_requirements = _context_requirements(requirements)
         own_requirements = list(requirements)
-        explicit = bool(context_requirements) or any(hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") in {"changed", "withdrawn"} for hint in requirements)
+        # Ordinary gifts and multiple beneficiaries are retail selection
+        # context, not reasons to stop an otherwise available purchase.
+        explicit = bool(context_requirements.get("delivery_preference")) or any(hint.get("request_detected") or hint.get("custom_print_hint") or hint.get("supersession_hint") in {"changed", "withdrawn"} for hint in requirements)
         from management.services.ig_business_cooperation import business_cooperation_for_sources
         business = business_cooperation_for_sources([
             {"message_id": row.pk, "role": "user", "text": row.text} for row in source_rows])
@@ -421,7 +423,13 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         source_ids = {row.pk for row in source_rows}
         selection_requested = any(proof.get("source_message_id") in source_ids for line in lines
             for proof in line["preferences"].get("evidence", {}).values())
-        notification_optin_requested = any(is_restock_interest(row.text) for row in source_rows)
+        from management.services.ig_commerce_turns import _current_source_text
+        notification_optin_requested = any(is_restock_interest(row.text)
+            and is_restock_interest(_current_source_text(row.text)) for row in source_rows)
+        notification_only_explicit = notification_optin_requested and not explicit
+        # Requested future notification keeps its own signed physical-review
+        # workflow. Current usable inventory alone cannot grant that provenance.
+        explicit = explicit or notification_optin_requested
         availability_requested = any((re.search(r"(?:наявн|налич|доступн|availab|in\s+stock)", row.text, re.I) and "?" in row.text)
             or is_restock_interest(row.text)
             for row in source_rows)
@@ -454,11 +462,14 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
                 return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
                     "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
                     "pure": False, "reason": "unchanged_hard_deadline"}
-        # Ledger quantity is an observation, never physical availability
-        # authority. A customer's exact selection or stock question requires
-        # the same scoped manager check for positive, zero and unknown counts.
-        physical_confirmation_requested = availability_requested or (
-            selection_requested and any(line["target"] and line["configuration_digest"] for line in lines))
+        from management.services.ig_inventory_availability import capture_inventory_availability
+        inventory = (capture_inventory_availability(client.pk, current_source_cart=cart, now=now)
+            if availability_requested or selection_requested else {})
+        available_ids = {row["line_id"] for row in inventory.get("lines") or [] if row.get("status") == "available"}
+        exact_ids = {line["line_id"] for line in lines if line["target"] and line["configuration_digest"]}
+        physical_confirmation_requested = bool((availability_requested or selection_requested) and exact_ids - available_ids)
+        if availability_requested and not exact_ids:
+            physical_confirmation_requested = True
         inquiries = (_unverified_configuration_inquiries(revision, cart, source_ids)
             if availability_requested or selection_requested else [])
         if any(_explicit_configuration_change(item) or re.search(
@@ -468,6 +479,12 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             # exact unlisted wish. Do not create a physical check for the old
             # selected SKU and accidentally answer another colour/lining.
             return {"created": False, "reason": "desired_configuration_requires_review", "pure": False}
+        if not explicit and exact_ids and exact_ids.issubset(available_ids) and not physical_confirmation_requested:
+            return {"created": False, "reason": "inventory_available", "pure": False}
+        if not explicit and physical_confirmation_requested and available_ids:
+            # Review only unresolved exact goods. Positive siblings continue
+            # normal selection and independent questions under inventory facts.
+            lines = [line for line in lines if line["line_id"] not in available_ids]
         if not explicit and not physical_confirmation_requested:
             if (prior and _verified(prior, "request")
                     and prior.envelope.get("cart_identity") == _cart_identity(cart)
@@ -488,7 +505,7 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
             return {"created": False, "task_id": prior.task_id, "request_id": str(prior.pk),
                 "request_digest": prior.envelope_hmac, "ack_facts": {"review_requested": True, "arrival_guaranteed": False},
                 "pure": False, "reason": "unchanged_customer_requirements"}
-        if (prior and not explicit and (not notification_optin_requested or (
+        if (prior and (not explicit or notification_only_explicit) and (not notification_optin_requested or (
                     prior.source_id == max(row.pk for row in source_rows) and prior.revision_id == revision.pk))
                 and not changes_requirement and _verified(prior, "request")
                 and prior.envelope.get("cart_identity") == _cart_identity(cart)

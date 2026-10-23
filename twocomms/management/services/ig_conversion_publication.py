@@ -1,4 +1,4 @@
-"""Publish only the five reviewed owner scenarios through existing CAS APIs."""
+"""Publish reviewed owner scenarios and localized trade policy using existing CAS."""
 from hashlib import sha256
 
 from django.db import transaction
@@ -26,7 +26,8 @@ def _matching(item, values):
     scalar = ("title", "body", "active", "priority", "locale", "trust_scope")
     return (all(item.get(key) == values[key] for key in scalar)
         and all(sorted(item.get(key) or ()) == sorted(values[key]) for key in ("tags", "triggers", "allowed_actions"))
-        and item.get("programme_metadata", {}) == values["programme_metadata"])
+        and item.get("programme_metadata", {}) == values["programme_metadata"]
+        and item.get("reviewed_source", {}) == values.get("reviewed_source", {}))
 
 
 def _plan():
@@ -96,9 +97,26 @@ def _publish(expected_draft_hash, expected_head_hash):
         if scenario not in admission["covered_scenarios"] or admission["coverage_status"] != "declared_covered":
             raise PolicyPublicationError("owner_scenario_coverage_missing", "Reviewed scenario is not admitted")
         coverage[scenario] = {"status": admission["coverage_status"], "required_ids": preview["required_ids"]}
+    # Localized trade facts are required only on the existing owned business
+    # facet. Creator/Direct and ordinary retail previews must not receive them.
+    from management.services.ig_cooperation_policy import LANGUAGES, TITLE
+    for locale in LANGUAGES:
+        preview = preview_instruction_draft(expected_revision=state.revision,
+            expected_snapshot_hash=state.snapshot_hash, locale=locale, client_tags={"collaboration", locale},
+            active_triggers={"collaboration", "business_cooperation"}, budget_chars=48000)
+        selected = preview.get("selected") or []
+        trade = [item for item in selected if item.get("title") == f"{TITLE} ({locale})"]
+        if len(trade) != 1 or trade[0]["id"] not in preview["required_ids"]:
+            raise PolicyPublicationError("cooperation_policy_coverage_missing", "Reviewed business module is not admitted")
+        coverage["business_cooperation_" + locale] = {"required_id": trade[0]["id"]}
+    for triggers, tags in (({"collaboration"}, {"collaboration"}), (set(), {"product"})):
+        preview = preview_instruction_draft(expected_revision=state.revision,
+            expected_snapshot_hash=state.snapshot_hash, client_tags=tags, active_triggers=triggers)
+        if any(str(item.get("title") or "").startswith(TITLE) for item in preview.get("selected") or []):
+            raise PolicyPublicationError("cooperation_policy_relevance_invalid", "Trade policy entered another route")
     result = publish_instruction_policy(expected_draft_revision=state.revision,
         expected_draft_hash=state.snapshot_hash, expected_head_id=head.publication_id,
-        expected_head_hash=head.snapshot_hash, note=f"{VERSION}: five owner-reviewed required scenarios")
+        expected_head_hash=head.snapshot_hash, note=f"{VERSION}: reviewed scenarios and localized business policy")
     return {"mode": "applied", "version": VERSION, "changed": result.changed,
         "previous_head_id": head.publication_id, "previous_head_hash": head.snapshot_hash,
         "head_id": result.publication.pk, "head_hash": result.publication.snapshot_hash,

@@ -87,16 +87,32 @@ def _reservations(source, identity, now, *, lock=False):
     return protected, _primitive(rows)
 
 
-def _allocation(target, *, lock=False):
+def _allocation(target, *, lock=False, _prepared=None):
     from product_catalog.models import ProductInventoryPolicy, VariantSizeRule, VariantBlankLink
     from productcolors.models import ProductColorVariant
     from warehouse.models import StockItem
-    policy = _inventory_read(ProductInventoryPolicy.objects.filter(product_id=target["product_id"]), lock).first()
-    variant = _inventory_read(ProductColorVariant.objects.filter(pk=target["color_variant_id"], product_id=target["product_id"]), lock).first()
+    if _prepared is not None and lock:
+        raise StockSyncError("inventory_preload_not_readonly")
+    prepared = _prepared if isinstance(_prepared, dict) else {}
+    policy = (prepared["policy"] if "policy" in prepared else
+        _inventory_read(ProductInventoryPolicy.objects.filter(product_id=target["product_id"]), lock).first())
+    variant = (prepared["variant"] if "variant" in prepared else
+        _inventory_read(ProductColorVariant.objects.filter(pk=target["color_variant_id"], product_id=target["product_id"]), lock).first())
+    if ((policy is not None and (not isinstance(policy, ProductInventoryPolicy) or policy.product_id != target["product_id"]))
+        or (variant is not None and (not isinstance(variant, ProductColorVariant)
+            or variant.pk != target["color_variant_id"] or variant.product_id != target["product_id"]))):
+        raise StockSyncError("inventory_preload_scope_changed")
     if not policy or not variant:
         raise StockSyncError("inventory_mapping_unknown")
-    rules = list(_inventory_read(VariantSizeRule.objects.filter(variant=variant, size__iexact=target["size"],
-        fit_code__in=["", target["fit_option_code"]]), lock).order_by("pk")[:3])
+    if "rules" in prepared:
+        if (not isinstance(prepared["rules"], (tuple, list)) or len(prepared["rules"]) > MAX_RESERVATIONS
+            or any(not isinstance(rule, VariantSizeRule) or rule.variant_id != variant.pk for rule in prepared["rules"])):
+            raise StockSyncError("inventory_preload_scope_changed")
+        rules = sorted([rule for rule in prepared["rules"] if rule.size.casefold() == target["size"].casefold()
+            and rule.fit_code in {"", target["fit_option_code"]}], key=lambda row: row.pk)
+    else:
+        rules = list(_inventory_read(VariantSizeRule.objects.filter(variant=variant, size__iexact=target["size"],
+            fit_code__in=["", target["fit_option_code"]]), lock).order_by("pk")[:3])
     if len(rules) > 2:
         raise StockSyncError("inventory_mapping_ambiguous")
     specific = next((rule for rule in rules if rule.fit_code == target["fit_option_code"]), None)

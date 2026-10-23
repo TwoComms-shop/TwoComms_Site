@@ -157,7 +157,10 @@ class CatalogCategoryDiscoveryTests(SimpleTestCase):
             authorized_price_ranges: tuple = ((800, 1000),)
         function = self.legacy_function("_provider_reply_truth_context", _extract_authoritative_price_claim=
             lambda client, text, control: (text, {**control, "_price_claim_invalid": True}, None),
-            _assisted_checkout_locale=lambda client: client.language)
+            _assisted_checkout_locale=lambda client: client.language,
+            # This AST fixture isolates category URLs and price rejection;
+            # stock authority has its own native tests and remains delegated.
+            _stock_reply_truth_context=lambda client, text, context: context)
         with patch("management.services.ig_reply_authority.build_reply_truth_context", return_value=Context()), \
             patch.object(discovery, "capture_product_category", side_effect=lambda pk, locale: self.category(pk)):
             result = function(SimpleNamespace(language="uk"), {"show_products": "101", "url": "https://evil.test"}, "Інше питання")

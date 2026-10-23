@@ -255,9 +255,11 @@ class NativeStockPromptInputTests(_RestockFixture, TestCase):
         system, canonical = self.capture_model_input("Чи є це худі в розмірі M у наявності?", 0)
         self.assertIn("observation", str(canonical["slots"]["fulfillment.review"]["value"]))
 
-    def test_positive_ledger_known_price_model_input_has_no_physical_confirmation(self):
+    def test_positive_ledger_known_price_model_input_has_independent_inventory_authority(self):
         _, canonical = self.capture_model_input("Чи є це худі в розмірі M у наявності та яка його ціна?", 100)
-        self.assertEqual(canonical["slots"]["fulfillment.review"]["value"]["status"], "pending")
+        self.assertEqual(canonical["slots"]["inventory.availability"]["status"], "confirmed")
+        self.assertEqual(canonical["slots"]["inventory.availability"]["value"]["lines"][0]["status"], "available")
+        self.assertIsNone(canonical["slots"]["fulfillment.review"]["value"])
 
     def test_unlisted_color_model_input_keeps_exact_wish_and_configured_choices(self):
         system, _ = self.capture_model_input("Хочу це худі кольору мокко.", 100)
@@ -290,29 +292,27 @@ class NativeStockAuthorityTests(_RestockFixture, TestCase):
         self.assertTrue(result["ready"], result)
         return Decision.objects.get(pk=result["decision_id"])
 
-    def test_positive_count_requires_exact_manager_check_with_source_excerpt(self):
+    def test_positive_count_continues_without_manager_check(self):
         self.rule.stock = self.variant.stock = 8
         self.rule.save(update_fields=["stock"])
         self.variant.save(update_fields=["stock"])
-        request, _, _ = self.case()
-        projection = reviews.fulfillment_review_projection(self.client_row.pk, now=self.now)
-        self.assertEqual(request.envelope["lines"][0]["observation"]["status"], "available")
-        self.assertEqual(projection["status"], "pending")
-        self.assertTrue(projection["can_decide"])
-        self.assertEqual(projection["decision_mode"], "initial")
-        self.assertFalse(projection["decision_recorded"])
-        self.assertIsNone(projection["decision"])
-        self.assertEqual(projection["source_excerpts"][0]["text"], request.source.text)
-        self.assertEqual(projection["source_excerpts"][0]["message_id"], request.source_id)
+        source = self.source("Ця позиція є в наявності?")
+        revision, _ = self.revision(source)
+        result = reviews.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
+        self.assertEqual(result["reason"], "inventory_available", result)
+        self.assertFalse(result["ready"])
+        self.assertFalse(Request.objects.exists())
         self.assertFalse(Decision.objects.exists())
 
-    def test_exact_selection_requires_check_even_with_positive_count(self):
+    def test_exact_selection_with_positive_count_needs_no_check(self):
         self.rule.stock = self.variant.stock = 8
         self.rule.save(update_fields=["stock"])
         self.variant.save(update_fields=["stock"])
-        request, _, _ = self.case(source=self.choice)
-        self.assertEqual(request.source_id, self.choice.pk)
-        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
+        revision, _ = self.revision(self.choice)
+        result = reviews.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
+        self.assertEqual(result["reason"], "inventory_available", result)
+        self.assertFalse(Request.objects.exists())
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 0)
 
     def test_same_question_and_raw_count_edit_reuse_one_case(self):
         original, revision, _ = self.case(source=self.choice)
@@ -322,8 +322,11 @@ class NativeStockAuthorityTests(_RestockFixture, TestCase):
         self.rule.save(update_fields=["stock"])
         self.variant.save(update_fields=["stock"])
         for offset in (1, 2):
-            question, _, result = self.case(at=self.now + timedelta(seconds=offset))
-            self.assertEqual(question.pk, original.pk)
+            source = self.source("Ця позиція є в наявності?", at=self.now + timedelta(seconds=offset))
+            next_revision, _ = self.revision(source)
+            result = reviews.prepare_fulfillment_review(next_revision, settings_obj=self.settings, now=source.provider_created_at)
+            self.assertEqual(result["reason"], "inventory_available", result)
+            self.assertFalse(result["ready"])
             self.assertFalse(result["created"])
         unrelated = self.source("Яка ціна?", at=self.now + timedelta(seconds=3))
         revision, _ = self.revision(unrelated)
@@ -346,6 +349,30 @@ class NativeStockAuthorityTests(_RestockFixture, TestCase):
         again = subscriptions.prepare_request(revision, source, settings_obj=self.settings, now=source.provider_created_at)
         self.assertEqual(again.invitation_id, result.invitation_id)
         self.assertEqual(Request.objects.count(), 2)
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 2)
+
+    def test_positive_stock_notification_optin_reuses_exact_source_revision_case(self):
+        from management.services import ig_restock_subscriptions as subscriptions
+        self.rule.stock = self.variant.stock = 8
+        self.rule.save(update_fields=["stock"])
+        self.variant.save(update_fields=["stock"])
+        revision, _ = self.revision(self.choice)
+        ordinary = reviews.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
+        self.assertEqual(ordinary["reason"], "inventory_available", ordinary)
+        self.assertFalse(Request.objects.exists())
+        result, source, revision, _ = self.request()
+        self.assertIsNotNone(result.invitation_id, result.reason)
+        request = Request.objects.get()
+        self.assertEqual((request.source_id, request.revision_id), (source.pk, revision.pk))
+        replay = subscriptions.prepare_request(revision, source, settings_obj=self.settings, now=source.provider_created_at)
+        self.assertEqual(replay.invitation_id, result.invitation_id)
+        self.assertEqual(Request.objects.get().pk, request.pk)
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
+        next_result, next_source, next_revision, _ = self.request()
+        self.assertIsNotNone(next_result.invitation_id, next_result.reason)
+        self.assertNotEqual(next_result.invitation_id, result.invitation_id)
+        next_request = Request.objects.exclude(pk=request.pk).get()
+        self.assertEqual((next_request.source_id, next_request.revision_id), (next_source.pk, next_revision.pk))
         self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 2)
 
     def test_unknown_colour_question_creates_no_wrong_selected_black_stock_case(self):
@@ -547,9 +574,6 @@ class NativeWaitingAcceptanceTests(_RestockFixture, TransactionTestCase):
         from management.services.ig_revision_outbox import plan_revision_effects
         from management.services.ig_revision_delivery import drain_group, ProviderPartResult
         from management.models import IgRevisionDeliveryEffect
-        self.rule.stock = self.variant.stock = 8
-        self.rule.save(update_fields=["stock"])
-        self.variant.save(update_fields=["stock"])
         original, _, _ = self.case(source=self.choice)
         source = self.source("What is the price?", at=self.now+timedelta(seconds=2))
         revision, token = self.revision(source)

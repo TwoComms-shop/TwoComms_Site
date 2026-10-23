@@ -150,11 +150,15 @@ def _current_physical_order(client, episode):
     return _client_order_queryset(client).filter(pk=episode.intended_order_id).first()
 
 
-def _line_target(lines, operation, *, active_index, active_garment=""):
+def _line_target(lines, operation, *, active_index, active_garment="", source_time=""):
     selectors = []
     if operation.target_recipient_id:
+        from management.services.ig_recipient_planning import resolve_recipient_selector
+        recipient = resolve_recipient_selector(lines, operation.target_recipient_id, source_time=source_time)
+        if not recipient:
+            return None, "ambiguous_recipient"
         selectors.append({index for index, line in enumerate(lines)
-            if line.get("recipient_id", "self") == operation.target_recipient_id})
+            if line.get("recipient_id", "self") == recipient})
     if operation.target_product_id is not None:
         product_id = operation.target_product_id
         if not isinstance(product_id, int) or isinstance(product_id, bool) or product_id <= 0:
@@ -181,6 +185,7 @@ def _line_target(lines, operation, *, active_index, active_garment=""):
 def _apply_line_operations(before, request, source, *, copy_projection=None):
     """Pure all-or-nothing batch over this session; no invoice/order mutation."""
     from management.services.ig_commerce_types import CommerceLineOperation
+    from management.services.ig_recipient_planning import source_event_time
     operations = request.line_operations
     if not operations or len(operations) > MAX_LINE_OPERATIONS or any(not isinstance(item, CommerceLineOperation) for item in operations):
         return None, [], "ambiguous_line_operation"
@@ -195,7 +200,10 @@ def _apply_line_operations(before, request, source, *, copy_projection=None):
     active_id = lines[original_active].get("line_id") if 0 <= original_active < len(lines) else ""
     facts = []
     for ordinal, operation in enumerate(operations):
-        if operation.operation not in {"add", "replace", "remove", "select", "update"}:
+        from management.services.ig_recipient_planning import leading_recipient, operation_source_clause
+        own_clause = operation_source_clause(getattr(source, "text", ""), ordinal)
+        dative_copy = bool(operation.copy_previous and leading_recipient(own_clause))
+        if operation.operation not in {"add", "replace", "remove", "select", "update", "plan", "configure"}:
             return None, [], "ambiguous_line_operation"
         if any(key not in _LINE_FIELDS for key in operation.field_updates):
             return None, [], "ambiguous_line_operation"
@@ -211,35 +219,100 @@ def _apply_line_operations(before, request, source, *, copy_projection=None):
         if operation.exact_product_id is not None and (not isinstance(operation.exact_product_id, int)
             or isinstance(operation.exact_product_id, bool) or operation.exact_product_id <= 0):
             return None, [], "ambiguous_line_operation"
-        if operation.operation == "add":
+        if operation.operation in {"add", "plan"}:
             if (operation.target_line_id or operation.target_line_index is not None
                 or operation.target_garment_type or operation.target_product_id is not None or operation.target_recipient_id):
                 return None, [], "ambiguous_line_target"
-            if len(lines) >= MAX_SELECTION_LINES:
+            planned_targets = [index for index, row in enumerate(lines)
+                if dative_copy and row.get("recipient_plan") and not row.get("product_id")
+                and row.get("recipient_id") == operation.recipient_id]
+            if len(planned_targets) > 1:
+                return None, [], "ambiguous_line_target"
+            if len(lines) >= MAX_SELECTION_LINES and not planned_targets:
                 return None, [], "line_limit_reached"
-            line = {"line_id": f"line:{source.pk}:{ordinal}", "quantity": 1, "recipient_id": "self"}
+            if operation.operation == "plan":
+                from management.services.ig_recipient_planning import VERSION, RECIPIENT_WORDS
+                if (before.get("lines") or updates or operation.exact_product_id or operation.copy_previous
+                    or operation.recipient_id not in set(RECIPIENT_WORDS.values())
+                    or not all(item.operation == "plan" for item in operations)):
+                    return None, [], "ambiguous_line_target"
+                line = {"line_id": f"line:{source.pk}:{ordinal}", "recipient_id": operation.recipient_id,
+                    "recipient_plan": {"schema": VERSION, "source_message_id": source.pk,
+                        "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest(),
+                        "operation_index": ordinal, "recipient_id": operation.recipient_id,
+                        "garment_type": operation.garment_type, "observed_at": source_event_time(source)}}
+            else:
+                line = (deepcopy(lines[planned_targets[0]]) if planned_targets else
+                    {"line_id": f"line:{source.pk}:{ordinal}", "quantity": 1, "recipient_id": "self"})
             copy_evidence = {}
             if operation.copy_previous:
-                if ordinal or source.reply_to_provider_message_id or copy_projection.get("line_count") != 1:
+                if ordinal or source.reply_to_provider_message_id or (not dative_copy and copy_projection.get("line_count") != 1):
                     return None, [], "ambiguous_line_target"
+                if dative_copy:
+                    # New-recipient anaphora must name a recent, unique
+                    # source-owned print. Never borrow a stale active draft.
+                    known = [row for row in before.get("lines") or [] if row.get("product_id")]
+                    if (len(known) != 1 or copy_projection.get("line_count") != len(before.get("lines") or [])
+                        or copy_projection.get("line_id") != known[0]["line_id"]
+                        or (copy_projection.get("values") or {}).get("product_id") != known[0]["product_id"]
+                        or any(row.get("recipient_id", "self") == operation.recipient_id for index, row in enumerate(lines)
+                            if index not in planned_targets)):
+                        return None, [], "ambiguous_line_target"
+                    prior = known[0]
+                    try:
+                        observed = datetime.fromisoformat((prior.get("recipient_reference") or {}).get("observed_at", ""))
+                        current = datetime.fromisoformat(source_event_time(source))
+                        recent = observed.tzinfo is not None and current.tzinfo is not None and timedelta(0) <= current - observed <= timedelta(hours=24)
+                    except (TypeError, ValueError):
+                        recent = False
+                    if (not recent or not updates.get("quantity") or not operation.recipient_id
+                        or operation.recipient_id == prior.get("recipient_id", "self")):
+                        return None, [], "ambiguous_line_target"
                 copied = copy_projection.get("values") or {}
                 if not copied:
                     return None, [], "copy_source_unverified"
                 copy_evidence = {key: deepcopy(proof) for key, proof in (copy_projection.get("evidence") or {}).items()
                     if key in {"product_id", "size", "color", "fit_option_code", "garment_type"}}
-                line.update({key: value for key, value in copied.items()
-                    if key in {"product_id", "size", "color", "fit_option_code", "garment_type"}})
-                line["recipient_id"] = copy_projection.get("recipient_id") or "self"
-                if operation.recipient_id and operation.recipient_id != line["recipient_id"]:
+                copied_recipient = copy_projection.get("recipient_id") or "self"
+                copy_values = {key: value for key, value in copied.items()
+                    if key in {"product_id", "size", "color", "fit_option_code", "garment_type"}}
+                for key in tuple(copy_values):
+                    own_preference = planned_targets and key != "product_id" and key in line
+                    other_person_measurement = (operation.recipient_id and operation.recipient_id != copied_recipient
+                        and key in {"size", "fit_option_code"})
+                    if own_preference or other_person_measurement:
+                        copy_values.pop(key, None)
+                        copy_evidence.pop(key, None)
+                line.update(copy_values)
+                if not planned_targets:
+                    line["recipient_id"] = copied_recipient
+                if operation.recipient_id and operation.recipient_id != copied_recipient and not planned_targets:
                     for key in ("size", "fit_option_code"):
                         line.pop(key, None)
                         copy_evidence.pop(key, None)
-            previous = None
-            lines.append(line)
-            target = len(lines) - 1
+            previous = deepcopy(lines[planned_targets[0]]) if planned_targets else None
+            if planned_targets:
+                target = planned_targets[0]
+                lines[target] = line
+            else:
+                lines.append(line)
+                target = len(lines) - 1
         else:
             target, reason = _line_target(lines, operation, active_index=original_active,
-                active_garment=(copy_projection.get("values") or {}).get("garment_type", ""))
+                active_garment=(copy_projection.get("values") or {}).get("garment_type", ""), source_time=source_event_time(source))
+            from management.services.ig_recipient_planning import leading_recipient
+            new_recipient = (reason == "missing_line_target" and operation.operation == "configure"
+                and leading_recipient(own_clause) and operation.target_recipient_id
+                and not operation.target_recipient_id.startswith("reference:")
+                and not any(row.get("recipient_id", "self") == operation.target_recipient_id for row in lines)
+                and operation.exact_product_id and operation.garment_type and updates.get("quantity")
+                and not operation.target_line_id and operation.target_line_index is None
+                and len(lines) < MAX_SELECTION_LINES)
+            if new_recipient:
+                # A literal new beneficiary with independently specified SKU,
+                # garment and units creates a row; no prior choices are copied.
+                target, reason = len(lines), ""
+                lines.append({"line_id": f"line:{source.pk}:{ordinal}", "recipient_id": operation.target_recipient_id})
             if reason:
                 return None, [], reason
             line = lines[target]
@@ -264,19 +337,51 @@ def _apply_line_operations(before, request, source, *, copy_projection=None):
                     "recipient_id": line.get("recipient_id", "self"), "values": {}, "changes": {}})
                 continue
             if operation.operation == "replace" or (operation.recipient_id and operation.recipient_id != line.get("recipient_id", "self")):
+                prior_plan = deepcopy(line.get("recipient_plan"))
+                changed_recipient = operation.recipient_id and operation.recipient_id != line.get("recipient_id", "self")
                 line = {"line_id": line["line_id"], "quantity": 1,
                     "recipient_id": operation.recipient_id or line.get("recipient_id", "self")}
+                if prior_plan and not changed_recipient:
+                    line["recipient_plan"] = prior_plan
+                    if "quantity" in previous:
+                        line["quantity"] = previous["quantity"]
+                    else:
+                        line.pop("quantity", None)
+                elif prior_plan and changed_recipient:
+                    from management.services.ig_recipient_planning import VERSION
+                    line.pop("quantity", None)
+                    line["recipient_plan"] = {"schema": VERSION, "source_message_id": source.pk,
+                        "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest(),
+                        "operation_index": ordinal, "recipient_id": operation.recipient_id,
+                        "garment_type": operation.garment_type, "observed_at": source_event_time(source)}
+                lines[target] = line
+            elif (operation.operation == "configure" and operation.garment_type
+                and line.get("garment_type") and operation.garment_type != line["garment_type"]):
+                line = {key: deepcopy(value) for key, value in line.items()
+                    if key in {"line_id", "recipient_id", "recipient_plan"}}
                 lines[target] = line
         if operation.exact_product_id:
             # Identity replacement invalidates every old product-scoped value.
             if line.get("product_id") not in (None, operation.exact_product_id):
+                origin = deepcopy(line.get("recipient_plan")) if operation.operation == "configure" else None
+                prior_quantity = line.get("quantity")
                 line = {"line_id": line["line_id"], "quantity": 1, "recipient_id": line.get("recipient_id", "self")}
+                if origin:
+                    line["recipient_plan"] = origin
+                    if prior_quantity is None:
+                        line.pop("quantity", None)
+                    else:
+                        line["quantity"] = prior_quantity
                 lines[target] = line
             line["product_id"] = operation.exact_product_id
         if operation.garment_type:
             line["garment_type"] = operation.garment_type
         if operation.recipient_id:
             line["recipient_id"] = operation.recipient_id
+        if (operation.operation == "configure" and not operation.target_recipient_id.startswith("reference:")) or dative_copy:
+            line["recipient_reference"] = {"source_message_id": source.pk,
+                "source_digest": hashlib.sha256(str(source.text or "").encode()).hexdigest(),
+                "observed_at": source_event_time(source)}
         if "color" in updates and line.get("color") != updates["color"]:
             line.pop("color_variant_id", None)
         line.update(updates)
@@ -765,6 +870,21 @@ def apply_turn(
             raise CommerceRevisionConflict("catalog_choice_source_unverified")
     else:
         source_request = parse_turn(source.text)
+        if source_request.line_operations and all(op.operation == "configure" for op in source_request.line_operations):
+            # Recipient-scoped configuration targets a standing multi-person
+            # plan. Keep the established scalar single-recipient behavior when
+            # no such plan exists, after validating the exact incoming source.
+            current_plan = IgCommerceSelectionSession.objects.filter(client=locked_client, open_slot=1).first()
+            from management.services.ig_recipient_planning import leading_recipient, operation_source_clause
+            if (not current_plan or not any(row.get("recipient_plan") for row in current_plan.lines)) and not leading_recipient(operation_source_clause(source.text)):
+                if _line_source_request(source, locked_client, request, original=source_request) is None:
+                    raise CommerceRevisionConflict("line_source_unverified")
+                producer = dict(request.source_binding).get("producer")
+                from management.services.ig_commerce_source_identity import resolve_source_product_request
+                source_request = parse_turn(source.text, _recipient_configuration=False)
+                request = resolve_source_product_request(locked_client, source, source_request)
+                if producer:
+                    request = dataclasses.replace(request, source_binding={**dict(request.source_binding), "producer": producer})
         business_observation = _business_cart_observation_reason(source.text, request, source_request)
         if business_observation:
             _non_mutation(locked_client, source, business_observation, classification="neutral")
@@ -890,6 +1010,11 @@ def apply_turn(
     if line_mode:
         from management.services.ig_commerce_projection import source_preferences_for
         copy_projection = historical_copy or source_preferences_for(locked_client)
+        from management.services.ig_recipient_planning import leading_recipient, operation_source_clause
+        if (not historical_copy and len(request.line_operations) == 1 and request.line_operations[0].copy_previous
+            and leading_recipient(operation_source_clause(source.text))):
+            known = [row for row in session.lines if row.get("product_id")]
+            copy_projection = source_preferences_for(locked_client, line_id=known[0]["line_id"]) if len(known) == 1 else {}
     repeat_allowed = bool(physical_order and (physical_order.payment_status == "paid"
         or (request.new_order_requested and source_request.new_order_requested)))
     repeat_started = False
@@ -958,7 +1083,12 @@ def apply_turn(
 
     line_facts = []
     withdrawn = {}
-    if line_mode:
+    from management.services.ig_recipient_planning import unscoped_group_choice
+    if unscoped_group_choice(before, request):
+        after["pending_clarification"] = "ambiguous_line_target"
+        action, accepted = "recipient_plan_clarification", False
+        reasons.append("ambiguous_line_target")
+    elif line_mode:
         line_reason = request.pending_line_clarification or repeat_preview_reason
         if physical_order and not repeat_started:
             line_reason = "existing_order_amendment_or_new"

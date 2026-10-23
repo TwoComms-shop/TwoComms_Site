@@ -611,6 +611,9 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     from management.services.ig_fulfillment_context import SLOT as FULFILLMENT_SLOT, capture_fulfillment_context
     components["slots"]["capture"][FULFILLMENT_SLOT] = capture_fulfillment_context(
         client, boundary=boundary, captured_at=captured_at, current_source_cart=source_cart)
+    from management.services.ig_inventory_availability import SLOT as INVENTORY_SLOT, capture_inventory_context
+    components["slots"]["capture"][INVENTORY_SLOT] = capture_inventory_context(
+        client, boundary=boundary, captured_at=captured_at, current_source_cart=source_cart)
     if client._has_waiting_list:
         from management.services.ig_restock_waiting_list_context import capture_waiting_list_context
         components["slots"]["capture"].update(capture_waiting_list_context(

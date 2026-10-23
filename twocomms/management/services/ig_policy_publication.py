@@ -235,6 +235,12 @@ def _instruction_item(row) -> dict:
 def _reviewed_source(value, body):
     from management.services.ig_brand_source import BrandSourceError, validate_reviewed_source
 
+    if isinstance(value, dict) and str(value.get("source_id") or "").startswith("management/bot_knowledge/modules/cooperation."):
+        from management.services.ig_cooperation_policy import validate_reviewed_source as validate_cooperation
+        try:
+            return validate_cooperation(value, body)
+        except ValueError as exc:
+            raise PolicyPublicationError("cooperation_source_body_mismatch", "reviewed cooperation provenance is invalid") from exc
     try:
         return validate_reviewed_source(value, body)
     except BrandSourceError as exc:

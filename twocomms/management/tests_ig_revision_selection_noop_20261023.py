@@ -131,11 +131,8 @@ class NativeSelectionNoOpTests(_RestockFixture, TransactionTestCase):
         transport.assert_not_called()
 
     def test_price_question_keeps_existing_review_and_exact_source_choices(self):
-        # As in the existing known-price continuation fixture, a catalog ledger
-        # is positive; physical availability still awaits the existing review.
-        self.variant.stock = self.rule.stock = 100
-        self.variant.save(update_fields=['stock'])
-        self.rule.save(update_fields=['stock'])
+        # Keep the native zero-stock fixture: its physical check owns the
+        # pending review. The exact catalogue price remains independently known.
         first, _, sent = self.prepare()
         self.assertEqual(first.state, 'completed', first.reasons)
         self.assertEqual(sent.call_count, 1)

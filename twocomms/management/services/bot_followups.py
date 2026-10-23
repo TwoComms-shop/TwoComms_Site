@@ -207,9 +207,9 @@ FOLLOWUP_POLICY_COPY = {
         "en": "I can see the payment has not gone through. Is the issue size, delivery, or the payment method? I can help in a couple of minutes.",
     },
     "payment_a3": {
-        "uk": "Посилання на оплату скоро закриється. Якщо плануєте оформити — краще зробити це сьогодні. Потрібен новий лінк або інший розмір — напишіть.",
-        "ru": "Ссылка на оплату скоро закроется. Если планируете оформить — лучше сделать это сегодня. Нужна новая ссылка или другой размер — напишите.",
-        "en": "The payment link will close soon. If you plan to place the order, it is best to do it today. Reply if you need a new link or a different size.",
+        "uk": "Посилання на оплату ще активне. Якщо залишилися питання про замовлення або потрібен інший спосіб оплати — напишіть, допоможу.",
+        "ru": "Ссылка на оплату ещё активна. Если остались вопросы о заказе или нужен другой способ оплаты — напишите, помогу.",
+        "en": "The payment link is still active. If you have questions about the order or need another payment option, reply here and I will help.",
     },
     "payment_a4": {
         "uk": "Посилання на оплату вже неактивне. Якщо замовлення ще актуальне, напишіть «так» — одразу зроблю нове. Товари й параметри збережені.",
@@ -2437,6 +2437,90 @@ class _FollowupSendPermission:
         return self.allowed
 
 
+@dataclass(frozen=True)
+class _LegacyPaymentSendClaim:
+    task_id: int
+    client_id: int
+    claim_token: str
+    state_digest: str
+
+
+def _legacy_payment_timer(task):
+    resolved = _policy_step_for_task(task)
+    return bool(task.trigger == IgFollowUpTask.Trigger.TIME and resolved
+        and resolved[0].scenario == "payment_link_unpaid"
+        and (task.event_payload or {}).get("origin") != "ordinary_intent_followup")
+
+
+def _legacy_payment_send_state(task):
+    """Read-only attempt fence, never historical source or payment authority."""
+    from management.services.ig_admin_state_capture import _owner_fence
+    from management.models import IgCheckoutProposal
+
+    owner = _owner_fence(task.client_id)
+    client = IgClient.objects.filter(pk=task.client_id).values("igsid", "current_product_id",
+        "current_size", "current_color", "current_qty", "stage", "last_message_at").first()
+    if owner is None or client is None or owner["owner"]["privacy_erasure_started_at"]:
+        raise ValueError("followup_owner_unavailable")
+    selection = None
+    if owner.get("session") is not None:
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        selection = capture_current_selection_lines(task.client_id, _owner_snapshot=owner)
+        if selection.get("status") != "captured" or not selection.get("coverage_complete"):
+            raise ValueError("followup_selection_unproven")
+    deal = IgDeal.objects.filter(pk=task.deal_id, client_id=task.client_id).values("pk", "client_id",
+        "invoice_id", "invoice_url", "invoice_expires_at", "active_checkout_proposal_id",
+        "pay_type", "amount", "requested_payment_amount").first()
+    if deal is None:
+        raise ValueError("followup_deal_unavailable")
+    episode = owner.get("episode") or {}
+    if episode.get("deal_id") and episode["deal_id"] != deal["pk"]:
+        raise ValueError("followup_deal_not_current")
+    sources = list(InstagramBotMessage.objects.filter(client_id=task.client_id, role="user")
+        .order_by("-pk").values("pk", "sender_id", "text", "provider_namespace", "provider_created_at", "created_at")[:1])
+    items = list(task.deal.items.order_by("pk").values("pk", "product_id", "color_variant_id", "title",
+        "size", "fit_option_code", "option_values", "qty", "unit_price", "line_total")[:65])
+    if len(items) > 64:
+        raise ValueError("followup_items_unavailable")
+    proposal = IgCheckoutProposal.objects.filter(pk=deal["active_checkout_proposal_id"], client_id=task.client_id,
+        deal_id=task.deal_id).values("pk", "revision", "status", "items_digest", "expires_at", "current_invoice_generation_id").first()
+    if deal["active_checkout_proposal_id"] and proposal is None:
+        raise ValueError("followup_checkout_scope_changed")
+    state = {"owner": owner, "selection": selection, "client": client, "deal": deal, "sources": sources, "items": items,
+        "proposal": proposal, "task": [task.reason, task.level, task.deal_id, task.discount_percent,
+            task.policy_started_at, task.meta_window_deadline]}
+    return hashlib.sha256(json.dumps(state, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _legacy_payment_provider_reason(task, captured, *, now):
+    """Recheck the claim's current unpaid context at physical provider I/O."""
+    if (not isinstance(captured, _LegacyPaymentSendClaim) or captured.task_id != task.pk
+        or captured.client_id != task.client_id or captured.claim_token != task.claim_token):
+        return "payment_followup_claim_unbound"
+    from management.models import IgWebhookInboxEvent
+    from management.services.bot_payment_truth import current_payment_confirmation
+
+    allowed, reason = _client_allows_followup(task.client, deal=task.deal, kind=task.kind)
+    if not allowed:
+        return reason
+    if _deal_is_paid(task.deal) or _payment_link_status(task, now=now) == "paid" or current_payment_confirmation(task.client).get("confirmed"):
+        return "already_converted"
+    if not _policy_condition_holds(_policy_step_for_task(task)[1].condition, task.client, deal=task.deal):
+        return "policy_condition_changed"
+    if IgWebhookInboxEvent.objects.filter(customer_igsid=task.client.igsid,
+        decision__in=("accepted", "blocked"), processed_at__isnull=True).exists():
+        return "pending_inbound"
+    if task.meta_window_deadline is None or now >= task.meta_window_deadline:
+        return "meta_window_closed"
+    try:
+        if _legacy_payment_send_state(task) != captured.state_digest:
+            return "payment_followup_context_changed"
+    except (ValueError, TypeError, AttributeError):
+        return "payment_followup_context_unavailable"
+    return ""
+
+
 @contextmanager
 def _ordinary_followup_provider_boundary(task_id, claim_token, *, prepared_text=None, checked_at=None, **delivery):
     """Re-read the task and context at the actual provider request boundary.
@@ -2470,7 +2554,7 @@ def _ordinary_followup_provider_boundary(task_id, claim_token, *, prepared_text=
 
 
 @contextmanager
-def _followup_promotion_provider_boundary(task_id, claim_token, *, prepared_text=None, checked_at=None, **delivery):
+def _followup_promotion_provider_boundary(task_id, claim_token, *, prepared_text=None, checked_at=None, payment_claim=None, **delivery):
     """Check fresh service debt for every follow-up at each physical request."""
     from management.services.ig_delivery_receipts import normalize_provider_message_ids
     from management.services.ig_service_complaints import promotion_service_hold_reason
@@ -2486,6 +2570,12 @@ def _followup_promotion_provider_boundary(task_id, claim_token, *, prepared_text
             promotion_service_hold_reason(task.client, now=now) or _restock_customer_send_reason(task))
         if task is not None:
             ordinary = (task.event_payload or {}).get("origin") == "ordinary_intent_followup"
+            if not reason and (payment_claim is not None or _legacy_payment_timer(task)):
+                reason = ("payment_followup_purpose_changed" if not _legacy_payment_timer(task)
+                    else _legacy_payment_provider_reason(task, payment_claim, now=now))
+                if not reason and (not prepared_text or prepared_text != task.message_text
+                        or prepared_text != compose_followup(task, now=now)):
+                    reason = "payment_followup_copy_changed"
         if reason and task is not None:
             ids = list(normalize_provider_message_ids(delivery.get("provider_message_ids") or ()))
             if ids or delivery.get("delivered_chunk_count", 0):
@@ -3030,6 +3120,14 @@ def _claim_due_followup(
         _mark_skipped(task, why)
         automation.release_client_automation_lease(client.id, lease_token)
         return None
+    if _legacy_payment_timer(task):
+        try:
+            task._legacy_payment_send_claim = _LegacyPaymentSendClaim(task.pk, task.client_id,
+                task.claim_token, _legacy_payment_send_state(task))
+        except (ValueError, TypeError, AttributeError):
+            _mark_skipped(task, "payment_followup_context_unavailable")
+            automation.release_client_automation_lease(client.id, lease_token)
+            return None
     return task, client, lease_token
 
 
@@ -3121,6 +3219,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
         if not claim:
             continue
         task, client, lease_token = claim
+        payment_claim = getattr(task, "_legacy_payment_send_claim", None)
         task_claim_token = task.claim_token
         reply_boundary = reply_execution_boundary(s.pk, client.id)
         reply_boundary_entered = False
@@ -3167,7 +3266,7 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                     _mark_skipped(task, intent_reason)
                 continue
             ordinary = (task.event_payload or {}).get("origin") == "ordinary_intent_followup"
-            text = compose_followup(task, now=now) if ordinary else (task.message_text or "").strip() or compose_followup(task)
+            text = compose_followup(task, now=now) if ordinary else (task.message_text or "").strip() or compose_followup(task, now=now)
             renewed = _renew_due_followup_claim(
                 task.id,
                 client.id,
@@ -3228,7 +3327,8 @@ def process_due_followups(s: InstagramBotSettings | None = None, *, now: datetim
                     ),
                     provider_request_boundary_factory=lambda **state: _followup_promotion_provider_boundary(
                         task.id, task_claim_token,
-                        prepared_text=text, checked_at=now if clock_injected else None, **state,
+                        prepared_text=text, checked_at=now if clock_injected else None,
+                        payment_claim=payment_claim, **state,
                     ),
                 )
             except Exception as exc:

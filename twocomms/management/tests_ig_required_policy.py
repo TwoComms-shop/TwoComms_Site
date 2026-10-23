@@ -4,7 +4,7 @@ import json
 import unittest
 
 from management.services.ig_required_policy import (
-    REQUIRED_KEY, SHOOTING_METADATA, RequiredPolicyError,
+    REQUIRED_KEY, SCENARIOS, SHOOTING_METADATA, RequiredPolicyError,
     admit_required_policy_modules, derive_required_scenarios,
     normalize_programme_metadata, required_for_scenarios, shooting_programme_metadata,
 )
@@ -43,7 +43,7 @@ class RequiredPolicyMetadataTests(unittest.TestCase):
 
     def test_invalid_required_values_and_unknown_metadata_fail_with_finite_code(self):
         for raw in ({REQUIRED_KEY: "size"}, {REQUIRED_KEY: [True]}, {REQUIRED_KEY: ["size", "money"]},
-                    {REQUIRED_KEY: ["size"] * 6}, {"arbitrary": "instruction"},
+                    {REQUIRED_KEY: ["size"] * (len(SCENARIOS) + 1)}, {"arbitrary": "instruction"},
                     {"kind": "shooting_prize"}, {**SHOOTING_METADATA, "manager_required": False}):
             with self.subTest(raw=raw), self.assertRaises(RequiredPolicyError) as caught:
                 normalize_programme_metadata(raw)

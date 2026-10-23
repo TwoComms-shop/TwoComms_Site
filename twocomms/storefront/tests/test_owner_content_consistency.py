@@ -75,12 +75,28 @@ class OwnerContentConsistencyTests(SimpleTestCase):
             self.assertIn("do not promise an automatic replacement", rendered)
 
     def test_faq_material_cut_qc_price_and_wholesale_topics_survive_locale_overrides(self):
+        from django.utils.translation import gettext
+
         for language in ("uk", "ru", "en"):
             with self.subTest(language=language), override(language):
                 _, faq, _, _ = self._render("faq", language)
                 text = json.dumps(faq, ensure_ascii=False)
-                for required in ("95%", "5%", "190", "220", "90%", "10%", "320", "Instagram", "10–20%"):
+                for required in ("95%", "5%", "190", "220", "90%", "10%", "320", "Instagram"):
                     self.assertIn(required, text)
+                # The owner's revised B2B policy separates dropshipping from
+                # wholesale; other FAQ discount programs keep their own rates.
+                b2b = next(item["acceptedAnswer"]["text"] for item in faq["mainEntity"]
+                           if item["name"] == gettext("Які умови опту і дропшипінгу?"))
+                wholesale_marker = {"uk": "Оптові закупівлі", "ru": "Оптовые закупки", "en": "Wholesale orders"}[language]
+                dropship, wholesale = b2b.split(wholesale_marker, 1)
+                self.assertIn("10–15%", dropship)
+                self.assertIn({"uk": "повної ціни на сайті", "ru": "полной цены на сайте", "en": "full website price"}[language], dropship)
+                self.assertIn({"uk": "індивідуально", "ru": "индивидуально", "en": "individually"}[language], dropship)
+                self.assertIn({"uk": "не активується автоматично", "ru": "не активируется автоматически", "en": "not activated automatically"}[language], dropship)
+                self.assertIn("8, 16", wholesale)
+                self.assertIn({"uk": "кратно 8", "ru": "кратно 8", "en": "multiples of 8"}[language], wholesale)
+                self.assertNotRegex(wholesale, r"\d+\s*%")
+                self.assertNotIn("10–20%", b2b)
                 for obsolete in ("35 %", "15 %", "п’ять стадій", "пять стадий", "five stages"):
                     self.assertNotIn(obsolete, text)
                 self.assertIn({"uk": "три етапи", "ru": "три этапа", "en": "three quality-control stages"}[language], text)

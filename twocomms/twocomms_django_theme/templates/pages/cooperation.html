@@ -285,7 +285,7 @@
               </div>
               <div class="feature-content">
                 <h3 class="feature-title">{% trans 'Підтримка' %}</h3>
-                <p class="feature-desc">{% trans '24/7 консультації' %}</p>
+                <p class="feature-desc">{% trans 'Умови через менеджера' %}</p>
               </div>
             </div>
           </div>
@@ -332,22 +332,24 @@
           {% trans 'Продавайте наші товари без вкладень у склад. Ми відправляємо замовлення вашим клієнтам.' %}
         </p>
         <ul class="partnership-benefits">
-          <li>{% trans 'Без вкладень у товар' %}</li>
-          <li>{% trans 'Автоматична обробка замовлень' %}</li>
-          <li>{% trans 'Висока маржинальність' %}</li>
-          <li>{% trans 'Підтримка 24/7' %}</li>
-          <li>{% trans 'Фіксовані ціни на футболки та худі за договором' %}</li>
+          <li>{% trans 'Без власного складу' %}</li>
+          <li>{% trans 'Замовлення за погодженням із менеджером' %}</li>
+          <li>{% trans 'Індивідуальна партнерська знижка' %}</li>
+          <li>{% trans 'Зв’язок із командою в Telegram' %}</li>
+          <li>{% trans '10–15% від поточної повної ціни на сайті — індивідуально' %}</li>
         </ul>
         <div class="partnership-commission">
-          <span class="commission-label">{% trans 'Комісія:' %}</span>
-          <span class="commission-value">5-20%</span>
+          <span class="commission-label">{% trans 'Індивідуальна знижка:' %}</span>
+          <span class="commission-value">10–15%</span>
         </div>
-        <a href="/dropshipper/" class="partnership-btn">
+        <a href="https://t.me/twocomms" class="partnership-btn" target="_blank" rel="noopener">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
           </svg>
-          {% trans 'Почати співпрацю' %}
+          {% trans 'Обговорити дропшипінг у Telegram' %}
         </a>
+        <p class="partnership-description">{% trans 'Від 8 фактичних продажів на місяць обговорюємо нові умови. Зміни не активуються автоматично.' %}</p>
+        <p class="partnership-description"><a href="/dropshipper/">{% trans 'Кабінет партнера — TEST' %}</a>. {% trans 'Можливості кабінету обмежені; поточні умови та замовлення погоджуйте в Telegram.' %}</p>
       </div>
     </div>
 
@@ -366,17 +368,17 @@
         </div>
         <h3 class="partnership-title">{% trans 'Оптові продажі' %}</h3>
         <p class="partnership-description">
-          {% trans 'Працюємо напряму з магазинами та мережами: гнучкі прайси, швидке відвантаження зі складу та зручні онлайн-інструменти для оформлення накладних.' %}
+          {% trans 'Закуповуйте партіями по 8, 16 або іншій кількості, кратній 8. Кращі умови для вашої партії погоджуємо індивідуально.' %}
         </p>
         <ul class="partnership-benefits">
-          <li>{% trans 'Старт від 8 одиниць на замовлення' %}</li>
-          <li>{% trans 'Зручне формування накладної прямо на сайті' %}</li>
-          <li>{% trans 'Оперативне відвантаження зі складу по всій Україні' %}</li>
-          <li>{% trans 'Готові медіаматеріали та персональний менеджер 24/7' %}</li>
+          <li>{% trans 'Партії 8, 16 і далі кратно 8' %}</li>
+          <li>{% trans 'ТТН партнера або TwoComms за погодженням' %}</li>
+          <li>{% trans 'Оплату й відправлення погоджуємо до відвантаження' %}</li>
+          <li>{% trans 'Фото із сайту та Instagram можна використовувати' %}</li>
         </ul>
         <div class="partnership-commission">
           <span class="commission-label">{% trans 'Знижка:' %}</span>
-          <span class="commission-value">{% trans 'Вигідні оптові тарифи' %}</span>
+          <span class="commission-value">{% trans 'Індивідуальні умови партії' %}</span>
         </div>
         <a href="{% url 'wholesale_page' %}" class="partnership-btn">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -407,12 +409,12 @@
         <ul class="partnership-benefits">
           <li>{% trans 'Ексклюзивні колекції' %}</li>
           <li>{% trans 'Спільний маркетинг' %}</li>
-          <li>{% trans 'Високі комісії' %}</li>
+          <li>{% trans 'Винагорода за домовленістю' %}</li>
           <li>{% trans 'Персональний менеджер' %}</li>
         </ul>
         <div class="partnership-commission">
           <span class="commission-label">{% trans 'Комісія:' %}</span>
-          <span class="commission-value">30-50%</span>
+          <span class="commission-value">{% trans 'За домовленістю' %}</span>
         </div>
         <a href="https://t.me/twocomms" class="partnership-btn" target="_blank">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -449,7 +451,7 @@
               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
               </svg>
-              <span>{% trans '15-30% від продажів' %}</span>
+              <span>{% trans 'Винагорода за домовленістю' %}</span>
             </div>
             <div class="benefit-item">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">

@@ -259,6 +259,16 @@ class FollowupPolicyIntegrationTests(TestCase):
         )
         return deal
 
+    def _source_budget_objection(self):
+        from management.models import InstagramBotMessage
+        from management.services.ig_objections import observe_inbound_objection
+
+        message = InstagramBotMessage.objects.create(client=self.client_record, sender_id=self.client_record.igsid,
+            role="user", source="webhook", status="done", mid="price-source-" + self._testMethodName,
+            provider_namespace="instagram_login:policy-fixture", provider_created_at=self.now,
+            text="Для мене це занадто дорого, не вкладаюся в бюджет.")
+        observe_inbound_objection(self.client_record, message, "price", readiness=0)
+
     def _event_task(self, *, issue_at=None):
         issue_at = issue_at or self.now - timedelta(hours=24)
         deal = IgDeal.objects.create(
@@ -797,6 +807,7 @@ class FollowupPolicyIntegrationTests(TestCase):
     def test_due_discount_waits_for_one_manager_decision_alert(self, send_text):
         from management.services.bot_followups import process_due_followups
 
+        self._source_budget_objection()
         self.client_record.stage = IgClient.Stage.CHECKOUT
         self.client_record.primary_objection = IgClient.Objection.PRICE
         self.client_record.save(update_fields=["stage", "primary_objection", "updated_at"])
@@ -835,6 +846,7 @@ class FollowupPolicyIntegrationTests(TestCase):
         from management.models import IgBotNotificationAudit
         from management.services.bot_followups import cancel_pending, process_due_followups
 
+        self._source_budget_objection()
         self.client_record.stage = IgClient.Stage.CHECKOUT
         self.client_record.primary_objection = IgClient.Objection.PRICE
         self.client_record.save(update_fields=[
@@ -886,6 +898,7 @@ class FollowupPolicyIntegrationTests(TestCase):
         )
 
     def test_expired_discount_is_cancelled_before_approval_alert(self):
+        self._source_budget_objection()
         task = IgFollowUpTask.objects.create(
             client=self.client_record,
             due_at=self.now,
@@ -1287,3 +1300,151 @@ class FollowupEventContinuationBoundaryTests(TestCase):
         task.policy_started_at = self.now
         with self.assertRaises(ValueError):
             IgFollowUpTask.objects.bulk_update([task], ["policy_started_at"])
+
+
+class LegacyPaymentProviderBoundaryTests(TestCase):
+    """Exercise the worker's actual per-request boundary after PROCESSING."""
+    def setUp(self):
+        from management.models import IgDealItem, InstagramBotMessage
+        self.now = datetime(2026, 8, 3, 11, 0, tzinfo=KYIV)
+        self.settings = InstagramBotSettings.load()
+        self.settings.is_enabled = True
+        self.settings.save(update_fields=["is_enabled"])
+        self.customer = IgClient.get_or_create_for_sender("legacy-payment-physical-fence")
+        self.customer.stage = IgClient.Stage.PAYMENT_PENDING
+        self.customer.last_message_at = self.now
+        self.customer.save(update_fields=["stage", "last_message_at"])
+        self.source = InstagramBotMessage.objects.create(client=self.customer, sender_id=self.customer.igsid,
+            role="user", source="webhook", status="done", provider_namespace="instagram_login:timer-fixture",
+            mid="unpaid-timer-source", text="Хочу оформити цю футболку.", provider_created_at=self.now)
+        self.deal = IgDeal.objects.create(client=self.customer, status=IgDeal.Status.AWAITING_PAYMENT,
+            amount="1000", requested_payment_amount="1000", invoice_id="timer-invoice-1",
+            invoice_url="https://pay.example/timer-invoice-1", invoice_expires_at=self.now+timedelta(hours=24))
+        self.item = IgDealItem.objects.create(deal=self.deal, title="Футболка", qty=1, unit_price="1000")
+        self.task = IgFollowUpTask.objects.create(client=self.customer, deal=self.deal, due_at=self.now,
+            kind=IgFollowUpTask.Kind.PAYMENT, reason="payment_link_unpaid", level=0,
+            policy_started_at=self.now-timedelta(minutes=25), meta_window_deadline=self.now+timedelta(hours=23))
+        self.physical_dispatches = []
+        self.boundary_reason = ""
+
+    def run_at_provider_boundary(self, change=lambda self: None):
+        from management.services.bot_followups import process_due_followups
+        def send_text(*args, **kwargs):
+            self.task.refresh_from_db()
+            self.assertEqual(self.task.status, IgFollowUpTask.Status.PROCESSING)
+            change(self)
+            # Same callback the real transport enters immediately before HTTP.
+            with kwargs["provider_request_boundary_factory"](planned_chunk_count=1,
+                    delivered_chunk_count=0, provider_message_ids=[]) as permission:
+                self.boundary_reason = permission.reason
+                if not permission:
+                    return ProviderDeliveryReceipt(False, "cancelled", permission.reason, "")
+                self.physical_dispatches.append(args[2])
+                return ProviderDeliveryReceipt(True, "", "", "timer-physical-receipt")
+        with patch("management.services.instagram_bot.send_text", side_effect=send_text):
+            result = process_due_followups(self.settings, now=self.now, limit=1)
+        self.task.refresh_from_db()
+        return result
+
+    def assert_blocked(self, reason):
+        self.assertEqual(self.physical_dispatches, [])
+        self.assertEqual(self.boundary_reason, reason)
+        self.assertEqual(self.task.status, IgFollowUpTask.Status.SKIPPED)
+        self.assertEqual(self.task.skip_reason, reason)
+
+    def test_unchanged_same_claim_can_send_once(self):
+        self.assertEqual(self.run_at_provider_boundary(), 1)
+        self.assertEqual(len(self.physical_dispatches), 1)
+        self.assertEqual(self.task.provider_message_id, "timer-physical-receipt")
+
+    def test_confirmed_200_prepayment_after_processing_blocks_stale_unpaid_stage(self):
+        def paid(case):
+            IgPaymentProjection.objects.create(client=case.customer, deal=case.deal,
+                truth=IgDeal.PaymentTruth.CONFIRMED, gross_amount="200", paid_at=case.now)
+        self.assertEqual(self.run_at_provider_boundary(paid), 0)
+        self.assert_blocked("already_converted")
+
+    def test_confirmed_full_payment_after_processing_blocks_stale_unpaid_stage(self):
+        def paid(case):
+            IgPaymentProjection.objects.create(client=case.customer, deal=case.deal,
+                truth=IgDeal.PaymentTruth.CONFIRMED, gross_amount="1000", paid_at=case.now)
+        self.assertEqual(self.run_at_provider_boundary(paid), 0)
+        self.assert_blocked("already_converted")
+
+    def test_new_customer_message_after_processing_blocks_send(self):
+        from management.models import InstagramBotMessage
+        def inbound(case):
+            InstagramBotMessage.objects.create(client=case.customer, sender_id=case.customer.igsid,
+                role="user", source="webhook", status="done", provider_namespace="instagram_login:timer-fixture",
+                mid="newer-source", text="Я передумав.", provider_created_at=case.now)
+        self.assertEqual(self.run_at_provider_boundary(inbound), 0)
+        self.assert_blocked("payment_followup_context_changed")
+
+    def test_same_source_id_changed_text_after_processing_blocks_send(self):
+        def edited(case):
+            case.source.text = "Не хочу оформлювати цю футболку."
+            case.source.save(update_fields=["text"])
+        self.assertEqual(self.run_at_provider_boundary(edited), 0)
+        self.assert_blocked("payment_followup_context_changed")
+
+    def test_cart_item_changed_after_processing_blocks_send(self):
+        def cart(case):
+            case.item.qty = 2
+            case.item.save(update_fields=["qty", "line_total"])
+        self.assertEqual(self.run_at_provider_boundary(cart), 0)
+        self.assert_blocked("payment_followup_context_changed")
+
+    def test_invoice_superseded_after_processing_blocks_send(self):
+        def invoice(case):
+            IgDeal.objects.filter(pk=case.deal.pk).update(invoice_id="timer-invoice-2",
+                invoice_url="https://pay.example/timer-invoice-2", invoice_expires_at=case.now+timedelta(hours=24))
+        self.assertEqual(self.run_at_provider_boundary(invoice), 0)
+        self.assert_blocked("payment_followup_context_changed")
+
+    def test_policy_purpose_changed_after_processing_cannot_bypass_legacy_fence(self):
+        def purpose(case):
+            IgFollowUpTask.objects.filter(pk=case.task.pk).update(reason="different_policy")
+        self.assertEqual(self.run_at_provider_boundary(purpose), 0)
+        self.assert_blocked("payment_followup_purpose_changed")
+
+    def test_expiry_crossed_before_provider_cannot_send_cached_active_link_copy(self):
+        from management.services import bot_followups as policy
+        self.task.level = 2
+        self.task.save(update_fields=["level"])
+        self.deal.invoice_expires_at = self.now+timedelta(seconds=1)
+        self.deal.save(update_fields=["invoice_expires_at"])
+        original = policy._followup_promotion_provider_boundary
+        def later_boundary(*args, **kwargs):
+            kwargs["checked_at"] = self.now+timedelta(seconds=2)
+            return original(*args, **kwargs)
+        with patch.object(policy, "_followup_promotion_provider_boundary", side_effect=later_boundary):
+            self.assertEqual(self.run_at_provider_boundary(), 0)
+        self.assert_blocked("payment_followup_copy_changed")
+
+    def test_model_output_does_not_change_the_customer_source_fence(self):
+        from management.models import InstagramBotMessage
+        def model(case):
+            InstagramBotMessage.objects.create(client=case.customer, sender_id="brand", role="model",
+                source="bot", status="done", text="Дякую.", mid="independent-model-output")
+        self.assertEqual(self.run_at_provider_boundary(model), 1)
+        self.assertEqual(len(self.physical_dispatches), 1)
+
+    def test_missing_or_foreign_in_process_claim_fails_closed(self):
+        from management.services import bot_followups as policy
+        for captured in (None, policy._LegacyPaymentSendClaim(self.task.pk, self.customer.pk, "other-owner", "unused")):
+            self.task.status, self.task.claim_token = IgFollowUpTask.Status.PROCESSING, "owner"
+            self.task.claim_until = self.now+timedelta(minutes=4)
+            self.task.save(update_fields=["status", "claim_token", "claim_until"])
+            with policy._followup_promotion_provider_boundary(self.task.pk, "owner", checked_at=self.now,
+                    payment_claim=captured) as permission:
+                self.assertFalse(permission)
+                self.assertEqual(permission.reason, "payment_followup_claim_unbound")
+
+    def test_live_far_future_third_reminder_has_no_artificial_deadline(self):
+        from management.services.bot_followups import _policy_followup_copy
+        self.task.level = 2
+        for language, active, urgency in (("uk", "ще активне", ("скоро", "сьогодні")),
+                ("ru", "ещё активна", ("скоро", "сегодня")), ("en", "still active", ("soon", "today"))):
+            text = _policy_followup_copy(self.task, language, now=self.now)
+            self.assertIn(active, text)
+            self.assertTrue(all(word not in text.casefold() for word in urgency))

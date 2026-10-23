@@ -19,6 +19,7 @@ from management.services.ig_revision_catalog_assets import _Unavailable
 SCHEMA_V1 = "catalog-choice-presentation.v1"
 SCHEMA_V2 = "catalog-choice-presentation.v2"
 SCHEMA = "catalog-choice-presentation.v3"
+SCHEMA_THEMED = "catalog-choice-presentation.v4"
 PREFIX = "CC1:"
 _PAYLOAD = re.compile(r"CC1:([1-9][0-9]{0,17}):([0-9]{1,2}):([0-9a-f]{32})")
 MAX_CARDS = 3
@@ -210,11 +211,11 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
     # Existing callers may rebuild historical values without discovery data.
     # Real product preparation below always captures category proof for v3.
     schema = _schema or (SCHEMA_V1 if _legacy else SCHEMA if any("category" in row for row in cards) else SCHEMA_V2)
-    if schema not in {SCHEMA_V1, SCHEMA_V2, SCHEMA}:
+    if schema not in {SCHEMA_V1, SCHEMA_V2, SCHEMA, SCHEMA_THEMED}:
         raise ValueError("catalog_choice_schema_invalid")
     _legacy = schema == SCHEMA_V1
     discovery_categories = ()
-    if schema == SCHEMA and presentation_kind == "products":
+    if schema in {SCHEMA, SCHEMA_THEMED} and presentation_kind == "products":
         from management.services.ig_catalog_category_discovery import (
             category_button_label, shortlist_copy, validate_category,
         )
@@ -222,14 +223,29 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
         if any(not validate_category(category, product_id=row["product_id"])
             for row, category in zip(cards, discovery_categories)):
             raise ValueError("catalog_choice_category_invalid")
+    themed = schema == SCHEMA_THEMED
+    if themed:
+        from management.services.ig_catalog_browsing import navigation_url
+        if presentation_kind != "products" or not scope.get("catalog_browse"):
+            raise ValueError("catalog_choice_theme_scope_missing")
+        for card in cards:
+            nav = card.get("theme_navigation")
+            if (not isinstance(nav, dict) or nav.get("locale") != locale
+                or nav.get("category_slug") != card.get("category", {}).get("slug")
+                or navigation_url(nav) != nav.get("url")):
+                raise ValueError("catalog_choice_theme_invalid")
+    elif any("theme_navigation" in row for row in cards):
+        raise ValueError("catalog_choice_theme_scope_missing")
     choose, chart, head, numbered = _LABELS[locale]
     if presentation_kind not in {"products", "color", "size"}:
         raise ValueError("catalog_choice_presentation_kind_invalid")
     if presentation_kind == "products":
         actions = []
         for card in cards:
-            actions.extend(({"kind": "product", "product_id": card["product_id"], "value": card["product_id"],
-                "label": choose}, {"kind": "chart", "product_id": card["product_id"], "label": chart}))
+            actions.append({"kind": "product", "product_id": card["product_id"], "value": card["product_id"],
+                "label": choose})
+            if not themed:
+                actions.append({"kind": "chart", "product_id": card["product_id"], "label": chart})
         ordered = scope.get("ordered_product_ids") or [row["product_id"] for row in cards]
         page = int(scope.get("page") or 0)
         if not 0 <= page <= 3 or ordered[page * MAX_CARDS:(page + 1) * MAX_CARDS] != [row["product_id"] for row in cards]:
@@ -251,23 +267,28 @@ def build_catalog_choice_effects(invitation_id, scope, cards, *, presentation_ki
     payloads = [f"{PREFIX}{invitation_id}:{index}:{_signature(invitation_id, index, manifest['context_digest'], schema=schema)}"
         for index in range(len(actions))]
     if presentation_kind == "products":
+        product_indices = [index for index, action in enumerate(actions) if action["kind"] == "product"]
+        card_numbers = {row["product_id"]: index + 1 for index, row in enumerate(cards)}
         elements = tuple(tpl.TemplateCard(title=tpl.display_short(row["title"]), image_url=row["image_url"],
-            buttons=(tpl.TemplateButton(tpl.BUTTON_POSTBACK, choose, payload=payloads[index * 2]),
-                     tpl.TemplateButton(tpl.BUTTON_POSTBACK, chart, payload=payloads[index * 2 + 1]))
+            buttons=(tpl.TemplateButton(tpl.BUTTON_POSTBACK, choose, payload=payloads[product_indices[index]]),
+                     tpl.TemplateButton(tpl.BUTTON_WEB_URL, row["theme_navigation"]["label"], url=row["theme_navigation"]["url"])
+                     if themed else tpl.TemplateButton(tpl.BUTTON_POSTBACK, chart, payload=payloads[product_indices[index] + 1]))
                 + ((tpl.TemplateButton(tpl.BUTTON_WEB_URL, category_button_label(row["category"]),
                     url=row["category"]["url"]),) if discovery_categories else ()))
             for index, row in enumerate(cards))
         text = head + "\n" + "\n".join(f"{index + 1}. {tpl.display_short(row['title'])}" for index, row in enumerate(cards))
         if discovery_categories:
             text += "\n" + shortlist_copy(discovery_categories, locale, links=True)
+        if themed:
+            text += "\n" + "\n".join(dict.fromkeys(f"{row['theme_navigation']['label']}: {row['theme_navigation']['url']}" for row in cards))
         more = tuple(tpl.QuickReply(action["label"], payloads[index])
             for index, action in enumerate(actions) if action["kind"] == "page")
         normalized = tpl.normalize_template(tpl.GenericTemplate(cards=elements, fallback_text=text, quick_replies=more))
         if set(normalized.degraded_fields) - {"title_truncated"}:
             raise ValueError("catalog_choice_template_degraded")
         message = tpl.template_message_payload(normalized)
-        quick = tuple(tpl.QuickReply((numbered.format(number=index // 2 + 1)
-            if action["kind"] == "product" else f"{chart} {index // 2 + 1}" if action["kind"] == "chart" else action["label"]), payloads[index])
+        quick = tuple(tpl.QuickReply((numbered.format(number=card_numbers[action["product_id"]])
+            if action["kind"] == "product" else f"{chart} {card_numbers[action['product_id']]}" if action["kind"] == "chart" else action["label"]), payloads[index])
             for index, action in enumerate(actions))
     else:
         heads = {"color": {"uk": "Оберіть колір:", "ru": "Выберите цвет:", "en": "Choose a colour:"},
@@ -337,12 +358,29 @@ def prepare_catalog_choice_presentations(revision, response, settings_row, *, co
         scope = _scope(revision, settings_row, locale)
         scope["ordered_product_ids"] = list(dict.fromkeys(ids))
         scope["page"] = 0
+        browse = (getattr(response_plan, "configuration", {}) or {}).get("catalog_browse") or {}
+        if browse:
+            from management.services.ig_catalog_browsing import (
+                browse_reference, current_browse_capture, validate_catalog_browse_response,
+            )
+            reason = validate_catalog_browse_response(browse, response)
+            if reason:
+                raise ValueError(reason)
+            reference = browse_reference(browse)
+            fresh = current_browse_capture(reference, revision.client, revision.pk)
+            if fresh.get("scope", {}).get("snapshot_digest") != revision.snapshot_digest:
+                raise ValueError("catalog_browse_context_changed")
+            scope["catalog_browse"] = reference
         cards = [_configured_card(revision.client, product_id,
             captures.get(product_id) or captures.get(str(product_id))) for product_id in page]
         from management.services.ig_catalog_category_discovery import capture_product_category
         for card in cards:
             card["category"] = capture_product_category(card["product_id"], locale)
-        return build_catalog_choice_effects(revision.pk, scope, cards, _schema=SCHEMA)
+        if browse and all(str(card["product_id"]) in browse.get("navigation", {}) for card in cards):
+            for card in cards:
+                card["theme_navigation"] = deepcopy(browse["navigation"][str(card["product_id"])])
+        schema = SCHEMA_THEMED if all("theme_navigation" in card for card in cards) else SCHEMA
+        return build_catalog_choice_effects(revision.pk, scope, cards, _schema=schema)
     except (ValueError, TypeError, KeyError, _Unavailable) as exc:
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
@@ -403,13 +441,27 @@ def prepare_catalog_choice_page(revision, response, settings_row, *, choice, con
         scope.update(ordered_product_ids=list(ordered), page=page,
             origin_manifest_digest=choice["manifest_digest"], origin_invitation_id=choice["invitation_id"],
             origin_effect_id=choice["effect_id"])
+        browse = None
+        if original["scope"].get("catalog_browse"):
+            from management.services.ig_catalog_browsing import current_browse_capture
+            browse = current_browse_capture(original["scope"]["catalog_browse"], revision.client, original["invitation_id"])
+            if not set(window).issubset(browse["eligible_product_ids"]):
+                raise ValueError("catalog_browse_product_mismatch")
+            # The original source owns the continuation predicate. Admission
+            # rechecks that immutable invitation rather than today's page text.
+            scope["catalog_browse"] = original["scope"]["catalog_browse"]
+            scope["catalog_browse_invitation_id"] = original["invitation_id"]
         captures = configured_choices_capture or {}
         cards = [_configured_card(revision.client, product_id,
             captures.get(product_id) or captures.get(str(product_id))) for product_id in window]
         from management.services.ig_catalog_category_discovery import capture_product_category
         for card in cards:
             card["category"] = capture_product_category(card["product_id"], scope["locale"])
-        return build_catalog_choice_effects(revision.pk, scope, cards, _schema=SCHEMA)
+        if browse and original["schema"] == SCHEMA_THEMED:
+            for card in cards:
+                card["theme_navigation"] = deepcopy(browse["navigation"][str(card["product_id"])])
+        return build_catalog_choice_effects(revision.pk, scope, cards,
+            _schema=SCHEMA_THEMED if original["schema"] == SCHEMA_THEMED else SCHEMA)
     except (KeyError, ValueError, TypeError, _Unavailable) as exc:
         return CatalogChoicePreparation(True, reasons=(str(exc),))
 
@@ -602,7 +654,7 @@ def validate_catalog_choice_metadata(metadata, *, payload, group, kind):
     keys = {"catalog_choice", "delivery", "prepared_payload_digest"} | (set() if legacy else {"part_index"})
     if (set(metadata) != keys or not isinstance(manifest, dict)
         or set(manifest) != (_V1_MANIFEST_KEYS if legacy else _MANIFEST_KEYS)
-        or manifest.get("schema") not in {SCHEMA, SCHEMA_V1, SCHEMA_V2} or delivery not in {"native", "fallback"}
+        or manifest.get("schema") not in {SCHEMA, SCHEMA_V1, SCHEMA_V2, SCHEMA_THEMED} or delivery not in {"native", "fallback"}
         or group != ("template" if delivery == "native" else "template_fallback")):
         return False
     try:
@@ -693,10 +745,19 @@ def catalog_choice_reference(manifest):
         "scope": deepcopy(manifest["scope"]), "cards": [{key: deepcopy(row[key]) for key in
             ("product_id", "asset_ref", "asset_selected_variant_id", "configuration_selector", "configuration_digest")}
             for row in manifest["cards"]]}
-    if manifest.get("schema") == SCHEMA and manifest["presentation_kind"] == "products":
+    if manifest.get("schema") in {SCHEMA, SCHEMA_THEMED} and manifest["presentation_kind"] == "products":
         from management.services.ig_catalog_category_discovery import category_reference
         for row, card in zip(reference["cards"], manifest["cards"]):
-            row["category"] = category_reference(card["category"])
+            if manifest["schema"] == SCHEMA_THEMED:
+                # One address retains both live category and exact theme URL
+                # proof without exhausting the unchanged 4096-byte binding.
+                row["browse_card_reference"] = _digest({"category": category_reference(card["category"]),
+                    "theme": card["theme_navigation"]})
+            else:
+                # The card already owns its product and the scope owns locale.
+                # Keep the exact category/name/URL proof as one content address
+                # rather than repeating its fields for every card in a binding.
+                row["category_reference_digest"] = _digest(category_reference(card["category"]))
     return reference
 
 
@@ -706,10 +767,36 @@ def validate_catalog_choice_assets(manifest, client):
     from management.services.ig_catalog_configured_choices import capture_configured_choices
 
     try:
+        browse = None
+        if manifest.get("scope", {}).get("catalog_browse"):
+            from management.services.ig_catalog_browsing import current_browse_capture
+            browse = current_browse_capture(manifest["scope"]["catalog_browse"], client,
+                manifest["scope"].get("catalog_browse_invitation_id") or manifest["invitation_id"])
         for card in manifest["cards"]:
+            if browse is not None:
+                if card["product_id"] not in browse["eligible_product_ids"]:
+                    return "catalog_browse_product_mismatch"
+                if "theme_navigation" in card or "theme_navigation_reference" in card:
+                    expected = browse["navigation"].get(str(card["product_id"]))
+                    if (not expected or (card.get("theme_navigation") is not None and card["theme_navigation"] != expected)
+                        or (card.get("theme_navigation_reference") is not None and card["theme_navigation_reference"] != _digest(expected))):
+                        return "catalog_choice_theme_changed"
+                if "browse_card_reference" in card:
+                    from management.services.ig_catalog_category_discovery import capture_product_category, category_reference
+                    category = capture_product_category(card["product_id"], browse["scope"]["locale"])
+                    expected = browse["navigation"].get(str(card["product_id"]))
+                    if not expected or card["browse_card_reference"] != _digest({"category": category_reference(category), "theme": expected}):
+                        return "catalog_choice_theme_changed"
+            elif any(key in card for key in ("theme_navigation", "theme_navigation_reference", "browse_card_reference")):
+                return "catalog_choice_theme_scope_missing"
             if "category" in card:
                 from management.services.ig_catalog_category_discovery import validate_current_category
                 if not validate_current_category(card["category"], product_id=card["product_id"]):
+                    return "catalog_choice_category_changed"
+            if "category_reference_digest" in card:
+                from management.services.ig_catalog_category_discovery import capture_product_category, category_reference
+                category = capture_product_category(card["product_id"], manifest["scope"]["locale"])
+                if card["category_reference_digest"] != _digest(category_reference(category)):
                     return "catalog_choice_category_changed"
             product = assets._product(card["product_id"])
             if card["asset_ref"] is not None:

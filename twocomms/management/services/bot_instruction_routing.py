@@ -94,6 +94,9 @@ _TURN_TRIGGERS: dict[str, re.Pattern] = {
         re.IGNORECASE,
     ),
     "collaboration": re.compile(r"співпрац\w*|сотруднич\w*|collaborat\w*|портфоліо|портфолио|portfolio|фотограф\w*|відеограф\w*|видеограф\w*", re.I),
+    # Semantic facet below reuses the owned business classifier, never a second
+    # lexical router or a profile label.
+    "business_cooperation": re.compile(r"(?!)"),
     "ugc": re.compile(r"\bugc\b|репост\w*|repost|відміт\w*\s+вас|отмет\w*\s+вас|tag\s+you", re.I),
 }
 
@@ -141,6 +144,8 @@ def turn_triggers(text: str) -> set[str]:
     )
 
     cooperation_sources = current_cooperation_sources([{"text": value}])
+    if extract_business_cooperation(value):
+        result.add("business_cooperation")
     if (extract_business_cooperation(value) or recruitment_service_for_sources(cooperation_sources) or any(
         _TURN_TRIGGERS["collaboration"].search(own_reply_text(row["text"])) for row in cooperation_sources
     )):

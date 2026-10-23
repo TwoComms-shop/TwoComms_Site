@@ -21,7 +21,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from management.services.ig_core_policy import ORDINARY_DISPATCH_WINDOW_DAYS
-from management.services.ig_reply_truth import (AvailabilityAuthority, CheckoutLineAuthority, FulfillmentDeadlineAuthority,
+from management.services.ig_reply_truth import (AvailabilityAuthority, InventoryAvailabilityAuthority, CheckoutLineAuthority, FulfillmentDeadlineAuthority,
     CheckoutOrderAuthority, ReplyTruthContext, ShippingAuthority, TimingAuthority)
 
 
@@ -1069,6 +1069,49 @@ def fulfillment_availability_authorities(projection) -> tuple[AvailabilityAuthor
     return tuple(facts)
 
 
+def inventory_availability_authorities(projection) -> tuple[InventoryAvailabilityAuthority, ...]:
+    """Only signed exact positive inventory captures grant retail stock prose."""
+    from management.services.ig_inventory_availability import verified_inventory_capture
+    if not verified_inventory_capture(projection) or projection.get("status") != "captured":
+        return ()
+    facts = []
+    for row in projection.get("lines") or []:
+        if row.get("status") != "available":
+            continue
+        target, labels = row.get("target") or {}, row.get("labels") or {}
+        if (type(target.get("quantity")) is not int or not 1 <= target["quantity"] <= 99
+            or type(row.get("free_quantity")) is not int or row["free_quantity"] < target["quantity"]
+            or not row.get("configuration_digest") or not row.get("inventory_digest")):
+            return ()
+        label = " · ".join(str(value) for value in (labels.get("product"), labels.get("color"),
+            target.get("size"), labels.get("fit")) if value)
+        facts.append(InventoryAvailabilityAuthority(line_id=str(row["line_id"]), line_label=label,
+            product_id=target["product_id"], color_variant_id=target["color_variant_id"],
+            size=target["size"], fit_code=target["fit_option_code"], quantity=target["quantity"],
+            option_values=tuple(sorted(target["option_values"].items())), availability="available",
+            checked_quantity=row["free_quantity"], supply_basis="inventory_observation", source_ref=projection["digest"],
+            product_label=str(labels.get("product") or ""), color_label=str(labels.get("color") or ""),
+            fit_label=str(labels.get("fit") or ""), inventory_digest=row["inventory_digest"],
+            configuration_digest=row["configuration_digest"], source_cart_capture_digest=projection["source_cart_capture_digest"],
+            capture_digest=projection["digest"]))
+    return tuple(facts)
+
+
+def apply_inventory_availability_context(context, projection):
+    """Replace inventory facts without changing manager review or timing status."""
+    from management.services.ig_inventory_availability import verified_inventory_capture
+    valid = verified_inventory_capture(projection) and projection.get("status") == "captured"
+    return replace(context, inventory_availability_authorities=inventory_availability_authorities(projection),
+        inventory_cart_line_ids=tuple(str(row["line_id"]) for row in projection.get("lines") or []) if valid else ())
+
+
+def _captured_inventory_authority(captured_client_state):
+    from management.services.ig_inventory_availability import captured_inventory_projection
+    projection = captured_inventory_projection(captured_client_state)
+    facts = inventory_availability_authorities(projection)
+    return facts, tuple(str(row["line_id"]) for row in projection.get("lines") or []) if projection else ()
+
+
 def _captured_fulfillment_projection(captured_client_state):
     payload = captured_client_state.as_dict() if hasattr(captured_client_state, "as_dict") else captured_client_state
     if not isinstance(payload, Mapping) or payload.get("status") != "captured":
@@ -1093,6 +1136,8 @@ def _fulfillment_timing_truth(captured_client_state) -> tuple[str, tuple[TimingA
 
 def apply_fulfillment_timing_context(context: ReplyTruthContext, captured_client_state) -> ReplyTruthContext:
     """Overlay the same frozen review used by the prompt and response plan."""
+    inventory, inventory_lines = _captured_inventory_authority(captured_client_state)
+    context = replace(context, inventory_availability_authorities=inventory, inventory_cart_line_ids=inventory_lines)
     status, facts = _fulfillment_timing_truth(captured_client_state)
     if not status:
         return context
@@ -1307,6 +1352,7 @@ def build_reply_truth_context(
     if conversation_amounts:
         _append_unique(evidence, "source_proved_conversation_amounts")
     fulfillment_status, timing_authorities = _fulfillment_timing_truth(captured_client_state)
+    inventory_facts, inventory_lines = _captured_inventory_authority(captured_client_state)
     if fulfillment_status == "pending":
         _append_unique(evidence, "source_bound_fulfillment_pending")
     elif fulfillment_status == "reviewed":
@@ -1343,6 +1389,8 @@ def build_reply_truth_context(
         timing_authorities=timing_authorities,
         fulfillment_deadline_authorities=fulfillment_deadline_authorities(_captured_fulfillment_projection(captured_client_state)),
         availability_authorities=fulfillment_availability_authorities(_captured_fulfillment_projection(captured_client_state)),
+        inventory_availability_authorities=inventory_facts,
+        inventory_cart_line_ids=inventory_lines,
         fulfillment_review_status=fulfillment_status,
         explicitly_qualified_standard_dispatch_days=(
             ORDINARY_DISPATCH_WINDOW_DAYS if not fulfillment_status and fulfillment_policy else None

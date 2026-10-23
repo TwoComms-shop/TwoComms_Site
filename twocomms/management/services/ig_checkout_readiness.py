@@ -152,7 +152,10 @@ def sizes_for_fit(product, fit_code: str, *, variant=None, strict=False) -> dict
         if fit_code:
             # Варіант передаємо, коли він відомий: правила `VariantSizeRule`
             # живуть на рівні кольору.
-            for row in resolve_effective_sizes(product, f"fit={fit_code}", variant=variant):
+            from management.services.ig_inventory_availability import inventory_source_for_variant
+            warehouse = variant is not None and inventory_source_for_variant(variant) == "warehouse"
+            for row in resolve_effective_sizes(product, f"fit={fit_code}", variant=variant,
+                    **({"ignore_variant_stock": True} if warehouse else {})):
                 if not isinstance(row, dict):
                     continue
                 size = normalize_size_value(row.get("size"))
@@ -199,16 +202,20 @@ def _disabled_sizes(variant, fit_code: str, *, strict=False) -> list[str]:
     try:
         from product_catalog.models import VariantSizeRule
         from product_catalog.size_grid_services import normalize_size_value
+        from management.services.ig_inventory_availability import inventory_source_for_variant
 
         rules = VariantSizeRule.objects.filter(variant=variant)
         if fit_code:
             rules = rules.filter(fit_code__in=("", fit_code))
         else:
             rules = rules.filter(fit_code="")
+        rules = list(rules)
+        warehouse = (any(rule.stock is not None and int(rule.stock) <= 0 for rule in rules)
+            and inventory_source_for_variant(variant) == "warehouse")
         result: list[str] = []
         for rule in rules:
             unavailable = not rule.is_enabled or (
-                rule.stock is not None and int(rule.stock) <= 0
+                not warehouse and rule.stock is not None and int(rule.stock) <= 0
             )
             if not unavailable:
                 continue
@@ -251,12 +258,15 @@ def _color_rows(product, *, fit_code: str, size: str, option_values=None, strict
     for row in rows:
         name = str(getattr(getattr(row, "color", None), "name", "") or "").strip()
         try:
+            from management.services.ig_inventory_availability import inventory_source_for_variant
+            warehouse = inventory_source_for_variant(row) == "warehouse" if _catalog_inputs is None else False
             allowed = row.pk in _catalog_inputs["allowed_variant_ids"] if _catalog_inputs is not None else variant_allows_purchase(
                 product,
                 row,
                 fit_code=fit_code,
                 size=size,
                 option_values=options,
+                **({"ignore_variant_stock": True} if warehouse else {}),
             )
         except Exception:
             # A failed option-rule lookup is not evidence that the variant is
@@ -671,8 +681,10 @@ def readiness_prompt_note(client, *, readiness: dict | None = None) -> str:
         "Каталог, складські числа й прапори доступності визначають вибір та оформлення, "
         "але не підтверджують фізичну наявність чи відсутність. Не кажи, що товар або "
         "розмір є чи його немає на складі, і не кажи, що ти вже перевірила залишки, "
-        "на підставі цих полів. Якщо клієнт питає про наявність, потрібна перевірка "
-        "менеджера саме для обраного товару, кольору, крою, розміру та кількості; "
+        "на підставі цих полів. Окремий підтверджений inventory.availability зі status=available "
+        "дозволяє звичайний вибір та оформлення для обраного товару, кольору, крою, розміру та кількості "
+        "без перевірки менеджером. За нульового, невідомого чи недостатнього залишку "
+        "потрібна перевірка менеджера саме цього запиту; не називай це відсутністю. "
         "не перенось підтвердження на іншу конфігурацію. Звичайний перелік розмірів "
         "описуй як варіанти каталогу без обіцянки наявності й без зайвої передачі менеджеру."
     )

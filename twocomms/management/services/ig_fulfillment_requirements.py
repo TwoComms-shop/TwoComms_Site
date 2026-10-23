@@ -223,15 +223,18 @@ def extract_requirements(text, *, provider_timestamp=None, now=None):
         result["gift"] = True if all(affirmative) else False if not any(affirmative) else None
         if result["gift"]:
             result["purpose_hint"] = "gift"
-    recipients = { _RECIPIENTS[match.group(1).casefold()] for match in re.finditer(
-        r"\b(?:для|for)\s+(?:(?:my|мого|моего)\s+)?(" + "|".join(_RECIPIENTS) + r")\b", value, re.I)
-        if _affirmed(value, match)}
+    from management.services.ig_recipient_planning import recipient_mentions, affirmative_apparel_request
+    beneficiary_mentions, beneficiary_alternative = recipient_mentions(value)
+    recipients = {item[0] for item in beneficiary_mentions}
     if len(recipients) == 1:
         result["recipient_hint"] = next(iter(recipients))
         if result["recipient_hint"] == "self" and result["gift"] is not True:
             result["purpose_hint"] = "self"
     elif recipients:
-        result["reasons"].append("recipient_ambiguous")
+        if not beneficiary_alternative and affirmative_apparel_request(value):
+            result["recipient_plan_hints"] = [item[0] for item in beneficiary_mentions]
+        else:
+            result["reasons"].append("recipient_ambiguous")
     urgent = [_affirmed(value, match) for match in _URGENT.finditer(value)]
     if urgent:
         result["urgency"] = True if all(urgent) else False if not any(urgent) else None

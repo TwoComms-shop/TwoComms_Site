@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-SCENARIOS = frozenset({"collaboration", "custom_print", "ugc", "size", "objection"})
+SCENARIOS = frozenset({"collaboration", "business_cooperation", "custom_print", "ugc", "size", "objection"})
 REQUIRED_KEY = "required_for_scenarios"
 MAX_MODULES = 300
 MAX_BODY_CHARS = 64_000
@@ -92,6 +92,8 @@ def derive_required_scenarios(*, captured_tags=(), semantic_triggers=()):
     result = set()
     if tags & {"collaboration", "creator"} or triggers & {"collaboration", "creator"}:
         result.add("collaboration")
+    if "business_cooperation" in triggers:
+        result.add("business_cooperation")
     if "custom_print" in tags or "custom_print" in triggers:
         result.add("custom_print")
     if tags & {"ugc", "ugc_review"} or "ugc" in triggers:

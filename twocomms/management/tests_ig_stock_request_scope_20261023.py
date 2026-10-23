@@ -710,7 +710,11 @@ class NativeApprovedBaseWishBindingTests(waiting_fixtures.RestockWaitingListFixt
     IG_RESTOCK_SUBSCRIPTIONS_ENABLED=True, IG_TURN_CONTEXT_MODE='unified',
     GOOGLE_INDEXING_ENABLED=False, INDEXNOW_ENABLED=False)
 class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingListFixture, TransactionTestCase):
-    """Known catalogue price remains separate from pending physical stock."""
+    """Known catalogue price remains separate from pending physical stock.
+
+    These pending-check candidates require a real zero-count fixture. Exact
+    positive usable counts now grant inventory availability independently.
+    """
     from management.tests_ig_revision_selection_noop_20261023 import NativeSelectionNoOpTests as _NoOp
     reset_sequences = True
     _execute = _NoOp._execute
@@ -797,7 +801,7 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
 
     def test_actual_h4_price_and_fronted_pending_check_sends_unchanged_once(self):
         from management.models import IgBotNotification
-        self.variant.stock = self.rule.stock = 100
+        self.variant.stock = self.rule.stock = 0
         self.variant.save(update_fields=['stock'])
         self.rule.save(update_fields=['stock'])
         parsed = {'reply_text': 'Худі Restock Aurora у чорному кольорі (розмір M, класичний крій) коштує 900 грн. '
@@ -832,9 +836,9 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
         grid = self.product.size_grid
         grid.guide_data['rows'].append({'size': 'XXL', 'display_size': 'XXL'})
         grid.save(update_fields=['guide_data'])
-        self.rule.size, self.rule.stock = 'XXL', 100
+        self.rule.size, self.rule.stock = 'XXL', 0
         self.rule.save(update_fields=['size', 'stock'])
-        self.variant.stock = 100
+        self.variant.stock = 0
         self.variant.save(update_fields=['stock'])
         self.choice = self.canonical('I want the Restock Aurora hoodie, quantity 1, size XXL, color black, classic fit')
         parsed = {'reply_text': 'The price for the Restock Aurora hoodie in Black (size XXL, classic fit) is 900.00 грн. '
@@ -868,7 +872,7 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
     def test_team_role_never_hides_foreign_configuration_or_firm_stock(self):
         self.customer.language = 'en'
         self.customer.save(update_fields=['language'])
-        self.variant.stock = self.rule.stock = 100
+        self.variant.stock = self.rule.stock = 0
         self.variant.save(update_fields=['stock'])
         self.rule.save(update_fields=['stock'])
         self.reject_candidate = True
@@ -894,7 +898,7 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
         self.assertEqual(self.products[1].status, 'published')
         self.assertNotEqual(capture_current_selection_lines(self.customer.pk)['lines'][0]['fields']['product_id']['value'],
             self.products[1].pk)
-        self.variant.stock = self.rule.stock = 100
+        self.variant.stock = self.rule.stock = 0
         self.variant.save(update_fields=['stock'])
         self.rule.save(update_fields=['stock'])
         self.reject_candidate = True
@@ -909,7 +913,7 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
                 self.assertIn('response_plan_line_claim_unverified', self.validation_reasons)
 
     def test_asserted_or_foreign_garment_stock_cannot_be_laundered_by_future_check(self):
-        self.variant.stock = self.rule.stock = 100
+        self.variant.stock = self.rule.stock = 0
         self.variant.save(update_fields=['stock'])
         self.rule.save(update_fields=['stock'])
         self.reject_candidate = True
@@ -930,10 +934,39 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
                 self.assertTrue(set(self.validation_reasons) & {
                     'response_plan_pending_stock_answer_required', 'unverified_product_availability'})
 
+    def test_zero_price_subject_cannot_borrow_another_size_color_or_fit(self):
+        self.reject_candidate = True
+        for subject in ('Restock Aurora, size L', 'Restock Aurora, color white, size M',
+                'Restock Aurora, size M, oversize fit'):
+            with self.subTest(subject=subject):
+                result, _, http = self.prepare(
+                    question='Чи є це худі в розмірі M у наявності та яка його ціна?', parsed={
+                        'reply_text': subject + ' costs 900 UAH. Уточню у менеджера наявність худі Restock Aurora у розмірі M.',
+                        'controls': [{'kind': 'manager', 'value': True}]})
+                self.assertNotEqual(result.state, 'completed', (result.reasons, self.validation_reasons))
+                http.assert_not_called()
+                self.assertIn('response_plan_line_claim_unverified', self.validation_reasons)
+
+    def test_zero_price_subject_preserves_the_backend_garment_kind(self):
+        self.customer.language = 'en'
+        self.customer.save(update_fields=['language'])
+        self.reject_candidate = True
+        question = 'Is this hoodie available in size M and what is its price?'
+        pending = ' Regarding availability of this hoodie in size M, I will check with our manager and let you know.'
+        result, _, http = self.prepare(question=question, parsed={
+            'reply_text': 'The Restock Aurora t shirt in black (size M, classic fit) costs 900 UAH.' + pending,
+            'controls': [{'kind': 'manager', 'value': True}]})
+        self.assertNotEqual(result.state, 'completed', (result.reasons, self.validation_reasons))
+        http.assert_not_called()
+        self.assertIn('response_plan_line_claim_unverified', self.validation_reasons)
+        self.reject_candidate = False
+        self.pending_variation('en', question,
+            'The Restock Aurora hoodie in black (size M, classic fit) costs 900 UAH.' + pending)
+
     def pending_variation(self, language, question, text):
         self.customer.language = language
         self.customer.save(update_fields=['language'])
-        self.variant.stock = self.rule.stock = 100
+        self.variant.stock = self.rule.stock = 0
         self.variant.save(update_fields=['stock'])
         self.rule.save(update_fields=['stock'])
         result, model, http = self.prepare(question=question, parsed={

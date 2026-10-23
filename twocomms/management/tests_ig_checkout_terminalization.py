@@ -200,18 +200,19 @@ class AssistedAttemptTerminalizationTests(TestCase):
         proposal.save(update_fields=["payment_attempt", "status", "updated_at"])
         reservation = None
         if with_inventory:
+            from management.services.ig_inventory import _fingerprint
+
+            allocation_key = f"catalog_variant:variant:{self.variant.pk}"
             reservation = IgCheckoutInventoryReservation.objects.create(
                 proposal=proposal,
                 item=item,
                 product=self.product,
                 color_variant=self.variant,
                 allocation_source="catalog_variant",
-                allocation_key=f"catalog_variant:variant:{self.variant.pk}",
+                allocation_key=allocation_key,
                 line_ids=[item.pk],
                 quantity=1,
-                reservation_fingerprint=hashlib.sha256(
-                    f"reservation-{suffix}".encode()
-                ).hexdigest(),
+                reservation_fingerprint=_fingerprint(proposal, allocation_key),
                 expires_at=self.now - timedelta(seconds=1),
             )
         return {
@@ -778,6 +779,63 @@ class AssistedAttemptTerminalizationTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_late_verified_success_with_stale_hold_preserves_money_without_consumption(self):
+        graph = self._graph(invoice_expires_at=self.now, with_inventory=True)
+        # A historical/unbound identity must not be adopted as the current
+        # revision's paid allocation, even though its proposal still matches.
+        reservation = graph["reservation"]
+        reservation.reservation_fingerprint = hashlib.sha256(b"stale-reservation").hexdigest()
+        reservation.save(update_fields=["reservation_fingerprint", "updated_at"])
+        original_stock = self.variant.stock
+
+        from management.services.ig_checkout_terminalization import expire_due_assisted_attempts
+        from management.models import IgFollowUpTask
+        from storefront.views.monobank import _apply_payment_attempt_status
+
+        expire_due_assisted_attempts(now=self.now, limit=10)
+        payload = {
+            "status": "success",
+            "invoiceId": graph["attempt"].monobank_invoice_id,
+            "reference": graph["attempt"].reference,
+            "ccy": 980,
+            "paidAmount": 90000,
+        }
+        for _ in range(2):
+            order, created = _apply_payment_attempt_status(
+                graph["attempt"], "success", payload=payload, source="provider_pull",
+            )
+            self.assertIsNone(order)
+            self.assertFalse(created)
+
+        for row in (graph["attempt"], graph["proposal"], graph["deal"], reservation, self.variant):
+            row.refresh_from_db()
+        self.assertEqual(graph["attempt"].status, PaymentAttempt.Status.PAID)
+        self.assertEqual(graph["attempt"].paid_amount, Decimal("900.00"))
+        self.assertEqual(graph["deal"].payment_truth, IgDeal.PaymentTruth.CONFIRMED)
+        projection = IgPaymentProjection.objects.get(deal=graph["deal"])
+        self.assertEqual(projection.truth, IgDeal.PaymentTruth.CONFIRMED)
+        self.assertEqual(projection.gross_amount, Decimal("900.00"))
+        self.assertTrue(projection.needs_reconciliation)
+        self.assertEqual(graph["proposal"].status, IgCheckoutProposal.Status.MANAGER_REVIEW)
+        self.assertEqual(reservation.state, IgCheckoutInventoryReservation.State.RELEASED)
+        review = IgFollowUpTask.objects.get(event_key=f"inventory-overbooked:{graph['proposal'].pk}")
+        self.assertEqual(review.event_payload["inventory_reason"], "inventory_current_revision_hold_missing")
+        self.assertEqual(review.event_payload["reservation_ids"], [])
+        self.assertEqual(review.kind, IgFollowUpTask.Kind.MANAGER_TASK)
+        self.assertFalse(Order.objects.exists())
+        self.assertIsNone(graph["attempt"].order_id)
+        self.assertIsNone(reservation.order_id)
+        self.assertEqual(reservation.fulfilled_quantity, 0)
+        self.assertEqual(self.variant.stock, original_stock)
+        self.assertFalse(IgCheckoutInventoryReservation.objects.filter(proposal=graph["proposal"], state__in=[
+            IgCheckoutInventoryReservation.State.PAID_COMMITTED,
+            IgCheckoutInventoryReservation.State.CONSUMED,
+            IgCheckoutInventoryReservation.State.FULFILLED,
+        ]).exists())
+        self.assertEqual(IgPaymentEvent.objects.filter(deal=graph["deal"], provider_status="success").count(), 1)
+        self.assertEqual(IgFollowUpTask.objects.filter(
+            event_key=f"late-local-payment-review:{graph['attempt'].pk}").count(), 1)
 
     def test_authenticated_promo_late_success_never_consumes_reissued_capacity(self):
         graph = self._graph(
