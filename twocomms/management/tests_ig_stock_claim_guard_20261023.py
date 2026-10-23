@@ -8,6 +8,147 @@ from django.test import SimpleTestCase
 from management.services import instagram_bot as bot
 
 
+class PendingManagerStockGrammarTests(SimpleTestCase):
+    positives = (
+        'Що стосується наявності саме розміру M на складі, я зараз уточню у менеджера та одразу вам повідомлю!',
+        'Щодо наявності худі M на складі, я зараз уточню у менеджера й одразу повідомлю вам.',
+        'Наявність худі M перевірю з менеджером та дам вам знати.',
+        'Что касается наличия M на складе, я сейчас уточню у менеджера и сразу вам сообщу.',
+        'По наличию M уточню у менеджера.',
+        'Regarding availability of this hoodie in size M, I will check with our manager and let you know.',
+        'As for availability of M, I’ll check with our manager.',
+        'I am checking availability of M with our manager.',
+    )
+
+    def test_topic_and_own_manager_check_share_one_nonassertive_predicate(self):
+        from management.services.ig_reply_truth import _pending_manager_stock_check, _product_availability_claim
+        for text in self.positives:
+            with self.subTest(text=text):
+                parsed = _pending_manager_stock_check(text)
+                self.assertTrue(parsed)
+                start, end = parsed['availability_span']
+                self.assertTrue(text[start:end])
+                self.assertFalse(_product_availability_claim(text))
+
+    def test_unknown_stock_predicates_are_never_product_labels_regardless_of_case(self):
+        from management.services.ig_reply_truth import (_pending_manager_stock_check,
+            validate_reply_truth, ReplyTruthContext)
+        context = ReplyTruthContext(fulfillment_review_status='pending', source_chosen_sizes=('M',),
+            source_chosen_colors=('black',), source_chosen_fits=('classic',))
+        for predicate in ('стовідсоткова', 'СТОВІДСОТКОВА', 'Стовідсоткова',
+                          'забезпечена', 'ЗАБЕЗПЕЧЕНА', 'Забезпечена'):
+            for subject in ('Наявність худі M', 'Доступність худі розмір M', 'Наявність худі Restock Aurora M'):
+                text = f'{subject} {predicate}, я уточню у менеджера.'
+                with self.subTest(text=text):
+                    self.assertFalse(_pending_manager_stock_check(text))
+                    result = validate_reply_truth(text, context=context)
+                    self.assertFalse(result.valid)
+                    self.assertIn('unverified_availability', result.reasons)
+        # A capitalized model-like span is insufficient proof of a label.
+        self.assertFalse(_pending_manager_stock_check(
+            'Щодо наявності худі Other Print у розмірі M, я уточню у менеджера.'))
+
+    def test_fronted_topic_keeps_exact_source_choices_across_comma_in_all_languages(self):
+        from management.services.ig_reply_truth import validate_reply_truth, ReplyTruthContext
+        context = ReplyTruthContext(fulfillment_review_status='pending', allowed_sizes=('M', 'L'),
+            allowed_colors=('black', 'white'), allowed_fits=('classic', 'oversize'),
+            source_chosen_sizes=('M',), source_chosen_colors=('black',), source_chosen_fits=('classic',))
+        pairs = (
+            ('Щодо наявності size M на складі, я уточню у менеджера.', 'size M', 'size L'),
+            ('Щодо наявності розміру M на складі, я уточню у менеджера.', 'розміру M', 'розміру L'),
+            ('Щодо наявності худі M, я уточню у менеджера.', 'худі M', 'худі L'),
+            ('Что касается наличия размера M, я уточню у менеджера.', 'размера M', 'размера L'),
+            ('Regarding availability of this hoodie in size M, I will check with our manager.', 'size M', 'size L'),
+            ('Щодо наявності color black, я уточню у менеджера.', 'color black', 'color white'),
+            ('Щодо наявності худі у чорному кольорі, я уточню у менеджера.', 'чорному', 'білому'),
+            ('По наличию худи в черном цвете, я уточню у менеджера.', 'черном', 'белом'),
+            ('Regarding availability of black hoodie, I will check with our manager.', 'black', 'white'),
+            ('Щодо наявності fit classic, я уточню у менеджера.', 'fit classic', 'fit oversize'),
+        )
+        for positive, selected, other in pairs:
+            for comma in (True, False):
+                source = positive if comma else positive.replace(',', '')
+                with self.subTest(source=source):
+                    self.assertTrue(validate_reply_truth(source, context=context).valid)
+                    rejected = validate_reply_truth(source.replace(selected, other), context=context)
+                    self.assertFalse(rejected.valid)
+                    self.assertIn('configuration_mismatch', rejected.reasons)
+
+    def test_explicit_nominal_stock_assurances_require_physical_authority(self):
+        from management.services.ig_reply_truth import validate_reply_truth, ReplyTruthContext
+        context = ReplyTruthContext(fulfillment_review_status='pending', source_chosen_sizes=('M',),
+            source_chosen_colors=('black',), source_chosen_fits=('classic',))
+        observed = (
+            'Наявність худі Restock Aurora Стовідсоткова, я уточню у менеджера.',
+            'Наличие худи M Полное, я уточню у менеджера.',
+            'Availability of hoodie M Certain, I will check with our manager.',
+            'Availability of hoodie M CERTAIN, I will check with our manager.',
+        )
+        for text in (*observed, 'Гарантована наявність худі Restock Aurora.',
+                'Guaranteed availability of this hoodie.', 'Наличие худи полное.',
+                'Наявність худі Restock Aurora 100%.'):
+            with self.subTest(text=text):
+                result = validate_reply_truth(text, context=context)
+                self.assertFalse(result.valid)
+                self.assertIn('unverified_availability', result.reasons)
+        # Exact quoted customer evidence and conservative pending topics do
+        # not become physical-stock assertions through this nominal grammar.
+        quote = observed[0]
+        self.assertTrue(validate_reply_truth(f'«{quote}»', context=ReplyTruthContext(
+            quoted_data=(quote,), fulfillment_review_status='pending')).valid)
+        for text in ('If availability of this hoodie is certain, I will check with our manager.',
+                'I cannot confirm availability of this hoodie is certain.',
+                'Availability of this hoodie is not certain.',
+                'Availability of this hoodie is uncertain.',
+                'If guaranteed availability of this hoodie, I will check with our manager.'):
+            with self.subTest(nonassertion=text):
+                self.assertTrue(validate_reply_truth(text, context=context).valid)
+        pending_context = ReplyTruthContext(fulfillment_review_status='pending', allowed_sizes=('M',),
+            allowed_colors=('black',), allowed_fits=('classic',), source_chosen_sizes=('M',),
+            source_chosen_colors=('black',), source_chosen_fits=('classic',))
+        for text in self.positives:
+            with self.subTest(pending=text):
+                self.assertTrue(validate_reply_truth(text, context=pending_context).valid)
+
+    def test_quote_negation_history_conditional_and_different_check_object_are_not_own_checks(self):
+        from management.services.ig_reply_truth import _pending_manager_stock_check
+        for text in ('«Щодо наявності M, я уточню у менеджера»',
+                'Щодо наявності M, я не уточню у менеджера.',
+                'Менеджер написав: я уточню наявність M у менеджера.',
+                'Щодо наявності M, я вчора уточнив у менеджера.',
+                'Якщо я уточню наявність M у менеджера.',
+                'If I check availability of M with our manager.',
+                'Regarding availability of M, I will not check with our manager.',
+                'Щодо наявності M, я уточню у менеджера час доставки.',
+                'Regarding confirmed availability of M, I will check shipping time with the manager.',
+                'Наявність M уточню.', 'Менеджер уточнить наявність M.'):
+            with self.subTest(text=text):
+                self.assertFalse(_pending_manager_stock_check(text))
+
+    def test_a_pending_topic_never_hides_independent_stock_absence_wait_price_or_eta(self):
+        from management.services.ig_reply_truth import (_pending_manager_stock_check,
+            _product_availability_claim, validate_reply_truth, ReplyTruthContext)
+        stock = ('Що стосується наявності M, я уточню у менеджера, але L є в наявності.',
+            'Щодо наявності M, я уточню у менеджера, M уже є на складі.',
+            'Regarding availability of M, I will check with our manager, and size M is in stock.',
+            'По наличию M, я уточню у менеджера, но худи нет.',
+            'По наличию M, я уточню у менеджера, но худи под заказ.',
+            'Щодо наявності M, я уточню у менеджера та повідомлю, що M є в наявності.',
+            'Наявність розміру M стовідсоткова, я уточню у менеджера.',
+            'Доступність розміру M забезпечена, я уточню у менеджера.',
+            'Підтверджена наявність M, я уточню у менеджера.')
+        for text in stock:
+            with self.subTest(text=text):
+                self.assertFalse(_pending_manager_stock_check(text))
+                self.assertTrue(_product_availability_claim(text))
+                self.assertFalse(validate_reply_truth(text, context=ReplyTruthContext()).valid)
+        self.assertFalse(_pending_manager_stock_check('Regarding availability of size M in stock, I will check with our manager.'))
+        for text in ('Щодо наявності M, я уточню у менеджера. Ціна — 1 грн.',
+                'Regarding availability of M, I will check with our manager. It will arrive in 2 days.'):
+            with self.subTest(text=text):
+                self.assertFalse(validate_reply_truth(text, context=ReplyTruthContext()).valid)
+
+
 def reviewed_projection(*, availability="available", quantity=1, checked=1, status="reviewed"):
     return {
         "version": 1, "status": status, "request_digest": "verified-current-purchase",

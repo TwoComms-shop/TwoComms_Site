@@ -30,6 +30,9 @@ DEFAULT_SUITE = "lifecycle"
 # Partition the complete acceptance list by module ownership; growing full
 # modules remain covered without duplicating native transaction cleanup.
 STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
+    "management.tests_ig_response_plan",
+    "management.tests_ig_response_cart_plan",
+    "management.tests_ig_reply_truth",
     "management.tests_ig_source_cart_catalog",
     "management.tests_ig_stock_authority_20261023",
     "management.tests_ig_stock_catalog_copy_20261023",

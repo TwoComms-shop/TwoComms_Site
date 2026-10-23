@@ -1846,7 +1846,7 @@ print(json.dumps({
         labels = (self.runner._validate_suite("stock-authority")
                   + self.runner._validate_suite("stock-authority-consumers"))
         self.assertEqual(len(labels), len(set(labels)))
-        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 47)
+        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 50)
         self.assertEqual(set(labels), set(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS))
         self.assertEqual(len(self.runner.STOCK_AUTHORITY_CORE_MODULES), 9)
         self.assertEqual(set(self.runner.SUITES["stock-authority"]),
@@ -1856,6 +1856,9 @@ print(json.dumps({
             self.assertIn("management.tests_ig_stock_" + suffix, labels)
         self.assertIn("management.tests_ig_palette_intent_20261023", labels)
         self.assertIn("management.tests_ig_source_cart_catalog", labels)
+        self.assertIn("management.tests_ig_reply_truth", labels)
+        self.assertIn("management.tests_ig_response_plan", labels)
+        self.assertIn("management.tests_ig_response_cart_plan", labels)
         self.assertIn("management.tests_ig_standard_funnel_qa", labels)
         for module in ("fulfillment_reviews", "fulfillment_timing", "fulfillment_truth",
                        "fulfillment_delivery", "fulfillment_checkout", "fulfillment_stock_api",

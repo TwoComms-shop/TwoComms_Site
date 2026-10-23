@@ -286,8 +286,53 @@ def line_clauses(text, line_plans):
     return result
 
 
+def _configuration_apposition(text):
+    """Only typed, nonverbal configuration descriptors may share commas."""
+    from management.services.ig_response_plan import CHOICE_ALIASES
+    size = r"(?:(?:розмір(?:у|і)?|размер(?:а|е)?|size)\s*)?(?:XS|S|M|L|XL|XXL|XXXL|[2-5]\s*[xх]\s*[lл])"
+    fits = r"classic|regular|oversize|оверсайз|класичн(?:ий|а|е|і|ого|ому|ою)|классическ(?:ий|ая|ое|ие|ого|ом|им|ую)"
+    fit = r"(?:(?:крій|крой|fit)\s+(?:" + fits + r")|(?:" + fits + r")(?:\s+(?:крій|крой|fit))?)"
+    colors = {alias.casefold() for key, aliases in CHOICE_ALIASES.items()
+        if key not in {'hoodie', 'tshirt', 'classic', 'oversize'} for alias in aliases}
+    parts = text.replace('(', '').replace(')', '').split(',')
+    if not 1 <= len(parts) <= 8 or len(text) > 300:
+        return False
+    for part in parts:
+        value = part.strip()
+        if re.fullmatch(size, value, re.I) or re.fullmatch(fit, value, re.I):
+            continue
+        color = re.sub(r"^(?:колір|кольору|цвет|цвета|colou?r)\s+", '', value, flags=re.I)
+        if color.casefold() not in colors:
+            return False
+    return True
+
+
 def scoped_claim_clauses(text):
     """A comma can separate different line assertions; identities stay local."""
-    from management.services.ig_reply_truth import _claim_sentences
+    from management.services.ig_reply_truth import _claim_sentences, _pending_manager_stock_check
     for sentence in _claim_sentences(text, ()):
-        yield from re.split(r"(?<!\d),|,(?!\d)|[;\n]|\b(?:але|но|but)\b", sentence, flags=re.I)
+        if _pending_manager_stock_check(sentence):
+            yield sentence
+            continue
+        # Parenthetical size/fit descriptions belong to their named SKU;
+        # their internal comma cannot detach a following price from it.
+        depth, start, malformed, group_start = 0, 0, False, 0
+        separators = []
+        for index, char in enumerate(sentence):
+            if char == '(':
+                if depth == 0:
+                    group_start = index + 1
+                depth += 1
+            elif char == ')':
+                malformed = malformed or depth == 0
+                depth = max(0, depth - 1)
+                if depth == 0:
+                    malformed = malformed or not _configuration_apposition(sentence[group_start:index])
+            elif char == ',' and depth == 0 and not (
+                    index and index + 1 < len(sentence) and sentence[index - 1].isdigit() and sentence[index + 1].isdigit()):
+                separators.append(index)
+        if depth or malformed:
+            separators = [match.start() for match in re.finditer(r"(?<!\d),|,(?!\d)", sentence)]
+        for end in (*separators, len(sentence)):
+            yield from re.split(r"[;\n]|\b(?:але|но|but)\b", sentence[start:end], flags=re.I)
+            start = end + 1

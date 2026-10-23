@@ -849,7 +849,7 @@ def _pending_stock_answer_covered(plan, text, source_message_id):
         return False
     from management.services.ig_reply_language import own_reply_text
     from management.services.ig_reply_truth import (_claim_sentences, _has_positive_claim,
-        _source_owned_availability_check)
+        _source_owned_availability_check, _pending_manager_stock_check)
     from management.services.ig_response_cart_plan import _scoped_request_tokens, selected_title_text
     from management.services.approved_public_facts import _captured_base, _GARMENT_WORDS
     check = re.compile(r"\b(?:уточню|уточнимо|перевірю|перевіримо|проверю|проверим)\b|"
@@ -862,13 +862,29 @@ def _pending_stock_answer_covered(plan, text, source_message_id):
     if _PRODUCT_NAME_QUOTES.search(identity):
         return False
     for clause in _claim_sentences(own_reply_text(identity), ()):
-        if ("?" in clause or not _source_owned_availability_check(clause)
-            or not manager.search(clause) or not _has_positive_claim(check, clause)):
+        # This protected capture owns exactly this product label. Shared
+        # grammar must never guess labels from capitalization or swallow an
+        # unknown predicate as though it were a model name.
+        semantic = re.sub(r"(?<!\w)" + re.escape(title) + r"(?!\w)", ' ', clause, flags=re.I) if title else clause
+        pending_check = _pending_manager_stock_check(semantic)
+        if ("?" in clause or (not pending_check and not _source_owned_availability_check(clause))
+            or not manager.search(clause) or (not pending_check and not _has_positive_claim(check, clause))):
             continue
         literal = title and re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", clause, re.I)
+        garment = _captured_base(captured.get("readiness"), "")[1]
+        if garment and any(key != garment and pattern.search(clause) for key, pattern in _GARMENT_WORDS.items()):
+            continue
         if (not literal and any(pattern.search(clause) for pattern in _GARMENT_WORDS.values())
             and not _captured_base(captured.get("readiness"), clause)[1]):
             continue
+        if pending_check:
+            subject = pending_check["subject"]
+            subject = re.sub(r"\b(?:наявн(?:ість|ості)|налич(?:ие|ия|ию)|доступн(?:ість|ості|ость|ости))\b", "availability", subject, flags=re.I)
+            subject = re.sub(r"\b(?:розмір(?:у|і|ом)?|размер(?:а|е|ом)?)\b", "size", subject, flags=re.I)
+            subject = re.sub(r"\b(?:на\s+склад[іе]|at\s+(?:the\s+)?warehouse)\b", "", subject, flags=re.I)
+            subject = re.sub(r"\b(?:саме|именно|exactly)\b", "", subject, flags=re.I)
+            if _scoped_request_tokens(subject, choices=captured["choices"], title=title):
+                return True
         if _scoped_request_tokens(clause, choices=captured["choices"], title=title, extra_words=(
             "i", "we", "will", "shall", "am", "also", "check", "checking", "verify", "verifying",
             "with", "our", "manager", "уточню", "уточнимо", "перевірю", "перевіримо", "проверю", "проверим",
@@ -1115,7 +1131,11 @@ def _topic_covered(kind, response, plan, *, source_message_id=None):
                 and not single_price_subject(clause, choices=plan.choices, title=plan.configuration.get("product_title", ""))):
                 continue
             amounts = _MONEY_RE.findall(clause)
-            if len(amounts) == 1 and validate_reply_truth(clause, context=context).valid:
+            price_context = plan.truth_context(replace(context,
+                allowed_sizes=tuple(authority.get("sizes", ())),
+                allowed_fits=tuple(authority.get("fits", ())),
+                allowed_colors=tuple(authority.get("colors", ()))))
+            if len(amounts) == 1 and validate_reply_truth(clause, context=price_context).valid:
                 try:
                     if Decimal(amounts[0][0].replace(",", ".")) in prices:
                         return True

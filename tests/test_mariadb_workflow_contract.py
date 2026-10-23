@@ -66,6 +66,9 @@ class MariaDbWorkflowContractTests(unittest.TestCase):
         from scripts.run_mariadb_gate import SUITES
 
         new_modules = {
+            "management.tests_ig_response_plan",
+            "management.tests_ig_response_cart_plan",
+            "management.tests_ig_reply_truth",
             "management.tests_ig_source_cart_catalog",
             "management.tests_ig_stock_authority_20261023",
             "management.tests_ig_stock_catalog_copy_20261023",

@@ -684,6 +684,17 @@ _AVAILABILITY_RE = re.compile(
     r"|(?:розмір|размер|size|\b(?:XS|S|M|L|XL|XXL|XXXL)\b)[^.!?\n]{0,35}"
     r"(?:\bє\b|\bесть\b|\bмаємо\b|\bимеем\b|we\s+have(?!\s+(?:chosen|selected|requested))|\bhave\b(?!\s+(?:chosen|selected|requested))|\bдоступн\w*|\bнаявн\w*|\bavailable\b|in\s+stock)", re.I,
 )
+# Nominal stock assurances are physical claims even without "is available"
+# or a nearby size token. Keep the noun, garment scope and explicit assertion
+# inside one bounded clause; product-title casing grants no authority.
+_NOMINAL_STOCK_NOUN = r"(?:наявн(?:ість|ості)|налич(?:ие|ия|ию)|доступн(?:ість|ості|ость|ости)|availability)"
+_NOMINAL_STOCK_ASSURANCE = (r"(?:стовідсотков\w*|стопроцентн\w*|повн(?:а|е|ий|і|істю)|полн(?:ое|ая|ый|ые|остью)|"
+    r"гарантован\w*|гарантирован\w*|забезпечен\w*|обеспечен\w*|certain|assured|guaranteed|full|100\s*%)")
+_NOMINAL_STOCK_RE = re.compile(
+    rf"\b{_NOMINAL_STOCK_NOUN}\b[^,;.!?\n]{{0,100}}?(?<!\w)(?P<after>{_NOMINAL_STOCK_ASSURANCE})(?!\w)|"
+    rf"(?<!\w)(?P<before>{_NOMINAL_STOCK_ASSURANCE})[^,;.!?\n]{{0,100}}?\b{_NOMINAL_STOCK_NOUN}\b"
+    r"[^,;.!?\n]{0,60}", re.I,
+)
 _CONFIGURATION_STOCK_RE = re.compile(
     r"\b(?:маємо|имеем|доступн\w*|наявн\w*|available)\b|in\s+stock|"
     r"\b(?:є|есть)\b|\bhave\b(?!\s+(?:chosen|selected|requested))", re.I,
@@ -951,11 +962,83 @@ def _comma_choice_continuation(sentence, clause_start, clause_end):
     return False
 
 
+def _pending_manager_stock_check(clause: str):
+    """Parse an own pending-check sentence; return references, never authority.
+
+    Availability may be a fronted noun topic, separated from its future
+    manager check by a comma. Only that noun belongs to the check predicate;
+    an independent stock statement cannot inherit its nonassertive status.
+    """
+    from management.services.ig_reply_language import own_reply_text
+    raw = str(clause or "")
+    if not raw or len(raw) > 1000:
+        return {}
+    text = own_reply_text(raw).strip().rstrip(".!").strip()
+    if (not text or re.search(r"[;?!\n]|\b(?:не|ні|not|never|if|would|could|якщо|якби|если|вчера|учора|раніше|раньше|previously|already)\b|n['’]t\b", text, re.I)
+        or _MONEY_RE.search(text) or _TIMING_RE.search(text)
+        or re.search(r"підтвердж\w*|подтвержд\w*|confirmed|гарант\w*|guarantee\w*|"
+            r"доставк\w*|shipping|delivery|ц[іе]н\w*|price|payment|оплат\w*", text, re.I)):
+        return {}
+    noun = re.compile(r"\b(?:наявн(?:ість|ості)|налич(?:ие|ия|ию)|доступн(?:ість|ості|ость|ости)|availability)\b", re.I)
+    nouns = list(noun.finditer(text))
+    original_nouns = list(noun.finditer(raw))
+    if len(nouns) != 1 or len(original_nouns) != 1:
+        return {}
+    action = re.compile(r"\b(?:(?:(?:зараз|наразі|сейчас|також|также)\s+)?(?:(?:я|ми)\s+)?"
+        r"(?:(?:зараз|наразі|сейчас|також|также)\s+)?(?:уточню|уточнимо|уточним|перевірю|перевіримо|проверю|проверим|перевіряю|перевіряємо|проверяю|проверяем)|"
+        r"(?:i|we)(?:['’]ll|\s+(?:will|shall|am|are))\s+(?:(?:now|also)\s+)?(?:check(?:ing)?|verify(?:ing)?))\b", re.I)
+    manager = re.compile(r"\b(?:у|з|із|с|со|with)\s+(?:(?:нашого|нашим|нашего|our|the)\s+)?"
+        r"(?:менеджер(?:а|ом|у)?|manager)\b", re.I)
+    actions, managers = list(action.finditer(text)), list(manager.finditer(text))
+    if len(actions) != 1 or len(managers) != 1:
+        return {}
+    callback = re.search(r"\s+(?:та|й|і|и|and)\s+(?:"
+        r"(?:(?:я|ми)\s+)?(?:(?:одразу|відразу|сразу)\s+)?(?:(?:вам|вас)\s+)?"
+        r"(?:повідомлю|повідомимо|сообщу|сообщим)(?:\s+(?:вам|вас))?|"
+        r"дам(?:о)?\s+вам\s+знати|"
+        r"(?:(?:i|we)(?:['’]ll|\s+will)?\s+)?(?:let\s+you\s+know|notify\s+you))\s*$", text, re.I)
+    spans = [actions[0].span(), managers[0].span()]
+    if callback:
+        spans.append(callback.span())
+    subject = text
+    for start, end in sorted(spans, reverse=True):
+        subject = subject[:start] + " " * (end - start) + subject[end:]
+    subject = re.sub(r"^\s*(?:що\s+стосується|щодо|стосовно|что\s+касается|по|насч[её]т|"
+        r"regarding|concerning|as\s+for|about)\s+", "", subject, flags=re.I).strip(" ,—–-")
+    # What remains must be one nonverbal availability topic, not a report,
+    # conditional, second action, confirmed stock or an appended yes/no/wait.
+    if (not noun.search(subject) or re.search(r"[,;:]|\b(?:я|ми|i|we|said|wrote|says|напис\w*|сказ\w*|"
+            r"повідом\w*|сообщ\w*|є|есть|маємо|имеем|available|unavailable|sold|out|will|"
+            r"немає|нема|нет|буде|будут|будет|очіку\w*|ожида\w*|під\s+замовлення|под\s+заказ)\b", subject, re.I)):
+        return {}
+    # Positively admit a noun-reference grammar, rather than trying to list
+    # every adjective or verb that could assert stock. Unknown predicates
+    # such as "стовідсоткова" / "забезпечена" remain protected claims.
+    from management.services.ig_response_cart_plan import _scoped_request_tokens
+    from management.services.ig_response_plan import CHOICE_ALIASES
+    reference = re.sub(r"\bin\s+stock\b", '#firm-stock#', subject, flags=re.I)
+    reference = noun.sub('availability', reference)
+    reference = re.sub(r"\b(?:розмір(?:у|і|ом)?|размер(?:а|е|ом)?)\b", 'size', reference, flags=re.I)
+    reference = re.sub(r"(?<!\w)(?:XS|S|M|L|XL|XXL|XXXL|[2-5]\s*[xх]\s*[lл])(?!\w)", ' ', reference, flags=re.I)
+    reference = _FIT_RE.sub(lambda match: ' ' if _configuration_axis_value('fit',
+        match.group('value') or match.group('descriptive_fit')) in {'classic', 'oversize'} else match.group(), reference)
+    for key, aliases in CHOICE_ALIASES.items():
+        if key in {'hoodie', 'tshirt', 'classic', 'oversize'}:
+            continue
+        for alias in aliases:
+            reference = re.sub(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", ' ', reference, flags=re.I)
+    reference = re.sub(r"\b(?:на\s+склад[іе]|at\s+(?:the\s+)?warehouse|саме|именно|exactly)\b", '', reference, flags=re.I)
+    if not _scoped_request_tokens(reference, choices={}):
+        return {}
+    original_noun = original_nouns[0]
+    return {"subject": subject, "availability_span": original_noun.span()}
+
+
 def _source_owned_availability_check(clause: str) -> bool:
     """A check may repeat source choices without claiming they are sellable."""
-    return bool(_AVAILABILITY_CHECK_RE.search(clause)
+    return bool(_pending_manager_stock_check(clause) or (_AVAILABILITY_CHECK_RE.search(clause)
         and _AVAILABILITY_CHECK_SUBJECT_RE.search(clause)
-        and not _product_availability_claim(clause))
+        and not _product_availability_claim(clause)))
 
 
 def _descriptive_palette_reference(sentence: str, match: re.Match) -> bool:
@@ -1197,6 +1280,7 @@ def _availability_claim_statuses(sentence: str) -> tuple[str, ...]:
     stock_sentence = _PHOTO_ABSENCE_RE.sub(lambda match: " " * len(match.group()), stock_sentence)
     stock_sentence = _CATALOG_EXISTENCE_RE.sub(lambda match: " " * len(match.group()), stock_sentence)
     quoted_spans = tuple(_QUOTED_SPAN_RE.finditer(stock_sentence))
+    pending_check = _pending_manager_stock_check(stock_sentence)
     statuses = []
     subject = bool(_STOCK_SUBJECT_RE.search(stock_sentence) or _EXACT_STOCK_RE.search(stock_sentence)
         or re.search(r"\bout\s+of\s+stock\b|\bsold\s+out\b", stock_sentence, re.I))
@@ -1214,6 +1298,18 @@ def _availability_claim_statuses(sentence: str) -> tuple[str, ...]:
             if subject and not (polite or title_negation or nonphysical) and not _STOCK_NONASSERTION_RE.search(prefix):
                 if status not in statuses:
                     statuses.append(status)
+    for match in _NOMINAL_STOCK_RE.finditer(stock_sentence):
+        prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", stock_sentence[:match.start()], flags=re.I)[-1]
+        assertion_start = match.start('after') if match.group('after') else match.start('before')
+        # "not certain" is a qualification, not a positive stock assurance.
+        # Existing independent stock/absence claims are still inspected below.
+        if (_STOCK_SUBJECT_RE.search(match.group())
+            and not _locally_negated(stock_sentence, assertion_start)
+            and not _locally_negated(stock_sentence, match.start())
+            and not _STOCK_NONASSERTION_RE.search(prefix)
+            and not _NEGATED_STATUS_RE.search(match.group())):
+            if "available" not in statuses:
+                statuses.append("available")
     for pattern in (_AVAILABILITY_RE, _EXACT_STOCK_RE, _BARE_PRODUCT_STOCK_RE):
         for match in pattern.finditer(stock_sentence):
             prefix = re.split(r"[,;]|\b(?:але|но|but|however)\b", stock_sentence[:match.start()], flags=re.I)[-1]
@@ -1221,6 +1317,9 @@ def _availability_claim_statuses(sentence: str) -> tuple[str, ...]:
             pending_subject = (re.match(r"(?:наявність|наявності|доступність|наличие|наличия|availability)\b", match.group(), re.I)
                 and _AVAILABILITY_CHECK_RE.search(tail)
                 and not re.search(r"\b(?:є|есть|available)\b|in\s+stock", match.group(), re.I))
+            if pending_check:
+                noun_start, noun_end = pending_check["availability_span"]
+                pending_subject = pending_subject or match.start() <= noun_start < noun_end <= match.end()
             if (
                 not _locally_negated(stock_sentence, match.start())
                 and not _NEGATED_STATUS_RE.search(match.group(0))
@@ -1860,6 +1959,20 @@ def validate_reply_truth(
                 ):
                     _add(reasons, "unverified_timing")
 
+        pending_check = _pending_manager_stock_check(sentence)
+        if pending_check:
+            # The topic and its check form one semantic unit even when a
+            # comma fronts the topic. Catalogue alternatives never replace
+            # the customer's actual captured size, fit or colour in it.
+            from management.services.ig_conversation_agreement import _configuration
+            stated, ambiguity = _configuration(pending_check['subject'])
+            if ambiguity:
+                _add(reasons, "configuration_mismatch")
+            for axis, choices in (("size", context.source_chosen_sizes),
+                    ("fit", context.source_chosen_fits), ("color", context.source_chosen_colors)):
+                if axis in stated and _configuration_axis_value(axis, stated[axis]) not in {
+                        _configuration_axis_value(axis, value) for value in choices}:
+                    _add(reasons, "configuration_mismatch")
         availability_claim = _product_availability_claim(sentence)
         reviewed_stock_claim = availability_claim
         manager_availability = _manager_availability_matches(sentence, context) if reviewed_stock_claim else ()

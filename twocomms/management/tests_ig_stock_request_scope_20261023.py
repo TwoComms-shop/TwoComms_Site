@@ -136,6 +136,49 @@ class UnlistedProductSourceTests(SimpleTestCase):
                     self.assertFalse(_pending_stock_answer_covered(plan, text, 8))
                     self.assertFalse(_acknowledges_choice('color', color, f'Ваше побажання — {alias}ватий колір.', {}))
 
+    def test_fronted_manager_check_retains_exact_source_product_size_color_and_own_polarity(self):
+        from types import SimpleNamespace
+        from management.services.ig_response_plan import _pending_stock_answer_covered
+        from management.tests_ig_stock_claim_guard_20261023 import PendingManagerStockGrammarTests
+        captured = {'source_message_ids': [7], 'line_id': 'selected',
+            'choices': {'color': 'black', 'size': 'M'}, 'title': 'Restock Aurora',
+            'readiness': {'product': {'id': 12, 'category_slug': 'hoodies'}}}
+        plan = SimpleNamespace(pending_stock_questions=captured)
+        for text in PendingManagerStockGrammarTests.positives:
+            with self.subTest(text=text):
+                self.assertTrue(_pending_stock_answer_covered(plan, text, 7))
+                self.assertFalse(_pending_stock_answer_covered(plan, text, 8))
+        positive = 'Щодо наявності худі Restock Aurora у чорному кольорі в розмірі M на складі, я зараз уточню у менеджера й одразу повідомлю вам.'
+        self.assertTrue(_pending_stock_answer_covered(plan, positive, 7))
+        for text in (positive.replace('Restock Aurora', 'Other Print'), positive.replace('чорному', 'білому'),
+                positive.replace('розмірі M', 'розмірі L'), positive.replace('худі', 'футболки'), f'«{positive}»',
+                positive.replace('я зараз уточню', 'я зараз не уточню'),
+                'Менеджер написав: ' + positive, 'Якщо ' + positive,
+                positive.replace('й одразу повідомлю вам.', 'й повідомлю, що худі M є в наявності.'),
+                positive.rstrip('. ') + ', але худі L є в наявності.',
+                'Наявність розміру M стовідсоткова, я уточню у менеджера.'):
+            with self.subTest(text=text):
+                self.assertFalse(_pending_stock_answer_covered(plan, text, 7))
+
+    def test_parenthetical_configuration_grammar_keeps_foreign_lines_and_recipients_separate(self):
+        from decimal import Decimal
+        from management.tests_ig_response_cart_plan import ResponseCartPlanTests
+        from management.services.ig_reply_truth import ReplyTruthContext
+        from management.services.ig_response_cart_plan import scoped_claim_clauses
+        fixture = ResponseCartPlanTests()
+        plan = fixture.plan(contexts={'first': ReplyTruthContext(authorized_prices=(Decimal('900'),), allowed_sizes=('M',)),
+            'second': ReplyTruthContext(authorized_prices=(Decimal('1290'),), allowed_sizes=('L',))})
+        for text in ('Classic (size M, Storm costs 900 UAH).', 'Classic (size M, Storm) costs 900 UAH.',
+                     'item 1 (M, item 2 — L) costs 900 UAH.', ') Classic (M, regular fit) costs 900 UAH.'):
+            with self.subTest(text=text):
+                self.assertTrue(plan.validate_multiline_claims(fixture.response(text), ReplyTruthContext()))
+        duplicate = fixture.plan(fixture.capture(duplicate=True), contexts={
+            key: ReplyTruthContext(authorized_prices=(Decimal('900'),), allowed_sizes=('M', 'L')) for key in ('first', 'second')})
+        self.assertTrue(duplicate.validate_multiline_claims(
+            fixture.response('item 1 for alice (M, bob L) costs 900 UAH.'), ReplyTruthContext()))
+        self.assertEqual(len(list(scoped_claim_clauses('Classic (M, regular fit), Storm (L, oversize fit) costs 1290 UAH.'))), 2)
+        self.assertEqual(len(list(scoped_claim_clauses('Classic (M, (regular fit, black)) costs 900 UAH.'))), 1)
+
 
 @override_settings(IG_FULFILLMENT_REVIEWS_ENABLED=True, GOOGLE_INDEXING_ENABLED=False)
 class NativeStockRequestScopeTests(waiting_fixtures.RestockWaitingListFixture, TransactionTestCase):
@@ -714,6 +757,102 @@ class NativeZeroLedgerPriceContinuationTests(waiting_fixtures.RestockWaitingList
 
     def test_zero_pending_stock_then_known_price_without_controls(self):
         self.price_continuation(False)
+
+    def test_actual_h4_price_and_fronted_pending_check_sends_unchanged_once(self):
+        from management.models import IgBotNotification
+        self.variant.stock = self.rule.stock = 100
+        self.variant.save(update_fields=['stock'])
+        self.rule.save(update_fields=['stock'])
+        parsed = {'reply_text': 'Худі Restock Aurora у чорному кольорі (розмір M, класичний крій) коштує 900 грн. '
+            'Що стосується наявності саме розміру M на складі, я зараз уточню у менеджера та одразу вам повідомлю!',
+            'controls': [{'kind': 'product', 'value': 1}, {'kind': 'size', 'value': 'M'},
+                {'kind': 'fit', 'value': 'classic'}, {'kind': 'color_variant_id', 'value': 1},
+                {'kind': 'price_quoted', 'value': '900.00'}, {'kind': 'manager', 'value': True}],
+            'turn_intelligence': {'catalog_candidates': [{'evidence': 'Restock Aurora · Black · M · classic',
+                'confidence': 1.0, 'product_id': 1}], 'confidence': 1.0, 'intent': 'price_inquiry', 'transcript': ''}}
+        result, model, http = self.prepare(question='Чи є це худі в розмірі M у наявності та яка його ціна?', parsed=parsed)
+        self.assertEqual(result.state, 'completed', (result.reasons, self.validation_reasons,
+            self.revision.action_receipts.get('response_coverage')))
+        self.assertEqual((model.call_count, http.call_count), (1, 1))
+        self.assertEqual(self.revision.delivery_effects.get(state='sent').payload['message']['text'], parsed['reply_text'])
+        self.assertFalse(self.revision.action_receipts['response_coverage']['remaining'])
+        self.assertEqual(self.before_action, self.after_action)
+        self.assertEqual(self.revision.action_receipts['client_configuration_update']['outcome'], 'no_op')
+        self.assertEqual(IgFollowUpTask.objects.filter(client=self.customer, reason='fulfillment_review').count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(client=self.customer).count(), 1)
+        repeated, generated, transport = self._execute()
+        self.assertEqual(repeated.state, 'completed', repeated.reasons)
+        generated.assert_not_called()
+        transport.assert_not_called()
+
+    def test_parenthetical_foreign_published_product_cannot_borrow_current_price(self):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        self.products[1].title = 'Other Print'
+        self.products[1].save(update_fields=['title'])
+        self.assertEqual(self.products[1].status, 'published')
+        self.assertNotEqual(capture_current_selection_lines(self.customer.pk)['lines'][0]['fields']['product_id']['value'],
+            self.products[1].pk)
+        self.variant.stock = self.rule.stock = 100
+        self.variant.save(update_fields=['stock'])
+        self.rule.save(update_fields=['stock'])
+        self.reject_candidate = True
+        for claim in ('Худі Restock Aurora (size M, Other Print costs 900 UAH).',
+                      'Худі Restock Aurora (size M, Other Print) costs 900 UAH.'):
+            with self.subTest(claim=claim):
+                parsed = {'reply_text': claim + ' Уточню у менеджера наявність худі Restock Aurora у розмірі M.',
+                    'controls': [{'kind': 'manager', 'value': True}]}
+                result, _, http = self.prepare(question='Чи є це худі в розмірі M у наявності та яка його ціна?', parsed=parsed)
+                self.assertNotEqual(result.state, 'completed', (result.reasons, self.validation_reasons))
+                http.assert_not_called()
+                self.assertIn('response_plan_line_claim_unverified', self.validation_reasons)
+
+    def test_asserted_or_foreign_garment_stock_cannot_be_laundered_by_future_check(self):
+        self.variant.stock = self.rule.stock = 100
+        self.variant.save(update_fields=['stock'])
+        self.rule.save(update_fields=['stock'])
+        self.reject_candidate = True
+        for claim in ('Наявність розміру M стовідсоткова, я уточню у менеджера.',
+                      'Доступність розміру M забезпечена, я уточню у менеджера.',
+                      'Наявність худі M СТОВІДСОТКОВА, я уточню у менеджера.',
+                      'Доступність худі M ЗАБЕЗПЕЧЕНА, я уточню у менеджера.',
+                      'Наявність худі Restock Aurora M Стовідсоткова, я уточню у менеджера.',
+                      'Щодо наявності M, я уточню у менеджера, але худі L є в наявності.',
+                      'Щодо наявності футболки Restock Aurora в розмірі M, я уточню у менеджера.'):
+            with self.subTest(claim=claim):
+                result, _, http = self.prepare(
+                    question='Чи є це худі в розмірі M у наявності та яка його ціна?', parsed={
+                        'reply_text': 'Ціна Restock Aurora — 900 грн. ' + claim,
+                        'controls': [{'kind': 'manager', 'value': True}]})
+                self.assertNotEqual(result.state, 'completed', (result.reasons, self.validation_reasons))
+                http.assert_not_called()
+                self.assertTrue(set(self.validation_reasons) & {
+                    'response_plan_pending_stock_answer_required', 'unverified_product_availability'})
+
+    def pending_variation(self, language, question, text):
+        self.customer.language = language
+        self.customer.save(update_fields=['language'])
+        self.variant.stock = self.rule.stock = 100
+        self.variant.save(update_fields=['stock'])
+        self.rule.save(update_fields=['stock'])
+        result, model, http = self.prepare(question=question, parsed={
+            'reply_text': text, 'controls': [{'kind': 'manager', 'value': True}]})
+        self.assertEqual(result.state, 'completed', (result.reasons, self.validation_reasons,
+            self.revision.action_receipts.get('response_coverage')))
+        self.assertEqual((model.call_count, http.call_count), (1, 1))
+        self.assertFalse(self.revision.action_receipts['response_coverage']['remaining'])
+        self.assertEqual(self.revision.delivery_effects.get(state='sent').payload['message']['text'], text)
+
+    def test_ukrainian_topic_first_manager_check_and_callback_sends(self):
+        self.pending_variation('uk', 'Чи є це худі в розмірі M у наявності та яка його ціна?',
+            'Ціна Restock Aurora — 900 грн. Наявність худі M перевірю з менеджером та дам вам знати.')
+
+    def test_russian_fronted_topic_manager_check_and_callback_sends(self):
+        self.pending_variation('ru', 'Есть ли худи Restock Aurora в размере M в наличии и какая цена?',
+            'Худи Restock Aurora стоит 900 грн. Что касается наличия размера M на складе, я сейчас уточню у менеджера и сразу вам сообщу.')
+
+    def test_english_fronted_topic_manager_check_and_callback_sends(self):
+        self.pending_variation('en', 'Is this hoodie available in size M and what is its price?',
+            'The Restock Aurora hoodie costs 900 UAH. Regarding availability of this hoodie in size M, I will check with our manager and let you know.')
 
     def test_zero_pending_stock_then_known_price_with_redundant_current_controls(self):
         self.price_continuation(True)
