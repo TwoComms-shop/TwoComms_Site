@@ -34,8 +34,13 @@ ACTION = "checkout_proposal_create"
 
 def requested_nonstandard_carrier(client, sources, *, source_cart_capture=None):
     """An own current delivery choice needs its actual human arrangement."""
-    import re
     from management.services.instagram_bot import _current_purchase_source_texts
+    return _requested_carrier_for_rows(_current_purchase_source_texts(client, sealed_sources=sources,
+        source_cart_capture=source_cart_capture, with_ids=True))
+
+
+def _requested_carrier_for_rows(rows):
+    import re
     from management.services.ig_commerce_turns import _current_source_text
 
     result = {}
@@ -44,8 +49,7 @@ def requested_nonstandard_carrier(client, sources, *, source_cart_capture=None):
         r"\b(?P<pickup>самовив\w*|самовывоз\w*|pick\s*up)\b|"
         r"\b(?P<other>інш\w*\s+(?:служб\w*|перевізник\w*)|друг\w*\s+(?:служб\w*|перевозчик\w*)|another\s+carrier)\b|"
         r"\b(?P<np>нов(?:а|ою|ой)\s+пошт\w*|нов(?:ая|ой)\s+почт\w*|nova\s+poshta|нп)\b", re.I)
-    for row in _current_purchase_source_texts(client, sealed_sources=sources,
-            source_cart_capture=source_cart_capture, with_ids=True):
+    for row in rows:
         for clause in re.split(r"[.!?;\n,]+|\b(?:але|а|но|but)\b", _current_source_text(row["text"]), flags=re.I):
             if re.search(r"\b(?:сказ\w*|казав\w*|говор\w*|said|told|якщо|если|if)\b", clause, re.I):
                 continue
@@ -69,6 +73,141 @@ def requested_nonstandard_carrier(client, sources, *, source_cart_capture=None):
                 result = {} if match.lastgroup == "np" else {"carrier": match.lastgroup,
                     "source_message_id": row["message_id"], "source_quote": row["text"]}
     return result
+
+
+def requested_manual_delivery(client, sources, *, source_cart_capture=None):
+    """Keep carrier and explicit distinct destinations as independent own wishes.
+
+    The hosted form has one destination. No manager prose/case completion can
+    turn a request for several destinations into authority for that form.
+    """
+    from management.services.instagram_bot import _current_purchase_source_texts
+
+    rows = _current_purchase_source_texts(client, sealed_sources=sources,
+        source_cart_capture=source_cart_capture, with_ids=True, include_window_state=True)
+    carrier = _requested_carrier_for_rows(rows)
+    destinations, single_source_id = _destination_requirement_for_rows(rows)
+    if rows and rows[0].get("raw_window_saturated") and not destinations and not single_source_id:
+        destinations = _retained_destination_requirement(client, oldest_message_id=rows[0]["message_id"],
+            source_cart_capture=source_cart_capture)
+    result = dict(carrier)
+    if destinations:
+        result["multiple_destinations"] = destinations
+    return result
+
+
+def _destination_requirement_for_rows(rows):
+    import re
+    from management.services.ig_commerce_turns import _current_source_text
+    destinations = {}
+    single_source_id = 0
+    target = r"(?:адрес\w*|міст(?:о|а|ах|ам|ами)|город\w*|addresses|address|cities|destinations?)"
+    multiple = re.compile(r"\b(?:дві|двох|двом\w*|двум\w*|два|две|2|різн\w*|разн\w*|окрем\w*|two|both|different|separate|multiple)\s+"
+        r"(?:(?:різн\w*|разн\w*|different|separate)\s+)?" + target + r"\b", re.I)
+    single = re.compile(r"\b(?:одн\w*|один|одну|one|single)\s+(?:" + target +
+        r"|посилк\w*|посылк\w*|parcel|shipment)\b", re.I)
+    shipping = r"\b(?:відправ\w*|надішл\w*|надсил\w*|достав\w*|отправ\w*|пришл\w*|send|ship\w*|deliver\w*)\b"
+    negated_prefix = re.compile(r"\b(?:не|ні|not|no|без|without|don['’]t|do\s+not)\s*"
+        r"(?:(?:хочу|хочемо|треба|потріб\w*|нуж\w*|надо|want|need|to|the|на|по|у|в|in|at|це|їх|усе|вс[её]|это|их|it|both|them|these|all|everything|"
+        r"відправ\w*|надсил\w*|отправ\w*|достав\w*|send|ship\w*|deliver\w*)\s+){0,5}$", re.I)
+    for row in rows:
+        for sentence in re.split(r"[.!?;\n]+", _current_source_text(row["text"])):
+            if re.search(r"\b(?:якщо|если|if|maybe|можливо|возможно)\b", sentence, re.I):
+                continue
+            if re.search(r"\b(?:сказ\w*|казав\w*|говор\w*|said|told)\b", sentence, re.I):
+                present = re.search(r"\b(?:тепер|теперь|зараз|сейчас|now)\b", sentence, re.I)
+                if not present:
+                    continue
+                sentence = sentence[present.start():]
+            for clause in re.split(r",|\b(?:але|а|но|but|instead)\b", sentence, flags=re.I):
+                if any(negated_prefix.search(clause[:action.start()]) for action in re.finditer(shipping, clause, re.I)):
+                    continue
+                multiple_in_clause = False
+                addressed = bool(re.search(shipping + r"|\b(?:хочу|потріб\w*|нуж\w*|want|need|prefer)\b", clause, re.I))
+                for match in re.finditer(multiple.pattern + "|" + single.pattern + r"|\b(?:усе\s+разом|все\s+разом|вс[её]\s+вместе|all\s+together|разом|вместе|together)\b", clause, re.I):
+                    before, after = clause[:match.start()], clause[match.end():]
+                    if negated_prefix.search(before) or re.match(r"\s+(?:(?:are|is)\s+)?(?:не\s+(?:треба|потріб\w*|нуж\w*)|not\s+(?:needed|required))\b", after, re.I):
+                        continue
+                    bare = bool(re.fullmatch(r"\s*(?:(?:тепер|теперь|зараз|сейчас|now|давайте|please)\s+)?"
+                        r"(?:(?:на|по|у|в|to|at|in)\s+)?", before, re.I)
+                        and (not after.strip(" :—-?") or re.match(r"\s*(?::|(?:до|у|в|to|in|at)\b)", after, re.I)))
+                    explicit_target = bool(multiple.fullmatch(match.group()) or single.fullmatch(match.group()))
+                    if not (bare or (addressed if explicit_target else re.search(shipping, clause, re.I))):
+                        continue
+                    if multiple.fullmatch(match.group()):
+                        destinations = {"source_message_id": row["message_id"], "source_quote": row["text"]}
+                        multiple_in_clause = True
+                    else:
+                        if multiple_in_clause:
+                            continue  # One address per person enumerates the plural request.
+                        destinations = {}
+                        single_source_id = row["message_id"]
+    return destinations, single_source_id
+
+
+def _retained_destination_requirement(client, *, oldest_message_id, source_cart_capture=None):
+    """A bounded native case retains only a negative delivery requirement.
+
+    Unrelated chat cannot turn a multi-address request into single-form assent
+    after the ordinary source window fills. Completed/raw manager decisions
+    grant no exemption; a newer own single-address choice is handled above.
+    """
+    from django.db.models import Q
+    from management.models import IgFollowUpTask, IgCustomerTurnRevision, IgCommercialEpisode, InstagramBotMessage, InstagramBotSettings
+    from management.services.ig_conversation_routes import conversation_route_reset_floor
+    from management.services.ig_purpose_sources import owned_source
+    from management.services.ig_ingress_source_proof import is_current_customer_source
+    from management.services.instagram_bot import ingress_provider_namespace
+    scope = (source_cart_capture or {}).get("scope") or {}
+    floor = scope.get("reset_floor") or conversation_route_reset_floor(client.pk)
+    settings_row = InstagramBotSettings.objects.filter(pk=1).first()
+    if settings_row is None:
+        return {}
+    episode = IgCommercialEpisode.objects.filter(pk=client.current_commercial_episode_id,
+        client=client, state="active", open_slot=1).first()
+    if episode is None:
+        return {}
+    namespace = ingress_provider_namespace(settings_row)
+    tasks = list(IgFollowUpTask.objects.filter(client=client, kind="manager_task", reason="revision_case:manager_handoff",
+        policy_version="revision-case-v1", manager_context__case_kind="customer_manager_request",
+        manager_context__delivery_scope__episode_id=client.current_commercial_episode_id,
+        manager_context__delivery_scope__reset_floor=floor, manager_context__delivery_scope__source_namespace=namespace,
+        manager_context__delivery_request__multiple_destinations__source_message_id__lt=oldest_message_id,
+        manager_context__delivery_request__multiple_destinations__source_message_id__gte=max(floor, episode.opened_watermark_message_id or 0),
+    ).order_by("-pk")[:8])
+    for task in tasks:
+        context = task.manager_context or {}
+        requirement = (context.get("delivery_request") or {}).get("multiple_destinations") or {}
+        source = InstagramBotMessage.objects.filter(pk=requirement.get("source_message_id"), client=client).first()
+        revision = IgCustomerTurnRevision.objects.filter(pk=context.get("latest_revision_id"), client=client).first()
+        if source is None or revision is None or source.text != requirement.get("source_quote"):
+            continue
+        receipt = (revision.action_receipts or {}).get("manager_handoff") or {}
+        if (receipt.get("task_id") != task.pk or receipt.get("case_kind") != "customer_manager_request"
+            or receipt.get("generation_proposal_digest") != revision.generation_proposal_digest
+            or not revision.generation_proposal_digest or _digest(revision.generation_proposal) != revision.generation_proposal_digest):
+            continue
+        owned, _reason = owned_source(revision, source, settings_row, require_head=False)
+        if not (owned and owned[2]["namespace"] == namespace and owned[2]["reset_floor"] == floor):
+            continue
+        # A prior explicit combination may itself have left the recent window.
+        # Screen a finite set of possible corrections, then reuse the same own
+        # assertion parser. A saturated correction scan keeps the negative hold.
+        candidates = Q(pk__in=[])
+        for stem in ("одн", "разом", "вмест", "one", "single", "together"):
+            candidates |= Q(text__icontains=stem)
+        corrections = list(InstagramBotMessage.objects.filter(candidates, client=client,
+            sender_id=client.igsid, role="user", pk__gt=source.pk, pk__lt=oldest_message_id,
+            provider_namespace=namespace, source__in=("webhook", "poll")).exclude(status="failed").select_related("client").order_by("-pk")[:65])
+        if len(corrections) > 64:
+            return dict(requirement)
+        current = [{"message_id": row.pk, "text": row.text} for row in reversed(corrections)
+            if is_current_customer_source(row, namespace=namespace)]
+        later, cleared = _destination_requirement_for_rows(current)
+        if not later and cleared:
+            continue
+        return later or dict(requirement)
+    return {}
 
 
 def checkout_question_coverage(plan, response, sources, coverage):
@@ -521,7 +660,7 @@ def checkout_authority_control(client, control, *, source_cart_capture=None, sou
 def authorize_revision_checkout(client, control, source_text, *, sealed_sources=(), source_cart_capture=None, source_cart_revision_id=None, assisted_context=None):
     """Use the real purchase gate with sealed customer text, never model prose."""
     from management.services.instagram_bot import payment_link_allowed
-    if requested_nonstandard_carrier(client, sealed_sources, source_cart_capture=source_cart_capture):
+    if requested_manual_delivery(client, sealed_sources, source_cart_capture=source_cart_capture):
         return {}, ("response_plan_checkout_delivery_requires_manager",)
     if assisted_context is not None:
         from management.services.ig_assisted_commerce_context import AssistedCommerceContext

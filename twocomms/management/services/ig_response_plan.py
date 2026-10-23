@@ -630,6 +630,43 @@ def _requested_topics(text, parsed_topics=()):
     return sorted(topics)
 
 
+def _manual_delivery_purchase_handled(plan, response):
+    """Handle this purchase request by its mandatory delivery intent, not an offer.
+
+    The source-owned fact also requires the existing native manager action
+    before transport. This credit grants no payment/shipment facts and leaves
+    every independent information or selection obligation with its own owner.
+    """
+    requirement = plan.configuration.get("manual_delivery_requirement") or {}
+    dimensions = requirement.get("dimensions") or []
+    if not dimensions or response.control.get("paylink") or response.control.get("payment"):
+        return False
+    from management.services.ig_reply_truth import _locally_negated
+    future = re.compile(r"\b(?:уточню|уточнимо|уточним|узгоджу|узгодимо|погоджу|погодимо|согласую|согласуем|передам|передамо|попрошу|"
+        r"(?:i|we)['’]ll\s+(?:check|ask|arrange)|(?:i|we)\s+will\s+(?:check|ask|arrange))\b", re.I)
+    carrier_words = {"ukr": r"укрпошт\w*|укрпочт\w*|ukrposhta", "meest": r"meest|міст\s+експрес\w*|мист\s+экспресс\w*",
+        "pickup": r"самовив\w*|самовывоз\w*|pick\s*up", "other": r"інш\w*\s+(?:служб\w*|перевізник\w*)|друг\w*\s+(?:служб\w*|перевозчик\w*)|another\s+carrier"}
+    handled = set()
+    for clause in re.findall(r"[^.!?\n]+[?]?", _unquoted_text(response.reply_text)):
+        action = future.search(clause)
+        review = bool(action and not _locally_negated(clause, action.start())
+            and re.search(r"менеджер\w*|manager|команд\w*|team", clause, re.I))
+        single_question = bool("?" in clause and re.search(r"\b(?:чи|мож\w*|чи\s+мож\w*|can|could|would)\b", clause, re.I)
+            and re.search(r"\b(?:одн\w*|один|одну|one|single)\s+(?:адрес\w*|посилк\w*|посылк\w*|address|parcel|shipment)\b", clause, re.I)
+            and not re.search(r"\b(?:не|not|no)\b", clause, re.I))
+        for index, dimension in enumerate(dimensions):
+            if dimension.get("kind") == "multiple_destinations":
+                distinct = re.search(r"\b(?:дві|двох|двом\w*|двум\w*|два|две|2|різн\w*|разн\w*|окрем\w*|two|both|different|separate|multiple)\s+"
+                    r"(?:(?:різн\w*|разн\w*|different|separate)\s+)?(?:адрес\w*|міст\w*|город\w*|addresses|cities|destinations?)\b", clause, re.I)
+                if single_question or (review and distinct):
+                    handled.add(index)
+            elif dimension.get("kind") == "carrier" and review:
+                pattern = carrier_words.get(dimension.get("value"))
+                if pattern and re.search(pattern, clause, re.I):
+                    handled.add(index)
+    return len(handled) == len(dimensions)
+
+
 _PERSONAL_PURCHASE = re.compile(
     r"\b(?:для\s+(?:себе|себя)|(?:і|и)\s+собі|особисто\s+(?:хочу|мені)|"
     r"лично\s+(?:хочу|мне)|for\s+myself|for\s+my\s+own\s+use)\b", re.I)
@@ -1472,6 +1509,8 @@ class ResponsePlan:
                 del group["obligations"]
         payload = {"version": 1, "plan_digest": self.digest, "obligation_columns": ["id", "kind"],
             "obligation_groups": list(groups.values())}
+        if self.configuration.get("manual_delivery_requirement"):
+            payload["manual_delivery_requirement"] = deepcopy(self.configuration["manual_delivery_requirement"])
         if self.recipient_planning:
             payload["recipient_planning"] = deepcopy(self.recipient_planning)
         if self.business_context:
@@ -1548,7 +1587,7 @@ class ResponsePlan:
         # These named projections already retain their full semantics above.
         # The no-line configuration must not duplicate the same large grids.
         if "configuration" in payload:
-            for key in ("consultation_measurements", "source_clarifications", "reorder_observations", "catalog_browse", "product_kind"):
+            for key in ("consultation_measurements", "source_clarifications", "reorder_observations", "catalog_browse", "product_kind", "manual_delivery_requirement"):
                 payload["configuration"].pop(key, None)
         return payload
 
@@ -1575,6 +1614,9 @@ class ResponsePlan:
                 "A pending recipient clarification asks whose preference this is. Never copy another person's SKU, size, fit, color or quantity. "
                 "Recipient count proves neither units, same designs, common address, delivery, discount nor payment. "
                 "Consultation questions grant no selection or checkout controls; existing quote gates own the eventual all-line checkout.")
+        if self.configuration.get("manual_delivery_requirement"):
+            guidance += ("\nThe active manual delivery requirement blocks hosted checkout. Preserve the cart and arrange delivery with the manager; "
+                "a carrier choice alone cannot resolve distinct destinations. Only an own explicit single-destination/parcel choice permits this form.")
         if self.business_context or any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())):
             guidance += "\nKnown catalog retail prices never authorize partner prices or discounts; this pending business case contains no agreed trade amount."
         if self.business_context:
@@ -1775,7 +1817,7 @@ class ResponsePlan:
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
             done = bool((kind in {"unclassified", "garment_type"} and _superseded_color_wish_covered(self, response,
                             obligation["source_message_id"], current_garment=kind == "garment_type"))
-                        or obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and checkout)
+                        or obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and (checkout or _manual_delivery_purchase_handled(self, response)))
                         or (kind == "garment_type" and obligation["source_message_id"] in inquiry_ids)
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
@@ -1882,7 +1924,7 @@ class ResponsePlan:
                         source_message_id=obligation["source_message_id"],
                         source_price_subjects=price_contexts[line_id].source_price_subjects if kind == "info:price" else ())
                 elif kind == "purchase_requested":
-                    done = (line_id, obligation.get("recipient_id")) in admitted
+                    done = (line_id, obligation.get("recipient_id")) in admitted or _manual_delivery_purchase_handled(self, response)
             elif kind == "info:price" and len(rows) == 1:
                 # A sole captured position is an exact price subject even
                 # when the source's terse price question had no line label.
@@ -2239,6 +2281,20 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None, pu
             plan = replace(plan, business_context={**plan.business_context, "source_observations": observations})
     if revision is None:
         return plan
+    from management.services.ig_revision_checkout import requested_manual_delivery
+    # This fact is prompt guidance for the real generation boundary. Ancillary
+    # inquiry/read-model plans must not reread the purchase history for it;
+    # checkout and mandatory intents independently enforce the actual hold.
+    manual_delivery = (requested_manual_delivery(client, revision.bundle_snapshot.get("sources") or (),
+        source_cart_capture=plan.source_cart_capture) if publication is not None else {})
+    if manual_delivery:
+        dimensions = []
+        if manual_delivery.get("carrier"):
+            dimensions.append({"kind": "carrier", "value": manual_delivery["carrier"], "source_message_id": manual_delivery["source_message_id"]})
+        if manual_delivery.get("multiple_destinations"):
+            dimensions.append({"kind": "multiple_destinations", "source_message_id": manual_delivery["multiple_destinations"]["source_message_id"]})
+        plan = replace(plan, configuration={**plan.configuration, "manual_delivery_requirement": {
+            "dimensions": dimensions, "hosted_checkout": "blocked", "next_step": "manual_arrangement_or_own_single_destination"}})
     from management.services.ig_pending_question_context import capture_pending_question_context
     plan = replace(plan, pending_questions=capture_pending_question_context(revision))
     if any(case.get("kind") == "collaboration_review" for case in plan.pending_questions.get("cases", ())):

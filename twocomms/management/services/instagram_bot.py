@@ -1553,7 +1553,7 @@ def _source_purchase_assent(text):
     return state
 
 
-def _current_purchase_source_texts(client, *, sealed_sources=(), source_cart_capture=None, with_ids=False):
+def _current_purchase_source_texts(client, *, sealed_sources=(), source_cart_capture=None, with_ids=False, include_window_state=False):
     """Bound continuity to owned current-episode sources and the reset floor."""
     from management.models import IgClient, IgCommercialEpisode, InstagramBotMessage
     from management.services.ig_conversation_routes import conversation_route_reset_floor
@@ -1581,7 +1581,9 @@ def _current_purchase_source_texts(client, *, sealed_sources=(), source_cart_cap
     owned = tuple(row for row in reversed(rows) if row.status != "failed"
         and (not namespace or row.provider_namespace == namespace)
         and is_current_customer_source(row, **({"namespace": namespace} if namespace else {})))
-    return tuple({"message_id": row.pk, "text": row.text} for row in owned) if with_ids else tuple(row.text for row in owned)
+    return tuple({"message_id": row.pk, "text": row.text,
+        **({"raw_window_saturated": len(rows) == 64} if include_window_state else {})}
+        for row in owned) if with_ids else tuple(row.text for row in owned)
 
 
 def payment_link_allowed(client, control: dict, reply: str, *, sealed_sources=(), source_cart_capture=None) -> bool:

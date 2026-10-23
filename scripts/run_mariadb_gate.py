@@ -42,6 +42,7 @@ STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
     "management.tests_ig_product_inquiries",
     "management.tests_ig_stock_authority_20261023",
     "management.tests_ig_stock_catalog_copy_20261023",
+    "management.tests_ig_cart_live_integration.CartLiveClaimIntegrationTests",
     "management.tests_ig_stock_claim_guard_20261023",
     "management.tests_ig_stock_request_scope_20261023",
     "management.tests_ig_palette_intent_20261023",

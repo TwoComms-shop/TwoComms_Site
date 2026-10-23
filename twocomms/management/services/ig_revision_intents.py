@@ -354,8 +354,8 @@ def manager_case_reason(revision, response=None):
         return "collaboration_review"
     if any(_MANAGER_REQUEST.search(text) for text in texts):
         return "customer_manager_request"
-    from management.services.ig_revision_checkout import requested_nonstandard_carrier
-    if requested_nonstandard_carrier(revision.client, revision.bundle_snapshot.get("sources") or ()):
+    from management.services.ig_revision_checkout import requested_manual_delivery
+    if requested_manual_delivery(revision.client, revision.bundle_snapshot.get("sources") or ()):
         return "customer_manager_request"
     if response is not None and (control.get("manager") or _MANAGER_PROMISE.search(response.reply_text)) and any(SUPPORT_RE.search(text) for text in texts):
         return "business_review"
@@ -799,18 +799,24 @@ def ensure_revision_manager_case(revision_id, token, *, settings_id):
             "authority": {"price_confirmed": False, "fulfillment_started": False},
         })
         if reason == "customer_manager_request":
-            from management.services.ig_revision_checkout import requested_nonstandard_carrier
-            delivery_request = requested_nonstandard_carrier(client, revision.bundle_snapshot.get("sources") or ())
+            from management.services.ig_revision_checkout import requested_manual_delivery
+            delivery_request = requested_manual_delivery(client, revision.bundle_snapshot.get("sources") or ())
             if delivery_request:
                 from management.services.ig_commerce_projection import capture_current_selection_lines
                 cart = capture_current_selection_lines(client.pk)
                 context["delivery_request"] = delivery_request
+                context["delivery_scope"] = {key: (cart.get("scope") or {}).get(key)
+                    for key in ("client_id", "episode_id", "reset_floor", "source_namespace")}
                 context["delivery_cart"] = [{"line_id": row["line_id"], "recipient_id": row["recipient_id"],
                     "fields": row.get("fields") or {}} for row in cart.get("lines") or []]
-                context["required_decisions"] = ["requested_carrier_arrangement", "customer_delivery_confirmation"]
-                task.message_text = ("Клієнт просить інший спосіб доставки. Узгодити відправку вручну; "
-                    "стандартна сторінка оформлення використовує Нову пошту. Не замінювати вибір клієнта автоматично.\n"
-                    + delivery_request["source_quote"])
+                context["required_decisions"] = (["requested_carrier_arrangement"] if delivery_request.get("carrier") else []) + (
+                    ["distinct_destinations_arrangement"] if delivery_request.get("multiple_destinations") else []) + ["customer_delivery_confirmation"]
+                quotes = [delivery_request["source_quote"]] if delivery_request.get("source_quote") else []
+                if delivery_request.get("multiple_destinations"):
+                    quotes.append(delivery_request["multiple_destinations"]["source_quote"])
+                task.message_text = ("Клієнт просить узгодити доставку вручну. Стандартна сторінка оформлення "
+                    "використовує Нову пошту й одну адресу на всю корзину. Не замінювати вибір клієнта автоматично.\n"
+                    + "\n".join(dict.fromkeys(quotes)))
         if reason == "collaboration_review":
             context["collaboration_brief"] = collaboration
             context["cooperation_kind"] = "recruitment_service" if recruitment else "business" if business else "creator_or_other"

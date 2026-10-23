@@ -164,7 +164,7 @@ class CartLiveClaimIntegrationTests(CartLiveFixture, TestCase):
         self.assertEqual(MAX_CLAIMS, 8)
         self.assertEqual(FACT_CLAIMS, frozenset({"assisted_commerce_offer", "source_preferences",
             "catalog_asset_references", "catalog_configuration", "canonical_urls", "public_policy_inputs",
-            "payment", "order", "shipment"}))
+            "payment", "order", "shipment", "retail_inventory_availability"}))
         rows = [{**deepcopy(original), "claim": claim} for claim in sorted(FACT_CLAIMS)[:MAX_CLAIMS]]
         self.assertEqual(len(rows), 8)
         self.assertEqual(_safe_bindings(rows), rows)

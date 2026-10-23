@@ -343,3 +343,314 @@ class CarrierManagerNativeJourneyTests(TransactionTestCase):
 
     def test_plain_ack_cannot_omit_the_source_owned_delivery_case(self):
         self._assert_carrier_case_before_sent("Добре, дякую!", [])
+
+
+class _CompleteRecipientDeliveryCart:
+    def _admit_choice(self, product, *, quantity=1, variant=None):
+        from datetime import timedelta
+        from django.utils import timezone
+        from storefront.models import Catalog, SizeGrid, ProductFitOption
+        from product_catalog.models import ProductInventoryPolicy, VariantSizeRule
+        from management.models import InstagramBotMessage
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        catalog = Catalog.objects.create(name="Delivery tee", slug=f"delivery-tee-{product.pk}")
+        grid = SizeGrid.objects.create(catalog=catalog, name="Delivery tee", guide_data={
+            "columns": [{"key": "size", "label": "Size"}], "rows": [{"size": "M", "display_size": "M"}]})
+        product.catalog, product.size_grid = catalog, grid
+        product.save(update_fields=["catalog", "size_grid"])
+        ProductFitOption.objects.create(product=product, code="classic", label="Classic", is_active=True, is_default=True)
+        ProductInventoryPolicy.objects.create(product=product, source="catalog_variant")
+        VariantSizeRule.objects.create(variant=variant, fit_code="classic", size="M", stock=20, is_enabled=True)
+        recipient = "себя" if product.pk == self.product.pk else "парня"
+        source = InstagramBotMessage.objects.create(client=self.client_row, sender_id=self.client_row.igsid,
+            role="user", source="webhook", provider_namespace="instagram_login:owner-1",
+            text=f"добавьте {product.title} для {recipient}, количество {quantity}, размер M, крой classic, цвет чёрный",
+            mid=f"delivery-choice-{product.pk}", provider_created_at=timezone.now()-timedelta(minutes=2))
+        with transaction.atomic():
+            admitted = reduce_inbound_commerce_source(self.client_row, source, expected_provider_namespace=source.provider_namespace)
+        self.assertTrue(admitted.ready, admitted.reason)
+        source.status = "done"
+        source.save(update_fields=["status"])
+        self.client_row.refresh_from_db()
+
+    def _second_delivery_line(self):
+        from storefront.models import Product
+        from productcolors.models import ProductColorVariant
+        second = Product.objects.create(title="Delivery Second", slug="delivery-second", category=self.product.category, price=600, status="published")
+        variant = ProductColorVariant.objects.create(product=second, color=self.variant.color, price_override=600, stock=20, is_default=True)
+        self._admit_choice(second, variant=variant)
+        self.variant.stock = 20
+        self.variant.save(update_fields=["stock"])
+        self.controls = [{"kind": "paylink", "value": "full"}]
+        self.client_row.intent, self.client_row.stage = "", ""
+        self.client_row.save(update_fields=["intent", "stage"])
+
+    def _available_cart(self):
+        from management.services.ig_inventory_availability import capture_inventory_availability
+        capture = capture_current_selection_lines(self.client_row.pk)
+        self.assertTrue(capture["coverage_complete"])
+        self.assertEqual([row["recipient_id"] for row in capture["lines"]], ["self", "boyfriend"])
+        inventory = capture_inventory_availability(self.client_row.pk, current_source_cart=capture)
+        self.assertEqual([row["status"] for row in inventory["lines"]], ["available", "available"])
+        return capture
+
+
+@override_settings(GOOGLE_INDEXING_ENABLED=False, SITE_BASE_URL="https://twocomms.shop")
+class MultipleDestinationPreofferTests(_CompleteRecipientDeliveryCart, TransactionTestCase):
+    reset_sequences = True
+    source_text = "Хочу обрати одяг."
+    _source = PreofferCheckoutTests._source
+    current = PreofferCheckoutTests.current
+    _renew_purchase_revision = PreofferCheckoutTests._renew_purchase_revision
+    _prepare = PreofferCheckoutTests._prepare
+    _install_generation = PreofferCheckoutTests._install_generation
+
+    def setUp(self):
+        checkout_fixture.RevisionCheckoutTests.setUp(self)
+        self._second_delivery_line()
+
+    def request(self, text):
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        self.current(text)
+        with transaction.atomic():
+            admitted = reduce_inbound_commerce_source(self.client_row, self.source, expected_provider_namespace=self.source.provider_namespace)
+        self.assertTrue(admitted.ready, admitted.reason)
+        return self._available_cart()
+
+    def test_original_two_address_counterexample_blocks_real_factory(self):
+        from unittest.mock import patch
+        from management.services import ig_revision_checkout as checkout
+        from management.services.ig_revision_live import RevisionGenerationBoundary
+        from management.services.ig_response_control import ResponseControl, ValidatedResponse
+        capture = self.request("Беру обидві. Відправте на дві різні адреси: мені до Києва, хлопцеві до Львова.")
+        before = capture["lines"]
+        boundary = RevisionGenerationBoundary(self.revision, self.revision_token, self.settings, self.publication_binding, source_cart_capture=capture)
+        response = ValidatedResponse(reply_text="Перевірте деталі:", controls=(ResponseControl("paylink", "full"),))
+        manifest = {"instruction_publication": {"id": self.publication.pk, "version": self.publication.version, "hash": self.publication.snapshot_hash}}
+        # Early generation may retain the candidate as a manager action; the
+        # actual checkout owner must still refuse it before any offer exists.
+        boundary.validate(response, policy_manifest=manifest)
+        with patch.object(checkout, "create_or_update_proposal", wraps=checkout.create_or_update_proposal) as factory:
+            result = self._prepare()
+        self.assertFalse(result.planned)
+        self.assertIn("response_plan_checkout_delivery_requires_manager", result.reasons)
+        factory.assert_not_called()
+        self.assertFalse(IgCheckoutProposal.objects.exists())
+        self.assertFalse(IgCheckoutAccessToken.objects.exists())
+        self.assertEqual(capture_current_selection_lines(self.client_row.pk)["lines"], before)
+
+    def test_own_plural_requests_in_three_languages_need_manual_delivery(self):
+        from management.services.ig_revision_checkout import requested_manual_delivery
+        for text in ("Беру обидві. Потрібна доставка у два різні міста.",
+                "Беру обе. Отправьте на два разных адреса: мне в Киев, парню во Львов.",
+                "Отправьте по двум адресам: мне в Киев, парню во Львов.",
+                "I'll take both. Send to two different addresses: mine to Kyiv, his to Lviv.", "Ship to both addresses."):
+            self.request(text)
+            requirement = requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"])
+            self.assertEqual(requirement["multiple_destinations"]["source_message_id"], self.source.pk, text)
+
+    def test_two_address_enumeration_cannot_be_reinterpreted_as_basket_combination(self):
+        from unittest.mock import patch
+        from management.services import ig_revision_checkout as checkout
+        for text in ("Беру обидві. Відправте на дві різні адреси: одну адресу мені, іншу хлопцеві.",
+                "I'll take both. Send to two different addresses: one address for me, another for him."):
+            self._available_cart()
+            # This checkout guard consumes the immutable delivery source; it
+            # must not need a product/recipient edit to recognize the hold.
+            self.current(text)
+            with patch.object(checkout, "create_or_update_proposal", wraps=checkout.create_or_update_proposal) as factory:
+                result = self._prepare()
+            self.assertFalse(result.planned, text)
+            self.assertIn("response_plan_checkout_delivery_requires_manager", result.reasons)
+            factory.assert_not_called()
+            self.assertFalse(IgCheckoutProposal.objects.exists())
+            self.assertFalse(IgCheckoutAccessToken.objects.exists())
+
+    def test_negated_combined_shipping_cannot_clear_an_active_distinct_destination_request(self):
+        from management.services.ig_revision_checkout import requested_manual_delivery
+        for text in ("Не відправляйте все разом на одну адресу.", "Не отправляйте всё вместе на один адрес.",
+                "Do not ship everything together to one address."):
+            self.request("Беру обидві. Відправте на дві різні адреси.")
+            origin = self.source.pk
+            self.request(text)
+            self.assertEqual(requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"])["multiple_destinations"]["source_message_id"], origin)
+            self.assertIn("response_plan_checkout_delivery_requires_manager", self._prepare().reasons)
+
+    def test_carrier_and_destination_changes_are_independent_and_natural_np_stays_ready(self):
+        from management.services.ig_revision_checkout import requested_manual_delivery, requested_nonstandard_carrier
+        self.request("Беру обидві. Відправте Укрпоштою на дві різні адреси.")
+        self.request("Тепер Новою поштою.")
+        self.assertFalse(requested_nonstandard_carrier(self.client_row, self.revision.bundle_snapshot["sources"]))
+        self.assertTrue(requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"])["multiple_destinations"])
+        for text in ("Дякую!", "Яка ціна?", "Хочу разом з хлопцем оформити покупку."):
+            self.request(text)
+            self.assertTrue(requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"])["multiple_destinations"])
+        self.request("Тепер відправте Новою поштою однією посилкою.")
+        self.assertFalse(requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"]))
+        result = self._prepare()
+        self.assertTrue(result.planned, result.reasons)
+        self.assertEqual(IgCheckoutProposal.objects.get().items.count(), 2)
+
+    def test_negated_quoted_reported_and_historical_plural_words_cannot_create_hold(self):
+        from management.services.ig_revision_checkout import requested_manual_delivery
+        for text in ("Не треба відправляти на дві різні адреси.", "Не отправляйте на два адреса.",
+                "Do not send to two addresses.", "Do not send it to two addresses.", "Don't ship both to two addresses.",
+                "«Відправте на дві різні адреси»", "Раніше хотіла доставку на дві адреси.",
+                "Мама сказала, відправте на дві різні адреси.", "Якщо колись треба на дві адреси.", "Якщо зараз треба на дві адреси."):
+            self.request(text)
+            self.assertFalse(requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"]), text)
+
+    def test_own_single_destination_corrections_in_three_languages_clear_only_destination(self):
+        from management.services.ig_revision_checkout import requested_manual_delivery
+        for correction in ("Тепер на одну адресу.", "Теперь отправьте одной посылкой.", "Now send everything together."):
+            self.request("Беру обидві. Відправте Укрпоштою на дві різні адреси.")
+            self.request(correction)
+            requirement = requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"])
+            self.assertEqual(requirement["carrier"], "ukr")
+            self.assertNotIn("multiple_destinations", requirement, correction)
+        self.request("Не на одну адресу. Потрібно на дві різні адреси.")
+        self.assertIn("multiple_destinations", requested_manual_delivery(self.client_row, self.revision.bundle_snapshot["sources"]))
+
+    def test_first_generation_prompt_has_only_the_active_compact_source_owned_requirement(self):
+        import json
+        from dataclasses import replace
+        from unittest.mock import patch
+        from management.services import instagram_bot as bot
+        from management.services.ig_response_plan import capture_response_plan
+        self.request("Беру обидві. Відправте на дві різні адреси: мені до Києва, хлопцеві до Львова.")
+        origin = self.source.pk
+        with patch.object(bot, "_current_purchase_source_texts", wraps=bot._current_purchase_source_texts) as reader:
+            plain = capture_response_plan(self.client_row, revision=self.revision)
+            reader.assert_not_called()
+            self.assertNotIn("manual_delivery_requirement", plain.prompt_projection())
+            plan = capture_response_plan(self.client_row, revision=self.revision, publication=self.publication_binding)
+        reader.assert_called_once()
+        fact = plan.prompt_projection()["manual_delivery_requirement"]
+        self.assertEqual(fact, {"dimensions": [{"kind": "multiple_destinations", "source_message_id": origin}],
+            "hosted_checkout": "blocked", "next_step": "manual_arrangement_or_own_single_destination"})
+        clean = replace(plan, configuration={key: value for key, value in plan.configuration.items() if key != "manual_delivery_requirement"})
+        self.assertLess(len(plan.prompt_guidance()) - len(clean.prompt_guidance()), 700)
+        self.assertNotIn("source_quote", json.dumps(fact))
+        for forbidden in ("shipment_confirmed", "manager_completed", "price_confirmed", "payment_confirmed"):
+            self.assertNotIn(forbidden, json.dumps(fact))
+        self.request("Тепер Новою поштою.")
+        plan = capture_response_plan(self.client_row, revision=self.revision, publication=self.publication_binding)
+        self.assertEqual(plan.prompt_projection()["manual_delivery_requirement"]["dimensions"][0]["source_message_id"], origin)
+        self.request("Тепер відправте Новою поштою однією посилкою.")
+        plan = capture_response_plan(self.client_row, revision=self.revision, publication=self.publication_binding)
+        self.assertNotIn("manual_delivery_requirement", plan.configuration)
+        self.assertNotIn("manual_delivery_requirement", plan.prompt_projection())
+
+    def test_generic_ack_keeps_purchase_debt_and_specific_delivery_ack_leaves_price_debt(self):
+        from types import SimpleNamespace
+        from management.services.ig_response_plan import capture_response_plan
+        self.request("Беру обидві. Відправте на дві різні адреси. Яка ціна?")
+        plan = capture_response_plan(self.client_row, revision=self.revision, publication=self.publication_binding)
+        generic = plan.coverage(SimpleNamespace(reply_text="Добре, дякую!", control={}))
+        self.assertTrue(any(row["kind"] == "purchase_requested" and row["id"] in generic["remaining"] for row in plan.obligations))
+        specific = plan.coverage(SimpleNamespace(reply_text="Уточню з менеджером доставку на дві різні адреси; ваші обрані речі збережено.", control={}))
+        self.assertTrue(any(row["kind"] == "purchase_requested" and row["id"] in specific["covered"] for row in plan.obligations))
+        self.assertTrue(any(row["kind"] == "info:price" and row["id"] in specific["remaining"] for row in plan.obligations))
+        self.assertEqual(specific["disposition"], "recovery")
+
+
+@override_settings(IG_REVISION_EXECUTION_ENABLED=False, GOOGLE_INDEXING_ENABLED=False)
+class MultipleDestinationNativeJourneyTests(_CompleteRecipientDeliveryCart, TransactionTestCase):
+    setUp = CarrierManagerNativeJourneyTests.setUp
+    _message = CarrierManagerNativeJourneyTests._message
+    _prepare = CarrierManagerNativeJourneyTests._prepare
+    _generate = CarrierManagerNativeJourneyTests._generate
+    _replace_bundle = CarrierManagerNativeJourneyTests._replace_bundle
+    _execute = CarrierManagerNativeJourneyTests._execute
+
+    def _record_delivery_case(self):
+        from unittest.mock import patch
+        from storefront.models import Category, Product
+        from productcolors.models import Color, ProductColorVariant
+        from management.models import IgFollowUpTask, IgBotNotification, IgCommerceSelectionSession
+        from management.services.ig_revision_live import execute_claimed_revision
+        self.client_row = self.customer
+        category = Category.objects.create(name="Delivery", slug="delivery")
+        self.product = Product.objects.create(title="Delivery First", slug="delivery-first", category=category, price=900, status="published")
+        color = Color.objects.create(name="Black", primary_hex="#111111")
+        self.variant = ProductColorVariant.objects.create(product=self.product, color=color, price_override=900, stock=20, is_default=True)
+        self._admit_choice(self.product, variant=self.variant)
+        self._second_delivery_line()
+        self._available_cart()
+        self.source.status = "done"
+        self.source.save(update_fields=["status"])
+        from django.utils import timezone
+        from management.models import IgCustomerTurn, IgTurnMessage
+        self.source = self._message("", "delivery-after-native-choices")
+        self.source.provider_created_at = timezone.now()
+        self.source.save(update_fields=["provider_created_at"])
+        self.turn = IgCustomerTurn.objects.create(client=self.customer, primary_source_message=self.source,
+            window_started_at=timezone.now(), window_deadline=timezone.now())
+        IgTurnMessage.objects.create(turn=self.turn, message=self.source, ordinal=1, role="user")
+        before = IgCommerceSelectionSession.objects.get(client=self.customer, open_slot=1).lines
+        source_text = "Беру обидві. Відправте на дві різні адреси: мені до Києва, хлопцеві до Львова."
+        self._replace_bundle([source_text])
+        self.parsed = {"reply_text": "Уточню з менеджером доставку на дві різні адреси; ваші обрані речі збережено.", "controls": []}
+        with (patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate),
+              patch("management.services.instagram_bot.get_page_token", return_value=""),
+              patch("management.services.instagram_bot._deliver_manager_notification") as external):
+            first = execute_claimed_revision(self.revision.pk, self.token, self.settings)
+        self.assertEqual(first.reasons, ("provider_not_configured",))
+        external.assert_not_called()
+        task = IgFollowUpTask.objects.get(reason="revision_case:manager_handoff")
+        self.assertEqual(task.manager_context["delivery_request"]["multiple_destinations"]["source_quote"], source_text)
+        self.assertEqual([row["line_id"] for row in task.manager_context["delivery_cart"]], [row["line_id"] for row in before])
+        self.assertEqual(IgBotNotification.objects.count(), 1)
+        return task, before
+
+    def test_two_address_source_creates_one_actual_case_and_alert_before_helpful_ack_sent(self):
+        from management.models import IgFollowUpTask, IgBotNotification, IgCommerceSelectionSession
+        _, before = self._record_delivery_case()
+        result, _, http = self._execute()
+        self.assertEqual(result.state, "completed", result.reasons)
+        self.assertEqual(http.call_count, 1)
+        self.assertTrue(self.revision.delivery_effects.filter(state="sent").exists())
+        self.assertEqual(IgFollowUpTask.objects.filter(reason="revision_case:manager_handoff").count(), 1)
+        self.assertEqual(IgBotNotification.objects.count(), 1)
+        self.assertFalse(IgCheckoutProposal.objects.exists())
+        self.assertFalse(IgCheckoutAccessToken.objects.exists())
+        self.assertEqual(IgCommerceSelectionSession.objects.get(client=self.customer, open_slot=1).lines, before)
+
+    def test_real_case_retains_requirement_after_64_unrelated_sources_and_only_own_combination_clears(self):
+        from management.services.ig_revision_checkout import requested_manual_delivery
+        from management.services.ig_revision_commerce import reduce_inbound_commerce_source
+        task, _ = self._record_delivery_case()
+        origin = task.manager_context["delivery_request"]["multiple_destinations"]["source_message_id"]
+        def later(text, mid):
+            source = self._message(text, mid)
+            with transaction.atomic():
+                admitted = reduce_inbound_commerce_source(self.customer, source, expected_provider_namespace=source.provider_namespace)
+            self.assertTrue(admitted.ready, admitted.reason)
+            source.status = "done"
+            source.save(update_fields=["status"])
+            self.customer.refresh_from_db()
+            return [{"message_id": source.pk, "role": "user", "text": source.text}]
+        for number in range(64):
+            sources = later("Дякую!" if number % 2 else "Яка ціна?", f"delivery-unrelated-{number}")
+        failed = self._message("Невдале повідомлення", "delivery-failed-filler")
+        failed.status = "failed"
+        failed.save(update_fields=["status"])
+        sources = later("Беру обидві. Новою поштою.", "delivery-buy-after-window")
+        from management.services.instagram_bot import _current_purchase_source_texts
+        default_rows = _current_purchase_source_texts(self.customer, sealed_sources=sources, with_ids=True)
+        window_rows = _current_purchase_source_texts(self.customer, sealed_sources=sources, with_ids=True, include_window_state=True)
+        self.assertEqual(len(default_rows), 63)
+        self.assertEqual([{key: value for key, value in row.items() if key != "raw_window_saturated"} for row in window_rows], list(default_rows))
+        self.assertTrue(all(set(row) == {"message_id", "text"} for row in default_rows))
+        self.assertTrue(all(row["raw_window_saturated"] for row in window_rows))
+        capture = capture_current_selection_lines(self.customer.pk)
+        self.assertEqual(requested_manual_delivery(self.customer, sources, source_cart_capture=capture)["multiple_destinations"]["source_message_id"], origin)
+        task.status = task.Status.COMPLETED
+        task.save(update_fields=["status"])
+        self.assertIn("multiple_destinations", requested_manual_delivery(self.customer, sources, source_cart_capture=capture))
+        sources = later("Тепер відправте однією посилкою на одну адресу.", "delivery-explicit-combination")
+        self.assertFalse(requested_manual_delivery(self.customer, sources))
+        for number in range(64):
+            sources = later("Дякую!", f"delivery-after-combination-{number}")
+        sources = later("Беру обидві.", "delivery-buy-after-combination-window")
+        self.assertFalse(requested_manual_delivery(self.customer, sources))

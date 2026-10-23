@@ -81,6 +81,7 @@ jobs:
             management.tests_ig_positive_stock_autonomy_20261023 \
             management.tests_ig_stock_clause_apposition_20261023 \
             management.tests_ig_preoffer_readiness_20261023 \
+            management.tests_ig_cart_live_integration.CartLiveClaimIntegrationTests \
             management.tests_ig_checkout_terminalization \
             management.tests_ig_revision_live \
             management.tests_ig_catalog_color_identity_20261023 \
