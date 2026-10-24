@@ -19,10 +19,18 @@ INITIAL = "Привіт! Хочу замовити футболку для се�
     IG_TURN_CONTEXT_MODE="unified", IG_CLIENT_STATE_PROMPT_TOKENS=2400,
     IG_BOT_POLICY_BUDGET_CHARS=48000)
 class LesiaNativePromptBudgetTests(TestCase):
-    setUp = fixtures.TurnContextConsumerIntegrationTests.setUp
     publish = fixtures.TurnContextConsumerIntegrationTests.publish
     fixture = fixtures.TurnContextConsumerIntegrationTests.fixture
     transport = fixtures.TurnContextConsumerIntegrationTests.transport
+
+    def setUp(self):
+        fixtures.TurnContextConsumerIntegrationTests.setUp(self)
+        from management.services.ig_core_policy import CANONICAL_IG_CORE_POLICY
+        # Native migrations preserve the singleton's historical published
+        # prompt. This regression intentionally exercises today's core; the
+        # shared context fixture and immutable bootstrap remain unchanged.
+        self.settings_row.system_prompt = CANONICAL_IG_CORE_POLICY
+        self.settings_row.save(update_fields=["system_prompt"])
 
     def catalog(self):
         from storefront.models import Catalog, Category, Product, ProductFitOption, ProductStatus, SizeGrid
@@ -183,6 +191,52 @@ class LesiaNativePromptBudgetTests(TestCase):
 
 
 class LesiaMigrationSeedTests(TestCase):
+    def test_historical_singleton_runs_all_three_current_core_packets_without_rewriting_bootstrap(self):
+        from importlib import import_module
+        from django.apps import apps
+        from django.db import transaction
+        from management.models import BotPolicyPublication, InstagramBotSettings
+        from management.services.ig_core_policy import CANONICAL_IG_CORE_POLICY
+
+        migration = import_module("management.migrations.0192_bot_prompt_revision_system_prompt")
+        historical_prompt = next(operation.field.get_default() for operation in migration.Migration.operations
+            if getattr(operation, "model_name", None) == "instagrambotsettings"
+            and getattr(operation, "name", None) == "system_prompt")
+        self.assertNotEqual(historical_prompt, CANONICAL_IG_CORE_POLICY)
+        InstagramBotSettings.objects.update_or_create(pk=1, defaults={"system_prompt": historical_prompt})
+        bootstrap = BotPolicyPublication.objects.filter(version=1).first()
+        if bootstrap is None:
+            import_module("management.migrations.0196_bot_policy_publication").bootstrap_instruction_publication(apps, None)
+            bootstrap = BotPolicyPublication.objects.get(version=1)
+        InstagramBotSettings.objects.filter(pk=1).update(active_instruction_publication=bootstrap)
+        original = (bootstrap.snapshot, bootstrap.snapshot_hash)
+        methods = (
+            "test_long_bounded_history_does_not_reinflate_native_mandatory_packet",
+            "test_native_initial_two_recipients_with_120_catalog_products_reaches_packet_admission",
+            "test_native_packet_preserves_current_questions_negation_and_language_preference",
+        )
+        for method in methods:
+            with self.subTest(packet=method), transaction.atomic():
+                case = LesiaNativePromptBudgetTests(method)
+                try:
+                    self.assertEqual(InstagramBotSettings.objects.get(pk=1).system_prompt, historical_prompt)
+                    case.setUp()
+                    self.assertEqual(case.settings_row.system_prompt, CANONICAL_IG_CORE_POLICY)
+                    self.assertNotEqual(case.publication.pk, bootstrap.pk)
+                    self.assertGreater(case.publication.version, bootstrap.version)
+                    self.assertEqual(case.settings_row.active_instruction_publication_id, case.publication.pk)
+                    self.assertEqual(case.publication_binding.publication_id, case.publication.pk)
+                    self.assertEqual(case.publication_snapshot.publication_id, case.publication.pk)
+                    # Call the original packet tests, retaining their transport,
+                    # 48k admission, 42k mandatory and source/recipient assertions.
+                    getattr(case, method)()
+                    bootstrap.refresh_from_db()
+                    self.assertEqual((bootstrap.snapshot, bootstrap.snapshot_hash), original)
+                    self.assertEqual(InstagramBotSettings.objects.filter(pk=1).count(), 1)
+                finally:
+                    case.doCleanups()
+                    transaction.set_rollback(True)
+
     def test_bootstrap_publication_and_singleton_survive_actual_inherited_setup(self):
         from importlib import import_module
         from django.apps import apps

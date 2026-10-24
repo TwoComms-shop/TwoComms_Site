@@ -748,3 +748,168 @@ class NativeFeasibilityQuestionTests(_RestockFixture, TransactionTestCase):
         self.client_row.refresh_from_db()
         self.answer("Не критична")
         self.assert_not_released()
+
+    def publish_question_policy(self):
+        """A real owner CAS publication changes no customer/cart permission."""
+        from django.contrib.auth import get_user_model
+        from management.services.ig_policy_publication import (
+            draft_state, save_instruction_draft, publish_instruction_policy,
+        )
+        actor = get_user_model().objects.create_superuser(username="question-policy-operator", password="test")
+        self.settings.refresh_from_db()
+        self.client_row.refresh_from_db()
+        old_epoch = self.settings.reply_permission_epoch
+        old_client_epoch = self.client_row.reply_permission_epoch
+        old_cart = capture_current_selection_lines(self.client_row.pk, now=self.now)
+        head = self.settings.active_instruction_publication
+        draft = draft_state()
+        _, draft = save_instruction_draft(expected_revision=draft.revision,
+            expected_snapshot_hash=draft.snapshot_hash, actor=actor,
+            values={"title": "Question continuity policy", "body": "Answer using confirmed facts.",
+                "active": True, "priority": 100, "locale": "all", "tags": ["global"],
+                "triggers": [], "programme_metadata": {}, "allowed_actions": [], "trust_scope": "public_policy"})
+        published = publish_instruction_policy(expected_draft_revision=draft.revision,
+            expected_draft_hash=draft.snapshot_hash, expected_head_id=head.pk,
+            expected_head_hash=head.snapshot_hash, actor=actor)
+        self.assertTrue(published.changed)
+        self.settings.refresh_from_db()
+        self.client_row.refresh_from_db()
+        self.assertEqual(self.settings.reply_permission_epoch, old_epoch + 1)
+        self.assertEqual(self.client_row.reply_permission_epoch, old_client_epoch)
+        current_cart = capture_current_selection_lines(self.client_row.pk, now=self.now)
+        self.assertEqual(current_cart["scope"], old_cart["scope"])
+        self.assertEqual(current_cart["lines"], old_cart["lines"])
+        self.assertEqual(current_cart["source_watermark"], old_cart["source_watermark"])
+
+    def assert_pending_question_blocks_native_offer(self):
+        result, validations, factories, prepares, sends = self.execute(
+            "Restock Aurora чорний розмір M є в наявності. Щодо бажаної дати відправки менеджер ще уточнює можливість. Перевірте деталі оформлення:",
+            paylink=True)
+        self.assertNotEqual(result.state, "completed", result.reasons)
+        self.assertIn((False, ("checkout_fulfillment_question_unanswered",)), validations)
+        self.assertEqual((factories, prepares, sends), (0, 0, 0))
+        self.assertEqual((IgCheckoutProposal.objects.count(), IgCheckoutAccessToken.objects.count()), (0, 0))
+
+    def assert_resolved_question_allows_native_offer(self):
+        result, validations, factories, prepares, sends = self.execute(
+            "Restock Aurora чорний розмір M є в наявності. Перевірте деталі оформлення:", paylink=True)
+        self.assertEqual(result.state, "completed", (result.reasons, validations))
+        self.assertEqual((factories, prepares, sends), (1, 1, 1))
+        self.assertEqual((IgCheckoutProposal.objects.count(), IgCheckoutAccessToken.objects.count()), (1, 1))
+        effect = IgRevisionDeliveryEffect.objects.get(revision=self.revision)
+        self.assertEqual(effect.state, "sent")
+        self.assertTrue(effect.provider_message_id)
+
+    def test_publication_epoch_retains_question_before_actual_factory_and_token(self):
+        request = self.prepare_question()
+        self.publish_question_policy()
+        self.stock_and_buy()
+        self.assertEqual(reviews.Decision.objects.filter(request=request).count(), 0)
+        self.assertEqual(self.debt()["request_id"], str(request.pk))
+        cart = capture_current_selection_lines(self.client_row.pk, now=self.now)
+        # Positive review projection retains its original permission barrier.
+        self.assertEqual(reviews._current_reason(request, self.settings, now=self.now,
+            current_source_cart=cart), "permission_changed")
+        self.assert_pending_question_blocks_native_offer()
+
+    def test_without_new_publication_question_still_blocks_actual_offer(self):
+        self.prepare_question()
+        self.stock_and_buy()
+        self.assert_pending_question_blocks_native_offer()
+
+    def test_own_date_withdrawal_after_publication_allows_actual_offer(self):
+        self.prepare_question()
+        self.publish_question_policy()
+        _RestockFixture.revision(self, self.source("Дата відправки неважлива."))
+        self.stock_and_buy()
+        self.assertEqual(self.debt(), {})
+        self.assert_resolved_question_allows_native_offer()
+
+    def test_real_reset_excludes_old_question_from_new_own_cart(self):
+        from django.contrib.auth import get_user_model
+        from management.services.ig_funnel_reset import reset_funnel
+        self.prepare_question()
+        actor = get_user_model().objects.create_superuser(username="question-reset-operator", password="test")
+        reset = reset_funnel(client_id=self.client_row.pk, actor=actor, mode="fresh_conversation",
+            expected_permission_epoch=self.client_row.reply_permission_epoch)
+        self.assertTrue(reset["ok"], reset)
+        self.client_row.refresh_from_db()
+        self.customer = self.client_row
+        self.canonical(f"добавьте {self.product.title}, количество 1, размер M, цвет black, крій classic")
+        self.stock_and_buy()
+        self.assertEqual(self.debt(), {})
+        self.assert_resolved_question_allows_native_offer()
+
+    def test_real_client_pause_still_blocks_actual_offer(self):
+        from management.models import IgPermissionTransitionJob
+        from management.services.ig_permission_transitions import create_permission_transition, attempt_permission_transition
+        self.prepare_question()
+        old_epoch = self.client_row.reply_permission_epoch
+        pause = create_permission_transition(kind=IgPermissionTransitionJob.Kind.CLIENT_PAUSE,
+            dedupe_key=f"question-native-pause:{self.client_row.pk}", client=self.client_row)
+        self.assertTrue(attempt_permission_transition(pause.pk))
+        self.client_row.refresh_from_db()
+        self.assertTrue(self.client_row.bot_paused)
+        self.assertEqual(self.client_row.reply_permission_epoch, old_epoch + 1)
+        self.stock_and_buy()
+        result, _, factories, prepares, sends = self.execute("Перевірте деталі оформлення:", paylink=True)
+        self.assertEqual(result.state, "blocked")
+        self.assertIn("client_blocked", result.reasons)
+        self.assertEqual((factories, prepares, sends), (0, 0, 0))
+        self.assertEqual((IgCheckoutProposal.objects.count(), IgCheckoutAccessToken.objects.count()), (0, 0))
+
+    def test_hard_departure_after_publication_stays_held_by_existing_native_review(self):
+        from management.services.ig_fulfillment_checkout import fulfillment_deadline_checkout_reason
+        self.prepare_question("Я виїжджаю 20.10.2026. Встигнете відправити до цієї дати?")
+        self.publish_question_policy()
+        self.stock_and_buy(expected_reason="review_requested")
+        cart = capture_current_selection_lines(self.client_row.pk, now=self.now)
+        self.assertEqual(fulfillment_deadline_checkout_reason(self.client_row, cart, now=self.now),
+            "checkout_hard_deadline_review_required")
+        _, _, factories, prepares, _ = self.execute("Щодо дати відправки менеджер ще уточнює можливість. Перевірте деталі оформлення:", paylink=True)
+        self.assertEqual((factories, prepares), (0, 0))
+        self.assertEqual((IgCheckoutProposal.objects.count(), IgCheckoutAccessToken.objects.count()), (0, 0))
+
+    def test_ordinary_cart_without_question_allows_offer_after_publication(self):
+        self.publish_question_policy()
+        self.stock_and_buy()
+        self.assertEqual(self.debt(), {})
+        self.assert_resolved_question_allows_native_offer()
+
+    def test_old_typed_delivered_answer_gets_no_new_epoch_authority(self):
+        self.prepare_question()
+        self.native_dispatch_answer()
+        self.assertEqual(self.debt(), {})
+        self.publish_question_policy()
+        self.stock_and_buy()
+        self.assertTrue(self.debt())
+        self.assert_pending_question_blocks_native_offer()
+
+    def test_old_delivered_short_question_receipt_gets_no_new_epoch_authority(self):
+        self.deliver_question()
+        self.publish_question_policy()
+        self.answer("Не критична")
+        self.stock_and_buy()
+        self.assertTrue(self.debt())
+        self.assert_pending_question_blocks_native_offer()
+
+    def test_new_current_epoch_question_receipt_resolves_retained_old_requirement(self):
+        request = self.prepare_question()
+        self.publish_question_policy()
+        self.stock_and_buy()
+        self.assertTrue(self.debt())
+        result, validations, factories, prepares, sends = self.execute(
+            "Restock Aurora чорний розмір M є в наявності. Бажана дата відправки 20.10.2026 поки не підтверджена. Чи ця дата для вас критична?")
+        self.assertEqual(result.state, "completed", (result.reasons, validations))
+        self.assertEqual((factories, prepares, sends), (0, 0, 1))
+        question = IgRevisionDeliveryEffect.objects.get(revision=self.revision)
+        self.assertEqual(question.state, "sent")
+        self.assertTrue(question.provider_message_id)
+        self.assertEqual(question.settings_permission_epoch, self.settings.reply_permission_epoch)
+        self.assertEqual(question.settings_permission_epoch, request.envelope["settings_epoch"] + 1)
+        self.answer("Не критична")
+        self.assertEqual(self.debt(), {})
+        self.assertEqual((IgCheckoutProposal.objects.count(), IgCheckoutAccessToken.objects.count()), (0, 0))
+        self.buyer = self.source("Беру. Оформіть замовлення.")
+        self.revision, self.token = _RestockFixture.revision(self, self.buyer)
+        self.assert_resolved_question_allows_native_offer()

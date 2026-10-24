@@ -193,8 +193,9 @@ def _contextual_question_release(request, cart, settings_obj, *, after_source_id
     if (not historical.get("coverage_complete") or historical.get("status") != "captured"
         or not _deadline_scope_matches(request, historical) or not _deadline_scope_matches(request, cart)):
         return 0, False
+    # The negative requirement may predate policy publication; the SENT
+    # question above must still have the current global and client epochs.
     if (request.envelope.get("settings_id") != settings_obj.pk
-        or request.envelope.get("settings_epoch") != settings_obj.reply_permission_epoch
         or request.envelope.get("client_epoch") != request.client.reply_permission_epoch):
         return 0, False
     def targets(lines):
@@ -247,7 +248,7 @@ def _released(request, cart, settings_obj, *, after_source_id, now):
     return _contextual_question_release(request, cart, settings_obj, after_source_id=after_source_id, now=now)
 
 
-def _answered_by_delivered_dispatch(request, hints, current_lines, *, now):
+def _answered_by_delivered_dispatch(request, hints, current_lines, *, now, settings_obj):
     """An existing typed, delivered dispatch answer may close dispatch questions.
 
     Delivery/arrival feasibility cannot be inferred from dispatch. Nothing from
@@ -261,6 +262,10 @@ def _answered_by_delivered_dispatch(request, hints, current_lines, *, now):
     from management.services.ig_fulfillment_delivery import render_task_update
     from management.services.ig_delivery_receipts import normalize_provider_message_id
     from management.services.ig_fulfillment_requirements import _CLOCK, _customer_text
+    # Negative retention never refreshes an old positive timing decision.
+    if (settings_obj.pk != request.envelope.get("settings_id")
+        or settings_obj.reply_permission_epoch != request.envelope.get("settings_epoch")):
+        return False
     if any(not hint.get("deadline_date") or hint.get("date_status") == "needs_clarification" for hint in hints):
         return False
     if any(re.search(r"отрима\w*|получ\w*|достав\w*|\b(?:arriv|receiv|deliver)\w*", hint["raw_quote"], re.I)
@@ -335,7 +340,7 @@ def capture_fulfillment_question_debt(client, cart, *, now=None, include_resolve
         if not hints:
             continue
         settings_obj = reviews._settings()
-        reason = reviews._current_reason(request, settings_obj, now=now, current_source_cart=cart, _deadline_hold=True)
+        reason = reviews._current_reason(request, settings_obj, now=now, current_source_cart=cart, _deadline_hold=True, _negative_requirement_read=True)
         if reason not in {"", "selection_changed", "deadline_continuation_bound"}:
             continue
         if current_lines is None:
@@ -354,7 +359,7 @@ def capture_fulfillment_question_debt(client, cart, *, now=None, include_resolve
         resolved_ids.update(hint["source_id"] for hint in hints
             if released_id and hint["source_id"] < released_id and _pure_feasibility_source(hint))
         hints = [hint for hint in hints if not released_id or hint["source_id"] > released_id]
-        if not hints or _answered_by_delivered_dispatch(request, hints, current_lines, now=now):
+        if not hints or _answered_by_delivered_dispatch(request, hints, current_lines, now=now, settings_obj=settings_obj):
             continue
         # A typed timing decision belongs to its original source/cart owner.
         # Do not infer a positive answer from task closure or manager prose.

@@ -722,7 +722,8 @@ def _batch_cart_sources_reason(request, settings_obj, cart, *, now, _permission_
 
 
 def _current_reason(request, settings_obj, *, now, current_source_cart=None, _settings_fresh=False,
-        _deadline_hold=False, _deadline_hold_line_ids=(), _source_excerpts=None):
+        _deadline_hold=False, _deadline_hold_line_ids=(), _source_excerpts=None,
+        _negative_requirement_read=False):
     from management.services.ig_purpose_sources import owned_source, latest_customer_source
     from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_reply_boundary import capture_reply_permission
@@ -742,7 +743,11 @@ def _current_reason(request, settings_obj, *, now, current_source_cart=None, _se
         from management.services.ig_revision_echo import revision_echo_blocks
         allowed_senders = allowed_sender_ids(settings_obj)
         if (not settings_obj.is_enabled or not _client_allowed(client)[0]
-            or settings_obj.reply_permission_epoch != data["settings_epoch"] or client.reply_permission_epoch != data["client_epoch"]
+            # A current negative requirement may outlive policy publication.
+            # This opt-in grants no old decision, receipt or send permission.
+            or (settings_obj.reply_permission_epoch != data["settings_epoch"]
+                and not (_deadline_hold and _negative_requirement_read))
+            or client.reply_permission_epoch != data["client_epoch"]
             or (allowed_senders and client.igsid not in allowed_senders)
             or permission_transition_blocks(settings_id=settings_obj.pk, client_id=client.pk)
             or (uses_revision_echo_scope(ingress_provider_namespace(settings_obj), client.igsid)
