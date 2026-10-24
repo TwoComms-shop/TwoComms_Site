@@ -69,3 +69,63 @@ def deduplicate_source_cart_note(turn_note, *, state, state_text):
     return (turn_note[:position]
         + "Complete exact positions are in facts:client_state slot current.source_cart above; use every line and its evidence there."
         + turn_note[position + len(turn_value):])
+
+
+def deduplicate_captured_consultation_note(turn_note, *, dynamic_notes):
+    """Reference only identical facts/rules already in mandatory dynamic notes.
+
+    The response plan, captured components and their digests are unchanged.
+    Missing, changed or differently formatted captures keep the full note.
+    """
+    from management.services.ig_fit_consultation import fit_consultation_projection, fit_consultation_guidance
+    from management.services.ig_product_focus import product_focus_guidance
+
+    lines = str(turn_note).splitlines(keepends=True)
+    positions = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "[SERVER RESPONSE PLAN]"]
+    if len(positions) != 1 or positions[0] + 1 >= len(lines):
+        return turn_note
+    index = positions[0] + 1
+    try:
+        plan = json.loads(lines[index])
+    except (ValueError, TypeError):
+        return turn_note
+    if not isinstance(plan, dict) or "fact_references" in plan:
+        return turn_note
+    suffix = "".join(lines[index + 1:])
+    references = {}
+    for key, marker, project, guidance in (
+        ("fit_consultation", "[CAPTURED FIT CONSULTATION]", fit_consultation_projection, fit_consultation_guidance),
+        ("product_focus", "[CAPTURED DISCUSSED PRINT]", lambda value: value, product_focus_guidance),
+    ):
+        note = dynamic_notes.get(key) if isinstance(dynamic_notes, dict) else None
+        if not isinstance(note, str) or not note.startswith(marker + "\n") or key not in plan:
+            continue
+        raw, separator, rules = note[len(marker) + 1:].partition("\n")
+        try:
+            captured = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(captured, dict) or not separator:
+            continue
+        try:
+            expected_rules = guidance(captured)
+            same_fact = (json.dumps(plan[key], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                == json.dumps(project(captured), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not expected_rules or rules != expected_rules or not same_fact:
+            continue
+        # These are appended server rules, not a substring inside a quoted
+        # customer JSON value. Exactly one complete occurrence must match.
+        bounded_suffix = "\n" + suffix
+        if bounded_suffix.count("\n" + expected_rules) != 1:
+            continue
+        suffix = bounded_suffix.replace("\n" + expected_rules,
+            f"\nUse the complete {key} facts and rules in facts:{key} above.", 1)[1:]
+        references[key] = "facts:" + key
+        del plan[key]
+    if not references:
+        return turn_note
+    plan["fact_references"] = references
+    ending = "\n" if lines[index].endswith("\n") else ""
+    return "".join(lines[:index]) + json.dumps(plan, ensure_ascii=False, separators=(",", ":")) + ending + suffix

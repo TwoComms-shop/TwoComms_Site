@@ -10,6 +10,11 @@ from management.services.ig_reply_language import own_reply_text, _QUOTES
 
 
 _STORE = re.compile(r"\b(?:магазин\w*|бутик\w*|shops?|stores?|boutiques?)\b", re.I)
+_OWN_STORE = re.compile(r"\b(?:i|we)\s+(?:run|own|operate|have)\s+(?:(?:an?|my|our|online|instagram)\s+){0,3}(?:shop|store|boutique)\b", re.I)
+_STORE_TRADE_TERMS = re.compile(
+    r"\b(?:partner\s+(?:terms?|prices?|discounts?|rates?)|"
+    r"(?:what(?:\s+is)?(?:\s+the)?|your|the|commission|discount)\s+rates?|"
+    r"payouts?|commissions?|settlements?)\b", re.I)
 _WHOLESALE = re.compile(r"\b(?:опт(?:ом|ов\w*)?|гурт\w*|wholesale|b2b)\b", re.I)
 _DROPSHIP = re.compile(r"\b(?:дропшип\w*|дроп[- ]?шип\w*|dropship\w*|drop[- ]shipping)\b", re.I)
 _PARTNERSHIP = re.compile(r"\b(?:партнерств\w*|партнёрств\w*|співпрац\w*|сотруднич\w*|collab\w*|cooperat\w*|partnership\w*)\b", re.I)
@@ -176,7 +181,16 @@ def business_cooperation_for_sources(sources):
     partnership = bool(_PARTNERSHIP.search(text))
     # A designer/photographer's generic collaboration is its separate creator
     # path. Store launch, resale and explicit trade terms remain business facts.
-    business = wholesale or dropship or resell or store and (launch or partnership)
+    owned_store_terms = bool(_OWN_STORE.search(text) and any(
+        _STORE_TRADE_TERMS.search(clause) and not _WITHDRAW.search(clause)
+        for clause in re.split(r"[.!?;\n]+", text)))
+    if owned_store_terms:
+        from management.services.bot_sales_classifier import is_creator_collaboration_offer
+        # A shop owner's service remuneration is not merchandise trade.
+        # Explicit resale/wholesale/dropship evidence keeps its separate path.
+        owned_store_terms = not (recruitment_service_for_sources(current)
+            or is_creator_collaboration_offer(text))
+    business = wholesale or dropship or resell or store and (launch or partnership or owned_store_terms)
     business |= partnership and not _CREATOR.search(text) and not recruitment_service_for_sources(current)
     if not business:
         return {}

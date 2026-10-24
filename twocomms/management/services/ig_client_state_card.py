@@ -736,7 +736,8 @@ def checkout_prompt_value(readiness):
     return value
 
 
-def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_slots=()) -> RenderResult:
+def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_slots=(),
+        _compact_fulfillment=False) -> RenderResult:
     """Budget estimated tokens by whole slots; oversized mandatory data fails.
 
     ``budget`` is an explicit integer estimate, not a provider token count. No
@@ -801,7 +802,7 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
                 projected["checkout_eligibility"] = {"available": "eligible", "unavailable": "ineligible"}.get(eligibility, eligibility)
             if key == "fulfillment.review":
                 from management.services.ig_fulfillment_context import fulfillment_prompt_value
-                projected["value"] = fulfillment_prompt_value(slot["value"])
+                projected["value"] = fulfillment_prompt_value(slot["value"], compact=_compact_fulfillment)
                 if (slot.get("authority") != "verified_manager_review"
                         or slot.get("validity") != "valid"
                         or projected["value"].get("status") != "reviewed"
@@ -841,6 +842,11 @@ def render_client_state_prompt(state: CapturedClientState, *, budget, excluded_s
         text = HEADER + _json({"status": payload["status"], "omissions": payload["omissions"]})
     included.extend(dict.fromkeys([*(key for key, block in mandatory), *represented_choices]))
     if estimate(text) > limit:
+        if not _compact_fulfillment and any(key == "fulfillment.review" for key, _ in mandatory):
+            # Retry only a lossless presentation of this already captured
+            # review. No source read, omitted requirement or budget change.
+            return render_client_state_prompt(state, budget=budget, excluded_slots=excluded_slots,
+                _compact_fulfillment=True)
         omitted.extend((key, "mandatory_budget_exceeded") for key, block in mandatory)
         omitted.extend((key, "mandatory_budget_exceeded") for key in represented_choices
             if key not in {identity for identity, _ in mandatory})

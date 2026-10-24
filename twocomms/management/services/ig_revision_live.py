@@ -1395,6 +1395,11 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     reply_language = resolve_revision_reply_language(revision, sources=sources,
         captured_context=boundary.reply_language_context, response_plan=boundary.response_plan)
 
+    if prepared_context is not None:
+        from management.services.ig_prompt_projections import deduplicate_captured_consultation_note
+        coverage_note = deduplicate_captured_consultation_note(coverage_note,
+            dynamic_notes=prepared_context.dynamic_notes)
+
     with revision_request_execution(
         revision.pk, token, settings_id=settings_row.pk,
         settings_permission_epoch=boundary.settings_epoch,

@@ -144,9 +144,12 @@ def turn_triggers(text: str) -> set[str]:
     )
 
     cooperation_sources = current_cooperation_sources([{"text": value}])
+    from management.services.bot_sales_classifier import is_creator_collaboration_offer
+
     if extract_business_cooperation(value):
         result.add("business_cooperation")
-    if (extract_business_cooperation(value) or recruitment_service_for_sources(cooperation_sources) or any(
+    if (extract_business_cooperation(value) or recruitment_service_for_sources(cooperation_sources)
+        or is_creator_collaboration_offer(value) or any(
         _TURN_TRIGGERS["collaboration"].search(own_reply_text(row["text"])) for row in cooperation_sources
     )):
         result.add("collaboration")

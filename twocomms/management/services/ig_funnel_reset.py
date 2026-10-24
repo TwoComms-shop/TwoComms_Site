@@ -254,6 +254,108 @@ def handle_historical_reset_ingress(
         return True
 
 
+def _archive_fresh_reply_attention(client, *, boundary, actor, now):
+    """Retire proved old conversation alerts without acknowledging a reply.
+
+    Financial/service work and uncertain delivery retain their independent
+    owner. A confirmed technical holding is physical history, not a useful
+    answer, but it need not keep the archived conversation in the current queue.
+    """
+    from management.models import IgPaymentConfirmationReview, IgPostSaleCase
+    from management.services.ig_response_debt import DEBT_KIND, REASON_LABELS, unresolved_reply_debts
+    from management.services.ig_revision_holding import confirmed_holding_effect_ids, RECEIPT_KEY, DELIVERY_KEY
+    from management.services.ig_revision_outbox import _digest, revision_sources_current
+    from management.services.ig_revision_execution import _whole_sent_proof
+
+    archived = []
+    tasks = _reset_financial_rows(unresolved_reply_debts().filter(
+        client=client, status="skipped", deal__isnull=True,
+        claim_token="", provider_message_id="", sent_message__isnull=True,
+        sent_at__isnull=True,
+    ).order_by("id"))
+    for task in tasks:
+        payload = task.event_payload if isinstance(task.event_payload, dict) else {}
+        context = task.manager_context if isinstance(task.manager_context, dict) else {}
+        revision_id = payload.get("revision_id")
+        ids = payload.get("source_message_ids")
+        effect_ids = payload.get("effect_ids")
+        if (type(revision_id) is not int or task.event_key != f"ig-revision-debt:{revision_id}"
+            or context.get("case_kind") != DEBT_KIND or context.get("revision_id") != revision_id
+            or context.get("owner") != "manager" or context.get("reason") != payload.get("reason")
+            or payload.get("reason") not in {*REASON_LABELS, "technical_holding_sent"}
+            or context.get("operator_review") or context.get("reply_resolution")
+            or not isinstance(ids, list) or not ids
+            or any(type(value) is not int or not 0 < value <= boundary for value in ids)
+            or len(set(ids)) != len(ids) or not isinstance(effect_ids, list)
+            or any(type(value) is not int or value <= 0 for value in effect_ids)
+            or len(set(effect_ids)) != len(effect_ids)):
+            continue
+        revision = _reset_financial_rows(IgCustomerTurnRevision.objects.filter(
+            pk=revision_id, client=client,
+        )).first()
+        if (revision is None or not isinstance(revision.bundle_snapshot, dict)
+            or not isinstance(revision.action_receipts, dict)):
+            continue
+        sources = list(revision.sources.select_related("message__client").order_by("ordinal", "id"))
+        if ([row.message_id for row in sources] != ids
+            or any(row.role != "user" or row.message.role != "user" for row in sources)
+            or _digest(revision.bundle_snapshot) != revision.snapshot_digest
+            or not revision_sources_current(revision, source_rows=sources)):
+            continue
+        coverage = (revision.action_receipts or {}).get("response_coverage") or {}
+        if (not isinstance(coverage, dict)
+            or any(not isinstance(coverage.get(key, []), list) for key in ("covered", "remaining"))
+            or coverage.get("payment_verification")
+            or any(":payment" in str(item) for key in ("covered", "remaining")
+                   for item in coverage.get(key, ()))
+            or IgPaymentConfirmationReview.objects.filter(client=client, watermark_message_id__in=ids).exists()
+            or IgPostSaleCase.objects.filter(client=client, source_message_id__in=ids).exists()):
+            continue
+        effects = list(_reset_financial_rows(revision.delivery_effects.order_by("order_index", "id")))
+        disposition = context.get("disposition")
+        actual_effect_ids = tuple(row.pk for row in effects)
+        admission = revision.action_receipts.get(RECEIPT_KEY) or {}
+        delivery = revision.action_receipts.get(DELIVERY_KEY) or {}
+        holding_ids = (confirmed_holding_effect_ids(revision)
+                       if isinstance(admission, dict) and isinstance(delivery, dict)
+                       and effects and all(row.actor == "bot" and row.purpose == "technical_holding"
+                                          for row in effects) else ())
+        # Current holding admission records its manager case before dispatch;
+        # the immutable task manifest is then empty. Its native admission must
+        # identify this exact task before the later holding can cover that gap.
+        pre_dispatch_holding = bool(
+            not effect_ids and disposition == "manager_reply"
+            and payload.get("reason") == "provider_candidates_exhausted"
+            and isinstance(admission, dict) and admission.get("task_id") == task.pk
+            and holding_ids and holding_ids == actual_effect_ids)
+        if actual_effect_ids != tuple(effect_ids) and not pre_dispatch_holding:
+            continue
+        if disposition == "reconcile_delivery":
+            if (payload.get("reason") != "technical_holding_sent" or not effects
+                or tuple(effect_ids) != holding_ids):
+                continue
+        elif disposition in {"manager_reply", "manager_reply_uncovered"}:
+            if effects and not pre_dispatch_holding and (any(row.state != "sent" or row.actor != "bot"
+                                   or row.purpose != "normal_reply" for row in effects)
+                            or not _whole_sent_proof(revision, effects)[0]):
+                continue
+        else:
+            continue
+        archive = {"version": 1, "outcome": "archived_by_fresh_reset", "reply_confirmed": False,
+                   "reset_after_message_id": boundary, "revision_id": revision_id,
+                   "actor_id": getattr(actor, "pk", None), "at": now.isoformat()}
+        task.manager_context = {**context, "fresh_reset_archive": archive}
+        task.status = task.Status.CANCELLED
+        task.skip_reason = "fresh_conversation_reset"
+        task.manager_approval_status = task.ManagerApprovalStatus.REJECTED
+        task.manager_approval_actor = actor if getattr(actor, "pk", None) else None
+        task.manager_approval_decided_at = now
+        task.save(update_fields=["manager_context", "status", "skip_reason", "manager_approval_status",
+                                 "manager_approval_actor", "manager_approval_decided_at", "updated_at"])
+        archived.append(task.pk)
+    return {"archived_reply_attention_count": len(archived), "archived_reply_attention_task_ids": archived}
+
+
 def _retire_fresh_work(client, *, now):
     # The operator owns the client lock and the global reply boundary. Retain
     # started/unknown/sent effects unchanged for reconciliation and accounting.
@@ -588,13 +690,18 @@ def _reset_funnel(*, client_id: int, actor, reason: str,
                 cancelled_automation = cancel_client_unstarted_automation(
                     client, reason="fresh_conversation_reset", now=now, nowait=False,
                 )
+                attention_retirement = _archive_fresh_reply_attention(
+                    client, boundary=boundary, actor=actor, now=now,
+                )
+                previous_state["reply_attention_retirement"] = attention_retirement
                 retired = _retire_fresh_work(client, now=now)
+                retired.update(attention_retirement)
                 retired["retired_pending_messages"] = retired_messages
                 retired["cancelled_automation"] = cancelled_automation
                 retired.update(checkout_retirement)
-            # A fresh conversation cancels automatic sends, not an operator's
-            # outstanding service obligation. Legacy funnel reset keeps its
-            # existing broader cancellation contract.
+            # Independent service/reconciliation obligations survive; proved
+            # old conversational alerts have a separate archival receipt.
+            # Legacy funnel reset keeps its existing cancellation contract.
             cancelled_followups = (
                 cancelled_automation["followups"] if fresh
                 else bot_followups.cancel_pending(client, reason="funnel_reset")

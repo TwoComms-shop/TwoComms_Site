@@ -162,7 +162,48 @@ def fulfillment_manifest(slot):
         "decision_version": (value.get("decision") or {}).get("version", 0)}
 
 
-def fulfillment_prompt_value(value):
+def _compact_review_tables(value):
+    """Lossless prompt tables; the signed DTO and ordinary view stay intact."""
+    result = deepcopy(value)
+    request = result.get("current_request")
+    if not isinstance(request, dict) or "prompt_table_semantics" in request:
+        return value
+    changed = False
+    for line in request.get("lines") or []:
+        preferences = line.get("preferences")
+        if not isinstance(preferences, dict) or "evidence_groups" in preferences:
+            continue
+        evidence = preferences.get("evidence")
+        if not isinstance(evidence, dict) or not evidence:
+            continue
+        groups = {}
+        for field, proof in evidence.items():
+            identity = json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            groups.setdefault(identity, {"fields": [], "proof": proof})["fields"].append(field)
+        if len(groups) < len(evidence):
+            preferences["evidence_groups"] = list(groups.values())
+            del preferences["evidence"]
+            changed = True
+    requirements = request.get("customer_requirements")
+    if (isinstance(requirements, list) and len(requirements) > 1
+        and all(isinstance(row, dict) and row for row in requirements)):
+        identity = lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        shared = {key: value for key, value in requirements[0].items()
+            if all(key in row and identity(row[key]) == identity(value) for row in requirements)}
+        if shared:
+            request["customer_requirements"] = {"shared": shared,
+                "rows": [{key: value for key, value in row.items() if key not in shared} for row in requirements]}
+            changed = True
+    if not changed:
+        return value
+    request["prompt_table_semantics"] = (
+        "Each evidence_groups proof binds every listed field. Each customer requirement is shared merged with its row; "
+        "all original values, including null/false and source ownership, are retained.")
+    compact = lambda item: json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+    return result if len(compact(result).encode()) < len(compact(value).encode()) else value
+
+
+def fulfillment_prompt_value(value, *, compact=False):
     """Present captured facts once; retain signed audit material in the DTO.
 
     No customer requirement, line, manager decision or shipping/consent term is
@@ -211,7 +252,7 @@ def fulfillment_prompt_value(value):
         for line in decision.get("lines") or []:
             for key in ("inventory_digest", "configuration_digest"):
                 line.pop(key, None)
-    return result
+    return _compact_review_tables(result) if compact else result
 
 
 def retained_fulfillment_frame(state):

@@ -718,6 +718,7 @@ def is_creator_collaboration_offer(text: str) -> bool:
 
     A role alone (for example, ``я модель``) is insufficient. The same message
     must also offer work, a deliverable, or a stated production capability.
+    A concrete own production or shoot-participation request needs no role.
     """
     from management.services.ig_business_cooperation import current_cooperation_sources
     from management.services.ig_reply_language import own_reply_text
@@ -731,11 +732,38 @@ def is_creator_collaboration_offer(text: str) -> bool:
     recruitment = recruitment_service_for_sources([{"role": "user", "text": value}])
     if recruitment and not recruitment.get("creator_work_also_offered"):
         return False
-    return bool(
+    existing_role_offer = bool(
         CREATOR_ROLE_RE.search(value)
         and (CREATOR_OFFER_RE.search(value) or CREATOR_SERVICE_RE.search(value))
         and re.search(r"\b(?:вам|ваш(?:а|у|ій|и)?|бренд\w*|brand\w*|для\s+(?:вас|ваш)|for\s+you|for\s+your)\b", value, re.I)
     )
+    if existing_role_offer:
+        return True
+    from management.services.ig_business_cooperation import _WITHDRAW
+    from management.services.ig_reply_truth import _locally_negated
+
+    # A concrete own offer need not contain a profession. Receiving product
+    # photos is not producing brand content; participation grants no approval.
+    own_production = re.compile(
+        r"\b(?:я|ми|мы|i|we)\s+(?:пропону\w*|предлага\w*|offer\w*|"
+        r"(?:can|можу|можемо|могу|можем)\s+(?:create|produce|shoot|make|зняти|знімати|створити|зробити|снять|создать))\b", re.I)
+    shoot = r"(?:зйом\w*|съем\w*|shoot\w*|фотосес\w*)"
+    participation = re.compile(
+        r"\b(?:хочу|хочемо|хотим|(?:i|we)\s+(?:want|would\s+like)\s+to)\s+"
+        r"(?:взяти\s+участь|взять\s+участие|участвовать|take\s+part|participate)\s+"
+        r"(?:у|в|in)\s+(?:(?:a|the|ваш\w*|your)\s+)?" + shoot + r"\b", re.I)
+    current_offer = False
+    for clause in re.split(r"[.!?;\n]+", value):
+        if _WITHDRAW.search(clause) and (CREATOR_SERVICE_RE.search(clause) or re.search(shoot, clause, re.I)):
+            current_offer = False
+            continue
+        production = own_production.search(clause)
+        deliverable = CREATOR_DELIVERABLE_RE.search(clause, production.end()) if production else None
+        if participation.search(clause) or (deliverable
+            and not _locally_negated(clause, deliverable.start())
+            and re.search(r"\b(?:бренд\w*|brand\w*|для\s+вас|for\s+(?:you|your))\b", clause, re.I)):
+            current_offer = True
+    return current_offer
 
 WHOLESALE_RE = re.compile(
     r"(?:\b(опт\w*|оптов\w*|wholesale|b2b|дропшип\w*|тираж\w*|партію|партия)\b|"
