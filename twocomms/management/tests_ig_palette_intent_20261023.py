@@ -49,6 +49,19 @@ class PaletteSourceIntentTests(SimpleTestCase):
         request = parse_turn("Хочу худі")
         previous = _jsonable(request)
         previous.pop("catalog_garment_type")
+        # Neither optional field existed in this historical request schema.
+        # A new dataclass default must not redefine the persisted old payload.
+        self.assertIsNone(previous.pop("purchase_reference_count"))
+        self.assertEqual(set(previous), {
+            "exact_product_id", "exact_unique_alias", "query", "field_updates", "hard", "preferences",
+            "preference_withdrawals", "semantic_constraints", "garment_type", "exact_reference",
+            "rejected_product_ids", "pending_clarification", "info_topics", "checkout_requested",
+            "purchase_requested", "full_cart_purchase_requested", "source_binding", "recipient_id",
+            "reset_requested", "support_requested", "new_purchase_requested", "exchange_requested",
+            "personalized_fit_requested", "custom_print_requested", "comparison_requested", "line_operations",
+            "pending_line_clarification", "new_order_requested", "historical_order_reference", "historical_line_id",
+            "historical_item_index", "historical_recipient_id",
+        })
         self.assertEqual(_request_payload(request), previous)
         self.assertEqual(_request_payload(CommerceTurnRequest(**previous)), previous)
         self.assertEqual(_request_payload(parse_turn("Show me hoodies"))["catalog_garment_type"], "hoodie")
