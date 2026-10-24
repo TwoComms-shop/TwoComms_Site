@@ -30,6 +30,16 @@ from management.tests_support import AnalysisPrivacyCleanupMixin
 @override_settings(ROOT_URLCONF="twocomms.urls_management", SECURE_SSL_REDIRECT=False,
                    ALLOWED_HOSTS=["testserver"], IG_PROVIDER_TRANSPORT="instagram_login")
 class FreshConversationResetTests(BuyerTruthTestMixin, TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # Migration 0196 owns this singleton on a migrated database. Exercise
+        # the same existing-row start when the fast test schema skips data migrations.
+        seeded, _ = InstagramBotSettings.objects.get_or_create(pk=1)
+        cls.seeded_settings_pk = seeded.pk
+        cls.seeded_publication_id = seeded.active_instruction_publication_id
+        cls.seeded_draft_revision = seeded.instruction_draft_revision
+
     def setUp(self):
         self.transport = patch.dict("os.environ", {"IG_PROVIDER_TRANSPORT": "instagram_login"})
         self.transport.start()
@@ -38,7 +48,10 @@ class FreshConversationResetTests(BuyerTruthTestMixin, TestCase):
             username="fresh-reset-operator", email="operator@example.invalid", password="x",
         )
         self.client.force_login(self.manager)
-        self.settings = InstagramBotSettings.objects.create(pk=1, ig_user_id="reset-owner", is_enabled=True)
+        self.settings, _ = InstagramBotSettings.objects.update_or_create(pk=1, defaults={
+            "ig_user_id": "reset-owner", "is_enabled": True,
+            "ai_enabled": True, "reply_permission_epoch": 0,
+        })
         self.customer = IgClient.objects.create(
             igsid="fresh-reset-customer", language="ru", intent=IgClient.Intent.SIZE,
             current_size="XL", current_color="black", memory_summary="Old preferences",
@@ -86,6 +99,16 @@ class FreshConversationResetTests(BuyerTruthTestMixin, TestCase):
         return IgWebhookInboxEvent.objects.create(namespace=namespace, owner_id=owner,
             customer_igsid=self.customer.igsid, event_key=event["message"]["mid"],
             decision=IgWebhookInboxEvent.Decision.ACCEPTED, payload=payload, payload_digest=digest)
+
+    def test_seeded_settings_singleton_is_reused_without_replacing_publication(self):
+        self.assertEqual(InstagramBotSettings.objects.count(), 1)
+        self.assertEqual(self.settings.pk, self.seeded_settings_pk)
+        self.assertEqual(self.settings.ig_user_id, "reset-owner")
+        self.assertTrue(self.settings.is_enabled)
+        self.assertTrue(self.settings.ai_enabled)
+        self.assertEqual(self.settings.reply_permission_epoch, 0)
+        self.assertEqual(self.settings.active_instruction_publication_id, self.seeded_publication_id)
+        self.assertEqual(self.settings.instruction_draft_revision, self.seeded_draft_revision)
 
     def test_full_reset_clears_profile_referral_and_cart_preserving_permissions_and_clocks(self):
         before_clock = self.customer.last_user_message_at

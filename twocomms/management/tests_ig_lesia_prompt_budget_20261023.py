@@ -180,3 +180,28 @@ class LesiaNativePromptBudgetTests(TestCase):
         self.assertLessEqual(len(fitted), 1100)
         with self.assertRaisesRegex(ValueError, "coverage_and_rules"):
             fit_compact_catalog(lines, limit=1100, minimum_products=10)
+
+
+class LesiaMigrationSeedTests(TestCase):
+    def test_bootstrap_publication_and_singleton_survive_actual_inherited_setup(self):
+        from importlib import import_module
+        from django.apps import apps
+        from management.models import BotPolicyPublication, InstagramBotSettings
+        bootstrap = BotPolicyPublication.objects.filter(version=1).first()
+        if bootstrap is None:
+            import_module("management.migrations.0196_bot_policy_publication").bootstrap_instruction_publication(apps, None)
+            bootstrap = BotPolicyPublication.objects.get(version=1)
+        original = (bootstrap.snapshot, bootstrap.snapshot_hash)
+        case = LesiaNativePromptBudgetTests("test_budget_never_drops_protected_product_rows")
+        try:
+            case.setUp()
+            bootstrap.refresh_from_db()
+            self.assertEqual((bootstrap.snapshot, bootstrap.snapshot_hash), original)
+            self.assertNotEqual(case.publication.pk, bootstrap.pk)
+            self.assertGreater(case.publication.version, bootstrap.version)
+            self.assertEqual(InstagramBotSettings.objects.filter(pk=1).count(), 1)
+            self.assertEqual(InstagramBotSettings.objects.get(pk=1).active_instruction_publication_id, case.publication.pk)
+            self.assertEqual(case.publication_binding.publication_id, case.publication.pk)
+            self.assertTrue(any(row["body"] == case.instruction.body for row in case.publication.snapshot["instructions"]))
+        finally:
+            case.doCleanups()

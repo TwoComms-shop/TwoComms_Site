@@ -182,30 +182,80 @@ class NativeFulfillmentReviewTests(_RestockFixture, TestCase):
     def _ordinary_inquiry(self):
         source = self.source("Ця позиція є в наявності?")
         revision, _ = self.revision(source)
+        self.inquiry_revision = revision
         with patch("management.services.instagram_bot._provider_http") as provider:
             result = review.prepare_fulfillment_review(revision, settings_obj=self.settings, now=self.now)
         provider.assert_not_called()
         return result
 
-    def test_positive_exact_catalog_inquiry_requires_manager_review(self):
+    def _assert_positive_inquiry_authority_and_coverage(self):
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.services.ig_inventory_availability import capture_inventory_availability, verified_inventory_capture
+        from management.services.ig_reply_authority import apply_inventory_availability_context
+        from management.services.ig_reply_truth import ReplyTruthContext, validate_reply_truth
+        from management.services.ig_response_plan import capture_response_plan
+        cart = capture_current_selection_lines(self.client_row.pk, now=self.now)
+        inventory = capture_inventory_availability(self.client_row.pk, current_source_cart=cart, now=self.now)
+        self.assertTrue(verified_inventory_capture(inventory))
+        self.assertEqual([row["status"] for row in inventory["lines"]], ["available"])
+        self.assertEqual(inventory["lines"][0]["target"]["quantity"], 1)
+        context = apply_inventory_availability_context(ReplyTruthContext(), inventory)
+        fact, = context.inventory_availability_authorities
+        self.assertEqual(fact.supply_basis, "inventory_observation")
+        reply = "Restock Aurora, Black, size M is in stock."
+        self.assertTrue(validate_reply_truth(reply, context=context).valid)
+        plan = capture_response_plan(self.client_row, revision=self.inquiry_revision,
+            source_cart_capture=cart, publication=self.binding)
+        self.assertEqual(plan.pending_stock_questions["mode"], "inventory_available")
+        coverage = plan.coverage(SimpleNamespace(reply_text=reply, control={}))
+        self.assertEqual(coverage["disposition"], "complete", coverage)
+        self.assertFalse(coverage["remaining"])
+        return cart
+
+    def _assert_pending_requirement_in_actual_capture(self, request, *, date, original_source_id):
+        from management.services.ig_admin_state_capture import current_admin_state
+        from management.services.ig_client_state_card import render_client_state_prompt
+        from management.services.ig_fulfillment_context import retained_fulfillment_frame
+        captured = current_admin_state(self.client_row.pk, now=self.now)
+        self.assertEqual(captured.status, "captured", captured)
+        self.assertLessEqual(captured.read_queries, 96)
+        frame = retained_fulfillment_frame(captured.state)
+        self.assertIsNotNone(frame)
+        slot = frame["slots"]["fulfillment.review"]
+        self.assertEqual(slot["status"], "confirmed")
+        value = slot["value"]
+        self.assertEqual(value["status"], "pending")
+        self.assertEqual(value["current_request"]["id"], str(request.pk))
+        self.assertTrue(any(hint.get("deadline_date") == date
+            for hint in value["current_request"]["customer_requirements"]))
+        self.assertIn(original_source_id, {proof["id"] for proof in slot["source_refs"]})
+        rendered = render_client_state_prompt(captured.state, budget=2400)
+        self.assertIn(date, rendered.text)
+
+    def test_positive_exact_catalog_inquiry_answers_autonomously_without_manager_review(self):
         self.variant.stock = self.rule.stock = 5
         self.variant.save(update_fields=["stock"])
         self.rule.save(update_fields=["stock"])
         result = self._ordinary_inquiry()
-        self.assertTrue(result["ready"], result)
-        self.assertEqual(Request.objects.count(), 1)
-        self.assertEqual(IgFollowUpTask.objects.filter(reason="fulfillment_review").count(), 1)
-        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
+        self.assertFalse(result["ready"], result)
+        self.assertEqual(result["reason"], "inventory_available")
+        self._assert_positive_inquiry_authority_and_coverage()
+        self.assertFalse(Request.objects.exists())
+        self.assertFalse(IgFollowUpTask.objects.filter(kind="manager_task").exists())
+        self.assertFalse(IgBotNotification.objects.exists())
 
-    def test_positive_exact_warehouse_inquiry_requires_manager_review(self):
+    def test_positive_exact_warehouse_inquiry_answers_autonomously_without_manager_review(self):
         from management.tests_ig_fulfillment_stock_sync import NativeFulfillmentStockSyncTests
         stock = NativeFulfillmentStockSyncTests.warehouse(self)
         stock.quantity = 5
         stock.save(update_fields=["quantity"])
         result = self._ordinary_inquiry()
-        self.assertTrue(result["ready"], result)
-        self.assertEqual(Request.objects.count(), 1)
-        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
+        self.assertFalse(result["ready"], result)
+        self.assertEqual(result["reason"], "inventory_available")
+        self._assert_positive_inquiry_authority_and_coverage()
+        self.assertFalse(Request.objects.exists())
+        self.assertFalse(IgFollowUpTask.objects.filter(kind="manager_task").exists())
+        self.assertFalse(IgBotNotification.objects.exists())
 
     def test_zero_catalog_inquiry_still_creates_source_bound_review(self):
         result = self._ordinary_inquiry()
@@ -254,11 +304,47 @@ class NativeFulfillmentReviewTests(_RestockFixture, TestCase):
         self.variant.save(update_fields=["stock"])
         self.rule.save(update_fields=["stock"])
         result = self._ordinary_inquiry()
-        self.assertTrue(result["ready"], result)
-        request = Request.objects.get(pk=result["request_id"])
+        self.assertFalse(result["ready"], result)
+        self.assertEqual(result["reason"], "inventory_available")
+        self.assertEqual(Request.objects.count(), 1)
+        request = Request.objects.get(pk=first.pk)
+        self.assertTrue(review._verified(request, "request"))
         self.assertTrue(any(hint["deadline_date"] == "2026-10-20"
             for hint in request.envelope["customer_requirements"]))
         self.assertTrue(any(proof["message_id"] == first.source_id for proof in request.envelope["sources"]))
+        self._assert_positive_inquiry_authority_and_coverage()
+        self._assert_pending_requirement_in_actual_capture(request, date="2026-10-20", original_source_id=first.source_id)
+        self.assertEqual(IgFollowUpTask.objects.filter(reason="fulfillment_review").count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
+
+    def test_positive_inquiry_keeps_own_hard_departure_case_capture_and_checkout_hold(self):
+        from management.services.ig_fulfillment_checkout import fulfillment_deadline_checkout_reason
+        from management.services.ig_revision_checkout import authorize_revision_checkout
+        first, _ = self.case("I leave tomorrow at 10 AM")
+        original_proof = next(proof for proof in first.envelope["sources"] if proof["message_id"] == first.source_id)
+        self.variant.stock = self.rule.stock = 5
+        self.variant.save(update_fields=["stock"])
+        self.rule.save(update_fields=["stock"])
+        result = self._ordinary_inquiry()
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(result["reason"], "unchanged_hard_deadline")
+        self.assertEqual(result["request_id"], str(first.pk))
+        self.assertEqual(Request.objects.count(), 1)
+        self.assertTrue(review._verified(first, "request"))
+        self.assertIn(original_proof, Request.objects.get(pk=first.pk).envelope["sources"])
+        cart = self._assert_positive_inquiry_authority_and_coverage()
+        self._assert_pending_requirement_in_actual_capture(first, date="2026-10-13", original_source_id=first.source_id)
+        self.assertEqual(fulfillment_deadline_checkout_reason(self.client_row, cart, now=self.now), "checkout_hard_deadline_review_required")
+        buyer = self.source("Беру. Оформіть замовлення.")
+        revision, _ = self.revision(buyer)
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        cart = capture_current_selection_lines(self.client_row.pk, now=self.now)
+        control, reasons = authorize_revision_checkout(self.client_row, {"paylink": "full"}, buyer.text,
+            sealed_sources=revision.bundle_snapshot["sources"], source_cart_capture=cart)
+        self.assertEqual(control, {})
+        self.assertIn("checkout_hard_deadline_review_required", reasons)
+        self.assertEqual(IgFollowUpTask.objects.filter(reason="fulfillment_review").count(), 1)
+        self.assertEqual(IgBotNotification.objects.filter(event_type="fulfillment_review").count(), 1)
 
     def test_latest_own_english_source_ignores_quoted_ukrainian_for_review_locale(self):
         request, _ = self.case('Can you dispatch this by 20.10.2026? "Це подарунок для мами"')

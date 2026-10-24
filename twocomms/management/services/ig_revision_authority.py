@@ -274,14 +274,14 @@ def _base_binding(claim: str, client, episode, selector, projection, **subjects)
 
 def _inventory_availability_binding(client, control, episode):
     from management.services.ig_inventory_availability import (validate_inventory_capture, verified_inventory_capture,
-        resolve_inventory_reference, inventory_capture_fingerprint)
+        resolve_inventory_reference, inventory_capture_fingerprint, owned_quote_capacity_line_ids)
     from management.services.ig_reply_authority import inventory_availability_authorities
     capture = control.get("inventory_availability_capture")
     reference = control.get("inventory_availability_reference")
     if reference is not None:
         capture = resolve_inventory_reference(client.pk, reference)
     if (not verified_inventory_capture(capture) or capture.get("client_id") != client.pk
-        or not inventory_availability_authorities(capture)):
+        or not (inventory_availability_authorities(capture) or owned_quote_capacity_line_ids(capture))):
         return None, "inventory_availability_unverified"
     reason = "" if reference is not None else validate_inventory_capture(client.pk, capture)
     if reason:
@@ -358,6 +358,9 @@ def _checkout_configuration_binding(client, control, episode):
         normalized, reasons = checkout_authority_control(client, control)
         if reasons:
             return None, reasons[0]
+        from management.services.ig_fulfillment_question_debt import capture_fulfillment_question_debt
+        if capture_fulfillment_question_debt(client, normalized["source_cart_capture"]):
+            return None, "checkout_fulfillment_question_unanswered"
         if "source_cart_reference" not in control and control.get("items") != normalized["items"]:
             return None, "checkout_cart_configuration_changed"
         try:
@@ -408,9 +411,13 @@ def _checkout_configuration_binding(client, control, episode):
     # gate as compact cart references, including at the physical send recheck.
     from management.services.ig_commerce_projection import capture_current_selection_lines
     from management.services.ig_fulfillment_checkout import fulfillment_deadline_checkout_reason
-    deadline_reason = fulfillment_deadline_checkout_reason(client, capture_current_selection_lines(client.pk))
+    current_cart = capture_current_selection_lines(client.pk)
+    deadline_reason = fulfillment_deadline_checkout_reason(client, current_cart)
     if deadline_reason:
         return None, deadline_reason
+    from management.services.ig_fulfillment_question_debt import capture_fulfillment_question_debt
+    if capture_fulfillment_question_debt(client, current_cart):
+        return None, "checkout_fulfillment_question_unanswered"
     return _base_binding(
         CLAIM_CATALOG_CONFIGURATION, client, episode, selector,
         {"items": [item.digest_payload() for item in quote.items],

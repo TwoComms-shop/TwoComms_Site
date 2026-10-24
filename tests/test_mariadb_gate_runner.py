@@ -205,6 +205,131 @@ class MariaDbGateRunnerTests(unittest.TestCase):
 
         self.runner = run_mariadb_gate
 
+    def test_index_metadata_reads_only_the_owned_schema_without_table_data(self):
+        schema = "test_twocomms_ig_0123456789ab"
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        with mock.patch.object(admin, "_query_all", return_value=[("PRIMARY",), ("actual_unique_index",)]) as query:
+            metadata = admin.capture_owned_index_names(schema)
+        query.assert_called_once_with(
+            "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
+            f"WHERE TABLE_SCHEMA = '{schema}' ORDER BY INDEX_NAME LIMIT 4097")
+        self.assertEqual(metadata.names, frozenset({"PRIMARY", "actual_unique_index"}))
+        for name in ("production", "test_twocomms_ig_other", schema + "' OR 1=1 --"):
+            with self.subTest(name=name), mock.patch.object(admin, "_query_all") as query:
+                with self.assertRaisesRegex(self.runner.GateError, "not gate-owned"):
+                    admin.capture_owned_index_names(name)
+                query.assert_not_called()
+
+    def test_duplicate_key_summary_requires_exact_actual_metadata_not_identifier_shape(self):
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        with mock.patch.object(admin, "_query_all", return_value=[("PRIMARY",), ("actual_unique_index",)]):
+            metadata = admin.capture_owned_index_names("test_twocomms_ig_0123456789ab")
+        for key in ("PRIMARY", "actual_unique_index", "PrivateCustomerName", "table.PRIMARY", "private@example.com"):
+            completed = subprocess.CompletedProcess([], 1, "", (
+                f'django.db.utils.IntegrityError: (1062, "Duplicate entry \'PRIVATE-VALUE\' for key \'{key}\'")\n'))
+            summary = self.runner._failure_summary(suite="dialogue-quality", completed=completed,
+                                                   index_metadata=metadata)
+            self.assertIn("database_error: errno=1062", summary)
+            self.assertEqual(" index=" in summary, key in metadata.names)
+            self.assertNotIn("PRIVATE-VALUE", summary)
+            self.assertNotIn("table.", summary)
+            self.assertNotIn("PrivateCustomerName", summary)
+            self.assertNotIn("private@example.com", summary)
+            if key in metadata.names:
+                self.assertIn(" index=" + key, summary)
+            self.assertLessEqual(len(summary), self.runner.MAX_FAILURE_SUMMARY_CHARS)
+
+    def test_duplicate_value_cannot_smuggle_an_existing_index_or_non1062_key(self):
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        with mock.patch.object(admin, "_query_all", return_value=[("PRIMARY",)]):
+            metadata = admin.capture_owned_index_names("test_twocomms_ig_0123456789ab")
+        for line in (
+            'IntegrityError: (1062, "Duplicate entry \'for key \'PRIMARY\'\' for key \'PrivateCustomerName\'")',
+            'IntegrityError: (1452, "Duplicate entry \'PRIVATE-VALUE\' for key \'PRIMARY\'")',
+            'IntegrityError: (1062, "Duplicate entry \'PRIVATE-VALUE\' for key \'PRIMARY\'") private-tail',
+        ):
+            summary = self.runner._failure_summary(suite="dialogue-quality",
+                completed=subprocess.CompletedProcess([], 1, "", line), index_metadata=metadata)
+            for private in ("PRIMARY", "PrivateCustomerName", "PRIVATE-VALUE", "private-tail"):
+                self.assertNotIn(private, summary)
+
+    def test_raw_and_forged_index_capsules_cannot_authorize_private_names(self):
+        line = 'IntegrityError: (1062, "Duplicate entry \'private-value\' for key \'PrivateCustomerName\'")'
+        forged = self.runner._OwnedIndexNames("test_twocomms_ig_0123456789ab",
+            frozenset({"PrivateCustomerName"}), object())
+        for metadata in (None, {"PrivateCustomerName"}, {"names": ["PrivateCustomerName"]}, forged):
+            summary = self.runner._failure_summary(suite="dialogue-quality",
+                completed=subprocess.CompletedProcess([], 1, "", line), index_metadata=metadata)
+            self.assertIn("errno=1062", summary)
+            self.assertNotIn("PrivateCustomerName", summary)
+            self.assertNotIn("private-value", summary)
+
+    def test_invalid_or_unbounded_metadata_is_not_published(self):
+        admin = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        for rows in ([("private@example.com",), ("name with spaces",)], [("PRIMARY",)] * 4097):
+            with mock.patch.object(admin, "_query_all", return_value=rows):
+                metadata = admin.capture_owned_index_names("test_twocomms_ig_0123456789ab")
+            line = 'IntegrityError: (1062, "Duplicate entry \'private\' for key \'PRIMARY\'")'
+            summary = self.runner._failure_summary(suite="dialogue-quality",
+                completed=subprocess.CompletedProcess([], 1, "", line), index_metadata=metadata)
+            self.assertNotIn(" index=", summary)
+
+    def test_optional_index_metadata_is_after_child_and_before_cleanup(self):
+        events = []
+        admin = FakeAdmin()
+        command = FakeCommandRunner(returncode=1, fail_command="test", stderr=(
+            'IntegrityError: (1062, "Duplicate entry \'private-value\' for key \'PRIMARY\'")\n'))
+        trusted = self.runner.AdminClient(host="127.0.0.1", port="3306", user="root", password="")
+        def metadata(schema):
+            events.append("metadata")
+            self.assertEqual(events[-2], "test")
+            self.assertNotIn("drop_user", [row[0] for row in admin.calls])
+            with mock.patch.object(trusted, "_query_all", return_value=[("PRIMARY",)]):
+                return trusted.capture_owned_index_names(schema)
+        admin.capture_owned_index_names = metadata
+        def child(args, **kwargs):
+            events.append(args[2])
+            return command(args, **kwargs)
+        output = io.StringIO()
+        with self.assertRaises(self.runner.GateError) as raised:
+            self.runner.run_gate(server_mode="external", admin=admin, command_runner=child,
+                project_root=PROJECT_ROOT, environ={}, output=output)
+        self.assertIn("command failed", str(raised.exception.primary_error))
+        self.assertIn("errno=1062 index=PRIMARY", output.getvalue())
+        self.assertNotIn("private-value", output.getvalue())
+        self.assertEqual([row[0] for row in admin.calls][-4:],
+            ["drop_user", "drop_database", "verify_cleanup", "close"])
+
+    def test_optional_index_metadata_error_preserves_primary_error_and_cleanup(self):
+        admin = FakeAdmin()
+        def missing(schema):
+            raise RuntimeError("private-metadata-error")
+        admin.capture_owned_index_names = missing
+        command = FakeCommandRunner(returncode=1, fail_command="test", stderr=(
+            'IntegrityError: (1062, "Duplicate entry \'private-value\' for key \'PrivateCustomerName\'")\n'))
+        output = io.StringIO()
+        with self.assertRaises(self.runner.GateError) as raised:
+            self.runner.run_gate(server_mode="external", admin=admin, command_runner=command,
+                project_root=PROJECT_ROOT, environ={}, output=output)
+        self.assertIn("command failed", str(raised.exception.primary_error))
+        self.assertIn("errno=1062", output.getvalue())
+        for private in ("private-value", "PrivateCustomerName", "private-metadata-error", " index="):
+            self.assertNotIn(private, output.getvalue())
+        self.assertEqual([row[0] for row in admin.calls][-4:],
+            ["drop_user", "drop_database", "verify_cleanup", "close"])
+
+    def test_optional_index_metadata_error_cannot_turn_success_into_failure(self):
+        admin = FakeAdmin()
+        admin.capture_owned_index_names = mock.Mock(side_effect=RuntimeError("private-metadata-error"))
+        output = io.StringIO()
+        result = self.runner.run_gate(server_mode="external", admin=admin,
+            command_runner=FakeCommandRunner(), project_root=PROJECT_ROOT, environ={}, output=output)
+        self.assertEqual(result["cleanup"], "verified")
+        admin.capture_owned_index_names.assert_called_once()
+        self.assertNotIn("private-metadata-error", output.getvalue())
+        self.assertEqual([row[0] for row in admin.calls][-4:],
+            ["drop_user", "drop_database", "verify_cleanup", "close"])
+
     def test_command_deadline_is_shared_and_preserves_shorter_child_limit(self):
         command = FakeCommandRunner()
         run = self.runner._deadline_command_runner(command, deadline=200)
@@ -2083,7 +2208,7 @@ print(json.dumps({
         labels = (self.runner._validate_suite("stock-authority")
                   + self.runner._validate_suite("stock-authority-consumers"))
         self.assertEqual(len(labels), len(set(labels)))
-        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 52)
+        self.assertEqual(len(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS), 54)
         self.assertEqual(set(labels), set(self.runner.STOCK_AUTHORITY_ACCEPTANCE_LABELS))
         self.assertEqual(len(self.runner.STOCK_AUTHORITY_CORE_MODULES), 10)
         self.assertEqual(set(self.runner.SUITES["stock-authority"]),
@@ -2099,6 +2224,8 @@ print(json.dumps({
         self.assertIn("management.tests_ig_response_cart_plan", labels)
         self.assertIn("management.tests_ig_cart_live_integration.CartLiveClaimIntegrationTests", labels)
         self.assertIn("management.tests_ig_standard_funnel_qa", labels)
+        self.assertIn("management.tests_ig_fulfillment_question_debt_20261024", labels)
+        self.assertIn("management.tests_ig_own_hold_consumers_20261024", labels)
         for module in ("fulfillment_reviews", "fulfillment_timing", "fulfillment_truth",
                        "fulfillment_delivery", "fulfillment_checkout", "fulfillment_stock_api",
                        "fulfillment_requirements", "restock_waiting_list_api", "restock_context",

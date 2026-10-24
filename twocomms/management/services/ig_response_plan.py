@@ -667,6 +667,11 @@ def _manual_delivery_purchase_handled(plan, response):
     return len(handled) == len(dimensions)
 
 
+def _fulfillment_question_purchase_handled(plan, response):
+    from management.services.ig_fulfillment_question_debt import question_purchase_handled
+    return question_purchase_handled(plan.configuration.get("fulfillment_question_debt"), response)
+
+
 _PERSONAL_PURCHASE = re.compile(
     r"\b(?:для\s+(?:себе|себя)|(?:і|и)\s+собі|особисто\s+(?:хочу|мені)|"
     r"лично\s+(?:хочу|мне)|for\s+myself|for\s+my\s+own\s+use)\b", re.I)
@@ -1511,6 +1516,10 @@ class ResponsePlan:
             "obligation_groups": list(groups.values())}
         if self.configuration.get("manual_delivery_requirement"):
             payload["manual_delivery_requirement"] = deepcopy(self.configuration["manual_delivery_requirement"])
+        if self.configuration.get("fulfillment_question_debt"):
+            fact = self.configuration["fulfillment_question_debt"]
+            payload["fulfillment_question_debt"] = {key: deepcopy(fact[key]) for key in (
+                "request_id", "source_message_ids", "line_ids", "deadline_dates", "date_status", "state", "checkout", "next_step")}
         if self.recipient_planning:
             payload["recipient_planning"] = deepcopy(self.recipient_planning)
         if self.business_context:
@@ -1587,7 +1596,7 @@ class ResponsePlan:
         # These named projections already retain their full semantics above.
         # The no-line configuration must not duplicate the same large grids.
         if "configuration" in payload:
-            for key in ("consultation_measurements", "source_clarifications", "reorder_observations", "catalog_browse", "product_kind", "manual_delivery_requirement"):
+            for key in ("consultation_measurements", "source_clarifications", "reorder_observations", "catalog_browse", "product_kind", "manual_delivery_requirement", "fulfillment_question_debt"):
                 payload["configuration"].pop(key, None)
         return payload
 
@@ -1617,6 +1626,10 @@ class ResponsePlan:
         if self.configuration.get("manual_delivery_requirement"):
             guidance += ("\nThe active manual delivery requirement blocks hosted checkout. Preserve the cart and arrange delivery with the manager; "
                 "a carrier choice alone cannot resolve distinct destinations. Only an own explicit single-destination/parcel choice permits this form.")
+        if self.configuration.get("fulfillment_question_debt"):
+            guidance += ("\nThe customer's explicit date-feasibility question remains unanswered for the listed garments. "
+                "Current inventory answers availability only. Preserve the existing manager review; state the date is still unconfirmed "
+                "Ask exactly one clear question about whether that specific date is critical. Ask about accepting uncertain timing separately if needed; never combine the alternatives into one yes/no question. Name the date and affected person or garment when its referent could be ambiguous. Do not offer checkout while this question remains open.")
         if self.business_context or any(case.get("kind") == "collaboration_review" for case in self.pending_questions.get("cases", ())):
             guidance += "\nKnown catalog retail prices never authorize partner prices or discounts; this pending business case contains no agreed trade amount."
         if self.business_context:
@@ -1817,7 +1830,7 @@ class ResponsePlan:
                 or (self.configuration.get("product_title") and _acknowledges_product(self.configuration["product_title"], text)))
             done = bool((kind in {"unclassified", "garment_type"} and _superseded_color_wish_covered(self, response,
                             obligation["source_message_id"], current_garment=kind == "garment_type"))
-                        or obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and (checkout or _manual_delivery_purchase_handled(self, response)))
+                        or obligation["id"] in chart_ids or acknowledged or product_acknowledged or (kind == "purchase_requested" and (checkout or _manual_delivery_purchase_handled(self, response) or _fulfillment_question_purchase_handled(self, response)))
                         or (kind == "garment_type" and obligation["source_message_id"] in inquiry_ids)
                         or (kind == "media:catalog_reference" and obligation["source_message_id"] in media_ids)
                         or (kind.startswith(("payment:", "info:payment")) and _payment_covered(kind, response, self, obligation["source_message_id"]))
@@ -1924,7 +1937,7 @@ class ResponsePlan:
                         source_message_id=obligation["source_message_id"],
                         source_price_subjects=price_contexts[line_id].source_price_subjects if kind == "info:price" else ())
                 elif kind == "purchase_requested":
-                    done = (line_id, obligation.get("recipient_id")) in admitted or _manual_delivery_purchase_handled(self, response)
+                    done = (line_id, obligation.get("recipient_id")) in admitted or _manual_delivery_purchase_handled(self, response) or _fulfillment_question_purchase_handled(self, response)
             elif kind == "info:price" and len(rows) == 1:
                 # A sole captured position is an exact price subject even
                 # when the source's terse price question had no line label.
@@ -2295,6 +2308,33 @@ def capture_response_plan(client, *, revision=None, source_cart_capture=None, pu
             dimensions.append({"kind": "multiple_destinations", "source_message_id": manual_delivery["multiple_destinations"]["source_message_id"]})
         plan = replace(plan, configuration={**plan.configuration, "manual_delivery_requirement": {
             "dimensions": dimensions, "hosted_checkout": "blocked", "next_step": "manual_arrangement_or_own_single_destination"}})
+    from management.services.ig_fulfillment_question_debt import capture_fulfillment_question_debt, _own_release, _FEASIBILITY
+    current_sources = revision.bundle_snapshot.get("sources") or ()
+    current_resolution = (any(_own_release(str(row.get("text") or "")) for row in current_sources)
+        and any(_FEASIBILITY.search(str(row.get("text") or "")) for row in current_sources))
+    contextual_candidate = any(re.sub(r"[,.!\s]+", " ", str(row.get("text") or "").strip().casefold()).strip()
+        in {"не критична", "не критично", "не критична дата", "not critical", "так підходить", "да подходит", "yes that works"}
+        for row in current_sources if row.get("role") == "user")
+    if publication is not None or current_resolution or contextual_candidate:
+        question_debt = capture_fulfillment_question_debt(client, plan.source_cart_capture, include_resolved=True)
+        if question_debt.get("state") == "unanswered_feasibility" and publication is not None:
+            plan = replace(plan, configuration={**plan.configuration, "fulfillment_question_debt": question_debt})
+        elif question_debt.get("state") == "resolved_by_customer":
+            # A real own release consumes only a pure date question. Mixed
+            # shipping-cost/product/selector questions keep their full owner.
+            resolved = set(question_debt["source_message_ids"])
+            releases = set(question_debt.get("release_source_message_ids", ()))
+            def keep(obligation):
+                return not ((obligation["source_message_id"] in resolved
+                    and obligation["kind"] in {"info:shipping", "info:dispatch_timing", "info:question"})
+                    or (obligation["source_message_id"] in releases and obligation["kind"] == "unresolved_line_operation"))
+            from management.services.ig_response_cart_plan import ResponseLinePlan
+            lines = []
+            for line in plan.line_plans:
+                payload = line.as_dict()
+                payload["obligations"] = [row for row in payload["obligations"] if keep(row)]
+                lines.append(ResponseLinePlan(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))))
+            plan = replace(plan, obligations=tuple(row for row in plan.obligations if keep(row)), line_plans=tuple(lines))
     from management.services.ig_pending_question_context import capture_pending_question_context
     plan = replace(plan, pending_questions=capture_pending_question_context(revision))
     if any(case.get("kind") == "collaboration_review" for case in plan.pending_questions.get("cases", ())):

@@ -1660,6 +1660,19 @@ def payment_link_allowed(client, control: dict, reply: str, *, sealed_sources=()
         ids = [row.get("message_id") for row in sealed_sources if isinstance(row, dict) and row.get("role") == "user"]
         policy = resolve_payment_policy(client=client, evidence_message_ids=ids)
         assent = policy.policy == IgCheckoutProposal.PaymentPolicy.FULL_OR_200_COD
+    if assent:
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        from management.services.ig_fulfillment_question_debt import capture_fulfillment_question_debt
+        # Legacy invoice callers have no captured cart. Avoid a full source
+        # capture when this client has no native cart review to retain.
+        if source_cart_capture is None:
+            from management.ig_fulfillment_review_models import IgFulfillmentReviewRequest
+            if not IgFulfillmentReviewRequest.objects.filter(client_id=client.pk, source__isnull=False,
+                    envelope__scope="cart").exists():
+                return True
+        current_cart = source_cart_capture if source_cart_capture is not None else capture_current_selection_lines(client.pk)
+        if capture_fulfillment_question_debt(client, current_cart):
+            return False
     return assent
 
 

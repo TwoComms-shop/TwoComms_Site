@@ -466,6 +466,10 @@ def _prepare_fulfillment_review(revision, *, settings_obj=None, now=None):
         inventory = (capture_inventory_availability(client.pk, current_source_cart=cart, now=now)
             if availability_requested or selection_requested else {})
         available_ids = {row["line_id"] for row in inventory.get("lines") or [] if row.get("status") == "available"}
+        if inventory:
+            from management.services.ig_inventory_availability import owned_checkout_capacity_line_ids
+            available_ids.update(owned_checkout_capacity_line_ids(client.pk, current_source_cart=cart,
+                inventory_capture=inventory, now=now))
         exact_ids = {line["line_id"] for line in lines if line["target"] and line["configuration_digest"]}
         physical_confirmation_requested = bool((availability_requested or selection_requested) and exact_ids - available_ids)
         if availability_requested and not exact_ids:

@@ -676,6 +676,9 @@ def authorize_revision_checkout(client, control, source_text, *, sealed_sources=
         request, reasons = _payment_request(control)
         if reasons or request != "full":
             return {}, reasons or ("assisted_checkout_payment_policy_unavailable",)
+        from management.services.ig_fulfillment_question_debt import capture_fulfillment_question_debt
+        if source_cart_capture and capture_fulfillment_question_debt(client, source_cart_capture):
+            return {}, ("checkout_fulfillment_question_unanswered",)
         return {"assisted_context": assisted_context, "assisted_reference": assisted_context.reference}, ()
 
     normalized, reasons = checkout_authority_control(client, control, source_cart_capture=source_cart_capture,
@@ -694,7 +697,16 @@ def authorize_revision_checkout(client, control, source_text, *, sealed_sources=
         **{key: control[key] for key in ("paylink", "payment") if key in control}}
         if "source_cart_binding" in normalized else dict(control))
     if not payment_link_allowed(client, purchase_control, str(source_text or ""),
-            sealed_sources=sealed_sources, source_cart_capture=source_cart_capture):
+            sealed_sources=sealed_sources, source_cart_capture=normalized.get("source_cart_capture") or source_cart_capture):
+        # Recompute only a denied candidate's specific clarification reason.
+        # The canonical legacy/native customer gate performs the actual hold.
+        from management.services.ig_fulfillment_question_debt import capture_fulfillment_question_debt
+        from management.services.ig_commerce_projection import capture_current_selection_lines
+        customer_cart = normalized.get("source_cart_capture") or source_cart_capture
+        if customer_cart is None:
+            customer_cart = capture_current_selection_lines(client.pk)
+        if capture_fulfillment_question_debt(client, customer_cart):
+            return {}, ("checkout_fulfillment_question_unanswered",)
         return {}, ("checkout_purchase_authority_missing",)
     return normalized, ()
 

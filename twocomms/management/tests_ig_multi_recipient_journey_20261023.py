@@ -81,11 +81,24 @@ class RecipientPlanningFamilyTests(SimpleTestCase):
 
 @override_settings(GOOGLE_INDEXING_ENABLED=False)
 class MultiRecipientSourceJourneyTests(CommerceStateFixture, TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # Retain the migration-owned publication while making the singleton
+        # start deterministic in the fast schema without data migrations too.
+        seeded, _ = InstagramBotSettings.objects.get_or_create(pk=1)
+        cls.seeded_settings_pk = seeded.pk
+        cls.seeded_publication_id = seeded.active_instruction_publication_id
+        cls.seeded_draft_revision = seeded.instruction_draft_revision
+
     def setUp(self):
         super().setUp()
         environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
         environment.start(); self.addCleanup(environment.stop)
-        self.settings_row = InstagramBotSettings.objects.create(pk=1, ig_user_id="recipient-journey-owner")
+        self.settings_row, _ = InstagramBotSettings.objects.update_or_create(pk=1, defaults={
+            "ig_user_id": "recipient-journey-owner", "is_enabled": False,
+            "ai_enabled": True, "reply_permission_epoch": 0,
+        })
 
     def reduce(self, text, *, at=None):
         from management.services.instagram_bot import ingress_provider_namespace
@@ -113,6 +126,16 @@ class MultiRecipientSourceJourneyTests(CommerceStateFixture, TestCase):
             "recipient_id": active.get("recipient_id", "self"), "watermark": capture["source_watermark"]}
         self.assertEqual(validate_source_cart_capture(capture, boundary)["capture_digest"], capture["capture_digest"])
         return capture
+
+    def test_seeded_settings_singleton_is_reused_without_replacing_publication(self):
+        self.assertEqual(InstagramBotSettings.objects.count(), 1)
+        self.assertEqual(self.settings_row.pk, self.seeded_settings_pk)
+        self.assertEqual(self.settings_row.ig_user_id, "recipient-journey-owner")
+        self.assertFalse(self.settings_row.is_enabled)
+        self.assertTrue(self.settings_row.ai_enabled)
+        self.assertEqual(self.settings_row.reply_permission_epoch, 0)
+        self.assertEqual(self.settings_row.active_instruction_publication_id, self.seeded_publication_id)
+        self.assertEqual(self.settings_row.instruction_draft_revision, self.seeded_draft_revision)
 
     def test_actual_initial_source_is_two_provisional_scopes_and_no_units_or_invoice(self):
         source, decision = self.start()

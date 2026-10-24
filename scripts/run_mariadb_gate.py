@@ -22,6 +22,7 @@ import tempfile
 import time
 import uuid
 from functools import lru_cache
+from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Callable, Mapping, TextIO
@@ -52,6 +53,8 @@ STOCK_AUTHORITY_ACCEPTANCE_LABELS = (
     "management.tests_ig_fulfillment_truth",
     "management.tests_ig_fulfillment_delivery",
     "management.tests_ig_fulfillment_checkout",
+    "management.tests_ig_fulfillment_question_debt_20261024",
+    "management.tests_ig_own_hold_consumers_20261024",
     "management.tests_ig_fulfillment_stock_api",
     "management.tests_ig_fulfillment_requirements",
     "management.tests_ig_restock_waiting_list_api",
@@ -561,7 +564,34 @@ def _test_execution_receipts(completed, allowed_test_ids) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def _failure_summary(*, suite: str, completed: subprocess.CompletedProcess, allowed_test_ids=()) -> str:
+
+_INDEX_METADATA_PROOF = object()
+_OWNED_SCHEMA_RE = re.compile(r"test_twocomms_ig_[a-f0-9]{12}")
+_SAFE_INDEX_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_DUPLICATE_INDEX_RE = re.compile(
+    r"\(1062,\s*(['\"])Duplicate entry .* for key ['`]"
+    r"([A-Za-z_][A-Za-z0-9_]{0,63})['`]\1\)$"
+)
+
+
+@dataclass(frozen=True)
+class _OwnedIndexNames:
+    schema: str
+    names: frozenset[str]
+    proof: object
+
+
+def _duplicate_index_name(candidate, metadata):
+    """Only metadata from this runner's disposable schema can name a key."""
+    if (type(metadata) is not _OwnedIndexNames or metadata.proof is not _INDEX_METADATA_PROOF
+        or not _OWNED_SCHEMA_RE.fullmatch(metadata.schema)):
+        return None
+    match = _DUPLICATE_INDEX_RE.search(candidate)
+    return match.group(2) if match and match.group(2) in metadata.names else None
+
+
+def _failure_summary(*, suite: str, completed: subprocess.CompletedProcess,
+                     allowed_test_ids=(), index_metadata=None) -> str:
     lines = [
         f"MariaDB gate child failed: suite={suite} exit={completed.returncode}"
     ]
@@ -590,7 +620,10 @@ def _failure_summary(*, suite: str, completed: subprocess.CompletedProcess, allo
                 None,
             )
             if database_errno_match:
-                lines.append(f"database_error: errno={database_errno_match.group(1)}")
+                index = (_duplicate_index_name(candidate, index_metadata)
+                         if database_errno_match.group(1) == "1062" else None)
+                lines.append(f"database_error: errno={database_errno_match.group(1)}"
+                             + (f" index={index}" if index else ""))
             elif test_failure_match:
                 named = _NAMED_TEST_FAILURE_RE.fullmatch(candidate)
                 identity = _trusted_test_identity(named, allowed_test_ids, method_group=2, id_group=3)
@@ -669,6 +702,20 @@ class AdminClient:
                 return "" if not row else str(row[1])
         finally:
             connection.close()
+
+    def capture_owned_index_names(self, database: str):
+        """Metadata only; never inspect a table or a different schema."""
+        if not _OWNED_SCHEMA_RE.fullmatch(database):
+            raise GateError("MariaDB index metadata schema is not gate-owned")
+        rows = self._query_all(
+            "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
+            f"WHERE TABLE_SCHEMA = '{database}' ORDER BY INDEX_NAME LIMIT 4097"
+        )
+        if len(rows) > 4096:
+            return None
+        names = frozenset(row[0] for row in rows if isinstance(row, (tuple, list))
+            and len(row) == 1 and isinstance(row[0], str) and _SAFE_INDEX_NAME_RE.fullmatch(row[0]))
+        return _OwnedIndexNames(database, names, _INDEX_METADATA_PROOF)
 
     def server_identity(self) -> tuple[str, str]:
         version, version_comment = self._query_one(
@@ -1809,11 +1856,21 @@ def run_gate(
             text=True,
             check=False,
         )
+        # Django's child has now created the kept disposable test schema.
+        # Optional diagnostics cannot replace a child failure or skip cleanup.
+        index_metadata = None
+        capture_indexes = getattr(admin, "capture_owned_index_names", None)
+        if capture_indexes is not None:
+            try:
+                index_metadata = capture_indexes(database)
+            except Exception:
+                pass  # Unknown metadata retains the existing errno-only output.
         allowed_test_ids = _literal_repository_test_ids(Path(project_root))
         output.write(_test_execution_receipts(completed, allowed_test_ids))
         if completed.returncode:
             output.write(_failure_summary(suite=suite, completed=completed,
-                                          allowed_test_ids=allowed_test_ids))
+                                          allowed_test_ids=allowed_test_ids,
+                                          index_metadata=index_metadata))
             primary_error = RuntimeError(f"{suite} command failed ({completed.returncode})")
             raise primary_error
 

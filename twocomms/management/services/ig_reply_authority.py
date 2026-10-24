@@ -1137,7 +1137,8 @@ def _fulfillment_timing_truth(captured_client_state) -> tuple[str, tuple[TimingA
 def apply_fulfillment_timing_context(context: ReplyTruthContext, captured_client_state) -> ReplyTruthContext:
     """Overlay the same frozen review used by the prompt and response plan."""
     inventory, inventory_lines = _captured_inventory_authority(captured_client_state)
-    context = replace(context, inventory_availability_authorities=inventory, inventory_cart_line_ids=inventory_lines)
+    if (context.inventory_availability_authorities, context.inventory_cart_line_ids) != (inventory, inventory_lines):
+        context = replace(context, inventory_availability_authorities=inventory, inventory_cart_line_ids=inventory_lines)
     status, facts = _fulfillment_timing_truth(captured_client_state)
     if not status:
         return context

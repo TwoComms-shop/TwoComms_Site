@@ -1,19 +1,23 @@
+import importlib
+
+from django.apps import apps
 from django.test import TestCase
 
-from management.models import BotInstruction, InstagramBotSettings
+from management.models import BotInstruction, BotPolicyPublication, InstagramBotSettings
 from management.services.ig_conversion_publication import publish_reviewed_owner_scenarios
 from management.services.ig_policy_publication import (
-    PolicyPublicationError, draft_state, publish_instruction_policy, save_instruction_draft,
+    PolicyPublicationError, draft_state, save_instruction_draft,
 )
+from management.tests_ig_policy_helpers import publish_current_instructions
 
 
 class OwnerScenarioPublicationTests(TestCase):
     def setUp(self):
         InstagramBotSettings.load()
         self.existing = BotInstruction.objects.create(title="Existing unrelated policy", body="Keep this policy.", is_active=True)
-        state = draft_state()
-        publish_instruction_policy(expected_draft_revision=state.revision, expected_draft_hash=state.snapshot_hash,
-            expected_head_id=None, expected_head_hash="", note="disposable baseline")
+        # Native migrations already own a bootstrap head; SQLite can start
+        # without one. Publish through the same CAS pipeline in either case.
+        publish_current_instructions()
 
     def test_dry_run_does_not_publish_and_apply_preserves_existing_then_is_idempotent(self):
         before = BotInstruction.objects.count()
@@ -53,3 +57,14 @@ class OwnerScenarioPublicationTests(TestCase):
                 expected_head_hash=plan["head_hash"])
         self.assertEqual(raised.exception.code, "owner_publication_cas_changed")
         self.assertEqual(BotInstruction.objects.count(), 1)
+
+
+class MigrationSeededOwnerScenarioPublicationTests(OwnerScenarioPublicationTests):
+    """Exercise the same assertions with migration 0196's actual seed."""
+
+    def setUp(self):
+        if not BotPolicyPublication.objects.exists():
+            migration = importlib.import_module("management.migrations.0196_bot_policy_publication")
+            migration.bootstrap_instruction_publication(apps, None)
+        self.assertIsNotNone(InstagramBotSettings.load().active_instruction_publication_id)
+        super().setUp()

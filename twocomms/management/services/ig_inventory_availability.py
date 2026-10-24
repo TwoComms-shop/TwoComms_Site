@@ -46,8 +46,11 @@ def verified_inventory_capture(value):
 
 
 def inventory_capture_fingerprint(value):
-    return _digest({key: value.get(key) for key in ("schema", "authority", "status", "client_id", "scope",
-        "source_cart_capture_digest", "source_binding", "inventory_digest", "lines", "owned_checkout")})
+    payload = {key: value.get(key) for key in ("schema", "authority", "status", "client_id", "scope",
+        "source_cart_capture_digest", "source_binding", "inventory_digest", "lines", "owned_checkout")}
+    if "owned_quote_capacity" in value:
+        payload["owned_quote_capacity"] = value["owned_quote_capacity"]
+    return _digest(payload)
 
 
 def owned_inventory_reference(revision, capture):
@@ -149,6 +152,19 @@ def _pre_owned_pool(pool):
     value["protected_before_owned"] = value.get("protected", 0)
     value["owned_hold_ids"] = []
     return value
+
+
+def _size_count_current(pool, rule_id):
+    from django.utils.dateparse import parse_datetime
+    rule = next(item for item in pool["protected_size_scope"]["rules"] if item["id"] == rule_id)
+    stamp = parse_datetime(rule["updated_at"])
+    for reservation in pool["reservations"]:
+        if reservation["state"] not in {"fulfilled", "consumed"}:
+            continue
+        times = [parse_datetime(reservation[key]) for key in ("fulfilled_at", "consumed_at") if reservation.get(key)]
+        if not times or any(value > stamp for value in times):
+            return False
+    return True
 
 
 def _read_inventory(entries, configurations, now, *, prepared=None, owned_hold_ids=()):
@@ -267,18 +283,16 @@ def _read_inventory(entries, configurations, now, *, prepared=None, owned_hold_i
             # count stale. Reuse the captured reservation/rule scope, with no
             # invented size allocation from a reservation's primary item.
             if row["status"] == "available":
-                from django.utils.dateparse import parse_datetime
                 rule_id = row["allocation"]["size_rule_id"]
-                rule = next(item for item in pool["protected_size_scope"]["rules"] if item["id"] == rule_id)
-                stamp = parse_datetime(rule["updated_at"])
-                for reservation in pool["reservations"]:
-                    if reservation["state"] not in {"fulfilled", "consumed"}:
-                        continue
-                    times = [parse_datetime(reservation[key]) for key in ("fulfilled_at", "consumed_at") if reservation.get(key)]
-                    if not times or any(value > stamp for value in times):
-                        row.update(status="check_required", reason="stale_catalog_size_count")
-                        break
+                if not _size_count_current(pool, rule_id):
+                    row.update(status="check_required", reason="stale_catalog_size_count")
         row["inventory_digest"] = _digest({"allocation": row["allocation"], "pool": pool})
+        # Private routing hint from already captured native rows. It is not a
+        # client/proposal exemption and never enters inventory_prompt_value.
+        row["live_checkout_hold_ids"] = sorted(reservation["id"] for reservation in pool["reservations"]
+            if pool.get("protected", 0) > 0 and reservation["state"] == "active"
+            and reservation.get("invoice_generation_id") is None and not reservation.get("fulfilled_quantity")
+            and datetime.fromisoformat(reservation["expires_at"]) > now)
         if owned_hold_ids:
             row["pre_owned_inventory_digest"] = _digest({"allocation": row["allocation"], "pool": _pre_owned_pool(pool)})
         row.pop("allocation", None)
@@ -341,7 +355,18 @@ def capture_inventory_availability(client_id, *, current_source_cart=None, now=N
             configurations = _read_configurations(targets, prepared=prepared)
             configurations = [row or {} for row in configurations]
             first, pools = _read_inventory(entries, configurations, now, prepared=prepared, owned_hold_ids=_owned_hold_ids)
+            owned_quote = None if _owned_hold_ids else _begin_owned_quote_capacity(client_id, cart, payload, first, pools, now)
             second, next_pools = _read_inventory(entries, configurations, now, owned_hold_ids=_owned_hold_ids)
+            if owned_quote is not None:
+                try:
+                    after = _owned_checkout_witness(client_id, owned_quote["parent"], owned_quote["witness"]["proposal_id"],
+                        cart, now, _current_inventory=True)
+                    if after != owned_quote["witness"]:
+                        owned_quote = None
+                except InventoryCaptureError as exc:
+                    if str(exc) == "inventory_query_bound":
+                        raise
+                    owned_quote = None
             final_configurations = [row or {} for row in _read_configurations(targets)]
             if first != second or pools != next_pools or configurations != final_configurations:
                 raise InventoryCaptureError("inventory_snapshot_changed")
@@ -359,6 +384,9 @@ def capture_inventory_availability(client_id, *, current_source_cart=None, now=N
                     or _source_watermark(cart["scope"], namespace, owner["owner"]["igsid"], now, customer_only=True) != cart.get("source_watermark")):
                     raise InventoryCaptureError("inventory_source_cart_changed")
             payload.update(status="captured", reason="", lines=first, inventory_digest=_digest(pools))
+            if owned_quote is not None:
+                payload["owned_quote_capacity"] = {"line_ids": [row["line_id"] for row in first],
+                    "source_cart_capture_digest": cart["capture_digest"], "witness": owned_quote["witness"]}
             if _owned_hold_ids:
                 payload["pre_owned_inventory_digest"] = _digest([_pre_owned_pool(pool) for pool in pools])
     except InventoryCaptureError as exc:
@@ -374,10 +402,14 @@ def inventory_prompt_value(value):
     """Expose positive exact facts and scoped checks; keep internal fences private."""
     if not verified_inventory_capture(value):
         return {"status": "unknown", "lines": []}
-    return {"status": value["status"], "authority": AUTHORITY,
-        "guidance": "Positive exact requested quantities may continue normally. Check-required means ask the manager, never that goods are absent. No timing, payment or reservation authority.",
+    result = {"status": value["status"], "authority": AUTHORITY,
+        "guidance": "Positive exact requested quantities may continue normally. For lines not covered by existing_quote_capacity, check-required means ask the manager, never that goods are absent. No timing, payment or reservation authority.",
         "lines": [{key: deepcopy(row[key]) for key in ("line_id", "recipient_id", "target", "labels", "status", "reason") if key in row}
             for row in value["lines"]]}
+    if owned_quote_capacity_line_ids(value):
+        result["existing_quote_capacity"] = {"line_ids": sorted(owned_quote_capacity_line_ids(value)),
+            "guidance": "These exact lines are covered by the customer's existing current quote and its own protected units. Continue that same quote without repeating an availability check. The check-required rows describe unallocated stock, not a shortage for this quote. This does not grant new free-stock, reservation, timing, payment or order claims; unanswered customer questions still block checkout."}
+    return result
 
 
 def capture_inventory_context(client, *, boundary, captured_at, current_source_cart=None, max_read_queries=None, _catalog_readback=None):
@@ -404,7 +436,8 @@ def capture_inventory_context(client, *, boundary, captured_at, current_source_c
         "scope": {key: boundary.get(key) for key in SCOPE_KEYS},
         "capture_scope": {key: boundary.get(key) for key in (*CAPTURE_SCOPE_KEYS, *purchase)},
         "observed_at": captured_at.isoformat(), "validity": "valid" if valid else "unknown",
-        "mandatory": valid and any(row.get("status") == "available" for row in value["lines"]),
+        "mandatory": valid and (any(row.get("status") == "available" for row in value["lines"])
+            or bool(owned_quote_capacity_line_ids(value))),
         "omission_reason": "" if valid else "inventory_selection_incomplete" if provisional else value.get("reason") or "inventory_scope_changed"}
 
 
@@ -432,13 +465,34 @@ def validate_inventory_capture(client_id, capture, *, now=None, current_source_c
         current = capture_inventory_availability(client_id, current_source_cart=current_source_cart, now=now)
     if current.get("status") != "captured":
         return current.get("reason") or "inventory_availability_unavailable"
-    keys = ("source_cart_capture_digest", "source_binding", "inventory_digest", "lines", "owned_checkout")
+    keys = ("source_cart_capture_digest", "source_binding", "inventory_digest", "lines", "owned_checkout", "owned_quote_capacity")
     if any(current.get(key) != capture.get(key) for key in keys):
         return "inventory_availability_changed"
     return ""
 
 
-def _owned_checkout_witness(client_id, parent, proposal_id, cart, now):
+def _same_consumer_selection(original, cart):
+    """A later assent can keep exact quote choices, never retarget its holds."""
+    from management.services.ig_revision_cart_binding import stable_checkout_source_capture
+    before, after = stable_checkout_source_capture(original), stable_checkout_source_capture(cart)
+    if (before is None or after is None
+        or any(before.get(key) != after.get(key) for key in
+            ("scope", "session_id", "generation", "active_line_id", "active_index"))
+        or type(before.get("selection_revision")) is not int
+        or type(after.get("selection_revision")) is not int
+        or after["selection_revision"] < before["selection_revision"]
+        or len(before.get("lines") or []) != len(after.get("lines") or [])):
+        return False
+    for old, current in zip(before["lines"], after["lines"]):
+        if (any(old.get(key) != current.get(key) for key in
+                ("line_id", "recipient_id", "index", "defaults", "unsupported_selectors"))
+            or {key: value for key, value in old.get("fields", {}).items() if key != "purchase_requested"}
+                != {key: value for key, value in current.get("fields", {}).items() if key != "purchase_requested"}):
+            return False
+    return True
+
+
+def _owned_checkout_witness(client_id, parent, proposal_id, cart, now, *, _current_inventory=False):
     """Exact native quote-to-item-to-pool proof; never all holds of a client."""
     from management.models import IgCheckoutProposal, IgCheckoutInventoryReservation as Reservation
     from management.services.ig_checkout_cart_provenance import capture_proposal_provenance, CartProvenanceError
@@ -455,8 +509,12 @@ def _owned_checkout_witness(client_id, parent, proposal_id, cart, now):
     revision = proposal.revisions.filter(revision=proposal.revision).first()
     snapshot = revision.snapshot if revision is not None else {}
     original = snapshot.get("source_cart_capture") or {}
-    if (original.get("capture_digest") != parent.get("source_cart_capture_digest")
-        or not same_checkout_source_capture(original, cart)):
+    source_matches = (verified_inventory_capture(parent) and parent.get("client_id") == client_id
+        and parent.get("source_cart_capture_digest") == cart.get("capture_digest")
+        and _same_consumer_selection(original, cart)) if _current_inventory else (
+            original.get("capture_digest") == parent.get("source_cart_capture_digest")
+            and same_checkout_source_capture(original, cart))
+    if not source_matches:
         raise InventoryCaptureError("inventory_owned_checkout_source_changed")
     items = list(proposal.items.order_by("position", "id"))
     raw = [{"proposal_item_id": item.pk, "position": item.position, "product_id": item.product_id,
@@ -481,7 +539,12 @@ def _owned_checkout_witness(client_id, parent, proposal_id, cart, now):
         line = by_line.get(mapping["line_id"])
         target = {"product_id": item.product_id, "color_variant_id": item.color_variant_id, "size": item.size,
             "fit_option_code": item.fit_code, "option_values": item.option_values or {}, "quantity": item.quantity}
-        if not line or line.get("status") != "available" or line.get("target") != target or not line.get("pool_id"):
+        current_shortage = (_current_inventory and line and line.get("status") == "check_required"
+            and line.get("reason") in {"insufficient_free_stock", "insufficient_size_stock"})
+        if (not line or (line.get("status") != "available" and not current_shortage)
+            or line.get("target") != target or not line.get("pool_id")
+            or mapping.get("recipient_id") != next((row.get("recipient_id") for row in cart.get("lines") or []
+                if row.get("line_id") == mapping["line_id"]), None)):
             raise InventoryCaptureError("inventory_owned_checkout_line_scope_changed")
         pool = pools.setdefault(line["pool_id"], {"quantity": 0, "item_ids": []})
         pool["quantity"] += item.quantity
@@ -494,6 +557,10 @@ def _owned_checkout_witness(client_id, parent, proposal_id, cart, now):
         raise InventoryCaptureError("inventory_owned_hold_scope_changed")
     seen = set()
     for hold in holds:
+        if _current_inventory:
+            from management.services.ig_inventory import _fingerprint
+            if hold["reservation_fingerprint"] != _fingerprint(proposal, hold["allocation_key"]):
+                raise InventoryCaptureError("inventory_owned_hold_scope_changed")
         pool_id = (f"warehouse:{hold['stock_item_id']}" if hold["allocation_source"] == "warehouse"
             else f"catalog_variant:{hold['color_variant_id']}" if hold["allocation_source"] in {"catalog_variant", ""} else "")
         expected = pools.get(pool_id)
@@ -506,10 +573,90 @@ def _owned_checkout_witness(client_id, parent, proposal_id, cart, now):
         "provenance_digest": _digest(provenance), "holds": json.loads(_json(holds))}
 
 
+def _begin_owned_quote_capacity(client_id, cart, payload, lines, pools, now):
+    """Reuse the current raw pool fence; never subtract another quote's units."""
+    from django.db.models import F
+    from management.models import IgCheckoutProposal
+    protected_ids = {identity for row in lines if row.get("status") == "check_required"
+        and row.get("reason") in {"insufficient_free_stock", "insufficient_size_stock"}
+        for identity in row.get("live_checkout_hold_ids") or []}
+    if not protected_ids:
+        return None
+    # The canonical witness below proves that this quote's exact items and
+    # finite holds equal the cart demand in every pool. Removing that demand
+    # leaves enough capacity iff totals cover all protected commitments.
+    if (any(row.get("status") not in {"available", "check_required"}
+            or row.get("status") == "check_required" and row.get("reason") not in
+                {"insufficient_free_stock", "insufficient_size_stock"} for row in lines)
+        or any(type(pool.get("before_total")) is not int or pool["before_total"] < pool.get("protected", 0)
+            or any(type(size.get("before_total")) is not int or size["before_total"] < size.get("protected", 0)
+                or not _size_count_current(pool, int(key)) for key, size in pool.get("size_counts", {}).items())
+            for pool in pools)):
+        return None
+    candidates = list(IgCheckoutProposal.objects.filter(client_id=client_id,
+        commercial_episode_id=cart["scope"].get("episode_id"), deal__active_checkout_proposal_id=F("pk"),
+        inventory_reservations__pk__in=protected_ids).distinct().values_list("pk", flat=True)[:2])
+    if len(candidates) != 1:
+        return None
+    parent = {**payload, "status": "captured", "reason": "", "lines": lines, "inventory_digest": _digest(pools)}
+    parent["digest"], parent["signature"] = _digest(parent), _sign(parent)
+    try:
+        witness = _owned_checkout_witness(client_id, parent, candidates[0], cart, now, _current_inventory=True)
+    except InventoryCaptureError as exc:
+        if str(exc) == "inventory_query_bound":
+            raise
+        return None
+    return {"parent": parent, "witness": witness}
+
+
+def owned_quote_capacity_line_ids(value):
+    """Signed contextual continuation only; never positive stock authority."""
+    if not verified_inventory_capture(value) or value.get("status") != "captured":
+        return frozenset()
+    proof = value.get("owned_quote_capacity") or {}
+    ids = proof.get("line_ids")
+    if (proof.get("source_cart_capture_digest") != value.get("source_cart_capture_digest")
+        or not isinstance(ids, list) or not ids or len(set(ids)) != len(ids)
+        or set(ids) != {row["line_id"] for row in value.get("lines") or []}
+        or not proof.get("witness")):
+        return frozenset()
+    return frozenset(ids)
+
+
+def owned_checkout_capacity_line_ids(client_id, *, current_source_cart, inventory_capture=None, now=None):
+    """Consume the native pool-fenced proof without another inventory journey.
+
+    Callers of a supplied capture retain its existing outer source fences.
+    Standalone observations get the ordinary producer's native source fences.
+    """
+    value = inventory_capture if inventory_capture is not None else capture_inventory_availability(client_id, now=now)
+    if (not verified_inventory_capture(value) or value.get("client_id") != client_id
+        or value.get("source_cart_capture_digest") != (current_source_cart or {}).get("capture_digest")):
+        return frozenset()
+    return owned_quote_capacity_line_ids(value)
+
+
 def capture_owned_checkout_inventory(client_id, parent, *, proposal_id, now=None):
     """Rebind only an exact backend-created checkout's own finite live holds."""
     from management.services.ig_commerce_projection import capture_current_selection_lines
     now = now or timezone.now()
+    if (owned_quote_capacity_line_ids(parent) and parent.get("client_id") == client_id
+        and not parent.get("owned_checkout")):
+        current = capture_inventory_availability(client_id, now=now)
+        previous = parent["owned_quote_capacity"]["witness"]
+        current_proof = current.get("owned_quote_capacity") or {}
+        if (previous.get("proposal_id") != proposal_id or not owned_quote_capacity_line_ids(current)
+            or current_proof["witness"].get("proposal_id") != proposal_id
+            or any(parent.get(key) != current.get(key) for key in ("source_cart_capture_digest", "source_binding"))
+            or len(parent["lines"]) != len(current["lines"])
+            or any(any(old.get(key) != fresh.get(key) for key in
+                ("line_id", "recipient_id", "target", "configuration_digest", "labels", "status", "reason"))
+                for old, fresh in zip(parent["lines"], current["lines"]))):
+            return {"status": "unknown", "reason": "inventory_owned_quote_changed"}
+        payload = {key: value for key, value in current.items() if key not in {"digest", "signature"}}
+        payload["owned_checkout"] = {**current_proof["witness"], "parent_capture": deepcopy(parent)}
+        payload["digest"], payload["signature"] = _digest(payload), _sign(payload)
+        return payload
     if (not verified_inventory_capture(parent) or parent.get("client_id") != client_id
         or parent.get("owned_checkout") or not parent.get("lines")
         or any(row.get("status") != "available" for row in parent["lines"])):

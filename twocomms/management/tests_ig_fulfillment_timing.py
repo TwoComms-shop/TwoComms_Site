@@ -4,7 +4,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
+
+from management.tests_ig_restock_subscriptions import _RestockFixture
 
 from management.services.ig_reply_authority import (
     _fulfillment_timing_truth, apply_fulfillment_timing_context,
@@ -554,3 +556,66 @@ class FulfillmentAvailabilityTests(SimpleTestCase):
             with self.subTest(text=text):
                 self.rejected(text, ReplyTruthContext())
                 self.valid(text, self.context())
+
+
+class FulfillmentInventoryOverlayTests(_RestockFixture, TestCase):
+    def inventory_frame(self, quantity=3):
+        from management.services.ig_inventory_availability import capture_inventory_availability, verified_inventory_capture
+        self.variant.stock = self.rule.stock = quantity
+        self.variant.save(update_fields=["stock"])
+        self.rule.save(update_fields=["stock", "updated_at"])
+        capture = capture_inventory_availability(self.client_row.pk, now=self.now)
+        self.assertTrue(verified_inventory_capture(capture))
+        self.assertEqual(capture["status"], "captured", capture.get("reason"))
+        self.assertEqual([row["status"] for row in capture["lines"]], ["available"])
+        return {"status": "captured", "slots": {"inventory.availability": {
+            "status": "confirmed", "authority": "inventory_available", "validity": "valid",
+            "omission_reason": "", "value": capture}}}
+
+    def test_equal_inventory_overlay_preserves_identity_for_empty_and_real_signed_facts(self):
+        context = ReplyTruthContext(explicitly_qualified_standard_dispatch_days=(1, 3))
+        self.assertIs(apply_fulfillment_timing_context(context, {"status": "captured", "slots": {}}), context)
+        frame = self.inventory_frame()
+        current = apply_fulfillment_timing_context(context, frame)
+        self.assertIsNot(current, context)
+        self.assertTrue(current.inventory_availability_authorities)
+        self.assertEqual(current.inventory_cart_line_ids,
+            tuple(row["line_id"] for row in frame["slots"]["inventory.availability"]["value"]["lines"]))
+        self.assertIs(apply_fulfillment_timing_context(current, deepcopy(frame)), current)
+
+    def test_empty_invalid_or_missing_inventory_clears_previous_facts_and_line_ids(self):
+        carrier = TimingAuthority(domain="carrier_estimate", min_days=2, max_days=4)
+        context = ReplyTruthContext(timing_authorities=(carrier,), explicitly_qualified_standard_dispatch_days=(1, 3))
+        frame = self.inventory_frame()
+        stale = apply_fulfillment_timing_context(context, frame)
+        tampered = deepcopy(frame)
+        tampered["slots"]["inventory.availability"]["value"]["signature"] = "0" * 64
+        unknown_slot = deepcopy(frame)
+        unknown_slot["slots"]["inventory.availability"]["status"] = "unknown"
+        for missing in (None, {}, {"status": "unavailable"}, {"status": "captured", "slots": {}}, tampered, unknown_slot):
+            for previous in (stale, replace(stale, inventory_availability_authorities=())):
+                with self.subTest(frame_status=(missing or {}).get("status"), facts=bool(previous.inventory_availability_authorities)):
+                    cleared = apply_fulfillment_timing_context(previous, missing)
+                    self.assertIsNot(cleared, previous)
+                    self.assertEqual(cleared.inventory_availability_authorities, ())
+                    self.assertEqual(cleared.inventory_cart_line_ids, ())
+                    self.assertEqual(cleared.timing_authorities, (carrier,))
+                    self.assertEqual(cleared.explicitly_qualified_standard_dispatch_days, (1, 3))
+        self.assertTrue(stale.inventory_availability_authorities)
+        self.assertTrue(stale.inventory_cart_line_ids)
+
+    def test_changed_valid_inventory_replaces_facts_without_weakening_current_timing_hold(self):
+        carrier = TimingAuthority(domain="carrier_estimate", min_days=2, max_days=4)
+        original = ReplyTruthContext(timing_authorities=(carrier,), explicitly_qualified_standard_dispatch_days=(1, 3))
+        current = apply_fulfillment_timing_context(original, self.inventory_frame(3))
+        changed_frame = self.inventory_frame(4)
+        changed_frame["diagnostics"] = {"fulfillment_timing_hold": True}
+        changed = apply_fulfillment_timing_context(current, changed_frame)
+        self.assertIsNot(changed, current)
+        self.assertEqual(changed.inventory_availability_authorities[0].checked_quantity, 4)
+        self.assertEqual(current.inventory_availability_authorities[0].checked_quantity, 3)
+        self.assertEqual(changed.inventory_cart_line_ids, current.inventory_cart_line_ids)
+        self.assertEqual(changed.fulfillment_review_status, "pending")
+        self.assertEqual(changed.timing_authorities, (carrier,))
+        self.assertIsNone(changed.explicitly_qualified_standard_dispatch_days)
+        self.assertFalse(validate_reply_truth("Usually we dispatch in 1–3 days after payment.", context=changed).valid)

@@ -21,17 +21,25 @@ from management import tests_ig_revision_live as live
 from management import tests_ig_live_conversation_contract_20261022 as contract
 
 
+def _fixture_collection(*, slug, **values):
+    # Native migrations already seed these unique slugs. Preserve their rows
+    # while making every semantic field used by this fixture deterministic.
+    defaults = {"parent": None, "name_ru": "", "name_en": "", "order": 0,
+        "indexable": False, "is_active": True, **values}
+    return MerchCollection.objects.update_or_create(slug=slug, defaults=defaults)[0]
+
+
 @override_settings(SITE_BASE_URL="https://twocomms.test")
 class CatalogBrowseCaptureTests(TestCase):
     def setUp(self):
         self.tee = Category.objects.create(name="Футболки", slug="tshirts")
         self.hoodie = Category.objects.create(name="Худі", slug="hoodie")
-        self.kharkiv = MerchCollection.objects.create(slug="kharkiv", kind="city", name_uk="Харків", name_ru="Харьков", name_en="Kharkiv")
-        self.street = MerchCollection.objects.create(slug="streetwear", kind="theme", name_uk="Streetwear")
-        self.military = MerchCollection.objects.create(slug="military", kind="theme", name_uk="Військові")
-        self.brigades = MerchCollection.objects.create(slug="brigades", kind="theme", name_uk="Бригади")
-        self.b225 = MerchCollection.objects.create(slug="225", kind="brigade", parent=self.brigades, name_uk="225 бригада")
-        MerchCollection.objects.create(slug="127", kind="brigade", parent=self.brigades, name_uk="127 бригада")
+        self.kharkiv = _fixture_collection(slug="kharkiv", kind="city", name_uk="Харків", name_ru="Харьков", name_en="Kharkiv")
+        self.street = _fixture_collection(slug="streetwear", kind="theme", name_uk="Streetwear")
+        self.military = _fixture_collection(slug="military", kind="theme", name_uk="Військові")
+        self.brigades = _fixture_collection(slug="brigades", kind="theme", name_uk="Бригади")
+        self.b225 = _fixture_collection(slug="225", kind="brigade", parent=self.brigades, name_uk="225 бригада")
+        _fixture_collection(slug="127", kind="brigade", parent=self.brigades, name_uk="127 бригада")
         self.a = self.product("Aurora", "tee", self.tee, self.kharkiv, self.street)
         self.b = self.product("Aurora", "hoodie", self.hoodie, self.kharkiv)
         self.c = self.product("Military", "military", self.hoodie, self.military)
@@ -305,6 +313,25 @@ class CatalogBrowseCaptureTests(TestCase):
             self.assertNotEqual(before["capture_digest"], browse.capture_catalog_browse(revision)["capture_digest"])
 
 
+@override_settings(SITE_BASE_URL="https://twocomms.test")
+class CatalogBrowseMigrationSeedTests(TestCase):
+    def test_actual_seeded_taxonomy_keeps_unique_rows_and_original_browse_contract(self):
+        from importlib import import_module
+        from django.apps import apps
+        import_module("product_catalog.migrations.0010_merch_collections").seed_merch_collections(apps, None)
+        import_module("product_catalog.migrations.0011_refine_brigade_taxonomy").refine_brigade_taxonomy(apps, None)
+        slugs = ("kharkiv", "streetwear", "military", "brigades", "225", "127")
+        seeded = dict(MerchCollection.objects.filter(slug__in=slugs).values_list("slug", "pk"))
+        case = CatalogBrowseCaptureTests("test_membership_not_exact_tag_set_and_garment_is_hard")
+        case.setUp()
+        self.assertEqual(dict(MerchCollection.objects.filter(slug__in=slugs).values_list("slug", "pk")), seeded)
+        self.assertEqual(len(seeded), 6)
+        self.assertIsNone(case.brigades.parent_id)
+        self.assertEqual(case.b225.parent_id, case.brigades.pk)
+        case.test_membership_not_exact_tag_set_and_garment_is_hard()
+        case.test_225_requires_actual_published_membership_127_has_no_invented_sku()
+
+
 @override_settings(SITE_BASE_URL="https://twocomms.test", SECRET_KEY="browse-native-test")
 class ThemedNativeBuilderTests(SimpleTestCase):
     def prepare(self):
@@ -375,9 +402,9 @@ class NativeCatalogBrowseTests(TransactionTestCase):
         self.addCleanup(media.disable)
         self.tee = Category.objects.create(name="Футболки", slug="tshirts")
         self.hoodie = Category.objects.create(name="Худі", slug="hoodie")
-        self.kharkiv = MerchCollection.objects.create(slug="kharkiv", kind="city", name_uk="Харків")
-        self.military = MerchCollection.objects.create(slug="military", kind="theme", name_uk="Військові")
-        self.street = MerchCollection.objects.create(slug="streetwear", kind="theme", name_uk="Streetwear")
+        self.kharkiv = _fixture_collection(slug="kharkiv", kind="city", name_uk="Харків")
+        self.military = _fixture_collection(slug="military", kind="theme", name_uk="Військові")
+        self.street = _fixture_collection(slug="streetwear", kind="theme", name_uk="Streetwear")
         self.shirt = self.product("Aurora", "native-tee", self.tee, self.kharkiv)
         self.good = self.product("Aurora", "native-hoodie", self.hoodie, self.kharkiv, self.street)
         self.foreign = self.product("Other", "native-other", self.hoodie, self.military)
@@ -559,8 +586,8 @@ class NativeCatalogBrowseTests(TransactionTestCase):
         http.assert_called_once()
 
     def test_native_numeric_collection_after_garment_uses_real_membership(self):
-        parent = MerchCollection.objects.create(slug="brigades", kind="theme", name_uk="Бригади")
-        numeric = MerchCollection.objects.create(slug="225", kind="brigade", name_uk="225 бригада", parent=parent)
+        parent = _fixture_collection(slug="brigades", kind="theme", name_uk="Бригади")
+        numeric = _fixture_collection(slug="225", kind="brigade", name_uk="225 бригада", parent=parent)
         ProductMerchCollection.objects.create(product=self.good, collection=numeric)
         self._fresh("Покажіть худі 225")
         result, _model, _http = self.answer_cards([self.good.pk])
@@ -570,7 +597,7 @@ class NativeCatalogBrowseTests(TransactionTestCase):
         self.assertEqual(manifest["cards"][0]["theme_navigation"]["collection_slug"], "225")
 
     def test_native_number_before_garment_asks_design_or_quantity_without_broadening(self):
-        MerchCollection.objects.create(slug="225", kind="brigade", name_uk="225 бригада")
+        _fixture_collection(slug="225", kind="brigade", name_uk="225 бригада")
         self._fresh("Покажіть225худі")
         self.parsed = {"reply_text": "Який саме дизайн ви маєте на увазі — 225 чи кількість худі?", "controls": []}
         result, _model, http = self._execute([(200, json.dumps({"message_id": "numeric-clarifier"}))])
@@ -581,7 +608,7 @@ class NativeCatalogBrowseTests(TransactionTestCase):
         http.assert_called_once()
 
     def test_native_known_empty_collection_is_catalog_absence_not_stock(self):
-        MerchCollection.objects.create(slug="127", kind="brigade", name_uk="127 бригада")
+        _fixture_collection(slug="127", kind="brigade", name_uk="127 бригада")
         self._fresh("Покажіть 127 бригаду")
         self.parsed = {"reply_text": "Яку іншу тему або категорію показати?", "controls": []}
         result, _model, http = self._execute([(200, json.dumps({"message_id": "empty-published-clarifier"}))])
@@ -622,7 +649,7 @@ class NativeBrowseFitCompatibilityTests(TransactionTestCase):
     def test_native_explicit_new_theme_browse_can_leave_retained_print_without_selecting(self):
         from pathlib import Path
         from management.services.ig_response_plan import capture_response_plan
-        theme = MerchCollection.objects.create(slug="kharkiv", kind="city", name_uk="Харків")
+        theme = _fixture_collection(slug="kharkiv", kind="city", name_uk="Харків")
         other = Product.objects.create(title="Інший Харків", slug="browse-retained-other",
             category=self.product.category, status="published", price=500, main_image="products/retained-other.jpg")
         target = Path(other.main_image.path)

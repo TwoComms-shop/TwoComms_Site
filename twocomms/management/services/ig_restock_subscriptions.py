@@ -326,7 +326,7 @@ def _target_capture(client, row, *, explicit=False, now):
         return None, "target_source_unavailable"
     observation = resolve_source_interest(preferences, now=now).as_dict()
     return {"cart_digest": cart["capture_digest"], "selection": _selection_identity(preferences),
-        "observation": observation, "selection_sources": sources}, ""
+        "observation": observation, "selection_sources": sources, "source_cart": cart}, ""
 
 
 def _scope(client, settings_obj):
@@ -506,6 +506,14 @@ def prepare_request(revision, source, settings_obj=None, now=None):
     if not captured:
         return RestockRequest(explicit, _copy(locale, "clarify") if explicit else "", reason=reason)
     observation = captured["observation"]
+    evidence = observation.get("evidence") or {}
+    if (not explicit and observation.get("status") == "unavailable"
+        and evidence.get("protected_quantity", 0) > 0 and evidence.get("protected_reservation_ids")):
+        from management.services.ig_inventory_availability import owned_checkout_capacity_line_ids
+        cart = captured["source_cart"]
+        held = owned_checkout_capacity_line_ids(revision.client_id, current_source_cart=cart, now=now)
+        if held and held == {line["line_id"] for line in cart.get("lines") or []}:
+            return RestockRequest(False, reason="owned_checkout_capacity")
     if observation.get("status") == "unknown":
         # The ordinary response path owns a real manager case and preserves
         # every customer question. Never claim a handoff from this read alone.

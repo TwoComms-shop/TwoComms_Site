@@ -41,8 +41,9 @@ class TurnContextConsumerIntegrationTests(TestCase):
             body="Captured public playbook A: answer with verified facts.", intent_tags="global",
             is_active=True, priority=1, locale="all")
         self.publication = self.publish(version=1)
-        self.settings_row = InstagramBotSettings.objects.create(pk=1, is_enabled=True,
-            ai_enabled=True, ig_user_id="owner-1", active_instruction_publication=self.publication)
+        self.settings_row, _ = InstagramBotSettings.objects.update_or_create(pk=1, defaults={
+            "is_enabled": True, "ai_enabled": True, "ig_user_id": "owner-1",
+            "active_instruction_publication": self.publication})
         self.publication_binding = PublicationBinding(self.publication.pk, self.publication.version,
             self.publication.snapshot_hash)
         self.publication_snapshot = load_active_policy_snapshot(self.settings_row)
@@ -57,6 +58,10 @@ class TurnContextConsumerIntegrationTests(TestCase):
         self.addCleanup(timing.stop)
 
     def publish(self, *, version):
+        from django.db.models import Max
+        # Native migration 0196 already owns version 1. A requested version is
+        # a lower bound; each authored snapshot is still a new immutable row.
+        version = max(version, int(BotPolicyPublication.objects.aggregate(value=Max("version"))["value"] or 0) + 1)
         snapshot = snapshot_from_rows(BotInstruction.objects.all().order_by("priority", "pk"))
         return BotPolicyPublication.objects.create(version=version, kind="publish", schema_version=1,
             snapshot=snapshot, snapshot_hash=snapshot_hash(snapshot), compiler_version="instruction-set-v1",

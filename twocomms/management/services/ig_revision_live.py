@@ -697,11 +697,12 @@ class RevisionGenerationBoundary:
             claims.append(CLAIM_CATALOG_CONFIGURATION)
         authority_control = dict(control)
         from management.services import instagram_bot as bot
-        from management.services.ig_inventory_availability import captured_inventory_projection
+        from management.services.ig_inventory_availability import captured_inventory_projection, owned_quote_capacity_line_ids
         from management.services.ig_reply_authority import inventory_availability_authorities
         from management.services.ig_revision_authority import CLAIM_INVENTORY_AVAILABILITY
         inventory = captured_inventory_projection(getattr(self, "captured_client_state", None))
-        if bot._stock_claim_sentences(response.reply_text) and inventory_availability_authorities(inventory):
+        if (owned_quote_capacity_line_ids(inventory)
+            or bot._stock_claim_sentences(response.reply_text) and inventory_availability_authorities(inventory)):
             claims.append(CLAIM_INVENTORY_AVAILABILITY)
             authority_control["inventory_availability_capture"] = inventory
         if self.assisted_context is not None:
