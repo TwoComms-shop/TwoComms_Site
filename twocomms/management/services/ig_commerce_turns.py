@@ -241,6 +241,15 @@ def _source_full_cart_purchase(text: str) -> bool:
         r")", current, re.I))
 
 
+def _source_pair_purchase(text: str) -> bool:
+    """A literal imperative names two standing positions, not two paid units."""
+    current = re.sub(r"\s+", " ", _current_source_text(text)).strip(" .!,")
+    return bool(re.fullmatch(r"(?:(?:так|да|yes)[, ]+)?(?:"
+        r"(?:оформлюй|оформіть|оформлюйте|замовте)\s+(?:обидві|обидва)(?:\s+позиції)?"
+        r"|(?:оформи|оформите|оформляй|оформляйте)\s+(?:обе|оба)(?:\s+позиции)?"
+        r"|(?:please\s+)?(?:order|buy)\s+both(?:\s+(?:items|positions))?)", current, re.I))
+
+
 def _withdrawn_size(text: str) -> str:
     text = _preference_source_text(text)
     rejected = set()
@@ -572,7 +581,8 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
         return planned, planning_pending
     current = _current_source_text(text)
     operations = []
-    clauses = re.split(r"\.(?=\s|$)|[;!\n]+|\s+(?:и|і|and)\s+(?=" + _ADD_ACTION + "|" + _REMOVE_ACTION + "|" + _REPLACE_ACTION + ")", current, flags=re.I)
+    unscoped_configuration = False
+    clauses = re.split(r"\.(?=\s|$)|[;!\n]+|,\s*(?=(?:собі|мені|мне|хлопцю|парню|дівчині|девушке|сестрі|сестре|брату|братові)\b)|\s+(?:и|і|and)\s+(?=" + _ADD_ACTION + "|" + _REMOVE_ACTION + "|" + _REPLACE_ACTION + ")", current, flags=re.I)
     for clause in clauses:
         if not clause.strip() or "?" in clause:
             continue
@@ -618,6 +628,9 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
                 or quantity_hint is not None or quantity_pending):
             action = "configure"
         if not action:
+            if (_recipient_configuration and not scoped_recipient and (_source_size(clause)
+                or _find_prefix_value(clause, _COLOR_WORDS) or _find_prefix_value(clause, _FIT_WORDS))):
+                unscoped_configuration = True
             if re.search(r"\b(?:другой|другую|інший|іншу|another|different)\s+(?:подарок|подарунок|gift)\b", lowered) and not _negated_action(lowered[:re.search(r"\b(?:другой|другую|інший|іншу|another|different)\b", lowered).start()]):
                 return (), "ambiguous_line_target"
             continue
@@ -746,6 +759,8 @@ def _line_operations(text, *, media_evidence=None, _source_clauses=None, _quanti
             _source_clauses.append((target_text, config_text))
         if len(operations) > 8:
             return (), "ambiguous_line_operation"
+    if unscoped_configuration and any(operation.operation == "configure" for operation in operations):
+        return (), "ambiguous_line_target"
     return tuple(operations), ""
 
 
@@ -910,7 +925,10 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
     line_operations, pending_line = _line_operations(raw, media_evidence=media_evidence,
         _quantity_title_texts=_quantity_title_texts, parsed_catalog_graph=parsed_catalog_graph,
         _recipient_configuration=_recipient_configuration)
-    pending_line = pending_line or ("" if line_operations and all(op.operation == "plan" for op in line_operations) else recipient_pending)
+    individually_scoped = bool(line_operations and all(op.operation == "configure"
+        and op.target_recipient_id and not op.target_recipient_id.startswith("reference:") for op in line_operations))
+    pending_line = pending_line or ("" if line_operations and (all(op.operation == "plan" for op in line_operations)
+        or individually_scoped) else recipient_pending)
     if pending == "multiple_product_links" and not line_operations:
         pending_line = pending_line or "multiple_product_links"
     if reset_requested and not line_operations and not exchange_requested:
@@ -932,7 +950,8 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
     historical = _historical_selectors(raw, line_operations)
     pending_line = pending_line or historical.pop("pending_line_clarification", "")
 
-    full_cart_purchase = _source_full_cart_purchase(raw)
+    pair_purchase = _source_pair_purchase(raw)
+    full_cart_purchase = _source_full_cart_purchase(raw) or pair_purchase
     return CommerceTurnRequest(
         exact_product_id=exact_product_id,
         garment_type=garment_type,
@@ -949,6 +968,7 @@ def parse_turn(text: str | None, *, media_evidence=None, _quantity_title_texts=(
         checkout_requested=checkout_requested,
         purchase_requested=_source_purchase(raw) or new_purchase_requested or full_cart_purchase,
         full_cart_purchase_requested=full_cart_purchase,
+        purchase_reference_count=2 if pair_purchase else None,
         recipient_id=recipient,
         reset_requested=reset_requested,
         support_requested=bool(re.search(r"(?:помог|вопрос|support|help)", lowered)),

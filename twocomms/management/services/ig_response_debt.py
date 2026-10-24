@@ -127,7 +127,7 @@ def record_response_coverage(revision_id, token, coverage):
         return False
     if (not isinstance(plan_digest, str) or (plan_digest and (len(plan_digest) != 64 or any(char not in "0123456789abcdef" for char in plan_digest)))
         or not isinstance(next_selector, str)
-        or (next_selector not in {"", "model", "size", "color", "fit", "variant", "options", "quantity", "product"}
+        or (next_selector not in {"", "model", "size", "color", "fit", "variant", "options", "quantity", "product", "recipient"}
             and not re.fullmatch(r"option:[a-z][a-z0-9_-]{0,48}", next_selector))):
         return False
     covered, remaining = coverage.get("covered", []), coverage.get("remaining", [])

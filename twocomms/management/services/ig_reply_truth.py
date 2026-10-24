@@ -542,13 +542,40 @@ def _checkout_basket_verified(sentence, context):
                         if not _locally_negated(sentence, match.start()) and not re.search(r"removed|вилуч\w*|видал\w*|удален\w*|убран\w*", sentence, re.I):
                             return False
     return True
+_ORDER_STATE_ENDING = r"(?:о|[аыеіу]|[иі]й|ого|ої|ому|[иі]м|[иі]ми|[иі]х|ою|ій|н(?:ый|ая|ое|ые|ого|ому|ым|ыми|ых|ую|ой))?\b"
+# The purpose noun 'оформлення/оформление' does not say an order exists.
+# Keep completed participles distinct from that noun and its case endings.
+_ORDER_CREATED_STATE = rf"(?:створен\w*|создан\w*|оформлен{_ORDER_STATE_ENDING}|placed|created|confirmed)"
 _ORDER_CLAIM_RE = re.compile(
-    r"(?:замовлен\w*|заказ\w*|order)[^.!?\n]{0,70}"
-    r"(?:створен\w*|создан\w*|оформлен\w*|placed|created|confirmed)"
-    r"|(?:створен\w*|создан\w*|оформлен\w*|placed|created|confirmed)"
-    r"[^.!?\n]{0,70}(?:замовлен\w*|заказ\w*|order)",
+    rf"(?:замовлен\w*|заказ\w*|order)[^.!?\n]{{0,70}}{_ORDER_CREATED_STATE}"
+    rf"|{_ORDER_CREATED_STATE}[^.!?\n]{{0,70}}(?:замовлен\w*|заказ\w*|order)",
     re.I,
 )
+_ORDER_REGISTRATION_NOUN = r"оформлен(?:ня|ню|ні|ням|нях|ие|ия|ию|ии|ием)"
+_ORDER_NOMINAL_COMPLETED_STATE = rf"(?:заверш[её]н{_ORDER_STATE_ENDING}|закінчен{_ORDER_STATE_ENDING}|виконан{_ORDER_STATE_ENDING}|підтверджен{_ORDER_STATE_ENDING}|подтвержд[её]н{_ORDER_STATE_ENDING})"
+# Determiners and descriptive modifiers form a bounded run of local words;
+# punctuation cannot become part of the order's noun phrase.
+_ORDER_REGISTRATION_SUBJECT = rf"{_ORDER_REGISTRATION_NOUN}\s+(?:[\w’'-]+\s+){{0,6}}?(?:замовлен\w*|заказ\w*)"
+_ORDER_NOMINAL_COMPLETION_RE = re.compile(
+    rf"{_ORDER_REGISTRATION_SUBJECT}[^.!?\n]{{0,50}}?{_ORDER_NOMINAL_COMPLETED_STATE}"
+    rf"|{_ORDER_NOMINAL_COMPLETED_STATE}[^.!?\n]{{0,50}}?{_ORDER_REGISTRATION_SUBJECT}"
+    r"|\border\s+(?:placement|registration|checkout)\s+(?:(?:is|was|has\s+been)\s+)?(?:successfully\s+)?(?:complete(?:d)?|finished)\b",
+    re.I,
+)
+_ORDER_NOMINAL_NEGATED_RE = re.compile(
+    rf"\b(?:не|not|isn['’]?t|hasn['’]?t)\s+(?:ще\s+|ещ[её]\s+|yet\s+)?"
+    rf"(?:(?:було|было|been)\s+)?(?:{_ORDER_NOMINAL_COMPLETED_STATE}|complete(?:d)?|finished)", re.I,
+)
+
+
+def _has_positive_order_claim(sentence):
+    return _has_positive_claim(_ORDER_CLAIM_RE, sentence) or any(
+        not _locally_negated(sentence, match.start())
+        and not _ORDER_NOMINAL_NEGATED_RE.search(match.group())
+        for match in _ORDER_NOMINAL_COMPLETION_RE.finditer(sentence)
+    )
+
+
 _SHIPPED_RE = re.compile(
     r"\b(?:відправлен(?:о|ий|а|е|і)|"
     r"отправлен(?:о|а|ы|ный|ная|ное|ные)?|shipped|dispatched)\b",
@@ -1988,7 +2015,7 @@ def validate_reply_truth(
             and not context.payment_confirmed
         ):
             _add(reasons, "unverified_payment")
-        if _has_positive_claim(_ORDER_CLAIM_RE, sentence) and not context.order_created:
+        if not context.order_created and _has_positive_order_claim(sentence):
             _add(reasons, "unverified_order")
         shipping_context = bool(_SHIPMENT_CONTEXT_RE.search(sentence))
         if shipping_context and _has_positive_claim(_DELIVERED_RE, sentence):

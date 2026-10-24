@@ -477,6 +477,8 @@ def _request_payload(request: CommerceTurnRequest) -> dict:
     # query-only capability is unused, including historical replay payloads.
     if not payload.get("catalog_garment_type"):
         payload.pop("catalog_garment_type", None)
+    if payload.get("purchase_reference_count") is None:
+        payload.pop("purchase_reference_count", None)
     return payload
 
 
@@ -485,6 +487,7 @@ def full_cart_purchase_line_ids(before, after, request):
     lines = before.get("lines")
     if (request.full_cart_purchase_requested is not True or request.purchase_requested is not True
         or not isinstance(lines, list) or not 2 <= len(lines) <= MAX_SELECTION_LINES
+        or (request.purchase_reference_count is not None and len(lines) != request.purchase_reference_count)
         or before.get("pending_clarification") or after.get("pending_clarification")
         or any(not isinstance(line, dict) or not isinstance(line.get("line_id"), str) or not line["line_id"] for line in lines)
         or len({line["line_id"] for line in lines}) != len(lines)
@@ -876,7 +879,9 @@ def apply_turn(
             # no such plan exists, after validating the exact incoming source.
             current_plan = IgCommerceSelectionSession.objects.filter(client=locked_client, open_slot=1).first()
             from management.services.ig_recipient_planning import leading_recipient, operation_source_clause
-            if (not current_plan or not any(row.get("recipient_plan") for row in current_plan.lines)) and not leading_recipient(operation_source_clause(source.text)):
+            recipient_cart = bool(current_plan and (any(row.get("recipient_plan") for row in current_plan.lines)
+                or (len(current_plan.lines) > 1 and all(row.get("recipient_reference") for row in current_plan.lines))))
+            if not recipient_cart and not leading_recipient(operation_source_clause(source.text)):
                 if _line_source_request(source, locked_client, request, original=source_request) is None:
                     raise CommerceRevisionConflict("line_source_unverified")
                 producer = dict(request.source_binding).get("producer")
@@ -1084,7 +1089,13 @@ def apply_turn(
     line_facts = []
     withdrawn = {}
     from management.services.ig_recipient_planning import unscoped_group_choice
-    if unscoped_group_choice(before, request):
+    if request.purchase_reference_count is not None and len(before.get("lines") or ()) != request.purchase_reference_count:
+        # "Both" names two positions; it cannot adopt an arbitrary larger
+        # basket or rewrite a position's already confirmed unit count.
+        after["pending_clarification"] = "ambiguous_line_target"
+        action, accepted = "line_clarification_required", False
+        reasons.append("ambiguous_line_target")
+    elif unscoped_group_choice(before, request):
         after["pending_clarification"] = "ambiguous_line_target"
         action, accepted = "recipient_plan_clarification", False
         reasons.append("ambiguous_line_target")

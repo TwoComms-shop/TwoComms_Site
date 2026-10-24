@@ -161,10 +161,14 @@ class CommerceTurnRequest:
     # garment for the cart or supplying selected-choice evidence. Appended to
     # preserve all existing positional constructor arguments.
     catalog_garment_type: str = ""
+    # A literal "order both" names positions, never rewrites their units.
+    purchase_reference_count: int | None = None
 
     def __post_init__(self):
         if self.catalog_garment_type not in {"", "tshirt", "hoodie"}:
             raise ValueError("catalog_garment_type_invalid")
+        if self.purchase_reference_count is not None and (type(self.purchase_reference_count) is not int or self.purchase_reference_count != 2):
+            raise ValueError("purchase_reference_count_invalid")
         object.__setattr__(self, "line_operations", tuple(self.line_operations))
         for field_name in (
             "field_updates",

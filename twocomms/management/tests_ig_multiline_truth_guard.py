@@ -1,6 +1,6 @@
 """Pure actual guard and factory-boundary regressions; no DB/provider setup.
 
-The two small factory/helper functions are compiled directly from their owned
+The small factory/helper functions are compiled directly from their owned
 source AST so importing Instagram's daemon does not start a Django app runtime.
 The parser, guard, response plan, price extractor and truth validators are real.
 """
@@ -23,11 +23,14 @@ from management.services.ig_response_guard import ProviderResponseGuard
 def _owned_functions():
     path = Path(__file__).parent / "services" / "instagram_bot.py"
     tree = ast.parse(path.read_text())
-    helper_names = {"_extract_authoritative_price_claim", "_provider_reply_truth_context"}
+    helper_names = {"_extract_authoritative_price_claim", "_provider_reply_truth_context",
+        "_stock_claim_sentences", "_stock_reply_truth_context", "_assisted_checkout_locale"}
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in helper_names
         or isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
             and target.id in {"_PRICE_CLAIM_RE", "_PRICE_RANGE_RE"} for target in node.targets)]
-    environment = {"Decimal": Decimal, "InvalidOperation": InvalidOperation, "re": re}
+    environment = {"Decimal": Decimal, "InvalidOperation": InvalidOperation, "re": re,
+        # These price-only fixtures have no captured reply-language scope.
+        "_reply_render_language": lambda client: getattr(client, "language", "uk")}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), environment)
     return tree, environment
 
@@ -52,9 +55,12 @@ class MultilineTruthGuardTests(unittest.TestCase):
         })
 
     def validator(self, plan):
+        from management.services.ig_revision_live import _captured_reply_truth
+
         def validate(response, context):
-            reason = plan.validate_multiline_claims(response, context)
-            return ReplyTruthResult(not bool(reason), (reason,) if reason else ())
+            # Production first proves every local clause, then applies the
+            # whole-reply guard that retains URL and business-status checks.
+            return _captured_reply_truth(plan, response, context)
         return validate
 
     def test_actual_guard_accepts_two_correct_scoped_prices_through_callback(self):
@@ -78,14 +84,12 @@ class MultilineTruthGuardTests(unittest.TestCase):
 
     def test_callback_keeps_business_status_and_url_truth_for_each_clause(self):
         guard = ProviderResponseGuard(context_factory=lambda *_: ReplyTruthContext(), truth_validator=self.validator(self.plan()))
-        for text, reason in (("Оплата підтверджена.", "unverified_payment"),
+        for text, reason in (("Оплата підтверджена.", "response_plan_line_claim_unverified"),
                 ("Classic коштує 790 грн. https://foreign.example/checkout", "unauthorized_url")):
             with self.subTest(text=text):
                 result = guard.validate({"reply_text": text, "controls": []})
                 self.assertFalse(result.valid)
-                # Root callback returns a finite scoped failure; the original
-                # protected positive assertion still must not be accepted.
-                self.assertEqual(result.reason_codes, ("response_plan_line_claim_unverified",))
+                self.assertEqual(result.reason_codes, (reason,))
 
     def test_callback_is_never_invoked_before_schema_controls_or_actual_media_pass(self):
         callback = Mock(return_value=ReplyTruthResult(True))
@@ -166,7 +170,8 @@ class MultilineTruthGuardTests(unittest.TestCase):
         original = dict(control)
         proposal_context = ReplyTruthContext(authorized_prices=(Decimal("1290"),),
             authorized_price_ranges=((Decimal("790"), Decimal("1290")),), order_created=True)
-        with patch("management.services.ig_reply_authority.build_reply_truth_context", return_value=proposal_context):
+        with (patch("management.services.ig_reply_authority.build_reply_truth_context", return_value=proposal_context),
+            patch("management.services.ig_catalog_category_discovery.category_urls_for_control", return_value=())):
             context = environment["_provider_reply_truth_context"](SimpleNamespace(pk=1), control, "Ціна 1290 грн.")
         self.assertEqual(control, original)
         self.assertTrue(context.order_created)
@@ -183,7 +188,8 @@ class MultilineTruthGuardTests(unittest.TestCase):
         control = {"product": 55, "size": "M"}
         original = dict(control)
         valid = ReplyTruthContext(authorized_prices=(Decimal("790"),))
-        with patch("management.services.ig_reply_authority.build_reply_truth_context", return_value=valid):
+        with (patch("management.services.ig_reply_authority.build_reply_truth_context", return_value=valid),
+            patch("management.services.ig_catalog_category_discovery.category_urls_for_control", return_value=())):
             context = environment["_provider_reply_truth_context"](SimpleNamespace(pk=1), control, "Ціна 790 грн.")
         self.assertEqual(control, original)
         self.assertIs(context, valid)

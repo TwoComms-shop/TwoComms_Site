@@ -320,6 +320,10 @@ def _named_selected_product_conflict(plan, text):
 
 def asks_next_selector(text, selector):
     """A selector must occur in the same interrogative clause as its request."""
+    if selector == "recipient":
+        from management.services.ig_response_cart_plan import cart_recipient_question
+        return any(cart_recipient_question({"clarification": True}, question)
+            for question in re.findall(r"[^.!?;\n]*\?", _unquoted_text(text)))
     pattern = _SELECTOR_WORDS.get(str(selector).split(":", 1)[0])
     if not pattern:
         return False
@@ -1233,8 +1237,13 @@ def _topic_covered(kind, response, plan, *, source_message_id=None, source_price
             continue
         if kind == "info:price" and plan.configuration.get("product_id"):
             from management.services.ig_response_cart_plan import single_price_subject
+            scoped_subject = any(subject.line_id == plan.scope.get("line_id")
+                and subject.product_id == plan.configuration["product_id"]
+                and subject.title == plan.configuration.get("product_title")
+                and re.search(r"(?<!\w)" + re.escape(subject.title) + r"(?!\w)", clause, re.I)
+                for subject in source_price_subjects)
             if (not re.search(r"ціна|вартість|кошту|цена|стоим|стоит|price|cost", clause, re.I)
-                and not single_price_subject(clause, choices=plan.choices, title=plan.configuration.get("product_title", ""))):
+                and not scoped_subject and not single_price_subject(clause, choices=plan.choices, title=plan.configuration.get("product_title", ""))):
                 continue
             amounts = _MONEY_RE.findall(clause)
             price_context = plan.truth_context(replace(context,
@@ -1522,6 +1531,9 @@ class ResponsePlan:
                 "request_id", "source_message_ids", "line_ids", "deadline_dates", "date_status", "state", "checkout", "next_step")}
         if self.recipient_planning:
             payload["recipient_planning"] = deepcopy(self.recipient_planning)
+        if self.configuration.get("cart_selector_clarification"):
+            fact = self.configuration["cart_selector_clarification"]
+            payload["cart_selector_clarification"] = {key: deepcopy(fact[key]) for key in ("source_message_ids", "requests")}
         if self.business_context:
             payload["business_context"] = deepcopy(self.business_context)
         chart_fits = [{key: row[key] for key in ("id", "source_message_id", "fit_code", "line_id") if key in row}
@@ -1623,6 +1635,13 @@ class ResponsePlan:
                 "A pending recipient clarification asks whose preference this is. Never copy another person's SKU, size, fit, color or quantity. "
                 "Recipient count proves neither units, same designs, common address, delivery, discount nor payment. "
                 "Consultation questions grant no selection or checkout controls; existing quote gates own the eventual all-line checkout.")
+        if self.configuration.get("cart_selector_clarification"):
+            guidance += ("\nThe listed current selector correction is still UNASSIGNED to a recipient/item. Preserve each line's existing "
+                "size, fit, color and quantity. Answer independently supported current information questions first; do not repeat the recipient question after a complete answer. Otherwise ask one focused question whose preference should change. The active/last line is not "
+                "the answer. Do not say the correction was recorded and emit no selection or payment controls until a new own source resolves its recipient.")
+        if len({row.get("line_id") for row in self.obligations if row["kind"] == "info:price" and row.get("line_id")}) > 1:
+            guidance += ("\nThe price request has separate source-owned line subjects. Answer each requested line's own verified unit price, "
+                "naming its recipient or position number. A price for one line never answers its sibling; do not pool catalog prices or infer a total/discount.")
         if self.configuration.get("manual_delivery_requirement"):
             guidance += ("\nThe active manual delivery requirement blocks hosted checkout. Preserve the cart and arrange delivery with the manager; "
                 "a carrier choice alone cannot resolve distinct destinations. Only an own explicit single-destination/parcel choice permits this form.")
@@ -1738,10 +1757,22 @@ class ResponsePlan:
                    for clause in _claim_sentences(_unquoted_text(response.reply_text), ())):
                 return "response_plan_payment_forwarding_unverified"
         if self.line_plans:
-            from management.services.ig_response_cart_plan import matching_line_ids
+            from management.services.ig_response_cart_plan import (matching_line_ids, cart_clarification_reason,
+                cart_recipient_question, shared_discovery_question)
             from management.services.ig_recipient_planning import planning_question_kind
+            clarification = self.configuration.get("cart_selector_clarification") or {}
+            independent_answer = bool(clarification and not response.control and "?" not in response.reply_text
+                and self.obligations and all(item["kind"].startswith("info:") for item in self.obligations)
+                and self.coverage(response)["disposition"] == "complete")
+            clarification_reason = cart_clarification_reason(clarification, response, self.line_plans,
+                independent_answer=independent_answer)
+            if clarification_reason:
+                return clarification_reason
             for question in re.findall(r"[^.!?\n]*[?]", _unquoted_text(response.reply_text)):
-                if planning_question_kind(self.recipient_planning, question, self.line_plans):
+                if cart_recipient_question(clarification, question):
+                    continue
+                if (planning_question_kind(self.recipient_planning, question, self.line_plans)
+                    or shared_discovery_question(self.recipient_planning, question, self.line_plans)):
                     if set(response.control).intersection({"product", "size", "fit", "option", "qty", "color_variant_id", "items", "paylink", "payment"}):
                         return "response_plan_provisional_selection_unsupported"
                     continue
@@ -1888,8 +1919,13 @@ class ResponsePlan:
             if any(item["kind"] == "info:price" for item in self.obligations) else {})
         selector = self.next_selector_line
         from management.services.ig_recipient_planning import planning_question_kind
+        from management.services.ig_response_cart_plan import shared_discovery_question, cart_recipient_question, cart_clarification_reason
         planning_questions = {planning_question_kind(self.recipient_planning, text, self.line_plans)
+            or ("product" if shared_discovery_question(self.recipient_planning, text, self.line_plans) else "")
             for text in re.findall(r"[^.!?\n]*[?]", _unquoted_text(response.reply_text))} - {""}
+        clarification = self.configuration.get("cart_selector_clarification") or {}
+        recipient_question = any(cart_recipient_question(clarification, text)
+            for text in re.findall(r"[^.!?\n]*[?]", _unquoted_text(response.reply_text)))
         question = any(asks_next_selector(text, selector.get("field", ""))
             and (matching_line_ids(text, self.line_plans) == (selector.get("line_id"),)
                 or selector.get("line_id") == self.focused_candidate_line_id)
@@ -1970,11 +2006,19 @@ class ResponsePlan:
                     and item["kind"] == "unresolved_line_operation"))
         waiting = (question or planning_questions) and not self.plan_gap and all(
             item["kind"] in dependent or planning_dependent(item) for item in self.obligations if item["id"] in remaining)
+        if recipient_question and not cart_clarification_reason(clarification, response, self.line_plans):
+            pending_ids = set(clarification["source_message_ids"])
+            cutoff = max(pending_ids)
+            waiting = not self.plan_gap and all((item["kind"] == "unresolved_line_operation"
+                and item["source_message_id"] in pending_ids) or (item.get("line_id") in rows
+                and item["source_message_id"] < cutoff and item["kind"] in {
+                    "product_id", "size", "fit_option_code", "color", "quantity", "garment_type"})
+                for item in self.obligations if item["id"] in remaining)
         result = {"version": 1, "plan_digest": self.digest,
             "source_message_ids": sorted({item["source_message_id"] for item in self.obligations}),
             "covered": covered, "remaining": remaining,
             "disposition": "complete" if not remaining and not self.plan_gap else "waiting_on_customer" if waiting else "recovery",
-            "next_selector": "recipient" if "recipient" in planning_questions else "product" if "product" in planning_questions else selector.get("field", "") if question else "", "next_selector_line": selector if question else {},
+            "next_selector": "recipient" if recipient_question or "recipient" in planning_questions else "product" if "product" in planning_questions else selector.get("field", "") if question else "", "next_selector_line": selector if question else {},
             "local": bool(local), **({"gap": self.plan_gap} if self.plan_gap else {})}
         if (self.payment_observation or self.payment_claim_source_ids) and not self.authority["payment_confirmed"]:
             result["payment_verification"] = "unresolved"
@@ -2152,7 +2196,8 @@ def _capture_payment_context(client, revision, sources, session, line):
     return deepcopy(first), boundary, fence, reason, now.isoformat()
 def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, contexts_by_line, context):
     """Pure attachment, preserving the legacy constructor and single-line API."""
-    from management.services.ig_response_cart_plan import build_cart_response_lines, matching_line_ids, anaphoric_price_line_id, MAX_OBLIGATIONS
+    from management.services.ig_response_cart_plan import (build_cart_response_lines, matching_line_ids,
+        anaphoric_price_line_id, MAX_OBLIGATIONS, cart_wide_price_line_ids, cart_selector_clarification)
     business_context, retail_sources = _business_source_partition(sources)
     business_ids = set(business_context.get("evidence_message_ids", ()))
     personal_fields = {row["message_id"]: _personal_choice_fields(row)
@@ -2217,6 +2262,11 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
                     active_line_id=capture.get("active_line_id"), readiness_by_line=readiness_by_line) or None
             rows = [{"id": f"{source_id}:{owner}:{topic}" if owner else f"{source_id}:{topic}",
                 "kind": topic, "source_message_id": source_id, **({"line_id": owner} if owner else {})}]
+            if owner is None and topic == "info:price":
+                requested_lines = cart_wide_price_line_ids(source, lines)
+                if requested_lines:
+                    rows = [{"id": f"{source_id}:{line_id}:{topic}", "kind": topic,
+                        "source_message_id": source_id, "line_id": line_id} for line_id in requested_lines]
             supported = next((line.as_dict()["authority"].get("fits", ()) for line in lines if line.line_id == owner), context.allowed_fits)
             obligations.extend(_expand_chart_obligations(rows, source, supported_fits=supported))
         # A typed operation with no current surviving source field remains debt.
@@ -2226,7 +2276,9 @@ def attach_cart_response_plan(plan, *, capture, sources, readiness_by_line, cont
             obligations.append({"id": f"{source_id}:unresolved_line_operation", "kind": "unresolved_line_operation", "source_message_id": source_id})
     gap = "response_plan_obligation_bound" if len(obligations) > MAX_OBLIGATIONS or any(len(item["id"]) > 160 for item in obligations) else ""
     from management.services.ig_recipient_planning import planning_context
+    selector_clarification = cart_selector_clarification(capture, retail_sources, obligations, lines)
     return replace(plan, source_cart_capture=deepcopy(capture), line_plans=lines,
+        configuration={**plan.configuration, **({"cart_selector_clarification": selector_clarification} if selector_clarification else {})},
         recipient_planning=planning_context(capture),
         obligations=tuple(obligations), plan_gap=gap, business_context=business_context,
         next_selector="" if obligations and all(item["kind"].startswith(("payment:", "info:payment", "business:")) for item in obligations) else next((line.as_dict()["next_selector"] for line in lines if line.as_dict()["next_selector"]), ""))

@@ -1138,6 +1138,51 @@ def _capture_current_selection_lines(client_id, *, now=None, _owner_snapshot=Non
                 "clarification": snapshot["pending_clarification"], "transition_id": head.pk,
                 "source_message_id": head.source_message_id,
                 "source_digest": hashlib.sha256(sources[head.source_message_id].text.encode()).hexdigest()}
+    if len(lines) > 1:
+        # Dative recipient_reference rows carry the same negative ownership
+        # debt as provisional plans. Recover its original rejected operation,
+        # not an unrelated latest source or the pending flag by itself.
+        from management.services.ig_recipient_planning import unscoped_group_choice
+        from management.services.ig_commerce_turns import parse_turn
+        from management.services.ig_commerce_types import CatalogGraph
+        resolved_axes = set()
+        for item in transitions:
+            source = sources.get(item.source_message_id)
+            decision = getattr(source, "commerce_turn_decision", None)
+            if (not source or not decision or decision.is_stale or decision.session_id != session.pk
+                or not reset_floor <= source.pk <= watermark["message_id"]
+                or not is_current_customer_source(source, namespace=namespace)):
+                continue
+            request = parse_turn(source.text, parsed_catalog_graph=CatalogGraph((), "", ""))
+            if (item.action == "line_operations_applied" and decision.accepted
+                and (decision.result_payload or {}).get("line_source_facts")):
+                for operation in request.line_operations:
+                    if (operation.operation == "configure" and operation.target_recipient_id
+                        and not operation.target_recipient_id.startswith("reference:")):
+                        resolved_axes.update(operation.field_updates)
+                continue
+            if item.action != "recipient_plan_clarification" or decision.accepted:
+                continue
+            previous, following = _source_snapshot(item.previous_snapshot), _source_snapshot(item.next_snapshot)
+            for state in (previous, following):
+                for key in ("revision", "last_provider_message_id", "pending_clarification"):
+                    state.pop(key, None)
+            if (previous != following or not unscoped_group_choice(item.previous_snapshot, request)
+                or [(row.get("line_id"), row.get("recipient_id", "self")) for row in previous.get("lines", ())]
+                    != [(row.get("line_id"), row.get("recipient_id", "self")) for row in lines]
+                or [row.get("product_id") for row in previous.get("lines", ())] != [row.get("product_id") for row in lines]):
+                continue
+            updates = {key: value for key, value in request.field_updates.items()
+                if key in {"size", "fit", "color", "qty", "quantity"} and key not in resolved_axes}
+            if updates:
+                payload["recipient_planning_state"] = {"schema": "recipient-planning.v1",
+                    "clarification": "ambiguous_line_target", "transition_id": item.pk,
+                    "source_message_id": source.pk, "source_digest": hashlib.sha256(source.text.encode()).hexdigest(),
+                    "unassigned_fields": updates}
+                break
+            # An explicit recipient may reaffirm an unchanged value. Its
+            # accepted source resolves this original selector without a delta.
+            break
     if removed:
         payload["removed"] = removed
     payload["capture_digest"] = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,

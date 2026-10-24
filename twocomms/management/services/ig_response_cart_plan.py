@@ -214,6 +214,110 @@ def matching_line_ids(clause, line_plans):
     return tuple(candidates) if len(candidates) == 1 else ()
 
 
+def cart_selector_clarification(capture, sources, obligations, line_plans):
+    """An unapplied current selector needs an owner, never the active row.
+
+    The caller has admitted the canonical capture. This is negative response
+    context only: parsed values remain unassigned and grant no field authority.
+    """
+    if len(line_plans) < 2:
+        return {}
+    unresolved = {row["source_message_id"] for row in obligations if row["kind"] == "unresolved_line_operation"}
+    captured_ids = set((capture.get("fence") or {}).get("source_ids") or ())
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_commerce_types import CatalogGraph
+    pending = []
+    state = capture.get("recipient_planning_state") or {}
+    if (state.get("schema") == "recipient-planning.v1" and state.get("clarification") == "ambiguous_line_target"
+        and state.get("source_message_id") in captured_ids and type(state.get("transition_id")) is int
+        and state["transition_id"] > 0 and re.fullmatch(r"[a-f0-9]{64}", str(state.get("source_digest") or ""))):
+        updates = {key: value for key, value in (state.get("unassigned_fields") or {}).items()
+            if key in {"size", "fit", "color", "qty", "quantity"}}
+        if updates:
+            pending.append({"source_message_id": state["source_message_id"], "unassigned_fields": updates})
+    for source in sources:
+        if source.get("role") != "user" or source.get("message_id") not in unresolved & captured_ids:
+            continue
+        request = parse_turn(str(source.get("text") or ""), parsed_catalog_graph=CatalogGraph((), "", ""))
+        updates = {key: value for key, value in request.field_updates.items()
+            if key in {"size", "fit", "color", "qty", "quantity"}}
+        if (updates and not request.line_operations and not matching_line_ids(source.get("text") or "", line_plans)
+            and source["message_id"] not in {row["source_message_id"] for row in pending}):
+            pending.append({"source_message_id": source["message_id"], "unassigned_fields": updates})
+    return {"source_message_ids": [row["source_message_id"] for row in pending], "requests": pending,
+        "lines": [{"line_id": line.line_id, "recipient_id": line.recipient_id} for line in line_plans]} if pending else {}
+
+
+def cart_recipient_question(context, question):
+    return bool(context and question.count("?") == 1 and re.search(
+        r"для\s+кого|кому\b|which\s+(?:person|item)|whose\b|who(?:m)?\b[^?]{0,50}(?:apply|size|preference)|"
+        r"(?:якої|яку|какой|какую)\s+позиці?\w*", question, re.I))
+
+
+def cart_clarification_reason(context, response, line_plans, *, independent_answer=False):
+    if not context:
+        return ""
+    reason = "response_plan_cart_recipient_clarification_required"
+    if set(response.control).intersection({"product", "item", "size", "fit", "option", "qty",
+            "color_variant_id", "items", "paylink", "payment", "objhandle"}):
+        return reason
+    from management.services.ig_response_plan import _unquoted_text
+    questions = re.findall(r"[^.!?\n]*\?", _unquoted_text(response.reply_text))
+    if not independent_answer and (len(questions) != 1 or not cart_recipient_question(context, questions[0])):
+        return reason
+    # A correct question cannot launder an earlier false recorded selection.
+    from management.services.ig_conversation_agreement import _configuration
+    from management.services.ig_reply_truth import _configuration_axis_value
+    axes = {"fit": "fit_option_code", "qty": "quantity"}
+    for clause in scoped_claim_clauses(_unquoted_text(response.reply_text)):
+        if "?" in clause:
+            continue
+        stated, _ = _configuration(clause)
+        if independent_answer and (set(stated).intersection({"size", "fit", "color", "qty"}) or re.search(
+                r"запис\w*|зафікс\w*|обира\w*|выбра\w*|зафикс\w*|\brecord\w*|\bselected\b", clause, re.I)):
+            return reason
+        matches = matching_line_ids(clause, line_plans)
+        if len(matches) == 1:
+            row = next(line.as_dict() for line in line_plans if line.line_id == matches[0])
+            for field, value in stated.items():
+                chosen = row["choices"].get(axes.get(field, field))
+                if chosen is not None and _configuration_axis_value(field, value) != _configuration_axis_value(field, chosen):
+                    return reason
+    return ""
+
+
+def shared_discovery_question(context, question, line_plans):
+    """One shared pre-product color/design question grants no selection."""
+    if (not context or len(line_plans) < 2 or question.count("?") != 1
+        or any(line.as_dict()["choices"].get("product_id") for line in line_plans)
+        or len(context.get("recipients", ())) != len(line_plans)):
+        return False
+    if re.search(r"\d|\b(?:розмір\w*|размер\w*|sizes?|крій|крой|fits?|кільк\w*|колич\w*|quantit\w*|"
+            r"оплат\w*|плат\w*|pay\w*|адрес\w*|address\w*|достав\w*|delivery|зниж\w*|скид\w*|discount\w*)\b", question, re.I):
+        return False
+    return bool(re.search(r"\b(?:який|яка|яку|які|какой|какая|какие|which|what)\b", question, re.I)
+        and re.search(r"\b(?:принт\w*|дизайн\w*|designs?|prints?|колір\w*|кольор\w*|цвет\w*|colou?rs?)\b", question, re.I)
+        and re.search(r"подоба\w*|нрав\w*|хоч\w*|like|prefer|want", question, re.I))
+
+
+def cart_wide_price_line_ids(source, line_plans):
+    """Expand an explicit pair/all-line price ask into finite owned subjects."""
+    if not 1 < len(line_plans) <= MAX_LINES:
+        return ()
+    text = str(source.get("text") or "")
+    if not re.search(r"\b(?:парн\w*|обидв\w*|обох|кожн\w*|pair|both|each)\b", text, re.I):
+        return ()
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_commerce_types import CatalogGraph
+    parsed = parse_turn(text, parsed_catalog_graph=CatalogGraph((), "", ""))
+    garment = parsed.catalog_garment_type or parsed.garment_type
+    rows = [line.as_dict() for line in line_plans]
+    if (not garment or any(row["choices"].get("garment_type") != garment
+            or not row["choices"].get("product_id") or not row["authority"].get("prices") for row in rows)):
+        return ()
+    return tuple(row["line_id"] for row in rows)
+
+
 def selected_title_text(text, title):
     """Unwrap only literal names present in the captured canonical label."""
     from management.services.ig_response_plan import _PRODUCT_NAME_QUOTES

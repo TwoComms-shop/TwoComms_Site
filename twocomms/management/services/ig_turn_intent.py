@@ -216,10 +216,18 @@ def _selection_signal(text, *, selection_context=False):
     if affirmative_apparel_request(text):
         return True
     value = _customer_text(text)
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_commerce_types import CatalogGraph
+    from management.services.ig_fulfillment_requirements import _customer_text as own_selection_text
+    from management.services.ig_business_cooperation import extract_business_cooperation
+    from management.services.ig_service_complaints import classify_service_complaint
+    recipient_eligible = not extract_business_cooperation(text) and not classify_service_complaint(text)
     reported = bool(_SELECTION_REPORTED.match(value))
     signal = None
-    for part in re.split(r"[.!?;\n]+|,\s*(?:але|но|but)\s+", value, flags=re.I):
-        clause = part.strip()
+    recipient_context = False
+    for part in re.split(r"(?<=[.!?;\n])|,\s*(?:але|но|but)\s+", value, flags=re.I):
+        source_clause = part.strip()
+        clause = source_clause.rstrip(".!?;\n").strip()
         own = _SELECTION_SELF.match(clause)
         if reported and not own:
             continue
@@ -227,9 +235,17 @@ def _selection_signal(text, *, selection_context=False):
             clause = clause[own.end():]
         clause = _SELECTION_POLITE.sub("", clause, count=1).strip()
         clause = re.sub(r"[, ]+", " ", clause).strip()
-        if _SELECTION_WITHDRAWAL.match(clause) or (selection_context and _SELECTION_SHORT_STOP.fullmatch(clause)):
+        if (_SELECTION_WITHDRAWAL.match(clause) or (selection_context and _SELECTION_SHORT_STOP.fullmatch(clause))
+            or (recipient_context and _NEGATED_ORDER.search(clause))):
             signal, selection_context = False, False
             continue
+        own_clause, _ = own_selection_text(source_clause)
+        parsed = parse_turn(own_clause, parsed_catalog_graph=CatalogGraph((), "", ""))
+        if (recipient_eligible and not parsed.pending_line_clarification and not parsed.pending_clarification
+            and parsed.line_operations and all(operation.operation == "configure" and operation.target_recipient_id
+                and not operation.target_recipient_id.startswith("reference:") and operation.field_updates
+                for operation in parsed.line_operations)):
+            signal, selection_context, recipient_context = True, True, True
         request = _SELECTION_REQUEST.match(clause)
         tail = clause[request.end():] if request else ""
         target = _SELECTION_TARGET.search(tail)
@@ -297,6 +313,11 @@ def _purpose(text):
         return "requested_selection"
     if selection is False:
         return "selection_withdrawal"
+    from management.services.ig_commerce_turns import parse_turn
+    from management.services.ig_commerce_types import CatalogGraph
+    pair = parse_turn(text, parsed_catalog_graph=CatalogGraph((), "", ""))
+    if pair.purchase_reference_count == 2 and pair.full_cart_purchase_requested:
+        return "retail"
     if _product_interest_signal(text) is False:
         return "product_interest_withdrawal"
     # A customer imperative can permit checkout discussion, but cannot itself

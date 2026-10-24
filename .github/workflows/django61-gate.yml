@@ -24,7 +24,9 @@ permissions:
 jobs:
   django61:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The Instagram regressions alone took 43 minutes on the hosted runner;
+    # leave time for the size, UI, static and baseline gates that follow.
+    timeout-minutes: 75
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -78,6 +80,10 @@ jobs:
             management.tests_ig_qa23_routing_20261024 \
             management.tests_ig_qa23_prompt_compaction_20261024 \
             management.tests_ig_qa23_reset_attention_20261024 \
+            management.tests_ig_qa23_candidate_authority_20261024 \
+            management.tests_ig_qa23_order_assertions_20261024 \
+            management.tests_ig_qa23_policy_raw_regressions_20261024 \
+            management.tests_ig_multiline_truth_guard \
             management.tests_ig_fresh_conversation_reset_20261023 \
             management.tests_ig_lesia_prompt_budget_20261023 \
             management.tests_ig_multi_recipient_journey_20261023 \

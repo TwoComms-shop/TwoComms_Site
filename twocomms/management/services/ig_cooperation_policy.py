@@ -10,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 import re
 
-VERSION = "owner-2026-10-23.q23.1"
+VERSION = "owner-2026-10-24.q23.2"
 PARSER_VERSION = "cooperation-source.v1"
 LANGUAGES = ("uk", "ru", "en")
 TITLE = "Owner reviewed: public cooperation"
@@ -254,6 +254,23 @@ def unreviewed_business_entitlement(text):
     guarantee. This is a B2B guard, not global retail discount authority.
     """
     from management.services.ig_reply_truth import _locally_negated
+    # Batch multiples do not approve combining sizes or prints. Keep this
+    # negative guard inside the existing business decision boundary.
+    mix_scope = re.compile(r"\b(?:розмір\w*|размер\w*|принт\w*|sizes?|prints?)\b", re.I)
+    mix_permission = re.compile(
+        r"\b(?:можна|можете|можемо|можно|можем|дозволено|разрешено)\s+"
+        r"(?:буде\s+|будет\s+)?(?:мішат\w*|зміш\w*|смеш\w*)\b|"
+        r"\byou\s+(?:can|may)\s+(?:mix|combine)\b|"
+        r"\b(?:sizes?|prints?)(?:\s+and\s+(?:sizes?|prints?))?\s+can\s+be\s+(?:mixed|combined)\b|"
+        r"\b(?:mixing|combining)\s+(?:sizes?|prints?)(?:\s+and\s+(?:sizes?|prints?))?\s+is\s+(?:allowed|permitted)\b", re.I)
+    for clause in re.split(r"[.;\n]+", str(text or "")):
+        if "?" in clause or not mix_scope.search(clause):
+            continue
+        for match in mix_permission.finditer(clause):
+            if (_locally_negated(clause, match.start())
+                or re.search(r"\b(?:чи|ли|whether|if)\s*$", clause[:match.start()], re.I)):
+                continue
+            return True
     entitlement = re.compile(r"гарантован\w*|гарантирован\w*|гаранту\w*|guarantee\w*|entitled|eligible|qualified|"
         r"призначен\w*|назначен\w*|схвален\w*|одобрен\w*|approved|assigned|unlocked", re.I)
     for clause in re.split(r"[,;:]|\b(?:and|but|та|але|і|и|но)\b", str(text or ""), flags=re.I):
