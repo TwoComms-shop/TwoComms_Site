@@ -531,7 +531,9 @@ def _line_quantity(text, *, action):
             "вісім": 8, "восемь": 8, "eight": 8, "дев'ять": 9, "дев’ять": 9, "девять": 9, "nine": 9,
             "десять": 10, "ten": 10}
         number = "|".join(re.escape(word) for word in numbers)
-        descriptors = r"(?:(?:такі|таку|такие|такую|самі|саму|самые|же|same|чорн\w*|черн\w*|біл\w*|бел\w*|black|white|blue|red|син\w*|червон\w*)\s+){0,4}"
+        colors = "|".join(_word_pattern(word) for word in _COLOR_WORDS)
+        descriptors = (r"(?:(?:такі|таку|такие|такую|самі|саму|самые|же|same|"
+            + colors + r")\s+){0,4}")
         for match in re.finditer(r"(?<!\w)(" + number
                 + r")\s+" + descriptors + r"(?:футболк\w*|худі|худи|hoodies?|t-shirts?|шт\.?|штук\w*|pieces?|items?)\b", text, re.I):
             if (_negated_action(text[:match.start()])

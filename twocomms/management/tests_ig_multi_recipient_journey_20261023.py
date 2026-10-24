@@ -250,6 +250,72 @@ class MultiRecipientSourceJourneyTests(CommerceStateFixture, TestCase):
         self.assertEqual(ambiguous.session.pending_clarification, "ambiguous_line_target")
         self.capture()
 
+    def assert_colored_word_quantity_stays_with_boyfriend(self, template, *, color="pink"):
+        self.start()
+        self.reduce(f"Собі одну чорну футболку https://twocomms.shop/product/{self.classic.slug}/, розмір M, крій classic.")
+        own = deepcopy(self.capture()["lines"][0]["fields"])
+        source, decision = self.reduce(template.format(url=f"https://twocomms.shop/product/{self.reality.slug}/"))
+        self.assertTrue(decision.accepted, decision.session.pending_clarification)
+        capture = self.capture()
+        self.assertEqual(capture["lines"][0]["fields"], own)
+        other = capture["lines"][1]
+        self.assertEqual(other["recipient_id"], "boyfriend")
+        for field, value in (("product_id", self.reality.pk), ("quantity", 2), ("color", color),
+                ("size", "L"), ("fit_option_code", "classic")):
+            self.assertEqual(other["fields"][field]["value"], value)
+            self.assertEqual(other["fields"][field]["source"]["source_message_id"], source.pk)
+        self.assertFalse(self.client.checkout_proposals.exists())
+
+    def test_ukrainian_two_pink_shirts_keep_quantity_on_own_recipient(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "Хлопцю дві рожеві футболки {url}, розмір L, крій classic.")
+
+    def test_russian_two_pink_shirts_keep_quantity_on_own_recipient(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "Для парня две розовые футболки {url}, размер L, крой classic.")
+
+    def test_english_two_pink_shirts_keep_quantity_on_own_recipient(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "For my boyfriend two pink t-shirts {url}, size L, fit classic.")
+
+    def test_another_curated_color_uses_the_same_quantity_vocabulary(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "For my boyfriend two green t-shirts {url}, size L, fit classic.", color="green")
+
+    def test_colored_quantity_does_not_accept_negation_quotes_or_alternatives(self):
+        self.start()
+        self.reduce(f"Собі одну чорну футболку https://twocomms.shop/product/{self.classic.slug}/, розмір M, крій classic.")
+        before = [deepcopy(row["fields"]) for row in self.capture()["lines"]]
+        for text in ("Хлопцю не хочу дві рожеві футболки", "Для парня не хочу две розовые футболки",
+                "For my boyfriend I don't want two pink t-shirts", "Хлопцю дві або три рожеві футболки",
+                "For my boyfriend two or three pink t-shirts", "«Хлопцю дві рожеві футболки»"):
+            with self.subTest(text=text):
+                self.reduce(text)
+                self.assertEqual([row["fields"] for row in self.capture()["lines"]], before)
+
+    def test_double_xl_recipient_source_is_not_two_units(self):
+        self.start()
+        for spelling in ("два XL", "дваXL", "2 хл"):
+            with self.subTest(spelling=spelling):
+                source, _ = self.reduce("Для хлопця розмір " + spelling)
+                other = self.capture()["lines"][1]
+                self.assertEqual(other["fields"]["size"]["value"], "XXL")
+                self.assertEqual(other["fields"]["size"]["source"]["source_message_id"], source.pk)
+                self.assertNotIn("quantity", other["fields"])
+                self.assertIsNone(other["defaults"]["quantity"]["value"])
+
+    def test_reviewed_pink_number_word_title_does_not_create_quantity(self):
+        self.reality.title = "Дві рожеві футболки"
+        self.reality.save(update_fields=["title"])
+        self.start()
+        source, decision = self.reduce("Хлопцю футболку Дві рожеві футболки, розмір L, крій classic.")
+        self.assertTrue(decision.accepted, decision.session.pending_clarification)
+        other = self.capture()["lines"][1]
+        self.assertEqual(other["fields"]["product_id"]["value"], self.reality.pk)
+        self.assertEqual(other["fields"]["product_id"]["source"]["source_message_id"], source.pk)
+        self.assertNotIn("quantity", other["fields"])
+        self.assertIsNone(other["defaults"]["quantity"]["value"])
+
     def test_recipient_aliases_scope_duplicate_sku_reply_clauses(self):
         from management.services.ig_response_cart_plan import matching_line_ids
         self.start()
