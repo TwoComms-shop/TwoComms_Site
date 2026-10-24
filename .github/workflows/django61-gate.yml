@@ -84,6 +84,10 @@ jobs:
             management.tests_ig_qa23_order_assertions_20261024 \
             management.tests_ig_qa23_policy_raw_regressions_20261024 \
             management.tests_ig_cooperation_publication_history_20261024 \
+            management.tests_ig_admission_manifest_atomic_20261024 \
+            management.tests_ig_terminal_fault_ack_20261024 \
+            management.tests_bot_health_logging_20261024 \
+            twocomms.tests_log_handlers \
             management.tests_ig_multiline_truth_guard \
             management.tests_ig_fresh_conversation_reset_20261023 \
             management.tests_ig_lesia_prompt_budget_20261023 \

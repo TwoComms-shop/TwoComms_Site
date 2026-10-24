@@ -789,6 +789,9 @@ LOGGING = {
         'pii_redaction': {
             '()': 'twocomms.log_handlers.PIIRedactionFilter',
         },
+        'expected_bot_readiness': {
+            '()': 'twocomms.log_handlers.ExpectedBotReadinessFilter',
+        },
     },
     'handlers': {
         'console': {
@@ -857,7 +860,7 @@ LOGGING = {
         'telegram_alert': {
             'level': 'ERROR',
             'class': 'twocomms.log_handlers.TelegramAlertHandler',
-            'filters': ['pii_redaction'],
+            'filters': ['pii_redaction', 'expected_bot_readiness'],
         },
         # W3-2: client-side ошибки (window.onerror) — отдельный файл.
         'client_error_file': {

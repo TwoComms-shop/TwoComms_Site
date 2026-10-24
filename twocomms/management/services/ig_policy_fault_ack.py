@@ -18,6 +18,16 @@ from management.services.ig_revision_authority import check_fact_bindings, check
 MODE = "local_policy_fault"
 
 
+def technical_acknowledgement(language):
+    """A recorded execution case makes no claim that a human received it."""
+    return {
+        "uk": "Дякую за звернення. Зафіксувала ваш запит для перевірки командою. Якщо є додаткові деталі або запитання, напишіть їх тут.",
+        "ru": "Спасибо за обращение. Зафиксировала ваш запрос для проверки командой. Если есть дополнительные детали или вопросы, напишите их здесь.",
+        "en": "Thank you for your message. I have recorded your request for our team to review. Please add any further details or questions here.",
+        "hi": "आपके संदेश के लिए धन्यवाद। मैंने आपका अनुरोध हमारी टीम की समीक्षा के लिए दर्ज कर लिया है। अन्य जानकारी या प्रश्न यहाँ लिखें।",
+    }.get(language, "")
+
+
 def business_acknowledgement(language, *, business_cooperation=None):
     brief = business_cooperation if isinstance(business_cooperation, dict) else {}
     subtypes = set(brief.get("subtypes") or ())

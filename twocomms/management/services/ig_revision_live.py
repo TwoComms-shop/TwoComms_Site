@@ -1257,16 +1257,47 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
     if not readiness.ready:
         return None, boundary, readiness.reasons
     from management.services.ig_revision_recovery import record_generation_admission
+    from management.services.gemini_routing import TurnFacts, classify_live_turn
+    from management.services.ig_turn_capture import capture_revision_routing
+    from management.services.ig_turn_intelligence import TurnContextError
+
+    sources = revision.bundle_snapshot["sources"]
+    source_id = int(sources[-1]["message_id"])
+    images = collection.inline_media
+    has_image = any(part.mime.startswith("image/") for part in collection.parts)
+    has_audio = any(part.mime.startswith("audio/") for part in collection.parts)
+    routing_decision = classify_live_turn(TurnFacts(has_image=has_image, has_audio=has_audio,
+        reasoning_task_hint="media_analysis" if (has_image or has_audio) else ""), settings_obj=settings_row)
+    context_mode = getattr(django_settings, "IG_TURN_CONTEXT_MODE", "legacy")
+    context_reason = "context_legacy_mode"
+    routing_capture = None
+    if context_mode in {"shadow", "unified"}:
+        settings_row.turn_intelligence_mode = context_mode
+        try:
+            routing_capture = capture_revision_routing(revision, generation_boundary=boundary,
+                collection=collection, settings_row=settings_row, publication=publication)
+        except TurnContextError as exc:
+            context_reason = exc.reason
+            if context_mode == "unified" and exc.reason != "legacy_sealed_time_unavailable":
+                return None, boundary, (exc.reason,)
+        if context_mode == "unified" and routing_capture is not None:
+            routing_decision = routing_capture.decision
+    from management.services.call_ai_analysis import prepare_live_chat_candidate_plan
+    from management.services.ig_revision_provider_execution import _frozen_candidates
+
+    manual_key = ((settings_row.custom_gemini_key or "").strip() or None
+        if settings_row.gemini_source == InstagramBotSettings.CredSource.CUSTOM else None)
+    _models, execution_plan = prepare_live_chat_candidate_plan(
+        model_chain_override=routing_decision.model_chain, manual_key=manual_key)
 
     admission = record_generation_admission(
         revision.pk, token, settings_id=settings_row.pk,
         settings_permission_epoch=boundary.settings_epoch,
         publication=publication, authority=boundary.baseline,
+        candidate_plan=_frozen_candidates(execution_plan),
     )
     if not admission.ready:
         return None, boundary, (admission.reason,)
-    sources = revision.bundle_snapshot["sources"]
-    source_id = int(sources[-1]["message_id"])
     try:
         route_capture = capture_revision_customer_routes(revision.pk, token,
             settings_id=settings_row.pk, settings_permission_epoch=boundary.settings_epoch,
@@ -1279,40 +1310,23 @@ def _generate_proposal(revision, token, settings_row, publication, collection):
         route_context = None
         logging.getLogger(__name__).warning("revision_route_capture_unavailable")
     failure = {}
-    images = collection.inline_media
     candidate_set = bot._build_turn_candidate_set() if images else None
     deadline = revision.overall_deadline - timedelta(seconds=5)
     media_context = [
         {**part, "status": "owned" if part.get("capture_outcome") == "owned" else "unavailable"}
         for source in sources for part in source.get("media_parts") or []
     ]
-    # The revision worker is a canonical provider caller. Preserve the sealed
-    # media facts when invoking the legacy generator so an omitted optional
-    # decision cannot silently downgrade an audio/image turn to ordinary chat.
-    from management.services.gemini_routing import TurnFacts, classify_live_turn
-    has_image = any(part.mime.startswith("image/") for part in collection.parts)
-    has_audio = any(part.mime.startswith("audio/") for part in collection.parts)
-    routing_decision = classify_live_turn(
-        TurnFacts(
-            has_image=has_image,
-            has_audio=has_audio,
-            reasoning_task_hint="media_analysis" if (has_image or has_audio) else "",
-        ),
-        settings_obj=settings_row,
-    )
     from management.services.ig_turn_integration import (
         legacy_revision_context_metadata, prepare_revision_turn_context,
     )
-    from management.services.ig_turn_intelligence import TurnContextError
-    context_mode = getattr(django_settings, "IG_TURN_CONTEXT_MODE", "legacy")
     prepared_context = None
     captured_context = None
-    context_reason = "context_legacy_mode"
-    if context_mode in {"shadow", "unified"}:
+    if routing_capture is not None:
         try:
             captured_context = prepare_revision_turn_context(
                 revision, generation_boundary=boundary, collection=collection,
                 settings_row=settings_row, publication=publication,
+                routing_capture=routing_capture,
             )
         except TurnContextError as exc:
             context_reason = exc.reason
@@ -1963,6 +1977,15 @@ def _revision_response_purpose_reason(revision):
         from management.services.ig_revision_holding import holding_receipt_valid
         if not holding_receipt_valid(current, text=text):
             return "holding_handoff_no_longer_open"
+        from management.services.ig_terminal_fault_ack import MODE as TERMINAL_FAULT_ACK_MODE
+        if ((current.action_receipts.get("technical_holding") or {}).get("acknowledgement_mode") == TERMINAL_FAULT_ACK_MODE
+            and not current.delivery_effects.exclude(purpose="technical_holding").exists()):
+            # This exact one-text acknowledgement is already bound to the
+            # real technical-debt task by holding_receipt_valid. It makes no
+            # product/support decision that requires a separate business case.
+            # The canonical outbox still enforces every source/permission and
+            # messaging-window fence before physical dispatch.
+            return ""
     from management.services.ig_revision_intents import product_review_receipt_reason
     product_reason = product_review_receipt_reason(current)
     if product_reason:
@@ -2259,6 +2282,14 @@ def execute_claimed_revision(revision_id, token, settings_row, *, presence_scope
             stage="revision_execution", exception_type=type(exc).__name__)
         if not recorded.ready:
             raise
+        try:
+            from management.services.ig_terminal_fault_ack import record_terminal_fault_ack_candidate
+
+            record_terminal_fault_ack_candidate(revision_id, settings_id=settings_row.pk)
+        except Exception:
+            # The original fault and its operator owner remain authoritative.
+            # A failed optional acknowledgement admission never masks them.
+            logging.getLogger(__name__).warning("revision_terminal_ack_candidate_unavailable")
         return RevisionLiveResult(revision_id, "blocked", (recorded.reason,))
     finally:
         _stop_revision_presence(scope)
@@ -2771,6 +2802,43 @@ def _log_revision_blocked(revision_id, client_id, outcome, *, event="revision_ex
     )
 
 
+def _process_terminal_fault_acknowledgements(settings_row):
+    """One already-admitted acknowledgement in the existing customer worker."""
+    from management.services import instagram_bot as bot
+    from management.services.ig_terminal_fault_ack import (
+        terminal_fault_ack_revision_ids, claim_terminal_fault_ack, execute_terminal_fault_ack,
+    )
+
+    for revision_id in terminal_fault_ack_revision_ids(limit=1):
+        if bot.maintenance_status()["active"]:
+            break
+        identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
+        if not identity:
+            continue
+        client, lease = bot.acquire_client_automation_lease(identity["client_id"])
+        if client is None:
+            continue
+        try:
+            revision, token = claim_terminal_fault_ack(revision_id,
+                settings_id=settings_row.pk, automation_lease_token=lease)
+            if revision is None or not token:
+                continue
+            outcome = execute_terminal_fault_ack(revision_id, token, settings_row)
+            if outcome.sent_parts:
+                return 1
+            if outcome.reasons:
+                _log_revision_blocked(revision_id, identity["client_id"], outcome,
+                    event="revision_terminal_fault_ack")
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            bot.log("error", "revision_terminal_fault_ack",
+                f"revision={revision_id} error={type(exc).__name__}")
+        finally:
+            bot.release_client_automation_lease(identity["client_id"], lease)
+    return 0
+
+
 def process_pending_revisions(settings_row, *, max_items=15, create_new=True) -> int:
     """Bounded optional worker; flag rollback only resumes canonical effects."""
     from management.services import instagram_bot as bot
@@ -3006,4 +3074,8 @@ def process_pending_revisions(settings_row, *, max_items=15, create_new=True) ->
         finally:
             _stop_revision_presence(presence_scope)
             bot.release_client_automation_lease(identity["client_id"], lease)
+    # Fresh source work keeps its existing slot priority. This queue contains
+    # only explicit new native-fault candidates, never a generic manual scan.
+    if handled < limit:
+        handled += _process_terminal_fault_acknowledgements(settings_row)
     return handled

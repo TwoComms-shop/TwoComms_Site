@@ -489,6 +489,9 @@ def holding_receipt_valid(revision, *, text=None):
     if receipt.get("acknowledgement_mode") == "local_policy_fault":
         from management.services.ig_policy_fault_ack import policy_fault_ack_valid
         return policy_fault_ack_valid(revision, receipt)
+    if receipt.get("acknowledgement_mode") == "local_terminal_fault":
+        from management.services.ig_terminal_fault_ack import terminal_fault_ack_valid
+        return terminal_fault_ack_valid(revision, receipt)
     if receipt.get("acknowledgement_mode") == "local_rate_limit":
         from management.services.ig_revision_rate_handoff import rate_ack_valid
         return rate_ack_valid(revision, receipt)

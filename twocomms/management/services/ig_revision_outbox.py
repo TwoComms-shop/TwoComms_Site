@@ -269,6 +269,7 @@ def _cas_readiness(
     offer_checker=None,
     now=None,
     allow_expired_holding=False,
+    allow_terminal_fault_ack=False,
 ) -> OutboxReadiness:
     now = now or timezone.now()
     reasons: list[str] = []
@@ -292,8 +293,13 @@ def _cas_readiness(
         _append(reasons, "pending_inbound")
     if revision.overall_deadline <= now and not allow_expired_holding:
         from management.services.ig_revision_recovery import execution_resume_is_current
+        terminal_ack_allowed = False
+        if allow_terminal_fault_ack:
+            from management.services.ig_terminal_fault_ack import terminal_fault_ack_current
+            terminal_ack_allowed = terminal_fault_ack_current(revision, now=now)
 
-        if not execution_resume_is_current(revision, now=now):
+        if not (execution_resume_is_current(revision, now=now)
+            or terminal_ack_allowed):
             _append(reasons, "revision_deadline_exhausted")
     window_deadline = _normal_reply_window_deadline(revision)
     if window_deadline is None:
@@ -383,6 +389,7 @@ def pre_winner_readiness(
     offer_checker=None,
     now=None,
     allow_expired_holding=False,
+    allow_terminal_fault_ack=False,
 ) -> OutboxReadiness:
     """DB-only hook; caller may use failure to request one in-budget repair."""
     try:
@@ -424,6 +431,7 @@ def pre_winner_readiness(
             offer_checker=offer_checker,
             now=now,
             allow_expired_holding=allow_expired_holding,
+            allow_terminal_fault_ack=allow_terminal_fault_ack,
         )
 
 
@@ -637,6 +645,8 @@ def plan_revision_effects(
                 purpose == PURPOSE_TECHNICAL_HOLDING
                 and revision.recovery_code == "provider_dispatch_budget"
             ),
+            allow_terminal_fault_ack=(purpose == PURPOSE_TECHNICAL_HOLDING
+                and (revision.action_receipts or {}).get("technical_holding", {}).get("acknowledgement_mode") == "local_terminal_fault"),
         )
         if not readiness.ready:
             return EffectPlanResult(reasons=readiness.reasons)
@@ -920,6 +930,8 @@ def mark_provider_started(
                 effect.purpose == PURPOSE_TECHNICAL_HOLDING
                 and revision.recovery_code == "provider_dispatch_budget"
             ),
+            allow_terminal_fault_ack=(effect.purpose == PURPOSE_TECHNICAL_HOLDING
+                and (revision.action_receipts or {}).get("technical_holding", {}).get("acknowledgement_mode") == "local_terminal_fault"),
         )
         if not readiness.ready:
             effect.state = (

@@ -283,10 +283,68 @@ def inspect_revision_provider_execution(revision, *, now=None, lock_ledger=False
     return ProviderContinuation(ready=eligible, reason=reason, candidate_plan=tuple(candidates), next_due_at=due, **base)
 
 
+def freeze_revision_provider_manifest_locked(revision, *, settings_row, client,
+                                             candidate_plan=None, now=None, allow_create=True):
+    """Freeze a budget under the caller's settings -> client -> revision locks.
+
+    This envelope grants no HTTP slot. Admission appends it in the same outer
+    transaction as its authority receipt; the gateway reuses the same producer.
+    Historic admission-only rows must use allow_create=False.
+    """
+    from management.services.ig_revision_outbox import _normal_reply_window_deadline
+
+    if not connection.in_atomic_block:
+        return ProviderContinuation(reason="provider_admission_not_atomic")
+    now = now or timezone.now()
+    root = economic_root(revision)
+    if not root:
+        return ProviderContinuation(reason="provider_lineage_invalid")
+    if root.pk == revision.pk:
+        root = revision
+    manifest = _manifest(root)
+    if not manifest:
+        source_id = revision.bundle_snapshot.get("sources", [{}])[-1].get("message_id")
+        family = economic_family(root)
+        if (not allow_create or (root.action_receipts or {}).get(MANIFEST_KEY)
+            or any("generation_admission" in (row.action_receipts or {}) for row in family)
+            or GeminiRequest.objects.filter(source_message_id=source_id,
+                source_execution_key__in=[f"ig-revision:{row.pk}" for row in family]).exists()):
+            return ProviderContinuation(reason="provider_manifest_missing")
+        candidates = _frozen_candidates(candidate_plan)
+        window = _normal_reply_window_deadline(root)
+        if not candidates or window is None or window <= now:
+            return ProviderContinuation(reason="provider_route_invalid")
+        manifest = {"version": 1, "root_revision_id": root.pk, "client_id": client.pk,
+                    "snapshot_digest": root.snapshot_digest, "source_message_ids": [row["message_id"] for row in root.bundle_snapshot["sources"]],
+                    "permission_epoch": root.permission_epoch, "settings_id": settings_row.pk,
+                    "settings_permission_epoch": settings_row.reply_permission_epoch, "started_at": now.isoformat(),
+                    "horizon_at": min(now + HORIZON, window).isoformat(), "max_http": MAX_HTTP,
+                    "max_scarce_http": MAX_SCARCE_HTTP, "max_repairs": 1, "candidates": list(candidates),
+                    "provider_policy_version": "revision-provider-8-v1",
+                    "instruction_publication": {
+                        "id": settings_row.active_instruction_publication_id,
+                        "version": getattr(settings_row.active_instruction_publication, "version", None),
+                        "hash": getattr(settings_row.active_instruction_publication, "snapshot_hash", ""),
+                    }}
+        manifest["digest"] = _digest(manifest)
+        root.action_receipts = {**(root.action_receipts or {}), MANIFEST_KEY: manifest}
+        root.save(update_fields=["action_receipts", "updated_at"])
+        if revision.pk != root.pk:
+            revision.action_receipts = {**(revision.action_receipts or {}), REFERENCE_KEY: {
+                "root_revision_id": root.pk, "manifest_digest": manifest["digest"]}}
+            revision.save(update_fields=["action_receipts", "updated_at"])
+    if (manifest["settings_id"] != settings_row.pk
+        or manifest["settings_permission_epoch"] != settings_row.reply_permission_epoch):
+        return ProviderContinuation(reason="provider_permission_changed")
+    if revision.pk != root.pk and (revision.action_receipts or {}).get(REFERENCE_KEY) != {
+        "root_revision_id": root.pk, "manifest_digest": manifest["digest"]}:
+        return ProviderContinuation(reason="provider_reference_invalid")
+    return ProviderContinuation(ready=True, root_revision_id=root.pk, manifest=manifest)
+
+
 def revision_provider_continuation(revision_id, token, *, settings_id, settings_permission_epoch, candidate_plan=None, now=None):
     """Freeze before graph creation; callers may only narrow the original route."""
     from management.services.gemini_accounting_runtime import _RevisionExecution, _revision_execution_valid
-    from management.services.ig_revision_outbox import _normal_reply_window_deadline
 
     now = now or timezone.now()
     identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
@@ -298,40 +356,14 @@ def revision_provider_continuation(revision_id, token, *, settings_id, settings_
         revision = IgCustomerTurnRevision.objects.select_for_update().filter(pk=revision_id).first()
         if not settings_row or not client or not revision:
             return ProviderContinuation(reason="provider_owner_missing")
-        root = economic_root(revision)
-        if not root:
-            return ProviderContinuation(reason="provider_lineage_invalid")
         source_id = revision.bundle_snapshot.get("sources", [{}])[-1].get("message_id")
         if not _revision_execution_valid(_RevisionExecution(revision.pk, token, settings_id, settings_permission_epoch), source_message_id=source_id, client_id=client.pk, lane="live", logical_turn_id=f"ig-revision:{revision.pk}"):
             return ProviderContinuation(reason="revision_execution_invalid")
-        manifest = _manifest(root)
-        if not manifest:
-            if (root.action_receipts or {}).get(MANIFEST_KEY) or GeminiRequest.objects.filter(source_message_id=source_id, source_execution_key__in=[f"ig-revision:{row.pk}" for row in economic_family(root)]).exists():
-                return ProviderContinuation(reason="provider_manifest_missing")
-            candidates = _frozen_candidates(candidate_plan)
-            window = _normal_reply_window_deadline(root)
-            if not candidates or window is None or window <= now:
-                return ProviderContinuation(reason="provider_route_invalid")
-            manifest = {"version": 1, "root_revision_id": root.pk, "client_id": client.pk,
-                        "snapshot_digest": root.snapshot_digest, "source_message_ids": [row["message_id"] for row in root.bundle_snapshot["sources"]],
-                        "permission_epoch": root.permission_epoch, "settings_id": settings_id,
-                        "settings_permission_epoch": settings_permission_epoch, "started_at": now.isoformat(),
-                        "horizon_at": min(now + HORIZON, window).isoformat(), "max_http": MAX_HTTP,
-                        "max_scarce_http": MAX_SCARCE_HTTP, "max_repairs": 1, "candidates": list(candidates),
-                        "provider_policy_version": "revision-provider-8-v1",
-                        "instruction_publication": {
-                            "id": settings_row.active_instruction_publication_id,
-                            "version": getattr(settings_row.active_instruction_publication, "version", None),
-                            "hash": getattr(settings_row.active_instruction_publication, "snapshot_hash", ""),
-                        }}
-            manifest["digest"] = _digest(manifest)
-            root.action_receipts = {**(root.action_receipts or {}), MANIFEST_KEY: manifest}
-            root.save(update_fields=["action_receipts", "updated_at"])
-            if revision.pk != root.pk:
-                revision.action_receipts = {**(revision.action_receipts or {}), REFERENCE_KEY: {"root_revision_id": root.pk, "manifest_digest": manifest["digest"]}}
-                revision.save(update_fields=["action_receipts", "updated_at"])
-        if manifest["settings_id"] != settings_id or manifest["settings_permission_epoch"] != settings_permission_epoch:
-            return ProviderContinuation(reason="provider_permission_changed")
+        frozen = freeze_revision_provider_manifest_locked(revision, settings_row=settings_row,
+            client=client, candidate_plan=candidate_plan, now=now,
+            allow_create="generation_admission" not in (revision.action_receipts or {}))
+        if not frozen.ready:
+            return frozen
         continuation = inspect_revision_provider_execution(revision, now=now)
         if candidate_plan is not None and continuation.ready:
             current = {_candidate_key(row): row for row in _frozen_candidates(candidate_plan)}

@@ -3,9 +3,79 @@ import threading
 import time
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.test import RequestFactory, SimpleTestCase
 
-from twocomms.log_handlers import PIIRedactionFilter, TelegramAlertHandler
+from twocomms.log_handlers import (
+    BOT_READINESS_MARKER, ExpectedBotReadinessFilter,
+    PIIRedactionFilter, TelegramAlertHandler,
+)
+
+
+class ExpectedBotReadinessFilterTests(SimpleTestCase):
+    def record(self):
+        request = RequestFactory().get('/bot/health/', HTTP_HOST='management.twocomms.shop')
+        request.urlconf = 'twocomms.urls_management'
+        setattr(request, BOT_READINESS_MARKER, {
+            'schema': 'ig-readiness-notification.v1', 'reason': 'customer_attention',
+            'attention_count': 1,
+        })
+        record = logging.LogRecord('django.request', logging.ERROR, __file__, 1,
+                                   'Service Unavailable: /bot/health/', (), None)
+        record.request, record.status_code = request, 503
+        return record
+
+    def test_only_explicit_customer_readiness_is_filtered(self):
+        self.assertFalse(ExpectedBotReadinessFilter().filter(self.record()))
+
+    def test_unclassified_and_malformed_markers_still_alert(self):
+        markers = [None, {}, {'reason': 'customer_attention'},
+                   {'schema': 'other', 'reason': 'customer_attention', 'attention_count': 1},
+                   {'schema': 'ig-readiness-notification.v1', 'reason': 'unknown', 'attention_count': 1}]
+        valid = getattr(self.record().request, BOT_READINESS_MARKER)
+        for count in (0, -1, True, '1', None):
+            markers.append({**valid, 'attention_count': count})
+        markers.append({**valid, 'unexpected': True})
+        for marker in markers:
+            with self.subTest(marker=marker):
+                record = self.record()
+                setattr(record.request, BOT_READINESS_MARKER, marker)
+                self.assertTrue(ExpectedBotReadinessFilter().filter(record))
+        record = self.record()
+        delattr(record.request, BOT_READINESS_MARKER)
+        self.assertTrue(ExpectedBotReadinessFilter().filter(record))
+
+    def test_other_errors_routes_hosts_methods_and_exceptions_still_alert(self):
+        changes = [
+            ('record', 'status_code', 500), ('record', 'status_code', 504),
+            ('record', 'name', 'other'), ('record', 'levelno', logging.CRITICAL),
+            ('record', 'exc_info', (RuntimeError, RuntimeError('failure'), None)),
+            ('request', 'method', 'POST'), ('request', 'path', '/bot/api/status/'),
+            ('request', 'urlconf', 'twocomms.urls'),
+        ]
+        for target, attribute, value in changes:
+            with self.subTest(attribute=attribute, value=value):
+                record = self.record()
+                setattr(record if target == 'record' else record.request, attribute, value)
+                self.assertTrue(ExpectedBotReadinessFilter().filter(record))
+        record = self.record()
+        record.request.META['HTTP_HOST'] = 'twocomms.shop'
+        self.assertTrue(ExpectedBotReadinessFilter().filter(record))
+        record.request.get_host = mock.Mock(side_effect=RuntimeError('metadata unavailable'))
+        self.assertTrue(ExpectedBotReadinessFilter().filter(record))
+        record.request = None
+        self.assertTrue(ExpectedBotReadinessFilter().filter(record))
+
+    def test_filter_is_configured_only_on_telegram_and_preserves_durable_handler(self):
+        from twocomms import settings as project_settings
+
+        config = project_settings.LOGGING
+        self.assertEqual(config['filters']['expected_bot_readiness']['()'],
+                         'twocomms.log_handlers.ExpectedBotReadinessFilter')
+        owners = [name for name, handler in config['handlers'].items()
+                  if 'expected_bot_readiness' in handler.get('filters', [])]
+        self.assertEqual(owners, ['telegram_alert'])
+        self.assertEqual(config['loggers']['django.request']['handlers'],
+                         ['app_error_file', 'telegram_alert'])
 
 
 class PIIRedactionFilterTests(SimpleTestCase):

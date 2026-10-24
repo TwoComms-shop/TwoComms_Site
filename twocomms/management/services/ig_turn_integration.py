@@ -36,12 +36,13 @@ def legacy_revision_context_metadata(revision, *, mode="legacy", reason="context
 
 
 def prepare_revision_turn_context(revision, *, generation_boundary, collection,
-                                  settings_row, publication, now=None):
+                                  settings_row, publication, now=None, routing_capture=None):
     """Capture once; all consumers receive defensive views of that capture."""
-    captured_at = now or timezone.now()
+    captured_at = routing_capture.captured_at if routing_capture is not None else now or timezone.now()
     settings_row.turn_intelligence_mode = getattr(settings, "IG_TURN_CONTEXT_MODE", "legacy")
     context = capture_revision_context(revision, generation_boundary=generation_boundary,
-        collection=collection, settings_row=settings_row, publication=publication, now=captured_at)
+        collection=collection, settings_row=settings_row, publication=publication, now=captured_at,
+        routing_capture=routing_capture)
     boundary = detached_payload(context.boundary)
     components = detached_payload(context.components)
     from management.services.ig_captured_policy_inputs import capture_policy_inputs

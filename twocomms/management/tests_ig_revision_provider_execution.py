@@ -51,7 +51,7 @@ class RevisionProviderExecutionTests(TransactionTestCase):
     def _admit(self):
         publication = PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash)
         authority = RevisionGenerationBoundary(self.revision, self.token, self.settings, publication).baseline
-        result = record_generation_admission(self.revision.pk, self.token, settings_id=self.settings.pk, settings_permission_epoch=self.settings.reply_permission_epoch, publication=publication, authority=authority)
+        result = record_generation_admission(self.revision.pk, self.token, settings_id=self.settings.pk, settings_permission_epoch=self.settings.reply_permission_epoch, publication=publication, authority=authority, candidate_plan=self.raw_plan)
         self.assertTrue(result.ready, result.reason)
 
     def test_global_http_count_and_route_survive_refresh(self):

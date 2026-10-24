@@ -1331,6 +1331,10 @@ def bot_health(request):
     )
     response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response["X-Robots-Tag"] = "noindex, nofollow"
+    if not healthy:
+        from twocomms.log_handlers import mark_expected_bot_readiness
+
+        mark_expected_bot_readiness(request, tasks=tasks, queues=queues, operations=operations)
     return response
 
 

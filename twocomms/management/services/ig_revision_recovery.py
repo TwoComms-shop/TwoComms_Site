@@ -75,9 +75,14 @@ def _selection_digest(client):
 
 def record_generation_admission(
     revision_id, token, *, settings_id, settings_permission_epoch,
-    publication, authority, now=None,
+    publication, authority, now=None, candidate_plan=None,
 ):
-    """Persist bounded source/authority fingerprints before opening a graph."""
+    """Commit authority and its frozen provider budget before preparation.
+
+    Candidate preparation is local and outside this mutex. An interruption
+    after this commit can use the existing bounded outage continuation, even
+    if no request graph has yet been opened.
+    """
     now = now or timezone.now()
     identity = IgCustomerTurnRevision.objects.filter(pk=revision_id).values("client_id").first()
     if identity is None or not authority.ready:
@@ -111,10 +116,18 @@ def record_generation_admission(
         }
         receipt["digest"] = _digest(receipt)
         existing = (revision.action_receipts or {}).get("generation_admission")
-        if existing:
-            return RecoveryAdmissionResult(existing == receipt, "existing_admission" if existing == receipt else "generation_admission_changed")
-        if GeminiRequest.objects.filter(logical_turn_id=receipt["logical_turn_id"]).exists():
+        if existing and existing != receipt:
+            return RecoveryAdmissionResult(reason="generation_admission_changed")
+        if not existing and GeminiRequest.objects.filter(logical_turn_id=receipt["logical_turn_id"]).exists():
             return RecoveryAdmissionResult(reason="generation_admission_missing_before_request")
+        from management.services.ig_revision_provider_execution import freeze_revision_provider_manifest_locked
+
+        frozen = freeze_revision_provider_manifest_locked(revision, settings_row=settings_row,
+            client=client, candidate_plan=candidate_plan, now=now, allow_create=not bool(existing))
+        if not frozen.ready:
+            return RecoveryAdmissionResult(reason=frozen.reason)
+        if existing:
+            return RecoveryAdmissionResult(True, "existing_admission")
         revision.action_receipts = {**(revision.action_receipts or {}), "generation_admission": receipt}
         revision.save(update_fields=["action_receipts", "updated_at"])
         return RecoveryAdmissionResult(True, "admitted")

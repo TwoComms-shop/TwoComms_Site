@@ -47,13 +47,19 @@ class PreGenerationExpiryTests(TransactionTestCase):
         self.assertFalse(GeminiRequest.objects.exists())
 
     def test_admitted_generation_keeps_missing_manifest_as_a_binding_fault(self):
+        from management.services.ig_revision_provider_execution import ProviderContinuation
+
         publication = PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash)
         authority = RevisionGenerationBoundary(self.revision, self.token, self.settings, publication).baseline
-        admission = record_generation_admission(
-            self.revision.pk, self.token, settings_id=self.settings.pk,
-            settings_permission_epoch=self.settings.reply_permission_epoch,
-            publication=publication, authority=authority,
-        )
+        # Historical releases committed admission without a manifest producer.
+        # Preserve that exact legacy shape; current admission is atomic.
+        with patch("management.services.ig_revision_provider_execution.freeze_revision_provider_manifest_locked",
+                return_value=ProviderContinuation(ready=True)):
+            admission = record_generation_admission(
+                self.revision.pk, self.token, settings_id=self.settings.pk,
+                settings_permission_epoch=self.settings.reply_permission_epoch,
+                publication=publication, authority=authority,
+            )
         self.assertTrue(admission.ready, admission.reason)
         self.assertEqual(self._classify_without_io().reason, "provider_manifest_missing")
 

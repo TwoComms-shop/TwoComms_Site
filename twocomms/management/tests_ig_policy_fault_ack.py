@@ -41,9 +41,12 @@ class PolicyFaultAckTests(TransactionTestCase):
         self._record_fault()
 
     def _record_fault(self):
+        from management.tests_gemini_accounting_shadow import _raw_plan
+
         authority = RevisionGenerationBoundary(self.revision, self.token, self.settings, self.binding).baseline
         admitted = record_generation_admission(self.revision.pk, self.token, settings_id=self.settings.pk,
-            settings_permission_epoch=self.settings.reply_permission_epoch, publication=self.binding, authority=authority)
+            settings_permission_epoch=self.settings.reply_permission_epoch, publication=self.binding, authority=authority,
+            candidate_plan=_raw_plan())
         self.assertTrue(admitted.ready, admitted.reason)
         recorded = record_policy_readiness_failure(self.revision.pk, self.token, settings_id=self.settings.pk,
             settings_permission_epoch=self.settings.reply_permission_epoch, publication=self.binding,

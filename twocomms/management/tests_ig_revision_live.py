@@ -39,6 +39,14 @@ class RevisionLiveTests(TransactionTestCase):
         environment = patch.dict(os.environ, {"IG_PROVIDER_TRANSPORT": "instagram_login"})
         environment.start()
         self.addCleanup(environment.stop)
+        # This fixture replaces the real gateway with _generate below. Its
+        # early admission must freeze that same canonical stub route, rather
+        # than the unconfigured credentials of the offline test environment.
+        from management.tests_gemini_accounting_shadow import _raw_plan
+        candidate_factory = patch("management.services.call_ai_analysis.prepare_live_chat_candidate_plan",
+            side_effect=lambda **kwargs: (["gemini-3.7-flash"], _raw_plan()))
+        candidate_factory.start()
+        self.addCleanup(candidate_factory.stop)
         snapshot = {"schema_version": 1, "instructions": []}
         self.publication = BotPolicyPublication.objects.create(
             version=int(BotPolicyPublication.objects.aggregate(value=Max("version"))["value"] or 0) + 1,

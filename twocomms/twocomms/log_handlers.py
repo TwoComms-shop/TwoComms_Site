@@ -36,6 +36,91 @@ LONG_NUMBER_RE = re.compile(r'(?<!\d)\d{12,19}(?!\d)')
 WEBHOOK_VERIFY_TOKEN_RE = re.compile(
     r'(?i)([?&]hub\.verify_token=)[^&\s"\']+'
 )
+BOT_READINESS_MARKER = '_twc_bot_readiness_notification'
+BOT_READINESS_LANES = frozenset({
+    'customer_revisions', 'legacy_inbound', 'legacy_outbound', 'revision_delivery',
+    'manager_notifications', 'conversation_analysis', 'analysis_materialization',
+    'reply_recovery', 'binotel_analysis', 'typed_memory', 'trace_refresh',
+})
+
+
+def _is_management_bot_health_request(request):
+    try:
+        return bool(
+            request.method == 'GET' and request.path == '/bot/health/'
+            and request.urlconf == 'twocomms.urls_management'
+            and request.get_host().split(':', 1)[0].lower() == 'management.twocomms.shop'
+        )
+    except Exception:
+        # A logging filter must fail open if request metadata is unavailable.
+        return False
+
+
+def _zero_readiness_count(value):
+    return type(value) is int and value == 0
+
+
+def mark_expected_bot_readiness(request, *, tasks, queues, operations):
+    """Classify only fully observed customer debt; never suppress unknown failures.
+
+    Customer debt already has a source-bound management notification. Probing
+    readiness must neither send that notification again nor call a provider.
+    """
+    if not _is_management_bot_health_request(request):
+        return
+    lanes = operations.get('lanes')
+    consumer = operations.get('consumer')
+    workers = operations.get('worker_lanes')
+    if not (
+        tasks.get('available') is True and tasks.get('healthy') is True
+        and _zero_readiness_count(tasks.get('unhealthy_count'))
+        and queues.get('available') is True and _zero_readiness_count(queues.get('revision_execution_overdue'))
+        and operations.get('available') is True and operations.get('healthy') is False
+        and operations.get('bot_state') == 'running'
+        and isinstance(consumer, dict) and consumer.get('process_online') is True
+        and consumer.get('main_healthy') is True and consumer.get('stalled_reason') == ''
+        and isinstance(workers, dict) and workers
+        and all(isinstance(row, dict) and row.get('healthy') is True for row in workers.values())
+        and isinstance(lanes, dict) and set(lanes) == BOT_READINESS_LANES
+        and all(isinstance(row, dict) and row.get('available') is True
+                and (name == 'customer_revisions' or row.get('healthy') is True)
+                for name, row in lanes.items())
+    ):
+        return
+    debt = lanes['customer_revisions']
+    count = debt.get('attention_total')
+    counts = debt.get('counts')
+    if not (
+        debt.get('healthy') is False and debt.get('state') == 'attention'
+        and debt.get('risk_coverage_complete') is True and debt.get('risk_scan_complete') is True
+        and debt.get('attention_total_exact') is True and type(count) is int and count > 0
+        and isinstance(counts, dict) and _zero_readiness_count(counts.get('failed'))
+        and _zero_readiness_count(counts.get('unknown'))
+    ):
+        return
+    setattr(request, BOT_READINESS_MARKER, {
+        'schema': 'ig-readiness-notification.v1', 'reason': 'customer_attention',
+        'attention_count': count,
+    })
+
+
+class ExpectedBotReadinessFilter(logging.Filter):
+    """Telegram-only exclusion for an explicitly classified readiness response."""
+
+    def filter(self, record):
+        request = getattr(record, 'request', None)
+        marker = getattr(request, BOT_READINESS_MARKER, None)
+        expected = (
+            record.name == 'django.request' and record.levelno == logging.ERROR
+            and getattr(record, 'status_code', None) == 503 and not record.exc_info
+            and _is_management_bot_health_request(request)
+            and isinstance(marker, dict)
+            and set(marker) == {'schema', 'reason', 'attention_count'}
+            and marker.get('schema') == 'ig-readiness-notification.v1'
+            and marker.get('reason') == 'customer_attention'
+            and type(marker.get('attention_count')) is int and marker['attention_count'] > 0
+        )
+        return not expected
 
 
 def redact_pii(text):

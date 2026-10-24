@@ -1428,6 +1428,30 @@ def _freeze_live_candidate_plan(
     return rows
 
 
+def prepare_live_chat_candidate_plan(*, model_chain_override=None, manual_key=None,
+                                    reasoning_task="customer_chat", model_override=None):
+    """Build the gateway's exact route locally; secret rows stay in process.
+
+    Revision admission uses the same factory before preparing its prompt. The
+    provider manifest projects only labels, indexes and immutable identities.
+    Final quota/permission admission still belongs to the actual dispatch.
+    """
+    manual_key = str(manual_key or "").strip() or None
+    if manual_key and not gemini_keys.manual_key_allowed("chat", manual_key):
+        manual_key = None
+    if manual_key and gemini_keys.configured_alias_for_secret(manual_key):
+        manual_key = None
+    if model_chain_override is not None:
+        models = [str(model or "").strip() for model in model_chain_override
+                  if gemini_keys.is_allowed_chat_model(str(model or "").strip())]
+    else:
+        models = gemini_keys.task_model_chain("chat", reasoning_task, model_override)
+    if not models:
+        raise CallAIAnalysisError("Не налаштована модель Gemini для live chat.")
+    raw = gemini_keys.live_chat_candidate_plan(model_chain_override=models)
+    return models, _freeze_live_candidate_plan(raw, models=models, manual_key=manual_key)
+
+
 def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
                         parse: bool = False, log_cb=None,
                         model_override: str | None = None,
@@ -1474,25 +1498,6 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
     # Preserve the opted-in route policy when a durable remaining allowance
     # later clips the local budget to one or two calls.
     extended_dispatch_route = bool(dispatch_budget and dispatch_budget.max_dispatches > 2)
-    manual_key = str(manual_key or "").strip() or None
-    if manual_key and not gemini_keys.manual_key_allowed("chat", manual_key):
-        manual_key = None
-    if manual_key and gemini_keys.configured_alias_for_secret(manual_key):
-        # The same credential already exists in the six-project plan. Retrying
-        # it as "manual" would bypass its quota/cooldown state and spend the
-        # same provider request twice under two labels.
-        manual_key = None
-
-    if model_chain_override is not None:
-        models = [
-            str(model or "").strip()
-            for model in model_chain_override
-            if gemini_keys.is_allowed_chat_model(str(model or "").strip())
-        ]
-    else:
-        models = gemini_keys.task_model_chain("chat", policy["task"], model_override)
-    if not models:
-        raise CallAIAnalysisError("Не налаштована модель Gemini для live chat.")
     attempts: list[str] = []
     last_actual_failure_kind = ""
     request_id = uuid.uuid4().hex
@@ -1521,14 +1526,11 @@ def _run_chat_with_pool(payload: dict, *, manual_key: str | None = None,
             except Exception:
                 pass
 
-    raw_candidate_plan = gemini_keys.live_chat_candidate_plan(
-        model_chain_override=models
+    models, candidate_plan = prepare_live_chat_candidate_plan(
+        model_chain_override=model_chain_override, manual_key=manual_key,
+        reasoning_task=policy["task"], model_override=model_override,
     )
-    candidate_plan = _freeze_live_candidate_plan(
-        raw_candidate_plan,
-        models=models,
-        manual_key=manual_key,
-    )
+
     def _refresh_executable_candidates() -> tuple[list[tuple[str, str, str]], dict, dict]:
         executable = [
             (item["key_name"], item["key_value"], item["model"])

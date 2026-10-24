@@ -6,7 +6,7 @@ The generation boundary's response plan remains the sole selection authority.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 import hashlib
 import json
@@ -481,13 +481,24 @@ def _provider_history(history, sources):
     return tuple(result)
 
 
-def _capture_revision_context(revision, *, generation_boundary, collection, settings_row,
-                             publication, history=None, now=None):
-    """Capture once; mandatory failures raise finite TurnContextError codes.
+@dataclass(frozen=True)
+class RevisionRoutingCapture:
+    """Request-local routing inputs, shared with later context preparation."""
+    revision_id: int
+    snapshot_digest: str
+    plan_digest: str
+    settings_id: int | None
+    settings_epoch: int
+    captured_at: datetime
+    client: object
+    inputs: Mapping
+    facts: object
+    decision: object
 
-    Optional failures become named omissions. Caller owns the post-capture CAS
-    and must halt the unified request when a mandatory capture fails.
-    """
+
+def _capture_revision_routing(revision, *, generation_boundary, collection, settings_row,
+                              publication, now=None):
+    """Capture the canonical route before history/catalog/prompt preparation."""
     from management.models import IgClient, IgCommercialEpisode, IgCommerceSelectionSession, IgFunnelResetAudit
 
     captured_at = now or timezone.now()
@@ -565,6 +576,66 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
             return dict(scope=scope, omission_reason=reason)
     commerce = _commerce(sources, plan, scope, purchases_count=client.purchases_count)
     referral = optional("referral", lambda: _referral(sources, scope, client=client, boundary=boundary))
+    media = _media(collection, revision, sources)
+    pinned_until = getattr(settings_row, "pinned_until", None)
+    policy = dict(mode=getattr(settings_row, "turn_intelligence_mode", "legacy"),
+        gemini_routing_mode=getattr(settings_row, "gemini_routing_mode", "adaptive"),
+        pinned_chat_model=getattr(settings_row, "pinned_chat_model", ""),
+        pinned_until=pinned_until.isoformat() if pinned_until else None)
+    from types import SimpleNamespace
+    from management.services.gemini_routing import classify_live_turn
+    from management.services.ig_turn_intelligence import build_routing_facts
+    facts = build_routing_facts(sources=sources, media=media, commerce=commerce, referral=referral)
+    decision = classify_live_turn(facts, settings_obj=SimpleNamespace(
+        gemini_routing_mode=policy["gemini_routing_mode"],
+        pinned_chat_model=policy["pinned_chat_model"], pinned_until=pinned_until), now=captured_at)
+    return RevisionRoutingCapture(revision.pk, revision.snapshot_digest, plan.digest,
+        getattr(settings_row, "pk", None), settings_row.reply_permission_epoch, captured_at, client,
+        _frozen(dict(sources=sources, boundary=boundary, source_cart=source_cart,
+            canonical_cart=canonical_cart, line=line, scope=scope, commerce=commerce,
+            referral=referral, omissions=omissions, media=media, routing_policy=policy)), facts, decision)
+
+
+def capture_revision_routing(revision, *, generation_boundary, collection, settings_row,
+                             publication, now=None):
+    """Public finite-error contract for the shared, provider-free route capture."""
+    try:
+        return _capture_revision_routing(revision, generation_boundary=generation_boundary,
+            collection=collection, settings_row=settings_row, publication=publication, now=now)
+    except TurnContextError:
+        raise
+    except Exception:
+        raise TurnContextError("revision_routing_capture_unavailable") from None
+
+
+def _capture_revision_context(revision, *, generation_boundary, collection, settings_row,
+                             publication, history=None, now=None, routing_capture=None):
+    """Reuse the admitted route, then capture optional context outside locks."""
+    from management.models import IgCommerceSelectionSession
+
+    routing = routing_capture or capture_revision_routing(revision,
+        generation_boundary=generation_boundary, collection=collection,
+        settings_row=settings_row, publication=publication, now=now)
+    plan = generation_boundary.response_plan
+    if (not isinstance(routing, RevisionRoutingCapture)
+        or routing.revision_id != revision.pk or routing.snapshot_digest != revision.snapshot_digest
+        or routing.plan_digest != plan.digest or routing.settings_id != getattr(settings_row, "pk", None)
+        or routing.settings_epoch != settings_row.reply_permission_epoch
+        or routing.inputs["boundary"]["publication"] != _publication(publication)
+        or (now is not None and now != routing.captured_at)):
+        raise TurnContextError("routing_capture_binding_changed")
+    captured_at, client = routing.captured_at, routing.client
+    values = detached_payload(routing.inputs)
+    sources, boundary, source_cart = (values[key] for key in ("sources", "boundary", "source_cart"))
+    canonical_cart, line, scope = (values[key] for key in ("canonical_cart", "line", "scope"))
+    commerce, referral, omissions = (values[key] for key in ("commerce", "referral", "omissions"))
+    def optional(identity, capture):
+        try:
+            return capture()
+        except Exception:
+            reason = identity + "_capture_unavailable"
+            omissions.append(dict(block_id="state:" + identity, reason=reason))
+            return dict(scope=scope, omission_reason=reason)
     def timing_capture():
         from management.services.ig_revision_conversation_context import conversation_timing_guidance
         return dict(scope=scope, guidance=conversation_timing_guidance(revision))
@@ -636,15 +707,13 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
     if omissions:
         components["capture_omissions"] = dict(scope=scope, items=omissions)
     boundary["history_digests"] = {str(row["message_id"]): capture_digest(row) for row in captured_history}
-    pinned_until = getattr(settings_row, "pinned_until", None)
-    policy = dict(mode=getattr(settings_row, "turn_intelligence_mode", "legacy"),
-        gemini_routing_mode=getattr(settings_row, "gemini_routing_mode", "adaptive"),
-        pinned_chat_model=getattr(settings_row, "pinned_chat_model", ""),
-        pinned_until=pinned_until.isoformat() if pinned_until else None)
     result = build_turn_context(boundary=boundary, sources=sources, captured_at=captured_at,
-        history=captured_history, media=_media(collection, revision, sources), commerce=commerce,
+        history=captured_history, media=values["media"], commerce=commerce,
         referral=referral, memory=memory, timing=timing, response_plan=plan,
-        routing_policy=policy, components=components)
+        routing_policy=values["routing_policy"], components=components)
+    if result.facts != routing.facts or result.decision != routing.decision:
+        raise TurnContextError("routing_capture_decision_changed")
+    result = replace(result, facts=routing.facts, decision=routing.decision)
     metadata = detached_payload(result.metadata)
     metadata["source_time_origins"] = boundary["source_time_origins"]
     metadata["watermark_time_origin"] = boundary["watermark_time_origin"]
@@ -668,11 +737,12 @@ def _capture_revision_context(revision, *, generation_boundary, collection, sett
 
 
 def capture_revision_context(revision, *, generation_boundary, collection, settings_row,
-                             publication, history=None, now=None):
+                             publication, history=None, now=None, routing_capture=None):
     """Public finite-error contract: unknown required failures halt unified."""
     try:
         return _capture_revision_context(revision, generation_boundary=generation_boundary,
-            collection=collection, settings_row=settings_row, publication=publication, history=history, now=now)
+            collection=collection, settings_row=settings_row, publication=publication, history=history,
+            now=now, routing_capture=routing_capture)
     except TurnContextError:
         raise
     except Exception:

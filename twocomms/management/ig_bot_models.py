@@ -8766,6 +8766,7 @@ class IgCustomerTurnRevision(models.Model):
                     "burst_budget_in", "burst_budget_out",
                     "reply_projection_admission",
                     "technical_holding", "technical_holding_delivery",
+                    "terminal_fault_ack_candidate", "terminal_fault_ack_attempt",
                     "parked_holding_disposition",
                     "provider_safe_reply",
                     "response_coverage", "semantic_delivery_finalized",
