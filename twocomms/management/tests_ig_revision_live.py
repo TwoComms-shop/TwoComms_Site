@@ -26,6 +26,19 @@ from management.services.ig_revision_outbox import PublicationBinding
 from management.services.ig_turn_revisions import create_collecting_revision
 
 
+def native_provider_candidate_plan():
+    """Bind both admission and the borrowed fake gateway to its exact route.
+
+    Callers may reuse _execute without inheriting this TestCase's setUp. This
+    is only the provider transport fixture; source, policy, selection, stock,
+    payment, response validation and physical-send assertions remain native.
+    """
+    from management.tests_gemini_accounting_shadow import _raw_plan
+
+    return patch("management.services.call_ai_analysis.prepare_live_chat_candidate_plan",
+        side_effect=lambda **kwargs: (["gemini-3.7-flash"], _raw_plan()))
+
+
 @override_settings(IG_REVISION_EXECUTION_ENABLED=False, GOOGLE_INDEXING_ENABLED=False)
 class RevisionLiveTests(TransactionTestCase):
     reset_sequences = True
@@ -42,9 +55,7 @@ class RevisionLiveTests(TransactionTestCase):
         # This fixture replaces the real gateway with _generate below. Its
         # early admission must freeze that same canonical stub route, rather
         # than the unconfigured credentials of the offline test environment.
-        from management.tests_gemini_accounting_shadow import _raw_plan
-        candidate_factory = patch("management.services.call_ai_analysis.prepare_live_chat_candidate_plan",
-            side_effect=lambda **kwargs: (["gemini-3.7-flash"], _raw_plan()))
+        candidate_factory = native_provider_candidate_plan()
         candidate_factory.start()
         self.addCleanup(candidate_factory.stop)
         snapshot = {"schema_version": 1, "instructions": []}
@@ -176,6 +187,7 @@ class RevisionLiveTests(TransactionTestCase):
     def _execute(self, send_results=None):
         provider_results = send_results or [(200, json.dumps({"message_id": "sent-1"}))]
         with (
+            native_provider_candidate_plan(),
             patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate) as generate,
             patch("management.services.instagram_bot.get_page_token", return_value="memory-token"),
             patch("management.services.instagram_bot._provider_http", side_effect=provider_results) as http,

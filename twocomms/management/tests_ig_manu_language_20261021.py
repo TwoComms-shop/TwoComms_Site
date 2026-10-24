@@ -359,7 +359,9 @@ class _NativeRussianRepairFixture(restock_fixture._RestockFixture):
 
     def run_repair(self):
         from management.services.ig_revision_live import execute_claimed_revision
-        with patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate_repair) as generate, \
+        from management.tests_ig_revision_live import native_provider_candidate_plan
+        with native_provider_candidate_plan(), \
+                patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate_repair) as generate, \
                 patch("management.services.instagram_bot.get_page_token", return_value="offline-language-token"), \
                 patch("management.services.instagram_bot._provider_http", return_value=(200, json.dumps({"message_id": "russian-repair-once"}))) as http, \
                 patch("management.services.instagram_bot._register_outgoing_message"):

@@ -810,7 +810,7 @@ def _business_approval_reason(response, context, cooperation_policy=None):
         return ""
     from management.services.ig_business_cooperation import _TOPICS
     from management.services.ig_reply_language import own_reply_text
-    from management.services.ig_reply_truth import _claim_sentences, _locally_negated
+    from management.services.ig_reply_truth import _claim_sentences, _denied_offer_spans, _locally_negated
     approval = re.compile(
         r"\b(?:confirmed|approved|agreed|authori[sz]ed|permitted|allowed)\b|"
         r"\bпідтверджен(?:о|а|ий|і)\b|підтверди\w*|\bподтвержден[оыа]\b|подтвердил\w*|"
@@ -832,6 +832,18 @@ def _business_approval_reason(response, context, cooperation_policy=None):
         from management.services.ig_cooperation_policy import unreviewed_business_entitlement
         if unreviewed_business_entitlement(sentence):
             return "response_plan_business_terms_unconfirmed"
+        # A bounded denial grants no trade right. Mask only its own objects,
+        # leaving every neighbouring amount and positive approval guarded.
+        for begin, end in reversed(_denied_offer_spans(sentence)):
+            sentence = sentence[:begin] + " " * (end - begin) + sentence[end:]
+        # Generic terms requiring individual agreement do not say this
+        # customer's terms have been approved. Only the complete generic
+        # clause qualifies; individual subjects and extra promises do not.
+        sentence = re.sub(
+            r"(?:^|(?<=[,;]))\s*(?:wholesale|dropshipping)"
+            r"(?:\s+and\s+(?:wholesale|dropshipping))?\s+terms"
+            r"(?:\s+like\s+rates\s+and\s+payouts)?\s+are\s+agreed\s+individually"
+            r"(?:\s+with\s+our\s+team)?(?=\s*(?:$|[,;]))", " ", sentence, flags=re.I)
         if (re.search(r"повернен\w*|возврат\w*|refund\w*", sentence, re.I)
             and re.search(r"\d\s*%", sentence)):
             return "response_plan_business_terms_unconfirmed"

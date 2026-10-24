@@ -545,7 +545,7 @@ def _checkout_basket_verified(sentence, context):
 _ORDER_STATE_ENDING = r"(?:о|[аыеіу]|[иі]й|ого|ої|ому|[иі]м|[иі]ми|[иі]х|ою|ій|н(?:ый|ая|ое|ые|ого|ому|ым|ыми|ых|ую|ой))?\b"
 # The purpose noun 'оформлення/оформление' does not say an order exists.
 # Keep completed participles distinct from that noun and its case endings.
-_ORDER_CREATED_STATE = rf"(?:створен\w*|создан\w*|оформлен{_ORDER_STATE_ENDING}|placed|created|confirmed)"
+_ORDER_CREATED_STATE = rf"(?:створен\w*|создан\w*|оформлен{_ORDER_STATE_ENDING}|\b(?:placed|created|confirmed)\b)"
 _ORDER_CLAIM_RE = re.compile(
     rf"(?:замовлен\w*|заказ\w*|order)[^.!?\n]{{0,70}}{_ORDER_CREATED_STATE}"
     rf"|{_ORDER_CREATED_STATE}[^.!?\n]{{0,70}}(?:замовлен\w*|заказ\w*|order)",
@@ -901,6 +901,29 @@ def _locally_negated(sentence: str, start: int) -> bool:
     return bool(_NEGATION_SUFFIX_RE.search(clause))
 
 
+def _denied_offer_spans(sentence: str) -> tuple[tuple[int, int], ...]:
+    """Locate complete denied offer objects, without negating adjacent claims.
+
+    Only bounded rate/timing noun phrases belong to this scope. An independent
+    price, stock assertion or coordinated positive promise cannot enter it.
+    Financial validation does not use these spans as monetary authority.
+    """
+    item = (
+        r"(?:guaranteed\s+)?(?:\d{1,3}(?:[.,]\d{1,2})?\s*%\s+"
+        r"(?:rates?|discounts?|fees?)|(?:same[- ]day|today|tomorrow)\s+"
+        r"(?:dispatch|shipping|delivery))"
+    )
+    pattern = (
+        r"(?:^|(?<=[,;]))\s*(?:(?:and|but)\s+)?"
+        r"(?P<denial>(?:(?:we|i)\s+)?(?:do\s+not|don['’]t|cannot|can['’]t)\s+"
+        r"(?:offer|promise|guarantee)\s+" + item
+        + r"(?:\s+(?:or|and)\s+" + item + r")*"
+        + r"(?:\s+(?:on|for)\s+(?:unconfirmed|unpaid)\s+orders)?"
+        + r")(?=\s*(?:$|[,;.!?]))"
+    )
+    return tuple(match.span("denial") for match in re.finditer(pattern, sentence, re.I))
+
+
 def _has_positive_claim(pattern: re.Pattern, sentence: str) -> bool:
     return any(
         not _locally_negated(sentence, match.start())
@@ -1210,6 +1233,7 @@ def _timing_nonclaim(sentence: str, start: int) -> bool:
         or any(match.start() <= start for match in _TIMING_UNCERTAINTY_RE.finditer(sentence))
         or any(match.start() <= start for match in _TIMING_ENQUIRY_RE.finditer(sentence))
         or _locally_negated(sentence, start)
+        or any(begin <= start < end for begin, end in _denied_offer_spans(sentence))
     )
 
 

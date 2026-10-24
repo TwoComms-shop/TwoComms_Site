@@ -254,6 +254,52 @@ def handle_historical_reset_ingress(
         return True
 
 
+def _missing_manifest_attention_is_unstarted(revision, task, *, source_ids, boundary):
+    """Prove the native crash-gap case, without interpreting absent receipts as success."""
+    from django.db.models import Q
+    from management.models import GeminiRequest, IgTurnRevisionSource
+    from management.services.ig_revision_burst_budget import economic_root, economic_family
+    from management.services.ig_revision_provider_execution import MANIFEST_KEY, REFERENCE_KEY
+    from management.services.ig_revision_outbox import _digest, revision_sources_current
+
+    debt = revision.action_receipts.get("response_debt")
+    if (not isinstance(debt, dict) or debt.get("version") != 1
+        or debt.get("task_id") != task.pk or debt.get("owner") != "manager"
+        or debt.get("disposition") != "manager_reply"
+        or debt.get("source_message_ids") != source_ids
+        or task.manager_context.get("disposition") != "manager_reply"
+        or task.event_payload.get("effect_ids") != []):
+        return False
+    try:
+        root = economic_root(revision)
+        family = economic_family(root) if root is not None else []
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+    if not family or revision.pk not in {row.pk for row in family}:
+        return False
+    family_ids = [row.pk for row in family]
+    if (any(not isinstance(row.action_receipts, dict)
+            or MANIFEST_KEY in row.action_receipts or REFERENCE_KEY in row.action_receipts
+            or not isinstance(row.bundle_snapshot, dict)
+            or _digest(row.bundle_snapshot) != row.snapshot_digest
+            or not revision_sources_current(row)
+            for row in family)
+        or IgRevisionDeliveryEffect.objects.filter(revision_id__in=family_ids).exists()):
+        return False
+    family_sources = list(IgTurnRevisionSource.objects.filter(
+        revision_id__in=family_ids,
+    ).values_list("message_id", flat=True))
+    if not family_sources or any(not 0 < pk <= boundary for pk in family_sources):
+        return False
+    names = [f"ig-revision:{pk}" for pk in family_ids]
+    # Even an unstarted or malformed graph makes the absent-manifest case
+    # ambiguous. Check either namespace and the physical source independently.
+    return not GeminiRequest.objects.filter(
+        Q(logical_turn_id__in=names) | Q(source_execution_key__in=names)
+        | Q(source_message_id__in=family_sources),
+    ).exists()
+
+
 def _archive_fresh_reply_attention(client, *, boundary, actor, now):
     """Retire proved old conversation alerts without acknowledging a reply.
 
@@ -282,7 +328,7 @@ def _archive_fresh_reply_attention(client, *, boundary, actor, now):
         if (type(revision_id) is not int or task.event_key != f"ig-revision-debt:{revision_id}"
             or context.get("case_kind") != DEBT_KIND or context.get("revision_id") != revision_id
             or context.get("owner") != "manager" or context.get("reason") != payload.get("reason")
-            or payload.get("reason") not in {*REASON_LABELS, "technical_holding_sent"}
+            or payload.get("reason") not in {*REASON_LABELS, "technical_holding_sent", "provider_manifest_missing"}
             or context.get("operator_review") or context.get("reply_resolution")
             or not isinstance(ids, list) or not ids
             or any(type(value) is not int or not 0 < value <= boundary for value in ids)
@@ -312,6 +358,10 @@ def _archive_fresh_reply_attention(client, *, boundary, actor, now):
             or IgPostSaleCase.objects.filter(client=client, source_message_id__in=ids).exists()):
             continue
         effects = list(_reset_financial_rows(revision.delivery_effects.order_by("order_index", "id")))
+        if payload.get("reason") == "provider_manifest_missing" and not _missing_manifest_attention_is_unstarted(
+            revision, task, source_ids=ids, boundary=boundary,
+        ):
+            continue
         disposition = context.get("disposition")
         actual_effect_ids = tuple(row.pk for row in effects)
         admission = revision.action_receipts.get(RECEIPT_KEY) or {}

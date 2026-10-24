@@ -251,7 +251,7 @@ def cart_selector_clarification(capture, sources, obligations, line_plans):
 def cart_recipient_question(context, question):
     return bool(context and question.count("?") == 1 and re.search(
         r"для\s+кого|кому\b|which\s+(?:person|item)|whose\b|who(?:m)?\b[^?]{0,50}(?:apply|size|preference)|"
-        r"(?:якої|яку|какой|какую)\s+позиці?\w*", question, re.I))
+        r"(?:якої|яку|какой|какую)\s+(?:(?:саме|именно)\s+)?позиці?\w*", question, re.I))
 
 
 def cart_clarification_reason(context, response, line_plans, *, independent_answer=False):
@@ -297,7 +297,7 @@ def shared_discovery_question(context, question, line_plans):
         return False
     return bool(re.search(r"\b(?:який|яка|яку|які|какой|какая|какие|which|what)\b", question, re.I)
         and re.search(r"\b(?:принт\w*|дизайн\w*|designs?|prints?|колір\w*|кольор\w*|цвет\w*|colou?rs?)\b", question, re.I)
-        and re.search(r"подоба\w*|нрав\w*|хоч\w*|like|prefer|want", question, re.I))
+        and re.search(r"подоб\w*|нрав\w*|хоч\w*|like|prefer|want", question, re.I))
 
 
 def cart_wide_price_line_ids(source, line_plans):

@@ -28,6 +28,9 @@ BAD_CANDIDATE = {
         {"kind": "fit", "value": "classic"}, {"kind": "size", "value": "M"}, {"kind": "qty", "value": 2}],
 }
 CLARIFICATION = {"reply_text": "Для кого саме змінити розмір на M — для вас чи для хлопця?", "controls": []}
+# Verbatim parsed candidates from actual V5 run ddabeb1f985b4f4e954e715d12eaee46.
+V5_LINE_CLARIFICATION = "Уточніть, будь ласка, для якої саме позиції змінити розмір на M?"
+V5_SHARED_DISCOVERY = "Привіт! З радістю допоможу підібрати футболки для вас і хлопця. Який саме дизайн, колір чи принт вам до вподоби?"
 
 
 class _CandidateObserved(BaseException):
@@ -111,15 +114,18 @@ class CandidateAuthorityTests(TransactionTestCase):
 
     def test_focused_clarification_is_valid_without_applying_the_correction(self):
         rows = self.seal(SOURCES)
-        decision, plan = self.probe(CLARIFICATION)
-        self.assertTrue(decision.valid, decision.reason_codes)
         from management.services.ig_response_control import ValidatedResponse
-        coverage = plan.coverage(ValidatedResponse(CLARIFICATION["reply_text"]))
-        self.assertEqual(coverage["disposition"], "waiting_on_customer", coverage)
-        self.assertIn(f"{rows[-1].pk}:unresolved_line_operation", coverage["remaining"])
-        self.assertEqual(coverage["next_selector"], "recipient")
-        self.assertTrue(plan.prompt_projection()["cart_selector_clarification"])
-        self.assert_original_choices()
+        for text in (CLARIFICATION["reply_text"], V5_LINE_CLARIFICATION,
+                "Для якої саме позиції потрібен розмір M?"):
+            with self.subTest(text=text):
+                decision, plan = self.probe({"reply_text": text, "controls": []})
+                self.assertTrue(decision.valid, decision.reason_codes)
+                coverage = plan.coverage(ValidatedResponse(text))
+                self.assertEqual(coverage["disposition"], "waiting_on_customer", coverage)
+                self.assertIn(f"{rows[-1].pk}:unresolved_line_operation", coverage["remaining"])
+                self.assertEqual(coverage["next_selector"], "recipient")
+                self.assertTrue(plan.prompt_projection()["cart_selector_clarification"])
+                self.assert_original_choices()
 
     def test_wrong_recorded_choice_without_controls_is_also_rejected(self):
         self.seal(SOURCES)
@@ -129,9 +135,12 @@ class CandidateAuthorityTests(TransactionTestCase):
 
     def test_fresh_shared_color_or_print_intake_question_is_valid(self):
         self.seal(["Привіт! Хочу замовити футболку для себе та хлопця"])
-        decision, plan = self.probe({"reply_text": "Привіт! Чудово, допоможу підібрати футболки для вас обох. Який колір або принт вам подобається?", "controls": []})
-        self.assertTrue(decision.valid, decision.reason_codes)
-        self.assertTrue(all(not line.as_dict()["choices"].get("product_id") for line in plan.line_plans))
+        for text in ("Привіт! Чудово, допоможу підібрати футболки для вас обох. Який колір або принт вам подобається?",
+                V5_SHARED_DISCOVERY, "Який дизайн вам до вподоби для футболок?"):
+            with self.subTest(text=text):
+                decision, plan = self.probe({"reply_text": text, "controls": []})
+                self.assertTrue(decision.valid, decision.reason_codes)
+                self.assertTrue(all(not line.as_dict()["choices"].get("product_id") for line in plan.line_plans))
 
     def prior_pair(self):
         for text in SOURCES[:2]:
@@ -261,21 +270,35 @@ class CandidateAuthorityTests(TransactionTestCase):
 
     def test_fake_recording_cannot_be_laundered_by_a_following_clarifier(self):
         self.seal(SOURCES)
-        decision, _ = self.probe({"reply_text": "Для хлопця записала розмір M. Для кого саме змінити розмір?", "controls": []})
-        self.assertFalse(decision.valid)
-        self.assert_original_choices()
+        for question in ("Для кого саме змінити розмір?", V5_LINE_CLARIFICATION):
+            with self.subTest(question=question):
+                decision, _ = self.probe({"reply_text": "Для хлопця записала розмір M. " + question, "controls": []})
+                self.assertFalse(decision.valid)
+                self.assert_original_choices()
 
     def test_shared_discovery_has_no_selection_controls(self):
         self.seal(["Привіт! Хочу замовити футболку для себе та хлопця"])
-        decision, _ = self.probe({"reply_text": "Який колір або принт вам подобається?",
-            "controls": [{"kind": "qty", "value": 2}]})
-        self.assertFalse(decision.valid)
+        for text in ("Який колір або принт вам подобається?", V5_SHARED_DISCOVERY):
+            with self.subTest(text=text):
+                decision, _ = self.probe({"reply_text": text,
+                    "controls": [{"kind": "qty", "value": 2}]})
+                self.assertFalse(decision.valid)
+
+    def test_line_clarification_cannot_carry_selection_or_checkout_controls(self):
+        self.seal(SOURCES)
+        for control in ({"kind": "size", "value": "M"}, {"kind": "paylink", "value": "full"}):
+            with self.subTest(control=control):
+                decision, _ = self.probe({"reply_text": V5_LINE_CLARIFICATION, "controls": [control]})
+                self.assertFalse(decision.valid)
+                self.assert_original_choices()
 
     def test_shared_discovery_does_not_replace_configured_line_questions(self):
         self.prior_pair()
         self.seal(["Підкажіть ціну на парні футболки."])
-        decision, _ = self.probe({"reply_text": "Який колір або принт вам подобається?", "controls": []})
-        self.assertFalse(decision.valid)
+        for text in ("Який колір або принт вам подобається?", V5_SHARED_DISCOVERY):
+            with self.subTest(text=text):
+                decision, _ = self.probe({"reply_text": text, "controls": []})
+                self.assertFalse(decision.valid)
 
     def test_one_line_price_does_not_discharge_sibling_price(self):
         self.prior_pair()
@@ -398,6 +421,16 @@ class CandidateAuthorityTests(TransactionTestCase):
 
 
 class CandidateSourceGrammarTests(SimpleTestCase):
+    def test_line_question_modifier_is_bounded_and_requires_pending_context(self):
+        from management.services.ig_response_cart_plan import cart_recipient_question
+        for question in (V5_LINE_CLARIFICATION, "Для какой именно позиции изменить размер на M?"):
+            with self.subTest(question=question):
+                self.assertTrue(cart_recipient_question({"clarification": True}, question))
+                self.assertFalse(cart_recipient_question({}, question))
+        for question in ("Для якої довільно обраної позиції змінити розмір?",
+                "Для якої саме позиції змінити розмір? Який колір?", "Для якої саме позиції змінити розмір."):
+            self.assertFalse(cart_recipient_question({"clarification": True}, question))
+
     def test_recipient_configure_is_consultation_not_purchase(self):
         from management.services.ig_turn_intent import _selection_signal
         from management.services.ig_commerce_turns import parse_turn

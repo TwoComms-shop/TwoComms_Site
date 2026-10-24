@@ -65,7 +65,7 @@ class RetailPreparationLivenessTests(TransactionTestCase):
         return patch("management.services.ig_turn_integration.prepare_revision_turn_context",
             side_effect=TurnContextError("required_context_budget_exceeded"))
 
-    def test_required_context_failure_gets_owned_native_ack_without_provider_manifest(self):
+    def test_required_context_failure_gets_owned_native_ack_with_frozen_provider_budget(self):
         self._english_question()
         with (self._context_budget_failure(),
             patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=AssertionError("no model dispatch")) as generate,
@@ -82,7 +82,17 @@ class RetailPreparationLivenessTests(TransactionTestCase):
         self.assertEqual(proof["code"], "required_context_budget_exceeded")
         self.assertEqual(proof["source_message_ids"], [self.source.pk])
         self.assertIs(proof["provider_dispatched"], False)
-        self.assertNotIn("provider_execution_manifest", self.revision.action_receipts)
+        # F57 freezes the bounded route atomically with admission, before this
+        # context failure. A manifest is budget proof, never evidence of HTTP.
+        from management.services.ig_revision_provider_execution import _digest
+        manifest = self.revision.action_receipts["provider_execution_manifest"]
+        self.assertEqual(manifest["digest"], _digest({key: value for key, value in manifest.items() if key != "digest"}))
+        self.assertEqual(manifest["root_revision_id"], self.revision.pk)
+        self.assertEqual(manifest["snapshot_digest"], self.revision.snapshot_digest)
+        self.assertEqual(manifest["source_message_ids"], [self.source.pk])
+        self.assertEqual((manifest["settings_id"], manifest["settings_permission_epoch"]),
+            (self.settings.pk, self.settings.reply_permission_epoch))
+        self.assertEqual((manifest["max_http"], manifest["max_scarce_http"], manifest["max_repairs"]), (8, 2, 1))
         self.assertFalse(GeminiRequest.objects.exists())
         self.assertEqual(self.source.status, "pending")
         effect = self.revision.delivery_effects.get()

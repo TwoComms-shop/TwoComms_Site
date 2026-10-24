@@ -74,7 +74,7 @@ class NativeAssistedPartialLiveTests(PartialCommerceFixture, TransactionTestCase
         # The existing live provider fixture retains the actual frozen route,
         # accounting winner and deterministic result validator. Only Gemini
         # transport and Instagram transport/token are replaced here.
-        with override_settings(ROOT_URLCONF="twocomms.urls"), \
+        with override_settings(ROOT_URLCONF="twocomms.urls"), _live_fixture.native_provider_candidate_plan(), \
                 patch("management.services.call_ai_analysis.gemini_generate_text", side_effect=self._generate) as generate, \
                 patch("management.services.instagram_bot.get_page_token", return_value="native-partial-live-token"), \
                 patch("management.services.instagram_bot._provider_http", return_value=(200,

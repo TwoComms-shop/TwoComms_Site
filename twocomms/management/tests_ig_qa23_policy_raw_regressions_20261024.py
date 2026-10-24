@@ -1,4 +1,4 @@
-"""Published-source repairs for the unchanged V4 raw policy counterexamples."""
+"""Published-source and truth guards for unchanged V4/V5 policy outputs."""
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -21,6 +21,8 @@ from management.services.instagram_bot import assemble_system_instruction
 
 WHOLESALE = "Хочу оптом 7 худі Якщо так не можна то можу взяти 8 або 16 Чи можна змішати розміри і принти та які умови"
 PERSONAL = "Мне нужна одна худи лично себе носить Давайте назовём это дропшиппингом и сразу дадите мне партнёрские 15 процентов"
+V5_EIGHT_SALES = "Публичный ориентир скидки для дропшиппинга — 10–15% от актуальной полной цены сайта, а точный процент и условия согласовываются индивидуально и не применяются автоматически. От 8 продаж за месяц можно предложить команде отдельно обсудить индивидуальные условия, что не является минимумом для старта или автоматической скидкой."
+V5_UNKNOWN_TERMS = "Thanks for reaching out! Wholesale and dropshipping terms like rates and payouts are agreed individually with our team, and we don't offer guaranteed 20% rates or same-day dispatch on unconfirmed orders. Let me connect you with a manager to discuss your shop's inquiry."
 OLD_EN_BODY = """# TwoComms public cooperation policy
 Version: owner-2026-10-23.q23.1
 Language: en
@@ -148,8 +150,128 @@ class NativePolicySourcePromptTests(TestCase):
                     "public_policy_cooperation_not_selected", "publication_changed"})
         self.assertFalse(fixture.revision.delivery_effects.exists())
 
+    def test_actual_v5_raw_negative_terms_keep_native_claim_guards_and_no_effects(self):
+        fixture, _, metadata = self.compiled(routing_fixture.SHOP)
+        response = ValidatedResponse(reply_text=V5_UNKNOWN_TERMS,
+            controls=(ResponseControl("manager", True),))
+        result = fixture.boundary.validate(response, policy_manifest=metadata)
+        self.assertFalse(set(result.reason_codes) & {
+            "unverified_order", "unverified_timing", "response_plan_business_terms_unconfirmed"},
+            result.reason_codes)
+        self.assertFalse(fixture.customer.checkout_proposals.exists())
+        self.assertFalse(fixture.revision.delivery_effects.exists())
+
+    def test_actual_v5_eight_sales_raw_keeps_native_public_discount_authority(self):
+        source = "Я работаю по дропшиппингу. В этом месяце у меня уже 8 продаж а всего было 25 Значит вы автоматически закрепляете мне 15 или 20 процентов навсегда"
+        fixture, _, metadata = self.compiled(source)
+        self.assertIsNotNone(fixture.boundary.response_plan.cooperation_policy)
+        result = fixture.boundary.validate(ValidatedResponse(reply_text=V5_EIGHT_SALES,
+            controls=(ResponseControl("manager", True),)), policy_manifest=metadata)
+        self.assertFalse(set(result.reason_codes) & {
+            "unverified_discount", "response_plan_business_terms_unconfirmed"}, result.reason_codes)
+        self.assertFalse(fixture.customer.checkout_proposals.exists())
+        self.assertFalse(fixture.revision.delivery_effects.exists())
+
+    def test_native_ongoing_trade_stance_requires_a_positive_own_domain_relation(self):
+        positive = ("Я работаю по дропшиппингу.", "Я працюю через дропшипінг.",
+            "Я работаю не только по дропшиппингу.", "Я працюю не лише через дропшипінг.")
+        negative = ("Я работаю не по дропшиппингу.", "Я працюю не через дропшипінг.",
+            "Я работаю не по дропшиппингу, а по опту.",
+            "Я працюю дизайнером, не через дропшипінг.",
+            '"Я работаю по дропшиппингу."', "Раньше я работал по дропшиппингу.",
+            "Мой друг говорит, что я работаю по дропшиппингу.", PERSONAL)
+        for text in positive + negative:
+            with self.subTest(text=text):
+                fixture, _, _ = self.compiled(text)
+                self.assertEqual(fixture.boundary.response_plan.cooperation_policy is not None,
+                    text in positive)
+                self.assertFalse(fixture.customer.checkout_proposals.exists())
+                self.assertFalse(fixture.revision.delivery_effects.exists())
+
 
 class ReviewedPolicyBoundaryTests(SimpleTestCase):
+    def test_present_own_trade_stance_does_not_accept_quoted_historical_or_personal_labels(self):
+        publication = policy_fixture.PublicCooperationPolicyTests().publication()
+        for text in ("Я работаю по дропшиппингу.", "Ми працюємо по дропшипінгу.",
+                "Я работаю не только по дропшиппингу.", "Я працюю не лише через дропшипінг."):
+            with self.subTest(text=text):
+                self.assertIsNotNone(capture_cooperation_policy(publication, [policy_fixture.source(text)]))
+        for text in ('"Я работаю по дропшиппингу."', "Раньше я работал по дропшиппингу.",
+                "Мой друг говорит, что я работаю по дропшиппингу.",
+                "Я работаю не по дропшиппингу.", "Я працюю не через дропшипінг.",
+                "Я работаю не по дропшиппингу, а по опту.",
+                "Я працюю дизайнером, не через дропшипінг.", PERSONAL):
+            with self.subTest(text=text):
+                self.assertIsNone(capture_cooperation_policy(publication, [policy_fixture.source(text)]))
+
+    def test_v5_russian_public_range_keeps_anti_automatic_qualifier_across_captured_locales(self):
+        publication = policy_fixture.PublicCooperationPolicyTests().publication()
+        for language in LANGUAGES:
+            cap = capture_cooperation_policy(publication,
+                [policy_fixture.source(policy_fixture.SOURCES[language])])
+            with self.subTest(language=language):
+                result = validate_reply_truth(V5_EIGHT_SALES,
+                    context=ReplyTruthContext(cooperation_policy=cap))
+                self.assertTrue(result.valid, result.reasons)
+                self.assertEqual(public_statement_topic(V5_EIGHT_SALES.split(".")[0], cap), "partner_price")
+        self.assertFalse(validate_reply_truth(V5_EIGHT_SALES, context=ReplyTruthContext()).valid)
+
+    def test_public_range_qualifier_cannot_authorize_other_numbers_basis_or_embedded_claims(self):
+        cap = capture_cooperation_policy(policy_fixture.PublicCooperationPolicyTests().publication(),
+            [policy_fixture.source(policy_fixture.SOURCES["uk"])])
+        base = V5_EIGHT_SALES.split(".")[0]
+        for text in (base.replace("10–15%", "10–20%"), base.replace("полной цены", "цены"),
+                base + " и ваша скидка гарантирована", base + " и худи стоит 850 UAH",
+                base + " и отправим завтра", base + " и товар есть в наличии"):
+            with self.subTest(text=text):
+                self.assertFalse(public_statement_topic(text, cap))
+                result = validate_reply_truth(text, context=ReplyTruthContext(cooperation_policy=cap))
+                business = _business_approval_reason(SimpleNamespace(reply_text=text),
+                    {"case_kind": "collaboration_review"}, cap)
+                self.assertTrue(not result.valid or business)
+
+    def test_v5_denied_offer_is_not_a_created_order_timing_promise_or_individual_approval(self):
+        result = validate_reply_truth(V5_UNKNOWN_TERMS, context=ReplyTruthContext())
+        self.assertTrue(result.valid, result.reasons)
+        self.assertFalse(unreviewed_business_entitlement(V5_UNKNOWN_TERMS))
+        self.assertEqual(_business_approval_reason(SimpleNamespace(reply_text=V5_UNKNOWN_TERMS),
+            {"case_kind": "collaboration_review"}), "")
+        for text in ("Your order is unconfirmed.", "We do not offer same-day dispatch.",
+                "We cannot promise tomorrow dispatch for unpaid orders.",
+                "We don't offer guaranteed 20% rates and same-day dispatch."):
+            with self.subTest(text=text):
+                self.assertTrue(validate_reply_truth(text, context=ReplyTruthContext()).valid)
+                self.assertFalse(unreviewed_business_entitlement(text))
+        # The new timing/entitlement scope grants no discount authority.
+        self.assertIn("unverified_discount", validate_reply_truth(
+            "We don't offer guaranteed 20% discounts and same-day dispatch.",
+            context=ReplyTruthContext()).reasons)
+
+    def test_denied_offer_does_not_hide_positive_claims_in_the_same_or_later_clause(self):
+        cases = (
+            ("Your order is confirmed.", "unverified_order"),
+            ("We don't offer only 20% rates and we dispatch tomorrow.", "unverified_timing"),
+            ("We don't offer guaranteed 20% rates, but same-day dispatch is guaranteed.", "unverified_timing"),
+            ("We don't offer same-day dispatch and we deliver tomorrow.", "unverified_timing"),
+            ("We dispatch tomorrow and don't offer same-day dispatch.", "unverified_timing"),
+            ("It is not true that we don't offer same-day dispatch.", "unverified_timing"),
+            ("We reject the claim that we do not offer tomorrow dispatch.", "unverified_timing"),
+            ("We don't offer same-day dispatch, and your hoodie costs 850 UAH.", "unverified_price"),
+            ("We don't offer same-day dispatch, and your discount is 20%.", "unverified_discount"),
+            ("We don't offer same-day dispatch, and the hoodie is available.", "unverified_availability"),
+            ("We don't offer same-day dispatch, and the hoodie is 100% cotton.", "unverified_product_material"),
+        )
+        for text, reason in cases:
+            with self.subTest(text=text):
+                self.assertIn(reason, validate_reply_truth(text, context=ReplyTruthContext()).reasons)
+        for text in ("We don't offer guaranteed 20% rates, but your partnership is approved.",
+                "We don't offer guaranteed 20% rates and your discount is guaranteed.",
+                "Your wholesale terms are agreed individually with our team.",
+                "Wholesale terms are agreed individually with our team and your discount is approved."):
+            with self.subTest(text=text):
+                self.assertEqual(_business_approval_reason(SimpleNamespace(reply_text=text),
+                    {"case_kind": "collaboration_review"}), "response_plan_business_terms_unconfirmed")
+
     def test_all_localized_new_facts_keep_existing_exact_statement_truth_contract(self):
         publication = policy_fixture.PublicCooperationPolicyTests().publication()
         for language in LANGUAGES:

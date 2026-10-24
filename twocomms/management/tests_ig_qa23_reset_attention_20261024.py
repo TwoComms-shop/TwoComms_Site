@@ -9,11 +9,11 @@ from django.utils import timezone
 from management import tests_ig_revision_live as live_fixtures
 from management import tests_ig_revision_preference_fallback as fallback_fixtures
 from management.models import (
-    IgClient, IgFollowUpTask, IgFunnelResetAudit, IgPaymentConfirmationReview,
+    GeminiRequest, IgClient, IgFollowUpTask, IgFunnelResetAudit, IgPaymentConfirmationReview,
     IgRevisionDeliveryEffect, InstagramBotMessage,
 )
 from management.services.ig_funnel_reset import _archive_fresh_reply_attention, reset_funnel
-from management.services.ig_response_debt import record_reply_debt, reply_debt_payload, with_reply_debt
+from management.services.ig_response_debt import park_manual_revision, record_reply_debt, reply_debt_payload, with_reply_debt
 from management.services.ig_revision_holding import confirmed_holding_effect_ids
 
 
@@ -32,6 +32,34 @@ class FreshResetAttentionTests(TransactionTestCase):
     def _ordinary_debt(self):
         self._prepare()
         return record_reply_debt(self.revision, "generation_failed")
+
+    def _missing_manifest_debt(self, *, refresh=False):
+        from management.services.ig_revision_live import RevisionGenerationBoundary
+        from management.services.ig_revision_outbox import PublicationBinding
+        from management.services.ig_revision_provider_execution import ProviderContinuation
+        from management.services.ig_revision_recovery import record_generation_admission
+        from management.services.ig_turn_revisions import create_refresh_successor
+
+        self._prepare()
+        self.economic_root_revision = self.revision
+        if refresh:
+            result = create_refresh_successor(self.revision.pk, self.token, reason="publication_changed")
+            self.assertTrue(result.created, result.reason)
+            self.revision = result.revision
+            self._prepare()
+        publication = PublicationBinding(self.publication.pk, self.publication.version, self.publication.snapshot_hash)
+        authority = RevisionGenerationBoundary(self.revision, self.token, self.settings, publication).baseline
+        # The retained historical case predates atomic manifest freezing.
+        # Reproduce that old admission boundary; the task and its debt receipt
+        # still come from the ordinary native service, never task rewrites.
+        with patch("management.services.ig_revision_provider_execution.freeze_revision_provider_manifest_locked",
+                   return_value=ProviderContinuation(ready=True)):
+            admission = record_generation_admission(self.revision.pk, self.token,
+                settings_id=self.settings.pk, settings_permission_epoch=self.settings.reply_permission_epoch,
+                publication=publication, authority=authority)
+        self.assertTrue(admission.ready, admission.reason)
+        self.revision.refresh_from_db()
+        return park_manual_revision(self.revision, "provider_manifest_missing")
 
     def _holding_debt(self, *, historical_case=True):
         self.assertFalse(self._fit_fixture(source_texts=["Сколько стоит эта футболка?"]).ready)
@@ -100,6 +128,157 @@ class FreshResetAttentionTests(TransactionTestCase):
                          [(row["id"], row["text"], row["send_state"], row["provider_message_id"]) for row in transcript])
         self.assertEqual(result["archived_reply_attention_task_ids"], [task.pk])
         self._assert_current_attention(False)
+
+    def test_native_missing_manifest_crash_gap_archives_without_reply_or_provider_evidence(self):
+        task = self._missing_manifest_debt()
+        payload, receipts = deepcopy(task.event_payload), deepcopy(self.revision.action_receipts)
+        transcript_fields = ("id", "text", "send_state", "provider_message_id", "delivery_provider_message_ids")
+        transcript = list(InstagramBotMessage.objects.filter(client=self.customer).values(*transcript_fields))
+        self.assertIn("generation_admission", receipts)
+        self.assertIn("response_debt", receipts)
+        self.assertNotIn("provider_execution_manifest", receipts)
+        self.assertFalse(GeminiRequest.objects.exists())
+        result = self._reset()
+        task.refresh_from_db()
+        self.revision.refresh_from_db()
+        self.assertEqual(result["archived_reply_attention_task_ids"], [task.pk])
+        self.assertEqual(task.status, "cancelled")
+        self.assertEqual(task.event_payload, payload)
+        self.assertFalse(task.manager_context["fresh_reset_archive"]["reply_confirmed"])
+        self.assertEqual(self.revision.action_receipts, receipts)
+        self.assertFalse(self.revision.delivery_effects.exists())
+        self.assertEqual(list(InstagramBotMessage.objects.filter(client=self.customer).values(*transcript_fields)), transcript)
+        self._assert_current_attention(False)
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+
+    def test_unstarted_refresh_family_can_archive_its_exact_native_crash_gap(self):
+        task = self._missing_manifest_debt(refresh=True)
+        self.assertEqual(self._reset()["archived_reply_attention_task_ids"], [task.pk])
+        task.refresh_from_db()
+        self.assertFalse(task.manager_context["fresh_reset_archive"]["reply_confirmed"])
+        self._assert_current_attention(False)
+
+    def test_second_native_reset_archives_retained_crash_gap_without_rewriting_first_audit(self):
+        task = self._missing_manifest_debt()
+        # Preserve the already completed old implementation's missed archive,
+        # while exercising the ordinary reset transaction and retirement.
+        with patch("management.services.ig_funnel_reset._missing_manifest_attention_is_unstarted", return_value=False):
+            first = self._reset()
+        first_audit = deepcopy(IgFunnelResetAudit.objects.get(pk=first["audit_id"]).previous_state)
+        self.revision.refresh_from_db()
+        self.assertEqual(self.revision.recovery_code, "fresh_conversation_reset")
+        self.assertEqual(self.revision.state, "superseded")
+        self._assert_current_attention(True)
+        second = self._reset()
+        self.assertEqual(second["archived_reply_attention_task_ids"], [task.pk])
+        self.assertEqual(second["reply_permission_epoch"], first["reply_permission_epoch"] + 1)
+        self.assertEqual(IgFunnelResetAudit.objects.get(pk=first["audit_id"]).previous_state, first_audit)
+        task.refresh_from_db()
+        self.assertFalse(task.manager_context["fresh_reset_archive"]["reply_confirmed"])
+        self._assert_current_attention(False)
+
+    def test_missing_manifest_reason_without_native_task_receipt_keeps_attention(self):
+        self._prepare()
+        task = record_reply_debt(self.revision, "provider_manifest_missing")
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
+        self._assert_current_attention(True)
+
+    def test_missing_manifest_native_task_receipt_must_match_exact_task(self):
+        from django.db.models.query import QuerySet
+        task = self._missing_manifest_debt()
+        receipts = deepcopy(self.revision.action_receipts)
+        receipts["response_debt"]["task_id"] = task.pk + 1
+        # Isolated corruption bypasses the append-only model guard deliberately.
+        QuerySet.update(type(self.revision).objects.filter(pk=self.revision.pk), action_receipts=receipts)
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
+
+    def test_missing_manifest_any_graph_identity_keeps_attention_even_before_provider_start(self):
+        from django.db.models.query import QuerySet
+        task = self._missing_manifest_debt(refresh=True)
+        for identity in ("logical_turn_id", "source_execution_key", "source_message_id"):
+            with self.subTest(identity=identity):
+                graph = GeminiRequest.objects.create(request_id=f"reset-gap-{identity}", lane="live",
+                    task_class="simple_live", accounting_mode="shadow")
+                value = self.source.pk if identity == "source_message_id" else f"ig-revision:{self.economic_root_revision.pk}"
+                # A corrupt identity fixture must not disappear from the guard.
+                QuerySet.update(GeminiRequest.objects.filter(pk=graph.pk), **{identity: value})
+                self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+                task.refresh_from_db()
+                self.assertEqual(task.status, "skipped")
+                graph.delete()
+
+    def test_missing_manifest_raw_family_manifest_or_reference_keeps_attention(self):
+        from django.db.models.query import QuerySet
+        task = self._missing_manifest_debt(refresh=True)
+        root = self.economic_root_revision
+        root.refresh_from_db()
+        original = deepcopy(root.action_receipts)
+        for key, value in (("provider_execution_manifest", {}),
+                           ("provider_execution_reference", {"root_revision_id": self.revision.pk})):
+            with self.subTest(key=key):
+                QuerySet.update(type(root).objects.filter(pk=root.pk), action_receipts={**original, key: value})
+                self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+                task.refresh_from_db()
+                self.assertEqual(task.status, "skipped")
+        QuerySet.update(type(root).objects.filter(pk=root.pk), action_receipts=original)
+
+    def test_missing_manifest_invalid_family_keeps_attention(self):
+        from django.db.models.query import QuerySet
+        task = self._missing_manifest_debt(refresh=True)
+        QuerySet.update(type(self.revision).objects.filter(pk=self.revision.pk), permission_epoch=999)
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
+
+    def test_missing_manifest_corrupted_root_snapshot_keeps_attention(self):
+        from django.db.models.query import QuerySet
+        task = self._missing_manifest_debt(refresh=True)
+        root = self.economic_root_revision
+        snapshot = deepcopy(root.bundle_snapshot)
+        snapshot["sources"][0]["text"] = "Corrupted historical source"
+        QuerySet.update(type(root).objects.filter(pk=root.pk), bundle_snapshot=snapshot)
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
+
+    def test_missing_manifest_unknown_ancestor_delivery_keeps_attention(self):
+        task = self._missing_manifest_debt(refresh=True)
+        root = self.economic_root_revision
+        effect = IgRevisionDeliveryEffect.objects.create(revision=root, source_message=self.source,
+            effect_key="reset-gap-unknown-ancestor", group="substantive_text", kind="text",
+            order_index=0, part_index=0, part_count=1, plan_digest="a"*64,
+            payload={"text": "Uncertain old reply"}, payload_digest="b"*64,
+            recipient_igsid=self.customer.igsid, provider_namespace=self.source.provider_namespace,
+            settings_id_snapshot=self.settings.pk, settings_permission_epoch=self.settings.reply_permission_epoch,
+            client_permission_epoch=root.permission_epoch, revision_snapshot_digest=root.snapshot_digest,
+            publication_id=self.publication.pk, publication_version=self.publication.version,
+            publication_hash=self.publication.snapshot_hash, authority_context_digest="c"*64, state="unknown")
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        effect.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
+        self.assertEqual(effect.state, "unknown")
+
+    def test_missing_manifest_family_source_after_reset_boundary_keeps_attention(self):
+        task = self._missing_manifest_debt()
+        with transaction.atomic():
+            result = _archive_fresh_reply_attention(self.customer,
+                boundary=self.source.pk-1, actor=None, now=timezone.now())
+        self.assertEqual(result["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
+
+    def test_missing_manifest_payment_evidence_keeps_attention(self):
+        task = self._missing_manifest_debt()
+        IgPaymentConfirmationReview.objects.create(client=self.customer,
+            dedupe_key="missing-manifest-payment", watermark_message_id=self.source.pk)
+        self.assertEqual(self._reset()["archived_reply_attention_count"], 0)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "skipped")
 
     def test_unknown_holding_delivery_keeps_its_reconciliation_alert(self):
         task = self._holding_debt()

@@ -172,6 +172,12 @@ def _own_business_enquiry(sources, originals):
     stance = re.compile(r"\b(?:(?:i|we)\s+(?:want|would\s+like|plan|intend|run|own|operate|am\s+interested|are\s+interested)|"
         r"(?:я|ми|мы)\s+(?:хочу|хочемо|хотим|маю|маємо|план\w*|відкри\w*|откры\w*|запуска\w*)|"
         r"хочу|хочемо|планую|плануємо|планирую|планируем|відкриваю|открываю|запускаю|маю\s+магазин|у\s+мене\s+магазин|у\s+меня\s+магазин)\b", re.I)
+    ongoing_stance = re.compile(
+        r"^\s*(?:(?:зараз|сейчас)\s+)?(?:я|ми|мы)\s+"
+        r"(?:працюю|працюємо|работаю|работаем)\s+"
+        r"(?:не\s+(?:только|лише|тільки)\s+)?(?:по|через|з|із|с)\s+"
+        r"(?:дропшип\w*|дроп[- ]шип\w*|опт(?:у|ом)?|гурт\w*)"
+        r"\s*[.!?]?\s*$", re.I)
     raw_by_id = {row.get("message_id"): str(row.get("text") or "") for row in originals if isinstance(row, dict)}
     for row in sources:
         for raw in re.findall(r"[^.!?\n]+[.!?]?", str(row.get("text") or "")):
@@ -185,7 +191,7 @@ def _own_business_enquiry(sources, originals):
             original = raw_by_id.get(row.get("message_id"), "")
             position = original.find(quote)
             question = position >= 0 and original[position + len(quote):].lstrip().startswith("?")
-            if (question or stance.search(text)) and business_cooperation_for_sources([{**row, "text": text}]):
+            if (question or stance.search(text) or ongoing_stance.search(text)) and business_cooperation_for_sources([{**row, "text": text}]):
                 return True
     return False
 
@@ -261,8 +267,14 @@ def _public_paraphrase_topic(text, topics):
             r"основной\s+рабочий\s+канал\s+партн[её]рства\s*[—–-]\s*telegram,?\s+но\s+текущего\s+чата\s+достаточно\s+для\s+обращения,?\s+(?:а|и)\s+кабинет\s+на\s+сайте\s+пока\s+тестовый",
         ),
     }
+    anti_automatic = (
+        r"(?:\s+(?:и\s+не\s+применяются\s+автоматически|"
+        r"(?:та|і)\s+не\s+застосовуються\s+автоматично|"
+        r"and\s+(?:are\s+)?never\s+applied\s+automatically))?"
+    )
     return next((topic for topic, choices in patterns.items() if topic in topics
-        and any(re.fullmatch(pattern, value, flags=re.I) for pattern in choices)), "")
+        and any(re.fullmatch(pattern + (anti_automatic if topic == "partner_price" else ""),
+            value, flags=re.I) for pattern in choices)), "")
 
 
 def is_reviewed_public_statement(text):
@@ -278,7 +290,7 @@ def unreviewed_business_entitlement(text):
     to the same coordinated clause; a prior denial cannot excuse a later
     guarantee. This is a B2B guard, not global retail discount authority.
     """
-    from management.services.ig_reply_truth import _locally_negated
+    from management.services.ig_reply_truth import _denied_offer_spans, _locally_negated
     # Batch multiples do not approve combining sizes or prints. Keep this
     # negative guard inside the existing business decision boundary.
     mix_scope = re.compile(r"\b(?:розмір\w*|размер\w*|принт\w*|sizes?|prints?)\b", re.I)
@@ -298,7 +310,10 @@ def unreviewed_business_entitlement(text):
             return True
     entitlement = re.compile(r"гарантован\w*|гарантирован\w*|гаранту\w*|guarantee\w*|entitled|eligible|qualified|"
         r"призначен\w*|назначен\w*|схвален\w*|одобрен\w*|approved|assigned|unlocked", re.I)
-    for clause in re.split(r"[,;:]|\b(?:and|but|та|але|і|и|но)\b", str(text or ""), flags=re.I):
+    entitlement_text = str(text or "")
+    for begin, end in reversed(_denied_offer_spans(entitlement_text)):
+        entitlement_text = entitlement_text[:begin] + " " * (end - begin) + entitlement_text[end:]
+    for clause in re.split(r"[,;:]|\b(?:and|but|та|але|і|и|но)\b", entitlement_text, flags=re.I):
         for match in entitlement.finditer(clause):
             if _locally_negated(clause, match.start()):
                 continue
