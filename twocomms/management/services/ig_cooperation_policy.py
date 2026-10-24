@@ -17,6 +17,17 @@ TITLE = "Owner reviewed: public cooperation"
 _TOKEN = object()
 _TOPICS = frozenset({"partner_price", "monthly_sales", "wholesale", "start_without_stock",
     "delivery_terms", "payment_terms", "settlement", "channels", "photo_usage", "samples", "review"})
+# Approved publication 8 (q23.1), retained only for immutable/draft reading.
+# These exact source/body identities do not enter reviewed_modules() or grant
+# current public facts; capture_cooperation_policy remains current-body only.
+_APPROVED_HISTORICAL_SOURCES = (
+    ("uk", "0db9bdc6351b57a4ab88a722973f010ff596006d3710e6c1afa810c92e92fe33",
+        "7930a10ba45c8183d33354d94600914a2b2c725c550ddd68e2007ae7790ecc04"),
+    ("ru", "c09651062306965c26e23deb1daed2ddc7d597b134cbdfd23663c413b4e7222c",
+        "dcc4b92a8f5d09d78a9444266480b185b62d4b840678f36842adfd8fec352acf"),
+    ("en", "f46f5e7b5cc543cdd2823e8017b579d6913cb7c2eaf2fa93bb08c390bb06b682",
+        "549cda98d47534e0300c943a037a815705d47f4a95b12727b4463b1865ff47f4"),
+)
 
 
 def _hash(text):
@@ -65,8 +76,22 @@ def reviewed_values(language):
 
 
 def validate_reviewed_source(value, body):
+    if type(value) is not dict or type(body) is not str:
+        raise ValueError("cooperation_source_body_mismatch")
+    def matches(expected):
+        return value == expected and all(type(value[key]) is type(item) for key, item in expected.items())
     for _language, approved, _facts, provenance in reviewed_modules():
-        if value == dict(provenance) and body.strip() == approved:
+        if matches(dict(provenance)) and body.strip() == approved:
+            return dict(value)
+    for language, source_digest, body_digest in _APPROVED_HISTORICAL_SOURCES:
+        expected = {"version": 1,
+            "source_id": f"management/bot_knowledge/modules/cooperation.{language}.md",
+            "source_hash": source_digest, "section_key": "public_cooperation",
+            "section_hash": body_digest, "body_hash": body_digest,
+            "parser_version": "cooperation-source.v1"}
+        if (matches(expected) and _hash(body.strip()) == body_digest
+            and body.strip().startswith("# TwoComms public cooperation policy\n"
+                f"Version: owner-2026-10-23.q23.1\nLanguage: {language}\n")):
             return dict(value)
     raise ValueError("cooperation_source_body_mismatch")
 

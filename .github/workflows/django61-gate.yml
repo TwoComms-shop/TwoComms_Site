@@ -83,6 +83,7 @@ jobs:
             management.tests_ig_qa23_candidate_authority_20261024 \
             management.tests_ig_qa23_order_assertions_20261024 \
             management.tests_ig_qa23_policy_raw_regressions_20261024 \
+            management.tests_ig_cooperation_publication_history_20261024 \
             management.tests_ig_multiline_truth_guard \
             management.tests_ig_fresh_conversation_reset_20261023 \
             management.tests_ig_lesia_prompt_budget_20261023 \
