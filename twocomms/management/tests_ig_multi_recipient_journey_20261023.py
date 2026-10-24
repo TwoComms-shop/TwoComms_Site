@@ -278,6 +278,55 @@ class MultiRecipientSourceJourneyTests(CommerceStateFixture, TestCase):
         self.assert_colored_word_quantity_stays_with_boyfriend(
             "For my boyfriend two pink t-shirts {url}, size L, fit classic.")
 
+    def test_ukrainian_digit_pink_shirts_keep_quantity_on_own_recipient(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "Хлопцю 2 рожеві футболки {url}, розмір L, крій classic.")
+
+    def test_russian_digit_pink_shirts_keep_quantity_on_own_recipient(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "Для парня 2 розовые футболки {url}, размер L, крой classic.")
+
+    def test_english_digit_pink_shirts_keep_quantity_on_own_recipient(self):
+        self.assert_colored_word_quantity_stays_with_boyfriend(
+            "For my boyfriend 2 pink t-shirts {url}, size L, fit classic.")
+
+    def test_numeric_colored_quantity_rejects_negation_quotes_and_alternatives(self):
+        self.start()
+        self.reduce(f"Собі одну чорну футболку https://twocomms.shop/product/{self.classic.slug}/, розмір M, крій classic.")
+        before = [deepcopy(row["fields"]) for row in self.capture()["lines"]]
+        for text in ("Хлопцю не 2 рожеві футболки", "Для парня не 2 розовые футболки",
+                "For my boyfriend not 2 pink t-shirts", "Хлопцю 2 або 3 рожеві футболки",
+                "For my boyfriend 2 or 3 pink t-shirts", "«Хлопцю 2 рожеві футболки»"):
+            with self.subTest(text=text):
+                self.reduce(text)
+                self.assertEqual([row["fields"] for row in self.capture()["lines"]], before)
+
+    def test_numeric_double_xl_recipient_source_is_size_without_units(self):
+        self.start()
+        self.reduce("Для себе розмір M")
+        own = deepcopy(self.capture()["lines"][0]["fields"])
+        for spelling in ("2XL", "2хл"):
+            with self.subTest(spelling=spelling):
+                self.reduce("Для хлопця розмір " + spelling)
+                first, second = self.capture()["lines"]
+                self.assertEqual(first["fields"], own)
+                self.assertEqual(second["fields"]["size"]["value"], "XXL")
+                self.assertIs(type(second["fields"]["size"]["value"]), str)
+                self.assertNotIn("quantity", second["fields"])
+                self.assertIsNone(second["defaults"]["quantity"]["value"])
+
+    def test_reviewed_pink_digit_title_does_not_create_quantity(self):
+        self.reality.title = "2 рожеві футболки"
+        self.reality.save(update_fields=["title"])
+        self.start()
+        source, decision = self.reduce("Хлопцю футболку 2 рожеві футболки, розмір L, крій classic.")
+        self.assertTrue(decision.accepted, decision.session.pending_clarification)
+        other = self.capture()["lines"][1]
+        self.assertEqual(other["fields"]["product_id"]["value"], self.reality.pk)
+        self.assertEqual(other["fields"]["product_id"]["source"]["source_message_id"], source.pk)
+        self.assertNotIn("quantity", other["fields"])
+        self.assertIsNone(other["defaults"]["quantity"]["value"])
+
     def test_another_curated_color_uses_the_same_quantity_vocabulary(self):
         self.assert_colored_word_quantity_stays_with_boyfriend(
             "For my boyfriend two green t-shirts {url}, size L, fit classic.", color="green")

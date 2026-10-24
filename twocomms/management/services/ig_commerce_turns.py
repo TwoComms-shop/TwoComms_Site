@@ -514,12 +514,26 @@ def _quantity_requirement_text(text, title_texts):
 
 
 def _line_quantity(text, *, action):
+    colors = "|".join(_word_pattern(word) for word in _COLOR_WORDS)
+    descriptors = (r"(?:(?:такі|таку|такие|такую|самі|саму|самые|же|same|"
+        + colors + r")\s+){0,4}")
     patterns = [r"\b(?:количество|кількість|quantity)\s*(?:(?:of\s+)?(?:футболк\w*|худі|худи|hoodies?|t-shirts?)\s*)?(?:[:=]|на|to)?\s*(\d{1,3})(?!\w)",
         r"\b(?:количество|кількість|quantity)[^.!?;\n]{0,48}?(?:\bна\b|\bto\b|[:=])\s*(\d{1,3})(?!\w)",
         r"(?<!\w)(\d{1,3})\s*(?:шт\.?|штук\w*|pieces?|items?)\b"]
+    numeric_apparel = None
     if action in {"add", "update", "replace", "configure"}:
-        patterns.append(r"(?<!\w)(\d{1,3})\s*(?:футболк\w*|худі|худи|hoodies?|t-shirts?)\b")
-    values = {int(match.group(1)) for pattern in patterns for match in re.finditer(pattern, text, re.I)}
+        numeric_apparel = r"(?<!\w)(\d{1,3})\s*(" + descriptors + r")(?:футболк\w*|худі|худи|hoodies?|t-shirts?)\b"
+        patterns.append(numeric_apparel)
+    values = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.I):
+            # Only the newly admitted descriptor-bearing numeric phrase gets
+            # this guard; preserve the existing direct-noun/unit grammar.
+            if (pattern == numeric_apparel and match.group(2)
+                and (_negated_action(text[:match.start()])
+                    or re.search(r"\b(?:или|або|чи|or)\b", text, re.I))):
+                return None, "ambiguous_line_quantity"
+            values.add(int(match.group(1)))
     if action in {"add", "configure"}:
         # Match a quantity phrase, never rewrite number words globally: the
         # spoken "два XL" remains a size alias and reviewed titles are masked
@@ -531,9 +545,6 @@ def _line_quantity(text, *, action):
             "вісім": 8, "восемь": 8, "eight": 8, "дев'ять": 9, "дев’ять": 9, "девять": 9, "nine": 9,
             "десять": 10, "ten": 10}
         number = "|".join(re.escape(word) for word in numbers)
-        colors = "|".join(_word_pattern(word) for word in _COLOR_WORDS)
-        descriptors = (r"(?:(?:такі|таку|такие|такую|самі|саму|самые|же|same|"
-            + colors + r")\s+){0,4}")
         for match in re.finditer(r"(?<!\w)(" + number
                 + r")\s+" + descriptors + r"(?:футболк\w*|худі|худи|hoodies?|t-shirts?|шт\.?|штук\w*|pieces?|items?)\b", text, re.I):
             if (_negated_action(text[:match.start()])
